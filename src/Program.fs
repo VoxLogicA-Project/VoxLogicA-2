@@ -98,7 +98,7 @@ let main (argv: string array) =
         if parsed.Contains SaveTaskGraphAsAST then
             let filenameOpt = parsed.GetResult SaveTaskGraphAsAST
 
-            let voxlogicaProgram = program.ToProgram("n")
+            let voxlogicaProgram = program.ToProgram()
 
             match filenameOpt with
             | Some filename ->
@@ -109,7 +109,7 @@ let main (argv: string array) =
         if parsed.Contains SaveTaskGraphAsProgram then
             let filenameOpt = parsed.GetResult SaveTaskGraphAsProgram
 
-            let voxlogicaProgram = program.ToProgram("n")
+            let voxlogicaProgram = program.ToProgram()
             let voxlogicaSyntax = voxlogicaProgram.ToSyntax()
 
             match filenameOpt with
