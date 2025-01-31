@@ -1,0 +1,8 @@
+
+let f(x,y) = x + y
+
+let y = f(a,b)
+
+let x = load(y)
+
+print "ciao" x
