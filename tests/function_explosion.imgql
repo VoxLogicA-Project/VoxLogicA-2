@@ -1,29 +1,30 @@
 // Function declaration based Fibonacci chain with combinatorial explosion
-// Each function calls its predecessors multiple times, causing combinatorial explosion in the DAG
+// Each function calls its predecessors multiple times, causing combinatorial explosion
 
-// Base cases
-let f0() = 1
-let f1() = 1
+// Base cases - using a dummy parameter 'x'
+let f0(x) = 1
+let f1(x) = 1
 
-// Define functions that call the predecessors multiple times
-let f2() = f1() + f0() + f1() + f0()
-let f3() = f2() + f1() + f2() + f1()
-let f4() = f3() + f2() + f3() + f2()
-let f5() = f4() + f3() + f4() + f3()
-let f6() = f5() + f4() + f5() + f4()
-let f7() = f6() + f5() + f6() + f5()
-let f8() = f7() + f6() + f7() + f6()
-let f9() = f8() + f7() + f8() + f7()
-let f10() = f9() + f8() + f9() + f8()
-let f11() = f10() + f9() + f10() + f9()
-let f12() = f11() + f10() + f11() + f10()
-let f13() = f12() + f11() + f12() + f11()
-let f14() = f13() + f12() + f13() + f12()
-let f15() = f14() + f13() + f14() + f13()
-let f16() = f15() + f14() + f15() + f14()
-let f17() = f16() + f15() + f16() + f15()
-let f18() = f17() + f16() + f17() + f16()
-let f19() = f18() + f17() + f18() + f17()
-let f20() = f19() + f18() + f19() + f18()
+// Functions calling predecessors
+let f2(x) = f1(x+1) + f0(x-1) + f1(x*2) + f0(x/2) + f1(x) + f0(x)
+let f3(x) = f2(x+1) + f1(x-1) + f2(x*2) + f1(x/2) + f2(x) + f1(x)
+let f4(x) = f3(x+1) + f2(x-1) + f3(x*2) + f2(x/2) + f3(x) + f2(x)
+let f5(x) = f4(x+1) + f3(x-1) + f4(x*2) + f3(x/2) + f4(x) + f3(x)
+let f6(x) = f5(x+1) + f4(x-1) + f5(x*2) + f4(x/2) + f5(x) + f4(x)
+let f7(x) = f6(x+1) + f5(x-1) + f6(x*2) + f5(x/2) + f6(x) + f5(x)
+let f8(x) = f7(x+1) + f6(x-1) + f7(x*2) + f6(x/2) + f7(x) + f6(x)
+let f9(x) = f8(x+1) + f7(x-1) + f8(x*2) + f7(x/2) + f8(x) + f7(x)
+let f10(x) = f9(x+1) + f8(x-1) + f9(x*2) + f8(x/2) + f9(x) + f8(x)
+let f11(x) = f10(x+1) + f9(x-1) + f10(x*2) + f9(x/2) + f10(x) + f9(x)
+let f12(x) = f11(x+1) + f10(x-1) + f11(x*2) + f10(x/2) + f11(x) + f10(x)
+let f13(x) = f12(x+1) + f11(x-1) + f12(x*2) + f11(x/2) + f12(x) + f11(x)
+let f14(x) = f13(x+1) + f12(x-1) + f13(x*2) + f12(x/2) + f13(x) + f12(x)
+let f15(x) = f14(x+1) + f13(x-1) + f14(x*2) + f13(x/2) + f14(x) + f13(x)
+let f16(x) = f15(x+1) + f14(x-1) + f15(x*2) + f14(x/2) + f15(x) + f14(x)
+let f17(x) = f16(x+1) + f15(x-1) + f16(x*2) + f15(x/2) + f16(x) + f15(x)
+let f18(x) = f17(x+1) + f16(x-1) + f17(x*2) + f16(x/2) + f17(x) + f16(x)
+let f19(x) = f18(x+1) + f17(x-1) + f18(x*2) + f17(x/2) + f18(x) + f17(x)
+let f20(x) = f19(x+1) + f18(x-1) + f19(x*2) + f18(x/2) + f19(x) + f18(x)
 
-print "function_explosion_f20" f20() 
+// Print result
+print "function_explosion_f20" f20(1) 

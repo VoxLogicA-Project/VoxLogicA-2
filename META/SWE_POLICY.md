@@ -4,10 +4,12 @@
 
 When developing a new feature in this repository, the following workflow is mandatory:
 
-0. **Pre-Branching Cleanup**
+0. **Pre-Branching Cleanup (CRITICAL AND MANDATORY)**
 
    - Before creating any branch, the working directory MUST be clean: there must be no active changes (no uncommitted or unstaged files).
    - Always switch to the main branch, ensure it is up to date and clean, and only then proceed to create a new branch.
+   - Failure to follow this rule can lead to changes being carried over to new branches unintentionally, causing confusion and potential merge conflicts.
+   - This step is NOT optional and MUST be performed before creating any new feature branch.
 
 1. **Create a GitHub Issue**
 
@@ -56,7 +58,8 @@ When a feature is marked complete, the following steps are MANDATORY:
 
    - Update the GitHub issue to reflect completion.
    - Reference the completed status in both the issue and the META task file.
-   - Merge the feature branch via a pull request referencing the issue, and close the branch after merge.
+   - Merge the feature branch into main **locally** (no pull request is required in this project; merges are performed directly on the developer's machine for traceability and speed).
+   - After merging, update the META files with the merge commit SHA for traceability, and delete the feature branch locally and remotely.
 
 3. **Documentation:**
 
@@ -82,3 +85,7 @@ When a feature is marked complete, the following steps are MANDATORY:
 
 - All task files MUST be stored in `META/TASKS/OPEN` (for ongoing tasks) and `META/TASKS/CLOSED` (for completed tasks).
 - Task filenames MUST reflect the corresponding GitHub issue number (e.g., `TASK_1_python_port.md`).
+
+## Notes
+
+- **Note:** In this project, we do **not** use pull requests for merging feature branches. All merges are performed locally by the developer, and traceability is maintained via commit SHAs and META updates. This is a project-specific policy for efficiency and clarity.

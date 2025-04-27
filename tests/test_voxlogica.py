@@ -42,6 +42,24 @@ class TestVoxLogicA(unittest.TestCase):
         # The number of operations should be large (at least 20 for f20, but likely more due to intermediate ops)
         self.assertGreaterEqual(len(work_plan.operations), 20)
 
+    def test_function_explosion(self):
+        """Test the reducer with function declarations causing combinatorial explosion"""
+        explosion_file = Path(__file__).parent / "function_explosion.imgql"
+        program = parse_program(explosion_file)
+        work_plan = reduce_program(program)
+
+        # Save the DAG to a file for analysis
+        dag_file = "/tmp/function_explosion_dag.txt"
+        with open(dag_file, "w") as f:
+            f.write(work_plan.to_dot())
+        print(f"DAG saved to {dag_file}")
+
+        self.assertEqual(len(work_plan.goals), 1)
+        # The number of operations should be much larger than the fibonacci chain due to combinatorial explosion
+        # Each function call creates multiple operations, and we're calling each function multiple times
+        self.assertGreaterEqual(len(work_plan.operations), 100)
+        print(f"Function explosion test created {len(work_plan.operations)} operations")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -48,10 +48,29 @@ if fsharp_fib_result.returncode == 0:
 else:
     print("F# CPU-demanding test FAILED.")
 
+# Run F# tests on function_explosion.imgql
+print("\nRunning F# Combinatorial Explosion test (function_explosion.imgql)...")
+fsharp_func_explosion_cmd = [
+    "dotnet",
+    "run",
+    "--project",
+    "../implementation/fsharp/VoxLogicA.fsproj",
+    "function_explosion.imgql",
+]
+fsharp_func_explosion_result = subprocess.run(
+    fsharp_func_explosion_cmd, cwd=os.path.dirname(__file__)
+)
+
+if fsharp_func_explosion_result.returncode == 0:
+    print("F# Combinatorial Explosion test PASSED.")
+else:
+    print("F# Combinatorial Explosion test FAILED.")
+
 # Exit with nonzero code if any test failed
 if (
     python_test_result.returncode != 0
     or fsharp_result.returncode != 0
     or fsharp_fib_result.returncode != 0
+    or fsharp_func_explosion_result.returncode != 0
 ):
     sys.exit(1)
