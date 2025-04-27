@@ -16,3 +16,10 @@ tests/*/output-cpu.config
 .config
 src/output
 
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
