@@ -11,7 +11,7 @@ Create a test that is CPU-demanding for the reducer. This involves creating a se
 ## Status
 
 - Task created and tracked in META and GitHub.
-- Implementation started: Test file `tests/fibonacci_chain.imgql` created. (Now extended to depth 30/f30.)
+- Implementation started: Test file `tests/fibonacci_chain.imgql` created. (Now extended to depth 100/f100.)
 - Integration and execution pending.
 
 ## Next Steps
