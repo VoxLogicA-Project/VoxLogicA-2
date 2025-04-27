@@ -1,27 +1,73 @@
-# Task: CPU-demanding test for reducer using function declarations for combinatorial explosion
+# Python Comment Parsing Issue in Lark Parser
 
-## Summary
+## Description
 
-Create a test that causes combinatorial explosion in the workflow graph by using function declarations instead of constants. This is similar to the fibonacci chain task (Task 2) but using function declarations instead of constant declarations, which will cause the Workflow (DAG) size to grow combinatorially with respect to the imgql size.
+The Python implementation of VoxLogicA-2 fails to parse imgql files that contain comments. The parser raises an `UnexpectedToken` error when it encounters comment lines. This issue only affects the Python implementation; the F# implementation handles comments correctly.
 
-## Issue
+## Reproducing the Issue
 
-- GitHub Issue: https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/3
+The issue can be reproduced using the attached test file `comment_parsing_failure.imgql`. This file includes standard "//" comments before function declarations.
 
-## Status
+Run the test with:
 
-- OPEN. Planning implementation for a test using function declarations that create combinatorial explosion in the DAG.
+```bash
+cd tests
+python -m unittest test_voxlogica.py
+```
 
-## Implementation Plan
+The test will fail with an `UnexpectedToken` error when trying to parse comments.
 
-1. Design and implement a sequence of imgql function declarations up to depth 20 (initially).
-2. Use function declarations instead of constant declarations, with the aim to make the Workflow (DAG) size increase combinatorially.
-3. Integrate the test into both Python and F# test runners.
-4. Run the test and verify it causes combinatorial explosion in the workflow.
-5. Save the DAG to a file to visualize the explosion.
-6. Update documentation and traceability in META and GitHub.
+## Error Log
 
-## Traceability
+```
+ERROR: test_function_explosion (test_voxlogica.TestVoxLogicA.test_function_explosion)
+Test the reducer with function declarations causing combinatorial explosion
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/vincenzo/data/local/repos/VoxLogicA-2/tests_venv/lib/python3.13/site-packages/lark/lexer.py", line 665, in lex
+    yield lexer.next_token(lexer_state, parser_state)
+          ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/vincenzo/data/local/repos/VoxLogicA-2/tests_venv/lib/python3.13/site-packages/lark/lexer.py", line 598, in next_token
+    raise UnexpectedCharacters(lex_state.text, line_ctr.char_pos, line_ctr.line, line_ctr.column,
+                               allowed=allowed, token_history=lex_state.last_token and [lex_state.last_token],
+                               state=parser_state, terminals_by_name=self.terminals_by_name)
+lark.exceptions.UnexpectedCharacters: No terminal matches 'F' in the current parser context, at line 8 col 4
 
-- Task file cross-referenced with GitHub issue #3.
-- Feature branch will follow the format: feature/3-function-explosion-test
+// Functions calling predecessors
+   ^
+Expected one of:
+        * /[a-z][a-zA-Z0-9]*/
+        * ESCAPED_STRING
+        * LPAR
+        * SIGNED_NUMBER
+
+Previous tokens: Token('OPERATOR', '//')
+```
+
+## Severity
+
+Medium - This issue prevents parsing imgql files with comments in the Python implementation, which hampers documentation and code readability.
+
+## Possible Causes
+
+The issue is likely related to how the Lark parser is configured to handle comments in the grammar definition. In the Python implementation, the comment rule appears to be incorrectly defined, causing tokens after the "//" to be treated as unexpected tokens.
+
+Looking at the grammar definition in `implementation/python/voxlogica/parser.py`, the COMMENT rule appears to be:
+
+```python
+COMMENT: "//" /[^\n]*/ NEWLINE
+```
+
+But it's possible that:
+
+1. The rule isn't being properly included for tokenization
+2. The comment handling differs between the lexer and parser phases
+3. There might be missing components in the comment rule definition
+
+## Notes
+
+The F# implementation correctly handles the same comments without any issues.
+
+## GitHub Issue Reference
+
+This issue is tracked in GitHub issue: https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/5

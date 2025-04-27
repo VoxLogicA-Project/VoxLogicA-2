@@ -1,73 +1,27 @@
-# Python Comment Parsing Issue in Lark Parser
+# Task: CPU-demanding test for reducer (imgql Fibonacci-like chain)
 
-## Description
+## Summary
 
-The Python implementation of VoxLogicA-2 fails to parse imgql files that contain comments. The parser raises an `UnexpectedToken` error when it encounters comment lines. This issue only affects the Python implementation; the F# implementation handles comments correctly.
+Create a test that is CPU-demanding for the reducer. This involves creating a series of imgql function declarations that use previous declarations in a Fibonacci-like (albeit non-recursive) fashion. The goal is to stress-test the reducer with a deep chain of dependent function calls.
 
-## Reproducing the Issue
+## Issue
 
-The issue can be reproduced using the attached test file `comment_parsing_failure.imgql`. This file includes standard "//" comments before function declarations.
+- GitHub Issue: https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/2
 
-Run the test with:
+## Status
 
-```bash
-cd tests
-python -m unittest test_voxlogica.py
-```
+- COMPLETE. Implementation finished, all tests pass, DAG saved, and documentation updated. Merged in commit SHA: c6a9837e7e235983143931e5c4a44ad2cbb1fb7b.
 
-The test will fail with an `UnexpectedToken` error when trying to parse comments.
+## Steps Completed
 
-## Error Log
+1. Designed and implemented a sequence of imgql function declarations up to f100 (depth 100).
+2. Integrated the test into both Python and F# test runners.
+3. Ran the test and verified it is CPU-demanding for the reducer (100 tasks).
+4. Saved the DAG to /tmp/dag.txt using the Python implementation.
+5. Updated documentation and traceability in META and GitHub.
 
-```
-ERROR: test_function_explosion (test_voxlogica.TestVoxLogicA.test_function_explosion)
-Test the reducer with function declarations causing combinatorial explosion
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Users/vincenzo/data/local/repos/VoxLogicA-2/tests_venv/lib/python3.13/site-packages/lark/lexer.py", line 665, in lex
-    yield lexer.next_token(lexer_state, parser_state)
-          ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/vincenzo/data/local/repos/VoxLogicA-2/tests_venv/lib/python3.13/site-packages/lark/lexer.py", line 598, in next_token
-    raise UnexpectedCharacters(lex_state.text, line_ctr.char_pos, line_ctr.line, line_ctr.column,
-                               allowed=allowed, token_history=lex_state.last_token and [lex_state.last_token],
-                               state=parser_state, terminals_by_name=self.terminals_by_name)
-lark.exceptions.UnexpectedCharacters: No terminal matches 'F' in the current parser context, at line 8 col 4
+## Traceability
 
-// Functions calling predecessors
-   ^
-Expected one of:
-        * /[a-z][a-zA-Z0-9]*/
-        * ESCAPED_STRING
-        * LPAR
-        * SIGNED_NUMBER
-
-Previous tokens: Token('OPERATOR', '//')
-```
-
-## Severity
-
-Medium - This issue prevents parsing imgql files with comments in the Python implementation, which hampers documentation and code readability.
-
-## Possible Causes
-
-The issue is likely related to how the Lark parser is configured to handle comments in the grammar definition. In the Python implementation, the comment rule appears to be incorrectly defined, causing tokens after the "//" to be treated as unexpected tokens.
-
-Looking at the grammar definition in `implementation/python/voxlogica/parser.py`, the COMMENT rule appears to be:
-
-```python
-COMMENT: "//" /[^\n]*/ NEWLINE
-```
-
-But it's possible that:
-
-1. The rule isn't being properly included for tokenization
-2. The comment handling differs between the lexer and parser phases
-3. There might be missing components in the comment rule definition
-
-## Notes
-
-The F# implementation correctly handles the same comments without any issues.
-
-## GitHub Issue Reference
-
-This issue is tracked in GitHub issue: https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/5
+- Task file and GitHub issue cross-referenced.
+- Feature branch: feature/2-cpu-demanding-reducer-test
+- Merge commit SHA: c6a9837e7e235983143931e5c4a44ad2cbb1fb7b

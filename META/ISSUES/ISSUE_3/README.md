@@ -1,64 +1,27 @@
-# Task: Python Port of F# Implementation
+# Task: CPU-demanding test for reducer using function declarations for combinatorial explosion
 
 ## Summary
 
-Port the current F# implementation (parser, reducer, main) to Python, using Lark for parsing. The Python version must:
-
-- Replicate all features of the F# implementation.
-- Be clear and modular, allowing for easy removal of unused features.
-- Use Lark for parsing, starting with a grammar as close as possible to the F# version.
-- Provide both CLI and HTTP API interfaces. The CLI and API must match exactly: every API endpoint must have a corresponding CLI switch, with data passed via files (CLI) or HTTP (API).
-- Use standard, widely adopted, and stable tools for dependencies, linting, and testing, with a preference for Microsoft VSCode/Cursor compatibility.
-- Include documentation (README, inline CLI docs, etc.) and maintain accuracy with respect to the implementation.
-- Add a `tests/` directory at the top level, alongside `fsharp/` and the new `python/` directory, with at least one simple test.
-- The design document for this port will be placed in the `doc/` directory, not in META.
+Create a test that causes combinatorial explosion in the workflow graph by using function declarations instead of constants. This is similar to the fibonacci chain task (Task 2) but using function declarations instead of constant declarations, which will cause the Workflow (DAG) size to grow combinatorially with respect to the imgql size.
 
 ## Issue
 
-- GitHub Issue: https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/1
+- GitHub Issue: https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/3
 
 ## Status
 
-- ✅ Implementation completed
-- ✅ Python port created with full feature parity to F# implementation
-- ✅ Created modular design with Lark parser, reducer, error handling, CLI, and API components
-- ✅ Implemented FastAPI server and Typer CLI that match the F# CLI options
-- ✅ Created test suite in `tests/` directory
-- ✅ Added documentation (README, inline docs)
-- ✅ Tested implementation and fixed issues with parser and reducer
+- OPEN. Planning implementation for a test using function declarations that create combinatorial explosion in the DAG.
 
-## Implementation Details
+## Implementation Plan
 
-- **Directory Structure:** Created `python/` directory at top level with Python implementation
-- **Parser:** Used Lark for parsing, with grammar closely matching F# version
-- **Reducer:** Implemented reducer logic for program evaluation
-- **CLI:** Used Typer for CLI that matches F# CLI options
-- **API:** Used FastAPI for API server with equivalent endpoints
-- **Dependencies:** Used widely adopted tools (FastAPI, Typer, Lark)
-- **Tests:** Added test suite in `tests/` directory and fixed issues during testing
-- **Fixes:** Resolved issues with Lark transformer and made key classes hashable for the reducer
+1. Design and implement a sequence of imgql function declarations up to depth 20 (initially).
+2. Use function declarations instead of constant declarations, with the aim to make the Workflow (DAG) size increase combinatorially.
+3. Integrate the test into both Python and F# test runners.
+4. Run the test and verify it causes combinatorial explosion in the workflow.
+5. Save the DAG to a file to visualize the explosion.
+6. Update documentation and traceability in META and GitHub.
 
-## Next Steps
+## Traceability
 
-1. Consider additional tests for more complex scenarios
-2. Optimize performance if needed
-3. Enhance documentation
-
-## Task Update (Refactor Plan)
-
-- Test data (e.g., .imgql files) must be in the global tests directory, shared by all implementations.
-- The test script should be language-agnostic and run tests for both Python and F# implementations.
-- Test data should not be in implementation directories.
-- The repo will have two top-level directories: tests and implementation. All implementations go in implementation/ as subdirs (python, fsharp).
-- The test script in tests/ will test both implementations.
-- Remove test data from implementation directories.
-- This refactor is planned and in progress.
-
-## Completion
-
-- Status: COMPLETE
-- All implementation, documentation, and tests are up to date and merged to main branch.
-- Feature branch merged and closed via pull request.
-- GitHub Issue: https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/1 (cross-referenced)
-- All traceability, documentation, and testing requirements satisfied as per SWE_POLICY.md.
-- Merge Commit SHA: 7a4ad1c (fully merged to main)
+- Task file cross-referenced with GitHub issue #3.
+- Feature branch will follow the format: feature/3-function-explosion-test
