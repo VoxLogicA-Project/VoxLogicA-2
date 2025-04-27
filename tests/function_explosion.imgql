@@ -1,0 +1,29 @@
+// Function declaration based Fibonacci chain with combinatorial explosion
+// Each function calls its predecessors multiple times, causing combinatorial explosion in the DAG
+
+// Base cases
+let f0() = 1
+let f1() = 1
+
+// Define functions that call the predecessors multiple times
+let f2() = f1() + f0() + f1() + f0()
+let f3() = f2() + f1() + f2() + f1()
+let f4() = f3() + f2() + f3() + f2()
+let f5() = f4() + f3() + f4() + f3()
+let f6() = f5() + f4() + f5() + f4()
+let f7() = f6() + f5() + f6() + f5()
+let f8() = f7() + f6() + f7() + f6()
+let f9() = f8() + f7() + f8() + f7()
+let f10() = f9() + f8() + f9() + f8()
+let f11() = f10() + f9() + f10() + f9()
+let f12() = f11() + f10() + f11() + f10()
+let f13() = f12() + f11() + f12() + f11()
+let f14() = f13() + f12() + f13() + f12()
+let f15() = f14() + f13() + f14() + f13()
+let f16() = f15() + f14() + f15() + f14()
+let f17() = f16() + f15() + f16() + f15()
+let f18() = f17() + f16() + f17() + f16()
+let f19() = f18() + f17() + f18() + f17()
+let f20() = f19() + f18() + f19() + f18()
+
+print "function_explosion_f20" f20() 

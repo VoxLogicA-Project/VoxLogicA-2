@@ -56,3 +56,16 @@
   - Integrate the new test into the Python and F# test runners if possible.
   - Run the test and verify it is CPU-demanding for the reducer.
   - Document the test and its results in the task file and update status accordingly.
+
+## 3. CPU-demanding test for reducer using function declarations for combinatorial explosion
+
+- **Task File:** See [META/TASKS/OPEN/TASK_3_function_explosion_test.md](TASKS/OPEN/TASK_3_function_explosion_test.md)
+- **Status:** PLANNING. Creating an implementation plan and designing a test file using function declarations to cause combinatorial explosion in the DAG.
+- **GitHub Issue:** https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/3
+- **Description:** Create a test that causes combinatorial explosion in the workflow graph by using function declarations instead of constants. This is similar to the fibonacci chain task (Task 2) but using function declarations instead of constant declarations, which will cause the Workflow (DAG) size to grow combinatorially with respect to the imgql size.
+- **Next Steps:**
+  - Create feature branch
+  - Design and implement test file with function declarations
+  - Integrate the test into the Python and F# test runners
+  - Run the test and verify combinatorial explosion
+  - Document the test results
