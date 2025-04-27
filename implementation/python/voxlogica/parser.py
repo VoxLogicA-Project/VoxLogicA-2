@@ -192,13 +192,16 @@ grammar = r"""
     paren_expr: "(" expression ")"
     
     identifier: /[a-z][a-zA-Z0-9]*/
-    OPERATOR: /[A-Z#;:_'.|!$%&\/^=*\-+<>?@~\\]+/
+    
+    // Make the OPERATOR pattern more specific to exclude "//" sequence
+    OPERATOR: /(?!\/{2})[A-Z#;:_'.|!$%&\/^=*\-+<>?@~\\]+/
     number: SIGNED_NUMBER -> float
     boolean: "true" -> true
            | "false" -> false
     string: ESCAPED_STRING
     
-    COMMENT: "//" /[^\n]*/ NEWLINE
+    // Define the comment pattern at the top level
+    COMMENT: "//" /[^\n]*/
     
     %import common.ESCAPED_STRING
     %import common.SIGNED_NUMBER
@@ -206,6 +209,7 @@ grammar = r"""
     %import common.NEWLINE
     %ignore WS
     %ignore COMMENT
+    %ignore NEWLINE
 """
 
 
