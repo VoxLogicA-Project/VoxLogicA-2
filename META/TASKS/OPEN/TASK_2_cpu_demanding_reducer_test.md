@@ -11,14 +11,15 @@ Create a test that is CPU-demanding for the reducer. This involves creating a se
 ## Status
 
 - Task created and tracked in META and GitHub.
-- Implementation not started.
+- Implementation started: Test file `tests/fibonacci_chain.imgql` created.
+- Integration and execution pending.
 
 ## Next Steps
 
-1. Design a sequence of imgql function declarations where each function depends on the previous two (Fibonacci-like, but non-recursive).
-2. Implement the test in the appropriate test directory.
-3. Run the test and verify that it is CPU-demanding for the reducer.
-4. Document the test and its results.
+1. Integrate the new test into the Python and F# test runners if possible.
+2. Run the test and verify that it is CPU-demanding for the reducer.
+3. Document the test and its results.
+4. Update status and traceability in META and GitHub.
 
 ## Traceability
 

@@ -33,6 +33,15 @@ class TestVoxLogicA(unittest.TestCase):
         self.assertEqual(len(work_plan.goals), 1)
         self.assertGreater(len(work_plan.operations), 0)
 
+    def test_fibonacci_chain(self):
+        """Test the reducer with a CPU-demanding Fibonacci-like chain"""
+        fib_file = Path(__file__).parent / "fibonacci_chain.imgql"
+        program = parse_program(fib_file)
+        work_plan = reduce_program(program)
+        self.assertEqual(len(work_plan.goals), 1)
+        # The number of operations should be large (at least 20 for f20, but likely more due to intermediate ops)
+        self.assertGreaterEqual(len(work_plan.operations), 20)
+
 
 if __name__ == "__main__":
     unittest.main()

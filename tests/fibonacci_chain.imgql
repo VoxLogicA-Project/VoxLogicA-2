@@ -1,0 +1,23 @@
+// Fibonacci-like chain: f0 = 1, f1 = 1, fn = fn-1 + fn-2
+let f0 = 1
+let f1 = 1
+let f2 = f1 + f0
+let f3 = f2 + f1
+let f4 = f3 + f2
+let f5 = f4 + f3
+let f6 = f5 + f4
+let f7 = f6 + f5
+let f8 = f7 + f6
+let f9 = f8 + f7
+let f10 = f9 + f8
+let f11 = f10 + f9
+let f12 = f11 + f10
+let f13 = f12 + f11
+let f14 = f13 + f12
+let f15 = f14 + f13
+let f16 = f15 + f14
+let f17 = f16 + f15
+let f18 = f17 + f16
+let f19 = f18 + f17
+let f20 = f19 + f18
+print "fib20" f20 
