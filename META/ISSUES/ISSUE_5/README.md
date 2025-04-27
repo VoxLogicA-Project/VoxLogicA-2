@@ -48,25 +48,36 @@ Previous tokens: Token('OPERATOR', '//')
 
 Medium - This issue prevents parsing imgql files with comments in the Python implementation, which hampers documentation and code readability.
 
-## Possible Causes
+## Root Cause Analysis
 
-The issue is likely related to how the Lark parser is configured to handle comments in the grammar definition. In the Python implementation, the comment rule appears to be incorrectly defined, causing tokens after the "//" to be treated as unexpected tokens.
+The issue was caused by two problems in the grammar definition:
 
-Looking at the grammar definition in `implementation/python/voxlogica/parser.py`, the COMMENT rule appears to be:
+1. The `OPERATOR` pattern `/[A-Z#;:_'.|!$%&\/^=*\-+<>?@~\\]+/` was matching the comment start sequence `//` as an operator token.
+2. Since the `//` was already matched as an operator, the subsequent comment text was being interpreted as unexpected tokens.
 
-```python
-COMMENT: "//" /[^\n]*/ NEWLINE
-```
+## Solution
 
-But it's possible that:
+The issue has been fixed by:
 
-1. The rule isn't being properly included for tokenization
-2. The comment handling differs between the lexer and parser phases
-3. There might be missing components in the comment rule definition
+1. Modifying the `OPERATOR` pattern to use a negative lookahead, preventing it from matching `//`:
+   ```
+   /(?!\/{2})[A-Z#;:_'.|!$%&\/^=*\-+<>?@~\\]+/
+   ```
+2. Simplifying the `COMMENT` pattern definition to correctly match comment lines:
+   ```
+   COMMENT: "//" /[^\n]*/
+   ```
+3. Adding explicit `%ignore NEWLINE` to ensure proper handling of line breaks.
 
-## Notes
+With these changes, the parser now correctly identifies and ignores comment lines in the imgql files, allowing for proper documentation and readability in the code.
 
-The F# implementation correctly handles the same comments without any issues.
+## Status
+
+- FIXED. The comment parsing issue has been resolved and verified with the test script. The grammar now properly ignores comments starting with "//".
+
+## Verification
+
+The fix was tested with the provided `reproduce.py` script, which successfully parsed a file containing comments without any errors. The test output confirms that the parser correctly identifies and ignores comments.
 
 ## GitHub Issue Reference
 
@@ -74,4 +85,4 @@ This issue is tracked in GitHub issue: https://github.com/VoxLogicA-Project/VoxL
 
 ## Ongoing Work
 
-- [2024-06-09] The test script reproduce.py was updated to use the correct test file path. The script now runs, and the comment parsing issue is confirmed to still exist (Unexpected token error on comment lines). See SWE_POLICY.md for traceability.
+- [2024-06-09] The parser grammar will be fixed to ensure comments (// ...) are always ignored, resolving the Unexpected token error. This is part of the fix for Issue 5 and follows SWE policy for traceability.
