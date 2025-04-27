@@ -57,6 +57,42 @@
 - **Documentation:** README.md updated with root cause analysis, solution details, and verification results.
 - **Testing:** The fix has been verified with the test script, confirming that files with comments can now be parsed correctly.
 
+## 6. Test Suite Execution After Reorganization
+
+- **Status:** COMPLETE. All test suites were executed individually and collectively after the recent project reorganization. All tests passed without errors.
+- **Description:** Verified the integrity of the test infrastructure by running:
+  - `basic_test/test.py`
+  - `fibonacci_chain/fibonacci_chain.py`
+  - `function_explosion/function_explosion.py`
+    Each test was run individually and then all were run in sequence to simulate a full suite run. The environment variable `PYTHONPATH=tests` was set to ensure correct module resolution.
+- **Traceability:**
+  - User request in chat to run all tests after reorganization.
+  - Command outputs and results recorded in chat history.
+- **Testing:**
+  - `basic_test`: 4 operations, 1 goal, DAG saved.
+  - `fibonacci_chain`: 100 operations, 1 goal, DAG saved.
+  - `function_explosion`: 15490 operations, 1 goal, DAG saved.
+  - No errors or failures encountered.
+- **Next Steps:**
+  - Maintain this test execution pattern for future reorganizations or major changes.
+  - Consider automating the orchestration of all test scripts in a single runner for convenience.
+
+## 7. Test Infrastructure: No PYTHONPATH Required
+
+- **Status:** COMPLETE. All test scripts in the tests/ directory can now be run without setting PYTHONPATH.
+- **Description:**
+  - Added an empty **init**.py to the tests/ directory, making it a package.
+  - Updated all test scripts to use relative imports (from ..voxlogica_testinfra import run_imgql_test).
+  - Tests are now run using the -m module syntax (e.g., python3 -m tests.basic_test.test), which works from the project root without any environment variable changes.
+- **Traceability:**
+  - User request in chat to remove the need for PYTHONPATH.
+  - Verified by running all test scripts with python3 -m ...
+- **Testing:**
+  - All test scripts executed successfully as modules.
+- **Next Steps:**
+  - Update documentation to reflect the new test invocation method.
+  - Ensure future test scripts follow this pattern.
+
 # Working Memory: Ongoing Activities
 
 ## 3. CPU-demanding test for reducer using function declarations for combinatorial explosion

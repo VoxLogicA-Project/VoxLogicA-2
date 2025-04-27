@@ -16,7 +16,7 @@ Create a test that causes combinatorial explosion in the workflow graph by using
 
 1. Design and implement a sequence of imgql function declarations up to depth 20 (initially).
 2. Use function declarations instead of constant declarations, with the aim to make the Workflow (DAG) size increase combinatorially.
-3. Integrate the test into both Python and F# test runners.
+3. All tests are now Python scripts that generate .imgql files in temporary locations and run them. Each test is a standalone script with command-line arguments (with defaults) and uses a common infrastructure module for execution and validation. The execution dependencies are reversed: each test is the main entry point and can be run independently.
 4. Run the test and verify it causes combinatorial explosion in the workflow.
 5. Save the DAG to a file to visualize the explosion.
 6. Update documentation and traceability in META and GitHub.
