@@ -70,4 +70,4 @@ The F# implementation correctly handles the same comments without any issues.
 
 ## GitHub Issue Reference
 
-This issue is tracked in GitHub issue: (will be created and linked)
+This issue is tracked in GitHub issue: https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/5
