@@ -20,4 +20,14 @@ let f17 = f16 + f15
 let f18 = f17 + f16
 let f19 = f18 + f17
 let f20 = f19 + f18
-print "fib20" f20 
+let f21 = f20 + f19
+let f22 = f21 + f20
+let f23 = f22 + f21
+let f24 = f23 + f22
+let f25 = f24 + f23
+let f26 = f25 + f24
+let f27 = f26 + f25
+let f28 = f27 + f26
+let f29 = f28 + f27
+let f30 = f29 + f28
+print "fib30" f30 
