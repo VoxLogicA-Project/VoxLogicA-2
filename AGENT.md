@@ -15,3 +15,5 @@ MANDATORY: The AI must keep a working memory in META where a record of ongoing a
 MANDATORY: The AI must update the working memory immediately whenever a task is completed, a step is finished, or any significant change is made to the project or its status.
 
 MANDATORY: The AI is responsible for checking and maintaining the documentation (in doc/) so that it is accurate with respect to the current implementation, and must act on changes appropriately.
+
+MANDATORY: The AI MUST always verify its answers before responding to any user question. This is to be treated as a core agent policy.
