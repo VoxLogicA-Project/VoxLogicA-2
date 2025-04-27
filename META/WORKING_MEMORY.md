@@ -2,7 +2,7 @@
 
 ## 1. Python Port of F# Implementation
 
-- **Task File:** See [META/TASK_python_port.md](TASK_python_port.md)
+- **Task File:** See [META/TASKS/CLOSED/TASK_1_python_port.md](TASKS/CLOSED/TASK_1_python_port.md)
 - **Status:** COMPLETE. Implementation tested, all tests passing, documentation and CLI/API parity confirmed, and all required steps for feature completion executed.
 - **Description:** Ported the F# implementation (parser, reducer, main) to Python, using Lark for parsing. All features implemented, modular, with CLI and HTTP API interfaces using FastAPI. CLI and API match exactly. Parser, reducer, error handling, CLI, and API server components implemented. Documentation and tests are up to date.
 - **Traceability:**
@@ -30,3 +30,12 @@
   - Consider additional tests for more complex scenarios
   - Optimize performance if needed
   - Enhance documentation
+
+# Working Memory: Ongoing Activities
+
+## 2. CPU-demanding test for reducer (imgql Fibonacci-like chain)
+
+- **Task File:** See [META/TASKS/OPEN/TASK_2_cpu_demanding_reducer_test.md](TASKS/OPEN/TASK_2_cpu_demanding_reducer_test.md)
+- **Status:** OPEN. Task created and tracked in META and GitHub.
+- **GitHub Issue:** https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/2
+- **Description:** Create a test that is CPU-demanding for the reducer, using a series of imgql function declarations in a Fibonacci-like (non-recursive) chain to stress-test the reducer.
