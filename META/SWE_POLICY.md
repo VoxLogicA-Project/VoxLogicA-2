@@ -18,7 +18,7 @@ When developing a new feature in this repository, the following workflow is mand
 
 2. **Document the Issue in META**
 
-   - Create a corresponding directory in META/ISSUES/OPEN named ISSUE_X where X is the GitHub issue number for open issues. When an issue is closed, move its directory to META/ISSUES/CLOSED/ISSUE_X.
+   - Create a corresponding directory in META/ISSUES/ISSUE_X where X is the GitHub issue number. All issues, whether open or closed, are stored directly in this directory. The status (open/closed) is tracked in the README.md file within each issue directory.
    - Include a README.md file within this directory that describes the issue, its status, and related information.
    - For bugs or specific technical issues, include any reproduction steps or test files in this directory.
 
@@ -83,7 +83,7 @@ When an issue is marked complete, the following steps are MANDATORY:
 
 ## Issue File Organization
 
-- All issue documentation MUST be stored in `META/ISSUES/OPEN/ISSUE_X` for open issues, and moved to `META/ISSUES/CLOSED/ISSUE_X` when closed, where X is the GitHub issue number.
+- All issue documentation MUST be stored in `META/ISSUES/ISSUE_X` where X is the GitHub issue number. There are no OPEN or CLOSED subdirectories; the status of each issue is tracked in its README.md file.
 - Each issue directory MUST contain a README.md file with the description, status, and other relevant information.
 - For bugs or technical issues, relevant reproduction steps, test files, or other artifacts should be stored in the issue directory.
 
