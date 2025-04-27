@@ -41,3 +41,31 @@ When developing a new feature in this repository, the following workflow is mand
 ## Rationale
 
 This policy ensures traceability, clarity, and alignment with industry best practices for collaborative software development. The main branch always contains the authoritative task description, which links to the issue, and the issue links to the feature branch, ensuring seamless navigation and context for all contributors.
+
+## Feature Completion Checklist (Best-Standards Policy)
+
+When a feature is marked complete, the following steps are MANDATORY:
+
+1. **META Update:**
+
+   - Update the relevant META task file to mark the feature as complete.
+   - Update WORKING_MEMORY.md to reflect the new status and remove or update any "ongoing" status for the feature.
+   - Ensure the main branch contains the authoritative, up-to-date task description.
+
+2. **GitHub Issue and Branch Workflow:**
+
+   - Update the GitHub issue to reflect completion.
+   - Reference the completed status in both the issue and the META task file.
+   - Merge the feature branch via a pull request referencing the issue, and close the branch after merge.
+
+3. **Documentation:**
+
+   - Ensure all documentation (README, design docs, CLI/API docs) is up to date and accurately reflects the completed feature.
+
+4. **Testing:**
+
+   - Confirm all relevant tests pass and that the test suite covers the new/changed feature.
+   - Ensure new tests are present if required.
+
+5. **Traceability:**
+   - Cross-reference all changes, issues, and branches for traceability (issue links in task files, branch names referencing issues, etc.).
