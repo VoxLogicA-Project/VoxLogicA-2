@@ -36,6 +36,8 @@ When developing a new feature in this repository, the following workflow is mand
    - Regularly push changes to the remote branch.
    - Open a pull request referencing the issue when the feature is ready for review.
 
+- All file and directory renames for versioned files (i.e., tracked by git) must be performed using git commands (e.g., 'git mv'), not by using 'mv' or other filesystem-only renaming methods. This ensures proper tracking of file history and avoids confusion in version control.
+
 ## Rationale
 
 This policy ensures traceability, clarity, and alignment with industry best practices for collaborative software development. The main branch always contains the authoritative task description, which links to the issue, and the issue links to the feature branch, ensuring seamless navigation and context for all contributors.

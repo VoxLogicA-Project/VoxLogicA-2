@@ -16,6 +16,10 @@
   - Fixed parsing issues with Lark transformer
   - Made key classes hashable to support operations and goals
 - **Next Steps:**
+  - Refactor repo: move all implementation code to implementation/ (with python/ and fsharp/ as subdirs)
+  - Move all test data (imgql files) to the global tests/ directory
+  - Ensure the test script in tests/ runs both Python and F# tests
+  - Remove test data from implementation directories
   - Consider additional tests for more complex scenarios
   - Optimize performance if needed
   - Enhance documentation

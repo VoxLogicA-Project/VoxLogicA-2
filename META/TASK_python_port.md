@@ -43,3 +43,13 @@ Port the current F# implementation (parser, reducer, main) to Python, using Lark
 1. Consider additional tests for more complex scenarios
 2. Optimize performance if needed
 3. Enhance documentation
+
+## Task Update (Refactor Plan)
+
+- Test data (e.g., .imgql files) must be in the global tests directory, shared by all implementations.
+- The test script should be language-agnostic and run tests for both Python and F# implementations.
+- Test data should not be in implementation directories.
+- The repo will have two top-level directories: tests and implementation. All implementations go in implementation/ as subdirs (python, fsharp).
+- The test script in tests/ will test both implementations.
+- Remove test data from implementation directories.
+- This refactor is planned and in progress.
