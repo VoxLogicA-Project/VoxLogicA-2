@@ -32,6 +32,26 @@ if fsharp_result.returncode == 0:
 else:
     print("F# tests FAILED.")
 
+# Run F# tests on fibonacci_chain.imgql
+print("\nRunning F# CPU-demanding test (fibonacci_chain.imgql)...")
+fsharp_fib_cmd = [
+    "dotnet",
+    "run",
+    "--project",
+    "../implementation/fsharp/VoxLogicA.fsproj",
+    "fibonacci_chain.imgql",
+]
+fsharp_fib_result = subprocess.run(fsharp_fib_cmd, cwd=os.path.dirname(__file__))
+
+if fsharp_fib_result.returncode == 0:
+    print("F# CPU-demanding test PASSED.")
+else:
+    print("F# CPU-demanding test FAILED.")
+
 # Exit with nonzero code if any test failed
-if python_test_result.returncode != 0 or fsharp_result.returncode != 0:
+if (
+    python_test_result.returncode != 0
+    or fsharp_result.returncode != 0
+    or fsharp_fib_result.returncode != 0
+):
     sys.exit(1)
