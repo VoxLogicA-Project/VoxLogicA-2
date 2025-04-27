@@ -2,7 +2,7 @@
 
 ## 1. Python Port of F# Implementation
 
-- **Issue File:** See [META/ISSUES/ISSUE_3/README.md](ISSUES/ISSUE_3/README.md)
+- **Issue File:** See [META/ISSUES/ISSUE_1/README.md](ISSUES/ISSUE_1/README.md)
 - **Status:** COMPLETE. Implementation tested, all tests passing, documentation and CLI/API parity confirmed, and all required steps for feature completion executed.
 - **Description:** Ported the F# implementation (parser, reducer, main) to Python, using Lark for parsing. All features implemented, modular, with CLI and HTTP API interfaces using FastAPI. CLI and API match exactly. Parser, reducer, error handling, CLI, and API server components implemented. Documentation and tests are up to date.
 - **Traceability:**
@@ -33,7 +33,7 @@
 
 ## 2. CPU-demanding test for reducer (imgql Fibonacci-like chain)
 
-- **Issue File:** See [META/ISSUES/ISSUE_4/README.md](ISSUES/ISSUE_4/README.md)
+- **Issue File:** See [META/ISSUES/ISSUE_2/README.md](ISSUES/ISSUE_2/README.md)
 - **Status:** COMPLETE. Implementation finished, all tests pass, DAG saved, and documentation updated. Merged in commit SHA: c6a9837e7e235983143931e5c4a44ad2cbb1fb7b.
 - **GitHub Issue:** https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/2
 - **Feature Branch:** feature/2-cpu-demainding-reducer-test
@@ -44,11 +44,24 @@
 - **Documentation:** All relevant documentation (README, design docs, CLI/API docs) is up to date and accurate.
 - **Testing:** All tests pass. Test suite covers the new implementation.
 
+## 5. Python Comment Parsing Issue in Lark Parser
+
+- **Issue File:** See [META/ISSUES/ISSUE_5/README.md](ISSUES/ISSUE_5/README.md)
+- **Status:** COMPLETE. Fixed the Python parser to handle comments correctly by modifying the OPERATOR pattern with a negative lookahead to exclude matching "//", simplifying the COMMENT pattern, and ensuring proper handling of line breaks.
+- **GitHub Issue:** https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/5
+- **Feature Branch:** fix/5-python-comment-parsing
+- **Description:** Fixed a bug where the Python parser failed to parse imgql files containing comments, raising an `UnexpectedToken` error when encountering comment lines. The fix ensures that comments are properly recognized and ignored by the Lark parser.
+- **Traceability:**
+  - Task file and GitHub issue cross-referenced.
+  - Feature branch and merge commit SHA: 532075ad7494e07334738d3d6aa4e165bc3739b9
+- **Documentation:** README.md updated with root cause analysis, solution details, and verification results.
+- **Testing:** The fix has been verified with the test script, confirming that files with comments can now be parsed correctly.
+
 # Working Memory: Ongoing Activities
 
 ## 3. CPU-demanding test for reducer using function declarations for combinatorial explosion
 
-- **Issue File:** See [META/ISSUES/ISSUE_5/README.md](ISSUES/ISSUE_5/README.md)
+- **Issue File:** See [META/ISSUES/ISSUE_3/README.md](ISSUES/ISSUE_3/README.md)
 - **Status:** PLANNING. Creating an implementation plan and designing a test file using function declarations to cause combinatorial explosion in the DAG.
 - **GitHub Issue:** https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/3
 - **Description:** Create a test that causes combinatorial explosion in the workflow graph by using function declarations instead of constants. This is similar to the fibonacci chain task (Task 2) but using function declarations instead of constant declarations, which will cause the Workflow (DAG) size to grow combinatorially with respect to the imgql size.
@@ -58,3 +71,17 @@
   - Integrate the test into the Python and F# test runners
   - Run the test and verify combinatorial explosion
   - Document the test results
+
+## 4. F# Stack Overflow Issue in Reducer
+
+- **Issue File:** See [META/ISSUES/ISSUE_4/README.md](ISSUES/ISSUE_4/README.md)
+- **Status:** OPEN. Investigating the F# implementation that crashes with a stack overflow when using function declarations with parameters and complex arithmetic operations.
+- **GitHub Issue:** https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/4
+- **Description:** When running a function-based imgql file with operations that cause combinatorial explosion in the DAG, the F# implementation crashes with a stack overflow, particularly when using function declarations with parameters and complex arithmetic operations.
+- **Next Steps:**
+  - Create feature branch
+  - Analyze the stack overflow root cause
+  - Implement a fix for excessive recursion in the reducer
+  - Consider adding memoization or tail-call optimization
+  - Verify the fix with the test case
+  - Document the solution

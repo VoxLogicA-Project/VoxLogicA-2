@@ -74,6 +74,7 @@ With these changes, the parser now correctly identifies and ignores comment line
 ## Status
 
 - FIXED. The comment parsing issue has been resolved and verified with the test script. The grammar now properly ignores comments starting with "//".
+- COMPLETED and MERGED. Merge commit SHA: 532075ad7494e07334738d3d6aa4e165bc3739b9
 
 ## Verification
 
