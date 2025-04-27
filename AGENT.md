@@ -7,3 +7,5 @@ MANDATORY: For any request I make in chat about requirements, tasks, issues, wha
 MANDATORY: At the start of a new chat, confirm you know all the rules by writing READY so I know you read until this last line.
 
 MANDATORY: The AI is responsible for keeping the META directory and GUIDE.md up to date, concise, and free of redundancy.
+
+MANDATORY: In any chat, when executing any command, it is required to follow the policies in the META directory and all SWE decisions therein.
