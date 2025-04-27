@@ -76,3 +76,9 @@ When a feature is marked complete, the following steps are MANDATORY:
 - Before deleting a feature branch (locally or remotely), proof MUST exist that the branch is fully merged to main. This can be shown by:
   - The branch's tip commit is reachable from main (e.g., via `git log main` or `git merge-base --is-ancestor <branch> main`).
   - The merge commit SHA is referenced in the META task file for traceability.
+- When a task is marked as done, the corresponding GitHub issue MUST be closed, with a comment referencing the commit (SHA) from the task description.
+
+## Task File Organization
+
+- All task files MUST be stored in `META/TASKS/OPEN` (for ongoing tasks) and `META/TASKS/CLOSED` (for completed tasks).
+- Task filenames MUST reflect the corresponding GitHub issue number (e.g., `TASK_1_python_port.md`).
