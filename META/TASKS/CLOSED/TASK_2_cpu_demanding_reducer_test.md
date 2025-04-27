@@ -10,7 +10,7 @@ Create a test that is CPU-demanding for the reducer. This involves creating a se
 
 ## Status
 
-- COMPLETE. Implementation finished, all tests pass, DAG saved, and documentation updated. Merged in commit SHA: <TO_BE_FILLED_AFTER_MERGE>.
+- COMPLETE. Implementation finished, all tests pass, DAG saved, and documentation updated. Merged in commit SHA: c6a9837e7e235983143931e5c4a44ad2cbb1fb7b.
 
 ## Steps Completed
 
@@ -24,4 +24,4 @@ Create a test that is CPU-demanding for the reducer. This involves creating a se
 
 - Task file and GitHub issue cross-referenced.
 - Feature branch: feature/2-cpu-demanding-reducer-test
-- Merge commit SHA: <TO_BE_FILLED_AFTER_MERGE>
+- Merge commit SHA: c6a9837e7e235983143931e5c4a44ad2cbb1fb7b

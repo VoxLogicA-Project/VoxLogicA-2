@@ -34,7 +34,7 @@
 ## 2. CPU-demanding test for reducer (imgql Fibonacci-like chain)
 
 - **Task File:** See [META/TASKS/CLOSED/TASK_2_cpu_demanding_reducer_test.md](TASKS/CLOSED/TASK_2_cpu_demanding_reducer_test.md)
-- **Status:** COMPLETE. Implementation finished, all tests pass, DAG saved, and documentation updated. Merged in commit SHA: <TO_BE_FILLED_AFTER_MERGE>.
+- **Status:** COMPLETE. Implementation finished, all tests pass, DAG saved, and documentation updated. Merged in commit SHA: c6a9837e7e235983143931e5c4a44ad2cbb1fb7b.
 - **GitHub Issue:** https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/2
 - **Feature Branch:** feature/2-cpu-demainding-reducer-test
 - **Description:** Created a test that is CPU-demanding for the reducer, using a series of imgql function declarations in a Fibonacci-like (non-recursive) chain to stress-test the reducer. Test extended to depth 100 (f100).
