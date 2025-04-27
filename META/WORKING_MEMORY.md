@@ -2,7 +2,7 @@
 
 ## 1. Python Port of F# Implementation
 
-- **Task File:** See [META/TASKS/CLOSED/TASK_1_python_port.md](TASKS/CLOSED/TASK_1_python_port.md)
+- **Issue File:** See [META/ISSUES/ISSUE_3/README.md](ISSUES/ISSUE_3/README.md)
 - **Status:** COMPLETE. Implementation tested, all tests passing, documentation and CLI/API parity confirmed, and all required steps for feature completion executed.
 - **Description:** Ported the F# implementation (parser, reducer, main) to Python, using Lark for parsing. All features implemented, modular, with CLI and HTTP API interfaces using FastAPI. CLI and API match exactly. Parser, reducer, error handling, CLI, and API server components implemented. Documentation and tests are up to date.
 - **Traceability:**
@@ -33,7 +33,7 @@
 
 ## 2. CPU-demanding test for reducer (imgql Fibonacci-like chain)
 
-- **Task File:** See [META/TASKS/CLOSED/TASK_2_cpu_demanding_reducer_test.md](TASKS/CLOSED/TASK_2_cpu_demanding_reducer_test.md)
+- **Issue File:** See [META/ISSUES/ISSUE_4/README.md](ISSUES/ISSUE_4/README.md)
 - **Status:** COMPLETE. Implementation finished, all tests pass, DAG saved, and documentation updated. Merged in commit SHA: c6a9837e7e235983143931e5c4a44ad2cbb1fb7b.
 - **GitHub Issue:** https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/2
 - **Feature Branch:** feature/2-cpu-demainding-reducer-test
@@ -46,20 +46,9 @@
 
 # Working Memory: Ongoing Activities
 
-## 2. CPU-demanding test for reducer (imgql Fibonacci-like chain)
-
-- **Task File:** See [META/TASKS/OPEN/TASK_2_cpu_demanding_reducer_test.md](TASKS/OPEN/TASK_2_cpu_demanding_reducer_test.md)
-- **Status:** IN PROGRESS. Test file `tests/fibonacci_chain.imgql` created with a deep Fibonacci-like chain to stress-test the reducer. (Now extended to depth 100/f100.)
-- **GitHub Issue:** https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/2
-- **Description:** Create a test that is CPU-demanding for the reducer, using a series of imgql function declarations in a Fibonacci-like (non-recursive) chain to stress-test the reducer.
-- **Next Steps:**
-  - Integrate the new test into the Python and F# test runners if possible.
-  - Run the test and verify it is CPU-demanding for the reducer.
-  - Document the test and its results in the task file and update status accordingly.
-
 ## 3. CPU-demanding test for reducer using function declarations for combinatorial explosion
 
-- **Task File:** See [META/TASKS/OPEN/TASK_3_function_explosion_test.md](TASKS/OPEN/TASK_3_function_explosion_test.md)
+- **Issue File:** See [META/ISSUES/ISSUE_5/README.md](ISSUES/ISSUE_5/README.md)
 - **Status:** PLANNING. Creating an implementation plan and designing a test file using function declarations to cause combinatorial explosion in the DAG.
 - **GitHub Issue:** https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/3
 - **Description:** Create a test that causes combinatorial explosion in the workflow graph by using function declarations instead of constants. This is similar to the fibonacci chain task (Task 2) but using function declarations instead of constant declarations, which will cause the Workflow (DAG) size to grow combinatorially with respect to the imgql size.

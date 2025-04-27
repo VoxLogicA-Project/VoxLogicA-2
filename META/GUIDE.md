@@ -10,7 +10,7 @@ The `META` directory contains all records, policies, and documentation related t
 - **Policies:** SWE policies and best practices are documented here (e.g., `SWE_POLICY.md`).
 - **Guides:** This `GUIDE.md` provides an overview and must be kept up to date.
 - **Emergent Structure:** The structure of `META` is flexible and should evolve as needed. Do not use rigid templates or boundaries.
-- Task files are now organized in `TASKS/OPEN` (for ongoing tasks) and `TASKS/CLOSED` (for completed tasks). Task filenames must reflect the GitHub issue number.
+- **Issues:** All issues are organized in `META/ISSUES` with directories named ISSUE_X where X is the GitHub issue number. Each issue directory contains a README.md file and any other relevant files for that issue.
 
 ## AI Responsibility
 
