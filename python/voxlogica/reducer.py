@@ -38,7 +38,7 @@ identifier = str
 OperationId = int
 
 
-@dataclass
+@dataclass(frozen=True)
 class Operator:
     """Base class for operators"""
 
@@ -46,7 +46,7 @@ class Operator:
         return ""
 
 
-@dataclass
+@dataclass(frozen=True)
 class IdentifierOp(Operator):
     """Identifier operator"""
 
@@ -56,7 +56,7 @@ class IdentifierOp(Operator):
         return self.value
 
 
-@dataclass
+@dataclass(frozen=True)
 class NumberOp(Operator):
     """Number operator"""
 
@@ -66,7 +66,7 @@ class NumberOp(Operator):
         return str(self.value)
 
 
-@dataclass
+@dataclass(frozen=True)
 class BoolOp(Operator):
     """Boolean operator"""
 
@@ -76,7 +76,7 @@ class BoolOp(Operator):
         return str(self.value).lower()
 
 
-@dataclass
+@dataclass(frozen=True)
 class StringOp(Operator):
     """String operator"""
 
@@ -90,7 +90,7 @@ class StringOp(Operator):
 Arguments = List[OperationId]
 
 
-@dataclass
+@dataclass(frozen=True)
 class Operation:
     """Operation in the work plan"""
 
@@ -106,12 +106,12 @@ class Operation:
 
 
 class Goal:
-    """Base class for goals"""
+    """Base class for goals in the work plan"""
 
     pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class GoalSave(Goal):
     """Goal to save an operation's result"""
 
@@ -122,7 +122,7 @@ class GoalSave(Goal):
         return f"save({self.name},{self.operation_id})"
 
 
-@dataclass
+@dataclass(frozen=True)
 class GoalPrint(Goal):
     """Goal to print an operation's result"""
 

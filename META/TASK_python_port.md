@@ -25,6 +25,7 @@ Port the current F# implementation (parser, reducer, main) to Python, using Lark
 - ✅ Implemented FastAPI server and Typer CLI that match the F# CLI options
 - ✅ Created test suite in `tests/` directory
 - ✅ Added documentation (README, inline docs)
+- ✅ Tested implementation and fixed issues with parser and reducer
 
 ## Implementation Details
 
@@ -34,10 +35,11 @@ Port the current F# implementation (parser, reducer, main) to Python, using Lark
 - **CLI:** Used Typer for CLI that matches F# CLI options
 - **API:** Used FastAPI for API server with equivalent endpoints
 - **Dependencies:** Used widely adopted tools (FastAPI, Typer, Lark)
-- **Tests:** Added test suite in `tests/` directory
+- **Tests:** Added test suite in `tests/` directory and fixed issues during testing
+- **Fixes:** Resolved issues with Lark transformer and made key classes hashable for the reducer
 
 ## Next Steps
 
-1. Test with real-world examples
+1. Consider additional tests for more complex scenarios
 2. Optimize performance if needed
 3. Enhance documentation

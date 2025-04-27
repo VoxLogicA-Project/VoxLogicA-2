@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Union
 from pathlib import Path
 import os
-from lark import Lark, Transformer, v_args
+from lark import Lark, Transformer, v_args, Tree
 
 # Equivalent types to the F# implementation
 Position = str
@@ -214,7 +214,20 @@ class VoxLogicATransformer(Transformer):
 
     @v_args(inline=True)
     def program(self, *commands):
-        return Program(list(commands))
+        # Extract actual command objects from Tree objects if needed
+        processed_commands = []
+        for cmd in commands:
+            if isinstance(cmd, Tree) and cmd.data == "command" and cmd.children:
+                # Extract the actual command from the Tree's children
+                processed_commands.append(cmd.children[0])
+            else:
+                processed_commands.append(cmd)
+        return Program(processed_commands)
+
+    @v_args(inline=True)
+    def command(self, cmd):
+        # Just return the command directly
+        return cmd
 
     @v_args(inline=True)
     def let_cmd(self, identifier, *args):
@@ -224,15 +237,15 @@ class VoxLogicATransformer(Transformer):
 
     @v_args(inline=True)
     def save_cmd(self, identifier, expression):
-        return Save("pos", identifier.strip('"'), expression)
+        return Save("pos", identifier.value, expression)
 
     @v_args(inline=True)
     def print_cmd(self, identifier, expression):
-        return Print("pos", identifier.strip('"'), expression)
+        return Print("pos", identifier.value, expression)
 
     @v_args(inline=True)
     def import_cmd(self, path):
-        return Import(path.strip('"'))
+        return Import(path.value)
 
     @v_args(inline=True)
     def formal_args(self, *args):
@@ -292,7 +305,12 @@ class VoxLogicATransformer(Transformer):
 
 # Create the parser
 parser = Lark(
-    grammar, start="program", parser="lalr", transformer=VoxLogicATransformer()
+    grammar,
+    start="program",
+    parser="lalr",
+    transformer=VoxLogicATransformer(),
+    propagate_positions=True,
+    maybe_placeholders=False,
 )
 
 
@@ -309,7 +327,21 @@ def parse_program(filename: Union[str, Path]) -> Program:
     with open(filename, "r") as f:
         program_text = f.read()
 
-    return parser.parse(program_text)
+    # First parse without transformation to get the tree
+    parser_no_transform = Lark(
+        grammar, start="program", parser="lalr", propagate_positions=True
+    )
+    parse_tree = parser_no_transform.parse(program_text)
+
+    # Then transform the tree
+    transformer = VoxLogicATransformer()
+    result = transformer.transform(parse_tree)
+
+    # Ensure we got a Program object
+    if not isinstance(result, Program):
+        raise ValueError(f"Expected Program object, got {type(result).__name__}")
+
+    return result
 
 
 def parse_import(filename: Union[str, Path]) -> List[Command]:

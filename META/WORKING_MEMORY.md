@@ -3,7 +3,7 @@
 ## 1. Python Port of F# Implementation
 
 - **Task File:** See [META/TASK_python_port.md](TASK_python_port.md)
-- **Status:** Implementation completed. Python port has been created with full feature parity to the F# implementation.
+- **Status:** Implementation tested and fixed. All tests are passing.
 - **Description:** Ported the F# implementation (parser, reducer, main) to Python, using Lark for parsing. Implemented all features, ensuring modularity, and provided both CLI and HTTP API interfaces using FastAPI. CLI and API match exactly. Implemented parser, reducer, error handling, CLI, and API server components.
 - **Details:**
   - Created Python implementation in `python/` directory
@@ -13,7 +13,9 @@
   - Implemented API server with FastAPI with equivalent endpoints
   - Added test suite in `tests/` directory
   - Created necessary documentation
+  - Fixed parsing issues with Lark transformer
+  - Made key classes hashable to support operations and goals
 - **Next Steps:**
-  - Test with real-world examples
+  - Consider additional tests for more complex scenarios
   - Optimize performance if needed
   - Enhance documentation
