@@ -69,3 +69,10 @@ When a feature is marked complete, the following steps are MANDATORY:
 
 5. **Traceability:**
    - Cross-reference all changes, issues, and branches for traceability (issue links in task files, branch names referencing issues, etc.).
+
+## Task Completion and Branch Deletion Policy
+
+- A task can be marked as done by referencing the commit hash (SHA) of the merge or relevant commit in the META task file.
+- Before deleting a feature branch (locally or remotely), proof MUST exist that the branch is fully merged to main. This can be shown by:
+  - The branch's tip commit is reachable from main (e.g., via `git log main` or `git merge-base --is-ancestor <branch> main`).
+  - The merge commit SHA is referenced in the META task file for traceability.

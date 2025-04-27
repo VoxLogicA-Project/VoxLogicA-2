@@ -61,3 +61,4 @@ Port the current F# implementation (parser, reducer, main) to Python, using Lark
 - Feature branch merged and closed via pull request.
 - GitHub Issue: https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/1 (cross-referenced)
 - All traceability, documentation, and testing requirements satisfied as per SWE_POLICY.md.
+- Merge Commit SHA: 7a4ad1c (fully merged to main)
