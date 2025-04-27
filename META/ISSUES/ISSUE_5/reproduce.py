@@ -21,8 +21,8 @@ def main():
     test_file_path = os.path.join(
         repo_root,
         "META",
-        "ISSUE",
-        "ISSUE_2_python_comment_parsing",
+        "ISSUES",
+        "ISSUE_5",
         "comment_parsing_failure.imgql",
     )
 

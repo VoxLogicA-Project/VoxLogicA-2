@@ -71,3 +71,7 @@ The F# implementation correctly handles the same comments without any issues.
 ## GitHub Issue Reference
 
 This issue is tracked in GitHub issue: https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/5
+
+## Ongoing Work
+
+- [2024-06-09] The test script reproduce.py was updated to use the correct test file path. The script now runs, and the comment parsing issue is confirmed to still exist (Unexpected token error on comment lines). See SWE_POLICY.md for traceability.
