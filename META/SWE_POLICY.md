@@ -4,6 +4,11 @@
 
 When developing a new feature in this repository, the following workflow is mandatory:
 
+0. **Pre-Branching Cleanup**
+
+   - Before creating any branch, the working directory MUST be clean: there must be no active changes (no uncommitted or unstaged files).
+   - Always switch to the main branch, ensure it is up to date and clean, and only then proceed to create a new branch.
+
 1. **Create a GitHub Issue**
 
    - Open a new issue in the repository describing the feature to be developed.
