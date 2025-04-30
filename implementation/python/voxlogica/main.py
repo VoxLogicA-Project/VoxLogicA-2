@@ -59,6 +59,9 @@ def run(
     save_task_graph_as_program: Optional[str] = typer.Option(
         None, help="Save the task graph in VoxLogicA format and exit"
     ),
+    save_task_graph_as_json: Optional[str] = typer.Option(
+        None, help="Save the task graph as JSON and exit"
+    ),
     save_syntax: Optional[str] = typer.Option(
         None, help="Save the AST in text format and exit"
     ),
@@ -92,6 +95,15 @@ def run(
         program = reduce_program(syntax)
         Logger.debug("Program reduced")
         Logger.info(f"Number of tasks: {len(program.operations)}")
+
+        # Save task graph as JSON if requested
+        if save_task_graph_as_json is not None:
+            import json
+            Logger.debug(f"Saving the task graph as JSON to {save_task_graph_as_json}")
+            with open(save_task_graph_as_json, "w") as f:
+                json.dump(program.to_json(), f)
+            Logger.info("All done.")
+            return 0
 
         # Save task graph as AST if requested
         if save_task_graph_as_ast is not None:

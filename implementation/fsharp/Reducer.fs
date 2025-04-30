@@ -16,7 +16,7 @@ type Operator =
     override this.ToString() =
         match this with
         | Identifier x -> x
-        | Number x -> x.ToString()
+        | Number x -> x.ToString("F1")
         | Bool x -> x.ToString()
         | String x -> x.ToString()
 
@@ -36,7 +36,7 @@ type Operation =
                 ""
 
         $"{this.operator}{args}" // Uncomment to show the args
-        //$"{this.operator}" 
+//$"{this.operator}"
 
 type Goal =
     | GoalSave of string * OperationId
@@ -54,28 +54,45 @@ type WorkPlan =
 
         $"goals: {g}\noperations:\n{t}"
 
+    member this.ToJson() =
+        let opToDict (op: Operation) =
+            dict
+                [ "operator", box (op.operator.ToString())
+                  "arguments", box (Seq.toArray op.arguments) ]
 
-    member this.ToProgram () : Program =
-        let operationToExpression (op: Operation): Expression =
+        let goalToDict (goal: Goal) =
+            match goal with
+            | GoalSave(name, opid) -> dict [ "type", box "save"; "name", box name; "operation_id", box opid ]
+            | GoalPrint(name, opid) -> dict [ "type", box "print"; "name", box name; "operation_id", box opid ]
+
+        dict
+            [ "operations", box (Array.map opToDict this.operations)
+              "goals", box (Array.map goalToDict this.goals) ]
+
+    member this.ToProgram() : Program =
+        let operationToExpression (op: Operation) : Expression =
             match op.operator with
-            | Identifier x -> ECall ("unknown",x,List.ofSeq <| Seq.map (fun x -> ECall ("unknown",$"op{x}",[])) op.arguments)                
+            | Identifier x ->
+                ECall("unknown", x, List.ofSeq <| Seq.map (fun x -> ECall("unknown", $"op{x}", [])) op.arguments)
             | Number x -> ENumber x
             | Bool x -> EBool x
             | String x -> EString x
 
         let declarations: seq<Command> =
             seq {
-                for i = 0 to this.operations.Length - 1 do                                        
+                for i = 0 to this.operations.Length - 1 do
                     yield Declaration($"op{i}", [], operationToExpression this.operations[i])
             }
 
         let goals: seq<Command> =
             seq {
                 for i = 0 to this.goals.Length - 1 do
-                    let initContext goalName goalOperationId = ("unknown", goalName, ECall("unknown", $"op{goalOperationId}", []))
+                    let initContext goalName goalOperationId =
+                        ("unknown", goalName, ECall("unknown", $"op{goalOperationId}", []))
+
                     match this.goals[i] with
-                    | GoalSave(x, y) -> yield Save (initContext x y)
-                    | GoalPrint(x, y) -> yield Print (initContext x y)
+                    | GoalSave(x, y) -> yield Save(initContext x y)
+                    | GoalPrint(x, y) -> yield Print(initContext x y)
             }
 
         Program [ yield! declarations; yield! goals ]
@@ -87,10 +104,8 @@ type WorkPlan =
         for i = 0 to this.operations.Length - 1 do
             let operation = this.operations[i]
 
-            str <-
-                str
-                + $"{i} [label=\"[{i}] {operation.ToString()}\"];\n" // Uncomment to add [n] to each label
-                // + $"{i} [label=\"{operation.ToString()}\"];\n"                
+            str <- str + $"{i} [label=\"[{i}] {operation.ToString()}\"];\n" // Uncomment to add [n] to each label
+            // + $"{i} [label=\"{operation.ToString()}\"];\n"
 
             for argument in operation.arguments do
                 str <- str + $"{argument} -> {i};\n"

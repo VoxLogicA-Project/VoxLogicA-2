@@ -34,6 +34,7 @@ python -m voxlogica.main run <filename> [OPTIONS]
 | `--save-task-graph-as-ast <file>`     | str  | Save the task graph in AST format and exit       |
 | `--save-task-graph-as-program <file>` | str  | Save the task graph in VoxLogicA format and exit |
 | `--save-syntax <file>`                | str  | Save the AST in text format and exit             |
+| `--save-task-graph-as-json <file>`    | str  | Save the task graph as JSON and exit             |
 | `--debug`                             | flag | Enable debug mode (more verbose logging)         |
 
 **Example:**
@@ -96,6 +97,7 @@ VoxLogicA.exe [OPTIONS] <filename>
 | `--save-task-graph-as-ast <file>`     | str/opt | Save the task graph in AST format and exit       |
 | `--save-task-graph-as-program <file>` | str/opt | Save the task graph in VoxLogicA format and exit |
 | `--save-syntax <file>`                | str/opt | Save the AST in text format and exit             |
+| `--save-task-graph-as-json <file>`    | str     | Save the task graph as JSON and exit             |
 | `<filename>`                          | str     | VoxLogicA session file (required)                |
 
 **Example:**
