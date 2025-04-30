@@ -11,6 +11,7 @@ type CmdLine =
     | [<UniqueAttribute>] SaveTaskGraph of option<string>
     | [<UniqueAttribute>] SaveTaskGraphAsAST of option<string>
     | [<UniqueAttribute>] SaveTaskGraphAsProgram of option<string>
+    | [<UniqueAttribute>] SaveTaskGraphAsJson of string
     | [<UniqueAttribute>] SaveSyntax of option<string>
     | [<MainCommandAttribute; UniqueAttribute>] Filename of string
 
@@ -22,6 +23,7 @@ type CmdLine =
             | SaveTaskGraphAsDot _ -> "save the task graph in .dot format and exit"
             | SaveTaskGraphAsAST _ -> "save the task graph in AST format and exit"
             | SaveTaskGraphAsProgram _ -> "save the task graph in VoxLogicA format and exit"
+            | SaveTaskGraphAsJson _ -> "save the task graph as JSON and exit"
             | SaveSyntax _ -> "save the AST in text format and exit"
             | Filename _ -> "VoxLogicA session file"
 
@@ -132,6 +134,15 @@ let main (argv: string array) =
             let filename = parsed.GetResult SaveTaskGraphAsDot
             ErrorMsg.Logger.Debug $"Saving the task graph to {filename}"
             System.IO.File.WriteAllText(filename, program.ToDot())
+
+        if parsed.Contains SaveTaskGraphAsJson then
+            let filename = parsed.GetResult SaveTaskGraphAsJson
+            ErrorMsg.Logger.Debug $"Saving the task graph as JSON to {filename}"
+            let jsonOptions = System.Text.Json.JsonSerializerOptions(WriteIndented = true)
+            let json = System.Text.Json.JsonSerializer.Serialize(program.ToJson(), jsonOptions)
+            System.IO.File.WriteAllText(filename, json)
+            ErrorMsg.Logger.Info "All done."
+            exit 0
 
         ErrorMsg.Logger.Info "All done."
         0

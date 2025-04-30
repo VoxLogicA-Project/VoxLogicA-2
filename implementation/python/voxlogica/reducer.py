@@ -192,13 +192,32 @@ class WorkPlan:
         dot_str = "digraph {\n"
 
         for i, operation in enumerate(self.operations):
-            dot_str += f'  {i} [label="[{i}] {operation}"];\n'
+            dot_str += f'  {i} [label="[{i}] {operation}"]\n'
 
             for argument in operation.arguments:
                 dot_str += f"  {argument} -> {i};\n"
 
         dot_str += "}\n"
         return dot_str
+
+    def to_json(self) -> dict:
+        """Return a JSON-serializable dict representing the work plan."""
+        def op_to_dict(op):
+            return {
+                "operator": str(op.operator),
+                "arguments": op.arguments,
+            }
+        def goal_to_dict(goal):
+            if isinstance(goal, GoalSave):
+                return {"type": "save", "name": goal.name, "operation_id": goal.operation_id}
+            elif isinstance(goal, GoalPrint):
+                return {"type": "print", "name": goal.name, "operation_id": goal.operation_id}
+            else:
+                return {"type": "unknown"}
+        return {
+            "operations": [op_to_dict(op) for op in self.operations],
+            "goals": [goal_to_dict(goal) for goal in self.goals],
+        }
 
 
 class InternalOperation:

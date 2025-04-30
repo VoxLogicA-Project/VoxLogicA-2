@@ -54,6 +54,20 @@ type WorkPlan =
 
         $"goals: {g}\noperations:\n{t}"
 
+    member this.ToJson() =
+        let opToDict (op: Operation) =
+            dict [
+                "operator", box (op.operator.ToString())
+                "arguments", box (Seq.toArray op.arguments)
+            ]
+        let goalToDict (goal: Goal) =
+            match goal with
+            | GoalSave(name, opid) -> dict ["type", box "save"; "name", box name; "operation_id", box opid]
+            | GoalPrint(name, opid) -> dict ["type", box "print"; "name", box name; "operation_id", box opid]
+        dict [
+            "operations", box (Array.map opToDict this.operations)
+            "goals", box (Array.map goalToDict this.goals)
+        ]
 
     member this.ToProgram () : Program =
         let operationToExpression (op: Operation): Expression =
