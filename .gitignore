@@ -25,3 +25,15 @@ __pycache__
 *.pywz
 
 voxlogica.egg-info/
+
+# Python virtual environments
+.venv/
+implementation/python/venv/
+
+# .NET build artifacts
+implementation/fsharp/bin/
+implementation/fsharp/obj/
+
+# Test artifacts
+*.imgql
+*.json
