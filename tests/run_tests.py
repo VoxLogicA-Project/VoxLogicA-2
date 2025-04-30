@@ -4,6 +4,12 @@ import sys
 import os
 from pathlib import Path
 import argparse
+# from fibonacci_chain.fibonacci_chain import run_fibonacci_chain_test
+# from function_explosion.function_explosion import run_function_explosion_test
+from basic_test import test as basic_test_module
+from fibonacci_chain import fibonacci_chain as fibonacci_chain_module
+from function_explosion import function_explosion as function_explosion_module
+from dag_equivalence import dag_equivalence as dag_equivalence_module
 
 # Always resolve project root (repo root is parent of 'tests')
 script_dir = Path(__file__).resolve().parent
@@ -45,6 +51,15 @@ def main():
         sys.exit(1)
     else:
         print("\nAll tests passed.")
+
+    print("Running basic test...")
+    basic_test_module.main()
+    print("Running fibonacci chain test...")
+    fibonacci_chain_module.main()
+    print("Running function explosion test...")
+    function_explosion_module.main()
+    print("Running DAG equivalence test...")
+    dag_equivalence_module.main()
 
 
 if __name__ == "__main__":

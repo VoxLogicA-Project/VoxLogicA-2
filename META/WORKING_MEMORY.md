@@ -74,7 +74,16 @@
   - Any differences are reported with clear diagnostics.
   - Documentation is updated to describe the normalization and comparison process.
 
-## 7. Test Suite Execution After Reorganization
+## 7. Feature: Export task graph as JSON (CLI option)
+
+- **Status:** CLOSED. Implemented in both Python and F# ports, user documentation updated, and tested with a cross-language test file. See commit and GitHub issue for details.
+- **Summary:**
+  - Both ports now support a CLI option to export the task graph as JSON.
+  - User documentation updated to reflect the new option.
+  - Tested with a shared test file to confirm correct behavior in both implementations.
+  - Issue closed on GitHub and locally.
+
+## 8. Test Suite Execution After Reorganization
 
 - **Status:** COMPLETE. All test suites were executed individually and collectively after the recent project reorganization. All tests passed without errors.
 - **Description:** Verified the integrity of the test infrastructure by running:
