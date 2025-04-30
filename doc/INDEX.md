@@ -71,4 +71,12 @@ This documentation is intended as a living knowledge base for:
 
 ---
 
+## User Documentation
+
+- **[User Guide: Command Line Options & Usage](./user/cli-options.md)**
+  - Comprehensive guide to the command line interfaces (CLI) for both the Python and F# ports of VoxLogicA-2.
+  - Includes usage examples, option descriptions, and troubleshooting tips for end users.
+
+---
+
 _This documentation is maintained as a living resource. For questions or contributions, contact the project leads or open an issue in the repository._

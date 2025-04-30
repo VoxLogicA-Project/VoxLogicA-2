@@ -93,6 +93,16 @@
   - Update documentation to reflect the new test invocation method.
   - Ensure future test scripts follow this pattern.
 
+## 8. User Documentation: CLI Options and User Docs
+
+- **Status:** IN PROGRESS. Creating user documentation for the command line options of both the Python and F# ports, to be placed in a new `doc/user/` subfolder. The documentation will be referenced from the main documentation index (`doc/INDEX.md`) but kept in a separate subfolder for clarity and maintainability.
+- **Description:**
+  - Document the command line options for both the Python and F# ports, ensuring accuracy and clarity for end users.
+  - Insert a reference to the new user documentation in the main documentation index.
+  - Keep the user documentation in a dedicated subfolder (`doc/user/`) to avoid cluttering technical or design docs.
+- **Next Steps:**
+  - Ensure all documentation is accurate and up to date with respect to the current implementation.
+
 # Working Memory: Ongoing Activities
 
 ## 3. CPU-demanding test for reducer using function declarations for combinatorial explosion
