@@ -57,7 +57,24 @@
 - **Documentation:** README.md updated with root cause analysis, solution details, and verification results.
 - **Testing:** The fix has been verified with the test script, confirming that files with comments can now be parsed correctly.
 
-## 6. Test Suite Execution After Reorganization
+## 6. Test: Ensure identical DAGs for same program in both ports (with JSON normalization)
+
+- **Issue File:** See [META/ISSUES/ISSUE_6/README.md](ISSUES/ISSUE_6/README.md)
+- **GitHub Issue:** https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/6
+- **Status:** OPEN. Need to create tests that show how the same program produces the same DAG in both the Python and F# ports, using JSON normalization for robust comparison.
+- **Description:**
+  - Generate 5 valid and representative imgql test cases.
+  - For each, run both ports and obtain the resulting DAG as JSON.
+  - Normalize the JSON using a standard procedure (e.g., sort keys, canonicalize numbers/strings).
+  - Compare the normalized outputs to ensure they are identical.
+  - Document the normalization procedure and any edge cases.
+- **Acceptance Criteria:**
+  - At least 5 test cases are generated and included in the test suite.
+  - The test suite runs both ports, normalizes the output, and compares them.
+  - Any differences are reported with clear diagnostics.
+  - Documentation is updated to describe the normalization and comparison process.
+
+## 7. Test Suite Execution After Reorganization
 
 - **Status:** COMPLETE. All test suites were executed individually and collectively after the recent project reorganization. All tests passed without errors.
 - **Description:** Verified the integrity of the test infrastructure by running:
@@ -76,22 +93,6 @@
 - **Next Steps:**
   - Maintain this test execution pattern for future reorganizations or major changes.
   - Consider automating the orchestration of all test scripts in a single runner for convenience.
-
-## 7. Test Infrastructure: No PYTHONPATH Required
-
-- **Status:** COMPLETE. All test scripts in the tests/ directory can now be run without setting PYTHONPATH.
-- **Description:**
-  - Added an empty **init**.py to the tests/ directory, making it a package.
-  - Updated all test scripts to use relative imports (from ..voxlogica_testinfra import run_imgql_test).
-  - Tests are now run using the -m module syntax (e.g., python3 -m tests.basic_test.test), which works from the project root without any environment variable changes.
-- **Traceability:**
-  - User request in chat to remove the need for PYTHONPATH.
-  - Verified by running all test scripts with python3 -m ...
-- **Testing:**
-  - All test scripts executed successfully as modules.
-- **Next Steps:**
-  - Update documentation to reflect the new test invocation method.
-  - Ensure future test scripts follow this pattern.
 
 ## 8. User Documentation: CLI Options and User Docs
 
