@@ -44,10 +44,11 @@ def get_voxlogica_cmd(language, imgql_path):
 def run_imgql_test(imgql_path: str, language: Optional[str] = None):
     """
     Run the given imgql file with the specified language, or all if language is None.
-    Returns a dict with results for each language.
+    Returns True if all selected implementations pass, False if any fail.
     """
     results = {}
     languages = [language] if language else get_supported_languages()
+    all_passed = True
     for lang in languages:
         cmd, cwd = get_voxlogica_cmd(lang, imgql_path)
         print(f"\n--- Running VoxLogicA ({lang}) on {imgql_path} ---")
@@ -58,9 +59,11 @@ def run_imgql_test(imgql_path: str, language: Optional[str] = None):
                 print(f"[ERROR] {lang} failed with code {proc.returncode}")
                 print(proc.stderr)
                 results[lang] = False
+                all_passed = False
             else:
                 results[lang] = True
         except Exception as e:
             print(f"[EXCEPTION] {lang} failed: {e}")
             results[lang] = False
-    return results
+            all_passed = False
+    return all_passed

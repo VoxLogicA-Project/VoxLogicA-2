@@ -61,7 +61,9 @@ def main():
 
     generate_test_imgql(imgql_path)
     print(f"Generated: {imgql_path}")
-    run_imgql_test(imgql_path, language=args.language)
+    result = run_imgql_test(imgql_path, language=args.language)
+    if not result:
+        sys.exit(1)
 
     if not args.keep and not args.imgql_path:
         os.remove(imgql_path)
