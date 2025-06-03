@@ -43,6 +43,56 @@ The issue appears to be related to how numbers are formatted and how operations 
 
 This issue is tracked in GitHub issue: https://github.com/voxlogica-project/VoxLogicA-2/issues/8
 
+## Detailed Analysis
+
+### Why the Issue Remains Unsolved
+
+The current fix attempts to address JSON number formatting differences, but the root cause is deeper. The fundamental issue is **operation ordering during DAG construction**, not JSON normalization.
+
+**What we discovered:**
+
+1. **RFC 8785 JSON normalization is already correct**: The test properly uses JCS (JSON Canonicalization Scheme) via the `jcs` library
+2. **The real problem is structural**: Both implementations create semantically equivalent DAGs but with different operation IDs and argument references
+3. **Example from failing test case 4**:
+
+   ```
+   let pi = 3.14
+   let area(r) = pi * r * r
+   let a = area(2)
+   print "area" a
+   ```
+
+   Python creates operations: `[3.14, 2.0, *, *]` with arguments `[[],[],[1,1],[0,2]]`
+   F# creates operations: `[2, 3.14, *, *]` with arguments `[[],[],[0,0],[1,2]]`
+
+**Why normalization can't fix this:**
+
+- Even with perfect JSON canonicalization, the operations reference different IDs
+- Python's operation 0 is `3.14`, F#'s operation 0 is `2`
+- This creates fundamentally different argument arrays that can't be normalized to match
+
+**Root cause in the reducers:**
+
+- Python and F# implementations traverse the AST or process function calls in different orders
+- When `area(2)` expands to `pi * 2 * 2`, the implementations encounter constants in different sequences
+- This leads to different operation creation orders and different DAG structures
+
+### Required Solution
+
+The fix needs to ensure **deterministic operation ordering** in both implementations:
+
+1. **Option A**: Standardize AST traversal order (left-to-right, depth-first, etc.)
+2. **Option B**: Implement semantic equivalence checking instead of structural matching
+3. **Option C**: Sort operations by semantic content before JSON comparison
+4. **Option D**: Use content-based operation IDs instead of creation-order IDs
+
+### Current Status
+
+- Branch `fix/8-fsharp-number-formatting` contains attempts at number formatting fixes
+- RFC JSON normalization (JCS) is correctly implemented and working as intended
+- The DAG equivalence test still fails on test case 4
+- **The fundamental operation ordering issue remains unresolved**
+
 ## Status
 
-- IN PROGRESS. Working on standardizing number formatting and ensuring proper JSON normalization in the equivalence tests.
+- **BLOCKED**. The issue requires architectural changes to ensure deterministic operation creation order in both Python and F# implementations. Current number formatting changes do not address the root cause of different operation ordering during DAG construction.
