@@ -4,7 +4,7 @@ This is the source code of the new iteration of the spatial model checker VoxLog
 
 ## Quick Start
 
-For the Python implementation, there's a convenience script in the root directory:
+There's a convenience script in the root directory to run VoxLogicA:
 
 ```bash
 # Run VoxLogicA without manually activating the virtual environment
@@ -21,5 +21,4 @@ This script automatically activates the virtual environment and runs the Python 
 
 For detailed documentation, see:
 
-- Python implementation: `implementation/python/README.md`
-- F# implementation: `implementation/fsharp/`
+- Implementation documentation: `implementation/python/README.md`

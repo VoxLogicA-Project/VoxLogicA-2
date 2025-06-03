@@ -1,4 +1,0 @@
-let pi = 3.14
-let area(r) = pi * r * r
-let a = area(2)
-print "area" a 

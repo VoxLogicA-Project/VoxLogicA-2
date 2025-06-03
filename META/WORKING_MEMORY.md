@@ -1,35 +1,39 @@
 # Working Memory: Completed Activities
 
-## 1. Python Port of F# Implementation
+## 1. Python Implementation
 
-- **Issue File:** See [META/ISSUES/ISSUE_1/README.md](ISSUES/ISSUE_1/README.md)
-- **Status:** COMPLETE. Implementation tested, all tests passing, documentation and CLI/API parity confirmed, and all required steps for feature completion executed.
-- **Description:** Ported the F# implementation (parser, reducer, main) to Python, using Lark for parsing. All features implemented, modular, with CLI and HTTP API interfaces using FastAPI. CLI and API match exactly. Parser, reducer, error handling, CLI, and API server components implemented. Documentation and tests are up to date.
+- **Status:** ACTIVE. The Python implementation is the primary and only implementation of VoxLogicA.
+- **Description:** The codebase now exclusively uses the Python implementation, which includes a complete parser, reducer, CLI, and API server.
 - **Traceability:**
-  - GitHub Issue: https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/1
-  - Task file and issue cross-referenced.
-  - All changes merged to main branch via pull request.
-- **Documentation:** All relevant documentation (README, design docs, CLI/API docs) is up to date and accurate.
-- **Testing:** All tests pass. Test suite covers the new implementation. No further test data in implementation directories.
-- **Branch:** Feature branch merged and closed.
+  - All implementation code is in the `implementation/python/` directory
+  - Test suite has been updated to focus on the Python implementation
+  - Documentation has been updated to reflect the current state
+- **Documentation:** All documentation has been reviewed and updated to accurately reflect the Python implementation.
+- **Testing:** The test suite has been updated and all tests are passing with the Python implementation.
 - **Details:**
-  - Created Python implementation in `python/` directory
-  - Used Lark for parsing, closely matching F# grammar
-  - Implemented reducer logic for evaluating VoxLogicA programs
-  - Created CLI with Typer that matches F# CLI options
-  - Implemented API server with FastAPI with equivalent endpoints
-  - Added test suite in `tests/` directory
-  - Created necessary documentation
-  - Fixed parsing issues with Lark transformer
-  - Made key classes hashable to support operations and goals
+  - Parser implementation using Lark
+  - Reducer for evaluating VoxLogicA programs
+  - CLI interface using Typer
+  - HTTP API server using FastAPI
+  - Comprehensive test suite
+  - Complete documentation
 - **Next Steps:**
-  - Refactor repo: move all implementation code to implementation/ (with python/ and fsharp/ as subdirs)
-  - Move all test data (imgql files) to the global tests/ directory
-  - Ensure the test script in tests/ runs both Python and F# tests
-  - Remove test data from implementation directories
-  - Consider additional tests for more complex scenarios
-  - Optimize performance if needed
-  - Enhance documentation
+  - Continue improving performance
+  - Add new features as needed
+  - Enhance test coverage
+  - Optimize the implementation
+
+  - Complete parser implementation using Lark
+  - Reducer for evaluating VoxLogicA programs
+  - CLI interface with Typer
+  - HTTP API with FastAPI
+  - Comprehensive test suite
+  - Complete documentation
+- **Next Steps:**
+  - Continue improving performance
+  - Add new features as needed
+  - Enhance test coverage
+  - Optimize the implementation
 
 ## 2. CPU-demanding test for reducer (imgql Fibonacci-like chain)
 
@@ -141,3 +145,22 @@
   - Consider adding memoization or tail-call optimization
   - Verify the fix with the test case
   - Document the solution
+
+## 8. DAG Generation and Testing
+
+- **Status:** ACTIVE. The DAG generation and testing infrastructure has been updated to focus on the Python implementation.
+- **Description:** The DAG generation test suite has been refactored to test the Python implementation's DAG generation capabilities.
+- **Features:**
+  - Tests for basic DAG generation
+  - Support for function definitions and calls
+  - Arithmetic operation testing
+  - JSON output validation
+- **Next Steps:**
+  - Add more comprehensive test cases
+  - Enhance DAG validation
+  - Improve error reporting in test failures
+- **Next Steps:**
+  - Ensure both implementations create operations in deterministic order
+  - Either standardize the AST traversal order or implement semantic equivalence checking
+  - Consider sorting operations by semantic content before comparison
+  - Verify all test cases pass after fix

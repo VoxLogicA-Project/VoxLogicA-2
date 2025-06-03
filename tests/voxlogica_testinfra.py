@@ -17,7 +17,7 @@ from implementation.python.voxlogica.reducer import reduce_program
 
 
 def get_supported_languages():
-    return ["python", "fsharp"]
+    return ["python"]
 
 
 def get_voxlogica_cmd(language, imgql_path):
@@ -30,15 +30,10 @@ def get_voxlogica_cmd(language, imgql_path):
             "run",
             str(imgql_path),
         ], repo_root
-    elif language == "fsharp":
-        return [
-            str(
-                repo_root / "implementation/fsharp/bin/Debug/net9.0/osx-arm64/VoxLogicA"
-            ),
-            str(imgql_path),
-        ], repo_root
     else:
         raise ValueError(f"Unknown language: {language}")
+        
+    # Note: F# implementation has been removed as part of the transition to Python
 
 
 def run_imgql_test(imgql_path: str, language: Optional[str] = None):

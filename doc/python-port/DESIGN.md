@@ -24,7 +24,7 @@ We have chosen **FastAPI** for the Python API server for the following reasons:
 
 ## Directory Structure
 
-- The Python implementation will reside in a top-level `python/` directory, alongside the existing `fsharp/` directory.
+- The Python implementation resides in the `implementation/python/` directory.
 
 ## Testing
 
