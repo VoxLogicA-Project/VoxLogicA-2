@@ -45,15 +45,24 @@ def run_imgql_test(imgql_path: str, language: Optional[str] = None):
     for lang in languages:
         cmd, cwd = get_voxlogica_cmd(lang, imgql_path)
         print(f"\n--- Running VoxLogicA ({lang}) on {imgql_path} ---")
+        print(f"Command: {' '.join(cmd)}")
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
-            print(proc.stdout)
-            if proc.returncode != 0:
-                print(f"[ERROR] {lang} failed with code {proc.returncode}")
+            # Always print stdout if there is any
+            if proc.stdout.strip():
+                print("STDOUT:")
+                print(proc.stdout)
+            # Always print stderr if there is any
+            if proc.stderr.strip():
+                print("STDERR:")
                 print(proc.stderr)
+
+            if proc.returncode != 0:
+                print(f"[ERROR] {lang} failed with return code {proc.returncode}")
                 results[lang] = False
                 all_passed = False
             else:
+                print(f"[SUCCESS] {lang} completed successfully")
                 results[lang] = True
         except Exception as e:
             print(f"[EXCEPTION] {lang} failed: {e}")

@@ -4,19 +4,23 @@ import sys
 import os
 from pathlib import Path
 import argparse
-from basic_test import test as basic_test_module
-from fibonacci_chain import fibonacci_chain as fibonacci_chain_module
-from function_explosion import function_explosion as function_explosion_module
 
 # Always resolve project root (repo root is parent of 'tests')
 script_dir = Path(__file__).resolve().parent
 repo_root = script_dir.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from tests.basic_test import test as basic_test_module
+from tests.fibonacci_chain import fibonacci_chain as fibonacci_chain_module
+from tests.function_explosion import function_explosion as function_explosion_module
+
 os.chdir(repo_root)
 
 TEST_MODULES = [
     "tests.basic_test.test",
     "tests.fibonacci_chain.fibonacci_chain",
-    "tests.function_explosion.function_explosion"
+    "tests.function_explosion.function_explosion",
 ]
 
 

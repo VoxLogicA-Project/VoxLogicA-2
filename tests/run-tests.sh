@@ -5,7 +5,7 @@
 set -e
 
 # Get the directory where this script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/.."
 VENV_DIR="$PROJECT_DIR/.venv"
 PYTHON_IMPL_DIR="$PROJECT_DIR/implementation/python"
@@ -40,6 +40,6 @@ fi
 # Install test requirements if not already installed
 pip install -q -r "$PYTHON_IMPL_DIR/requirements-test.txt"
 
-# Run pytest with the python implementation directory as the working directory
-cd "$PYTHON_IMPL_DIR"
-python -m pytest tests/ -v "$@"
+# Run the test suite using the Python test infrastructure
+cd "$PROJECT_DIR"
+python -m tests.run_tests "$@"
