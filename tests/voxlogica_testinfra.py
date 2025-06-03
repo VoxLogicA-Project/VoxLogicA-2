@@ -32,8 +32,6 @@ def get_voxlogica_cmd(language, imgql_path):
         ], repo_root
     else:
         raise ValueError(f"Unknown language: {language}")
-        
-    # Note: F# implementation has been removed as part of the transition to Python
 
 
 def run_imgql_test(imgql_path: str, language: Optional[str] = None):

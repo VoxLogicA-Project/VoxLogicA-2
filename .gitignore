@@ -30,9 +30,5 @@ voxlogica.egg-info/
 .venv/
 implementation/python/venv/
 
-# .NET build artifacts
-implementation/fsharp/bin/
-implementation/fsharp/obj/
-
 # Test artifacts
 *.json

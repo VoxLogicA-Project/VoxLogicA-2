@@ -8,7 +8,6 @@ from pathlib import Path
 import os
 from lark import Lark, Transformer, v_args, Tree
 
-# Equivalent types to the F# implementation
 Position = str
 
 

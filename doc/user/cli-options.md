@@ -1,6 +1,6 @@
 # VoxLogicA-2 Command Line Options & Usage Guide
 
-This guide describes the command line interfaces (CLI) for both the Python and F# ports of VoxLogicA-2. It is intended for end users who wish to run VoxLogicA-2 from the command line, automate workflows, or understand the available options.
+This guide describes the command line interfaces (CLI) for the Python port of VoxLogicA-2. It is intended for end users who wish to run VoxLogicA-2 from the command line, automate workflows, or understand the available options.
 
 ---
 
@@ -76,10 +76,6 @@ python -m voxlogica.main version
 ```
 
 ---
-
-## F# Port CLI
-
-The F# port provides a CLI using [Argu](https://fsprojects.github.io/Argu/). The main entry point is typically the compiled executable (e.g., `VoxLogicA.exe`).
 
 ### Basic Usage
 

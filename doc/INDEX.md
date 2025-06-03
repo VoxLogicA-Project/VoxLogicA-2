@@ -49,7 +49,7 @@ This documentation is intended as a living knowledge base for:
 
 ## Current State & Goals
 
-- **Implementation Language:** F# (modular, open to future multi-language evolution)
+- **Implementation Language:** python
 - **Core Modules:** Parsing, reduction, execution planning, and logic engine (see `src/`)
 - **Design Principles:**
   - Modularity and flexibility for rapid scientific evolution
@@ -74,7 +74,7 @@ This documentation is intended as a living knowledge base for:
 ## User Documentation
 
 - **[User Guide: Command Line Options & Usage](./user/cli-options.md)**
-  - Comprehensive guide to the command line interfaces (CLI) for both the Python and F# ports of VoxLogicA-2.
+  - Comprehensive guide to the command line interfaces (CLI) f
   - Includes usage examples, option descriptions, and troubleshooting tips for end users.
 
 ---

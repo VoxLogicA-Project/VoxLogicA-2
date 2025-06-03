@@ -52,7 +52,6 @@ When an issue is marked complete, the following steps are MANDATORY:
 1. **META Update:**
 
    - Update the README.md in the corresponding META/ISSUES/ISSUE_X directory to mark the issue as complete.
-   - Update WORKING_MEMORY.md to reflect the new status and remove or update any "ongoing" status for the issue.
    - Ensure the main branch contains the authoritative, up-to-date information.
 
 2. **GitHub Issue and Branch Workflow:**

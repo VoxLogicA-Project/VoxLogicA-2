@@ -71,7 +71,6 @@ python -m unittest discover tests
 
 ## Features
 
-- Full feature parity with the F# implementation
 - Modern Python API with type hints
 - FastAPI-based REST API
 - Typer-based CLI
