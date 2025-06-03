@@ -203,8 +203,13 @@ class WorkPlan:
     def to_json(self) -> dict:
         """Return a JSON-serializable dict representing the work plan."""
         def op_to_dict(op):
+            # Output numbers as JSON numbers, not strings
+            if isinstance(op.operator, NumberOp):
+                operator_value = op.operator.value
+            else:
+                operator_value = str(op.operator)
             return {
-                "operator": str(op.operator),
+                "operator": operator_value,
                 "arguments": op.arguments,
             }
         def goal_to_dict(goal):

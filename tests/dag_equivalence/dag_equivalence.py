@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
+try:
+    import jcs  # Added for canonicalization
+except ImportError:
+    raise ImportError("The 'jcs' library is required for JSON canonicalization. Install it with 'pip install jcs' in your virtual environment.")
 """
 Test that the same imgql program produces identical DAGs (as JSON) in both Python and F# ports, after normalization.
+
+Normalization uses the JCS (JSON Canonicalization Scheme, RFC 8785) via the 'jcs' Python library, which ensures canonical ordering and number formatting.
 """
 import json
 import tempfile
@@ -62,8 +68,8 @@ def run_port_and_get_json(imgql_path: str, port: str) -> Dict:
         raise ValueError(f"Unknown port: {port}")
 
 def normalize_json(obj: Dict) -> str:
-    """Return a normalized JSON string (sorted keys, compact separators)."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    """Return a JCS-canonicalized JSON string (RFC 8785, normalizes numbers and structure)."""
+    return jcs.canonicalize(obj)
 
 def main():
     print("DAG Equivalence Test: Python vs F# ports (with JSON normalization)")

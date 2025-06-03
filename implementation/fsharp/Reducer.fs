@@ -16,7 +16,7 @@ type Operator =
     override this.ToString() =
         match this with
         | Identifier x -> x
-        | Number x -> x.ToString("F1")
+        | Number x -> x.ToString("G", System.Globalization.CultureInfo.InvariantCulture)
         | Bool x -> x.ToString()
         | String x -> x.ToString()
 
@@ -56,9 +56,14 @@ type WorkPlan =
 
     member this.ToJson() =
         let opToDict (op: Operation) =
-            dict
-                [ "operator", box (op.operator.ToString())
-                  "arguments", box (Seq.toArray op.arguments) ]
+            let operatorValue =
+                match op.operator with
+                | Number x -> box x
+                | Identifier x -> box x
+                | Bool x -> box x
+                | String x -> box x
+
+            dict [ "operator", operatorValue; "arguments", box (Seq.toArray op.arguments) ]
 
         let goalToDict (goal: Goal) =
             match goal with
