@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# VoxLogicA wrapper script
+# This script activates the virtual environment and runs the voxlogica command
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Activate the virtual environment
+source "$SCRIPT_DIR/.venv/bin/activate"
+
+# Run voxlogica with all passed arguments
+exec voxlogica "$@" 
