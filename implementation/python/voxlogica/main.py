@@ -4,19 +4,34 @@ VoxLogicA Main module - Python implementation
 
 import os
 import sys
-import argparse
-from typing import Optional, List, Dict, Any, Union
-from pathlib import Path
 import importlib.metadata
 import uvicorn
-
+from typing import Optional, Dict, Any, Union, Type, get_type_hints, List, Callable, TypeVar, Generic, Tuple
+from fastapi import FastAPI, HTTPException, Request, Depends, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.routing import APIRouter
+from pydantic import BaseModel, create_model, Field
+import uvicorn
 import typer
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+import logging
+import sys
+import os
+from pathlib import Path
 
-from .parser import parse_program
-from .reducer import reduce_program
+from .features import FeatureRegistry, Feature, OperationResult
 from .error_msg import Logger, VLException
+
+# Type variables for generic response handling
+T = TypeVar('T')
+
+class ErrorResponse(BaseModel):
+    """Standard error response model"""
+    detail: str
+
+class SuccessResponse(BaseModel, Generic[T]):
+    """Standard success response model"""
+    success: bool = True
+    data: Optional[T] = None
 
 # Create CLI app with Typer
 app = typer.Typer(help="VoxLogicA - Voxel Logic Analyzer")
@@ -28,6 +43,9 @@ api_app = FastAPI(
     version="0.1.0",
 )
 
+# API router for versioned endpoints
+api_router = APIRouter(prefix="/api/v1")
+
 
 def get_version() -> str:
     """Get the version of the VoxLogicA package"""
@@ -37,13 +55,54 @@ def get_version() -> str:
         return "0.1.0-dev"
 
 
-# ----------------- CLI Functions -----------------
+# ----------------- Helper Functions -----------------
 
+def setup_logging(debug: bool = False) -> None:
+    """Set up logging configuration"""
+    log_level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[logging.StreamHandler()]
+    )
+    logger = logging.getLogger('voxlogica')
+    logger.info("VoxLogicA version: %s", get_version())
+
+
+def handle_cli_feature(feature_name: str, **kwargs: Any) -> None:
+    """Handle a CLI feature execution"""
+    logger = logging.getLogger('voxlogica.cli')
+    try:
+        # Get the feature handler
+        feature = FeatureRegistry.get_feature(feature_name)
+        if not feature:
+            logger.error("Unknown feature: %s", feature_name)
+            sys.exit(1)
+            
+        # Call the feature handler
+        result = feature.handler(**kwargs)
+        
+        # Handle the result
+        if hasattr(result, 'success') and not result.success:
+            error_message = getattr(result, 'error', 'Unknown error')
+            logger.error("Operation failed: %s", error_message)
+            sys.exit(1)
+            
+    except VLException as e:
+        logger.error("Error: %s", str(e))
+        sys.exit(1)
+    except Exception as e:
+        logger.exception("Unexpected error")
+        sys.exit(1)
+
+
+# ----------------- CLI Commands -----------------
 
 @app.command()
-def version():
+def version() -> None:
     """Print the VoxLogicA version and exit"""
-    typer.echo(f"VoxLogicA version: {get_version()}")
+    handle_cli_feature("version")
+    raise typer.Exit(code=0)
 
 
 @app.command()
@@ -53,113 +112,192 @@ def run(
     save_task_graph_as_dot: Optional[str] = typer.Option(
         None, help="Save the task graph in .dot format and exit"
     ),
-    save_task_graph_as_ast: Optional[str] = typer.Option(
-        None, help="Save the task graph in AST format and exit"
-    ),
-    save_task_graph_as_program: Optional[str] = typer.Option(
-        None, help="Save the task graph in VoxLogicA format and exit"
-    ),
-    save_task_graph_as_json: Optional[str] = typer.Option(
-        None, help="Save the task graph as JSON and exit"
-    ),
     save_syntax: Optional[str] = typer.Option(
         None, help="Save the AST in text format and exit"
     ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
-):
+) -> None:
     """Run a VoxLogicA session"""
-    # Set up logging
-    Logger.log_to_stdout()
-    if debug:
-        Logger.set_log_level(["user", "info", "warn", "fail", "dbug"])
-    else:
-        Logger.set_log_level(["user", "info", "warn", "fail"])
-
-    Logger.info(f"VoxLogicA version: {get_version()}")
-
+    setup_logging(debug=debug)
+    logger = logging.getLogger('voxlogica.cli')
+    
+    # Build kwargs for the feature handler
+    kwargs: Dict[str, Any] = {
+        "filename": filename,
+        "debug": debug
+    }
+    
     try:
-        # Parse the program
-        syntax = parse_program(filename)
-        Logger.debug("Program parsed")
-
-        # Save syntax if requested
-        if save_syntax is not None:
-            if save_syntax:
-                Logger.debug(f"Saving the abstract syntax to {save_syntax}")
-                with open(save_syntax, "w") as f:
-                    f.write(str(syntax))
-            else:
-                Logger.debug(f"{syntax}")
-
-        # Reduce the program
-        program = reduce_program(syntax)
-        Logger.debug("Program reduced")
-        Logger.info(f"Number of tasks: {len(program.operations)}")
-
-        # Save task graph as JSON if requested
-        if save_task_graph_as_json is not None:
-            import json
-            Logger.debug(f"Saving the task graph as JSON to {save_task_graph_as_json}")
-            with open(save_task_graph_as_json, "w") as f:
-                json.dump(program.to_json(), f)
-            Logger.info("All done.")
-            return 0
-
-        # Save task graph as AST if requested
-        if save_task_graph_as_ast is not None:
-            voxlogica_program = program.to_program()
-            if save_task_graph_as_ast:
-                Logger.debug(
-                    f"Saving the task graph in AST syntax to {save_task_graph_as_ast}"
-                )
-                with open(save_task_graph_as_ast, "w") as f:
-                    f.write(str(voxlogica_program))
-            else:
-                Logger.debug(f"{voxlogica_program}")
-
-        # Save task graph as program if requested
-        if save_task_graph_as_program is not None:
-            voxlogica_program = program.to_program()
-            voxlogica_syntax = voxlogica_program.to_syntax()
-            if save_task_graph_as_program:
-                Logger.debug(
-                    f"Saving the task graph in VoxLogicA syntax to {save_task_graph_as_program}"
-                )
-                with open(save_task_graph_as_program, "w") as f:
-                    f.write(voxlogica_syntax)
-            else:
-                Logger.debug(f"{voxlogica_syntax}")
-
-        # Save task graph if requested
-        if save_task_graph is not None:
-            if save_task_graph:
-                Logger.debug(f"Saving the task graph to {save_task_graph}")
-                with open(save_task_graph, "w") as f:
-                    f.write(str(program))
-            else:
-                Logger.debug(f"{program}")
-
-        # Save task graph as DOT if requested
-        if save_task_graph_as_dot is not None:
-            Logger.debug(f"Saving the task graph to {save_task_graph_as_dot}")
-            with open(save_task_graph_as_dot, "w") as f:
-                f.write(program.to_dot())
-
-        Logger.info("All done.")
-        return 0
-
-    except VLException as e:
-        Logger.failure(str(e))
-        if debug:
-            Logger.debug_exception(e)
-        return 1
-
+        # Read the program file
+        with open(filename, "r") as f:
+            program = f.read()
+        kwargs["program"] = program
     except Exception as e:
-        Logger.failure(f"Unexpected error: {str(e)}")
-        if debug:
-            Logger.debug_exception(e)
-        return 1
+        logger.error("Failed to read file %s: %s", filename, str(e))
+        raise typer.Exit(code=1) from e
+    
+    try:
+        # Determine which feature to run based on options
+        if save_task_graph is not None:
+            handle_cli_feature("save_task_graph", output_filename=save_task_graph, **kwargs)
+        elif save_task_graph_as_dot is not None:
+            handle_cli_feature("save_task_graph", output_filename=save_task_graph_as_dot, **kwargs)
+        elif save_syntax is not None:
+            logger.info("Saving syntax is not yet implemented in the new feature system")
+            raise typer.Exit(code=1)
+        else:
+            # Default to running the program
+            handle_cli_feature("program", **kwargs)
+        
+        raise typer.Exit(code=0)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        logger.exception("An unexpected error occurred")
+        raise typer.Exit(code=1) from e
 
+
+# ----------------- API Endpoints -----------------
+
+def create_request_model(feature: Feature) -> Type[BaseModel]:
+    """Dynamically create a Pydantic model for the request"""
+    if not feature.api_endpoint or "request_model" not in feature.api_endpoint:
+        return type("EmptyRequest", (BaseModel,), {"__annotations__": {}})
+    
+    # Create field definitions with proper typing
+    field_definitions: Dict[str, Any] = {}
+    for field_name, (field_type, description) in feature.api_endpoint["request_model"].items():
+        field_definitions[field_name] = (field_type, Field(..., description=description))
+    
+    # Create the model with proper type hints
+    model_name = f"{feature.name.capitalize()}Request"
+    return create_model(model_name, **field_definitions, __base__=BaseModel)
+
+
+def register_api_endpoints():
+    """Register all API endpoints from features"""
+    for feature_name, feature in FeatureRegistry.get_all_features().items():
+        if not feature.api_endpoint:
+            continue
+            
+        endpoint_config = feature.api_endpoint
+        path = endpoint_config["path"]
+        methods = endpoint_config.get("methods", ["GET"])
+        response_model = endpoint_config.get("response_model")
+        
+        # Create request model if needed
+        request_model = None
+        if "request_model" in endpoint_config:
+            request_model = create_request_model(feature)
+        
+        # Create a closure to capture the current feature_name
+        def create_endpoint_handler(current_feature_name: str):
+            async def endpoint_handler(*, request: Any = None):
+                try:
+                    # Get the feature handler
+                    handler = FeatureRegistry.get_feature(current_feature_name).handler
+                    
+                    # Prepare kwargs based on request
+                    kwargs = {}
+                    if request is not None and hasattr(request, "dict"):
+                        kwargs.update(request.dict())
+                    
+                    # Call the handler
+                    result = handler(**kwargs)
+                    
+                    # Handle the operation result
+                    if hasattr(result, 'success'):
+                        if not result.success:
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=result.error or "An error occurred"
+                            )
+                        return result.data
+                    return result
+                    
+                except HTTPException:
+                    raise
+                except VLException as e:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=str(e)
+                    )
+                except Exception as e:
+                    # Log the error using the module-level logger
+                    logger = logging.getLogger('voxlogica.main')
+                    logger.error(
+                        "Error in feature '%s': %s",
+                        current_feature_name,
+                        str(e),
+                        exc_info=True
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Internal server error"
+                    ) from e
+            return endpoint_handler
+        
+        # Create the endpoint handler with the current feature_name
+        endpoint_handler = create_endpoint_handler(feature_name)
+        
+        # Register the endpoint for each HTTP method
+        for method in methods:
+            method = method.lower()
+            
+            # Skip unsupported methods
+            if method not in {"get", "post", "put", "delete"}:
+                logging.getLogger('voxlogica.main').warning(
+                    "Unsupported HTTP method: %s for %s",
+                    method,
+                    path
+                )
+                continue
+            
+            # Create route configuration
+            route_kwargs = {
+                "path": path,
+                "response_model": response_model,
+                "responses": {
+                    status.HTTP_400_BAD_REQUEST: {"model": ErrorResponse},
+                    status.HTTP_500_INTERNAL_SERVER_ERROR: {"model": ErrorResponse}
+                }
+            }
+            
+            # Add request model for methods that expect a body
+            if method in {"post", "put"} and request_model is not None:
+                route_kwargs["response_model"] = response_model
+                
+                # Create a properly typed handler function
+                async def typed_handler(request: Any) -> Any:
+                    # Validate the request against the model at runtime
+                    try:
+                        # Convert request to dict if it's a Pydantic model
+                        request_data = request.dict() if hasattr(request, 'dict') else request
+                        # Create a new instance of the request model
+                        # We know request_model is not None here because of the outer if condition
+                        assert request_model is not None  # For type checking
+                        validated_request = request_model(**request_data)
+                        return await endpoint_handler(request=validated_request)
+                    except Exception as e:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail={"error": f"Invalid request data: {str(e)}"}
+                        )
+                
+                # Register the route with the typed handler
+                getattr(api_router, method)(**route_kwargs)(typed_handler)
+            else:
+                # For methods without request body
+                getattr(api_router, method)(**route_kwargs)(endpoint_handler)
+
+# Register all API endpoints
+register_api_endpoints()
+
+# Include the router in the FastAPI app
+api_app.include_router(api_router)
+
+
+# ----------------- CLI Commands -----------------
 
 @app.command()
 def serve(
@@ -168,137 +306,18 @@ def serve(
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
 ):
     """Start the VoxLogicA API server"""
-    # Set up logging
-    Logger.log_to_stdout()
-    if debug:
-        Logger.set_log_level(["user", "info", "warn", "fail", "dbug"])
-    else:
-        Logger.set_log_level(["user", "info", "warn", "fail"])
-
-    Logger.info(
-        f"Starting VoxLogicA API server version {get_version()} on {host}:{port}"
-    )
+    setup_logging(debug)
+    
+    Logger.info(f"Starting VoxLogicA API server version {get_version()} on {host}:{port}")
+    Logger.info(f"API documentation available at http://{host}:{port}/docs")
+    
     uvicorn.run(api_app, host=host, port=port)
 
 
 # ----------------- API Models -----------------
 
-
-class ProgramRequest(BaseModel):
-    """Request to parse and reduce a VoxLogicA program"""
-
-    program: str = Field(..., description="The VoxLogicA program to parse and reduce")
-    filename: Optional[str] = Field(
-        None, description="Optional filename for error reporting"
-    )
-
-
-class ProgramResponse(BaseModel):
-    """Response with the parsed and reduced program"""
-
-    operations: int = Field(
-        ..., description="Number of operations in the reduced program"
-    )
-    goals: int = Field(..., description="Number of goals in the reduced program")
-    task_graph: str = Field(..., description="String representation of the task graph")
-    dot_graph: Optional[str] = Field(
-        None, description="DOT representation of the task graph"
-    )
-    syntax: Optional[str] = Field(None, description="Original program syntax")
-
-
-class ErrorResponse(BaseModel):
-    """Error response"""
-
-    error: str = Field(..., description="Error message")
-    detail: Optional[str] = Field(None, description="Additional error details")
-
-
-# ----------------- API Endpoints -----------------
-
-
-@api_app.get("/version")
-def api_version() -> Dict[str, str]:
-    """Get the VoxLogicA version"""
-    return {"version": get_version()}
-
-
-@api_app.post("/program", response_model=Union[ProgramResponse, ErrorResponse])
-def api_program(request: ProgramRequest) -> Dict[str, Any]:
-    """Parse and reduce a VoxLogicA program"""
-    try:
-        # Write the program to a temporary file if no filename is provided
-        if request.filename:
-            filename = request.filename
-            with open(filename, "w") as f:
-                f.write(request.program)
-        else:
-            import tempfile
-
-            with tempfile.NamedTemporaryFile(suffix=".imgql", delete=False) as temp:
-                temp.write(request.program.encode())
-                filename = temp.name
-
-        # Parse the program
-        syntax = parse_program(filename)
-
-        # Reduce the program
-        program = reduce_program(syntax)
-
-        # Clean up temporary file if created
-        if not request.filename:
-            os.unlink(filename)
-
-        # Return the response
-        return {
-            "operations": len(program.operations),
-            "goals": len(program.goals),
-            "task_graph": str(program),
-            "dot_graph": program.to_dot(),
-            "syntax": str(syntax),
-        }
-
-    except VLException as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
-
-
-@api_app.post("/save-task-graph", response_model=Dict[str, str])
-def api_save_task_graph(request: ProgramRequest) -> Dict[str, str]:
-    """Parse, reduce, and save the task graph of a VoxLogicA program"""
-    try:
-        # Write the program to a temporary file
-        import tempfile
-
-        with tempfile.NamedTemporaryFile(suffix=".imgql", delete=False) as temp:
-            temp.write(request.program.encode())
-            filename = temp.name
-
-        # Parse the program
-        syntax = parse_program(filename)
-
-        # Reduce the program
-        program = reduce_program(syntax)
-
-        # Generate output filename
-        output_filename = request.filename or "task_graph.dot"
-
-        # Save the task graph
-        with open(output_filename, "w") as f:
-            f.write(program.to_dot())
-
-        # Clean up temporary file
-        os.unlink(filename)
-
-        return {"message": f"Task graph saved to {output_filename}"}
-
-    except VLException as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+# These models are now dynamically generated from feature definitions
+# in the register_api_endpoints() function
 
 
 if __name__ == "__main__":
