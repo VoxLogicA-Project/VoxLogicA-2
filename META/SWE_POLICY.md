@@ -18,7 +18,7 @@ When developing a new feature in this repository, the following workflow is mand
 
 2. **Document the Issue in META**
 
-   - Create a corresponding directory in META/ISSUES/ISSUE_X where X is the GitHub issue number. All issues, whether open or closed, are stored directly in this directory. The status (open/closed) is tracked in the README.md file within each issue directory.
+   - Create a corresponding directory in META/ISSUES/ISSUE_X where X is the GitHub issue number. Closed issues are stored in the ARCHIVED directory. The status (open/closed) is tracked in the README.md file within each issue directory.
    - Include a README.md file within this directory that describes the issue, its status, and related information.
    - For bugs or specific technical issues, include any reproduction steps or test files in this directory.
 
@@ -90,3 +90,11 @@ When an issue is marked complete, the following steps are MANDATORY:
 ## Notes
 
 - **Note:** In this project, we do **not** use pull requests for merging feature branches. All merges are performed locally by the developer, and traceability is maintained via commit SHAs and META updates. This is a project-specific policy for efficiency and clarity.
+
+## Remote Issue Closure Synchronization Policy
+
+- When an issue is closed locally, the corresponding remote (GitHub) issue MUST be closed immediately.
+- After attempting to close the remote issue, record the result (success or failure) in local working memory.
+- If the remote close fails (e.g., due to network, permissions, or API issues), the user MUST be notified and the issue marked as "pending remote close."
+- On subsequent runs, the system MUST automatically retry closing any issues marked as "pending remote close" until successful, and update the record accordingly.
+- This ensures local and remote issue states remain synchronized, and failures to close remote issues are visible and actionable.
