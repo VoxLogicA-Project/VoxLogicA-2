@@ -35,5 +35,4 @@ implementation/fsharp/bin/
 implementation/fsharp/obj/
 
 # Test artifacts
-*.imgql
 *.json
