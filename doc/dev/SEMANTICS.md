@@ -75,27 +75,83 @@ VoxLogicA aims to provide a high-level, declarative language for manipulating an
 ## Feature Implementation Status and Design Notes
 
 ### Implemented Features
-- **Parsing and Translation to DAG**: The system already implements parsing of the VoxLogicA language and translation to a Directed Acyclic Graph (DAG) representation. See `implementation/python/voxlogica/parser.py` and `implementation/python/voxlogica/reducer.py` for details.
-- **Operation Type**: In the current implementation (see `reducer.py`), each operation in the DAG is represented as an operator with argument IDs. Currently, these IDs are integers.
+- **Parsing and Translation to DAG**: Parsing of the VoxLogicA language and translation to a Directed Acyclic Graph (DAG) is implemented (`parser.py`, `reducer.py`).
+- **Operation Type**: Each operation in the DAG is represented as an operator with argument IDs (currently integers).
+
+---
 
 ### Requirement: Content-Addressed DAG Node IDs
-To improve result tracking, avoid recomputation, and ensure reproducibility, every node (operation) in the DAG should have a unique identifier computed as follows:
-- The ID of each node is the SHA-256 hash of its RFC-compliant, JSON-normalized record, computed recursively (i.e., including the IDs of its argument nodes).
-- Basic constants (e.g., numbers, strings, booleans) are hashed directly from their normalized JSON representation.
-- This approach ensures that identical operations with identical inputs always have the same ID, enabling efficient caching and result reuse.
 
-#### JSON Normalization
-- JSON normalization is required to ensure that logically equivalent records always produce the same hash. This involves:
-  - Canonical key ordering
-  - Consistent formatting (e.g., whitespace, number representations)
-  - Use of a de-facto standard normalizer, such as [rfc8785](https://datatracker.ietf.org/doc/html/rfc8785) (JSON Canonicalization Scheme, JCS)
-- Libraries for JSON normalization include:
-  - Python: [`python-jcs`](https://pypi.org/project/python-jcs/), [`canonicaljson`](https://pypi.org/project/canonicaljson/)
-  - Other languages: see [rfc8785 implementations](https://github.com/cyberphone/json-canonicalization#implementations)
+**Goal:**
+Enable robust result tracking, efficient caching, reproducibility, and distributed execution by making every DAG node (operation) have a unique, content-addressed identifier.
 
-#### Implementation Note
-- This content-addressed ID scheme can be implemented in the `reducer` module, replacing the current integer-based IDs.
-- The system should use the normalized, canonical JSON form of each operation node (including its arguments' IDs) to compute the SHA-256 hash.
+**Design:**
+- Each node’s ID is the SHA-256 hash of its RFC-compliant, JSON-normalized record, recursively including the IDs of its argument nodes.
+- Constants (numbers, strings, booleans) are hashed directly from their normalized JSON representation.
+- This ensures that identical operations with identical inputs always have the same ID, enabling efficient caching and result reuse, and making results portable and shareable.
+
+**JSON Normalization:**
+- Use RFC 8785 (JCS) for canonicalization: canonical key ordering, consistent formatting, etc.
+- Use a standard library, e.g. [`python-jcs`](https://pypi.org/project/python-jcs/) or [`canonicaljson`](https://pypi.org/project/canonicaljson/).
+- See [rfc8785 implementations](https://github.com/cyberphone/json-canonicalization#implementations) for other languages.
+
+**Implementation Note:**
+- This scheme should be implemented in the `reducer` module, replacing integer-based IDs.
+- The normalized, canonical JSON form of each operation node (including its arguments' IDs) is used to compute the SHA-256 hash.
+- Tests should be written to ensure that equivalent operations always produce the same ID, and that changes in arguments or structure result in different IDs.
+
+---
+
+### Open Questions and Points for Discussion
+
+1. **Node Record Structure:**
+   - What fields must be included in the JSON record for each node? (e.g., operator name, argument IDs, parameters, metadata)
+   - Should we include versioning or provenance information in the node record?
+
+2. **Constants and Data Blobs:**
+   - For large constants (e.g., image files), should the hash be computed on the file content, a reference, or a metadata record?
+   - How do we handle non-JSON-serializable data (e.g., binary blobs, numpy arrays)?
+
+3. **Error Handling and Partial Results:**
+   - How should errors or partial failures be represented in the DAG/results?
+   - Should error nodes have their own content-addressed IDs?
+
+4. **Result Storage and Retrieval:**
+   - Where and how are results for each node stored (local cache, remote store, etc.)?
+   - Should the system support pluggable backends for result storage?
+
+5. **Distributed/Remote Execution:**
+   - How do we serialize/deserialize the DAG and datasets for distributed or remote execution?
+   - Should we support partial materialization (only some nodes have results)?
+
+6. **Extensibility:**
+   - How do we allow new operator types or data types to be added without breaking the ID scheme?
+   - Should operator definitions themselves be content-addressed?
+
+7. **Security and Privacy:**
+   - Are there privacy or security concerns with content-addressed IDs (e.g., leaking information via hashes)?
+
+---
+
+### Proposed Next Steps
+
+- **Finalize the node record schema** (fields, required/optional, versioning).
+- **Prototype the content-addressed ID computation** in `reducer.py` using a canonical JSON library.
+- **Write tests** for ID stability and uniqueness.
+- **Decide on result storage and retrieval mechanisms** (local/remote, pluggable?).
+- **Document error handling and partial result semantics**.
+- **Plan for extensibility** (operator/data type plugins, versioning).
+- **Review security/privacy implications** of content-addressed IDs.
+
+---
+
+#### Questions for Review
+
+- Should the node record include provenance/versioning fields?
+- How should we handle large binary data (e.g., images) in the content-addressed scheme?
+- Do you want to support pluggable result storage backends from the start?
+- Is there a preferred canonical JSON library for Python in your environment?
+- Should operator definitions themselves be content-addressed and versioned?
 
 ---
 
