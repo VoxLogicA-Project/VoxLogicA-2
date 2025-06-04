@@ -151,6 +151,9 @@ def run(
     save_task_graph_as_dot: Optional[str] = typer.Option(
         None, help="Save the task graph in .dot format and exit"
     ),
+    save_task_graph_as_json: Optional[str] = typer.Option(
+        None, help="Save the task graph as JSON and exit"
+    ),
     save_syntax: Optional[str] = typer.Option(
         None, help="Save the AST in text format and exit"
     ),
@@ -181,6 +184,12 @@ def run(
         elif save_task_graph_as_dot is not None:
             handle_cli_feature(
                 "save_task_graph", output_filename=save_task_graph_as_dot, **kwargs
+            )
+        elif save_task_graph_as_json is not None:
+            handle_cli_feature(
+                "save_task_graph_json",
+                output_filename=save_task_graph_as_json,
+                **kwargs,
             )
         elif save_syntax is not None:
             logger.info(

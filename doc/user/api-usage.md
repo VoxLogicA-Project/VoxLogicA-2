@@ -1,0 +1,414 @@
+# VoxLogicA API Usage Guide
+
+## Overview
+
+VoxLogicA provides a REST API that offers the same functionality as the command-line interface. The API is built using FastAPI and provides automatic documentation, request validation, and consistent error handling.
+
+## Starting the API Server
+
+To start the VoxLogicA API server:
+
+```bash
+# Start with default settings (localhost:8000)
+./voxlogica serve
+
+# Start with custom host and port
+./voxlogica serve --host 0.0.0.0 --port 8080
+
+# Start with debug mode enabled
+./voxlogica serve --debug
+```
+
+Once started, the API will be available at:
+
+- **API Base URL**: `http://localhost:8000/api/v1/`
+- **Interactive Documentation**: `http://localhost:8000/docs`
+- **OpenAPI Schema**: `http://localhost:8000/openapi.json`
+
+## Available Endpoints
+
+### 1. Get Version
+
+Get the current VoxLogicA version.
+
+**Endpoint**: `GET /api/v1/version`
+
+**Example**:
+
+```bash
+curl http://localhost:8000/api/v1/version
+```
+
+**Response**:
+
+```json
+{
+  "version": "0.1.0"
+}
+```
+
+### 2. Parse and Analyze Program
+
+Parse and analyze a VoxLogicA program, returning the task graph and analysis results.
+
+**Endpoint**: `POST /api/v1/program`
+
+**Request Body**:
+
+```json
+{
+  "program": "let a = 1\nlet b = 2\nlet sum = a + b\nprint sum",
+  "filename": "example.imgql" // optional
+}
+```
+
+**Example**:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/program \
+  -H "Content-Type: application/json" \
+  -d '{
+    "program": "let a = 1\nlet b = 2\nlet sum = a + b\nprint sum",
+    "filename": "example.imgql"
+  }'
+```
+
+**Response**:
+
+```json
+{
+  "operations": 3,
+  "goals": 1,
+  "task_graph": "goals: print(sum,2)\noperations:\n0 -> 1.0\n1 -> 2.0\n2 -> +(0,1)",
+  "syntax": "Program([Let('a', Literal(1.0)), Let('b', Literal(2.0)), Let('sum', BinaryOp('+', Var('a'), Var('b'))), Print('sum')])"
+}
+```
+
+### 3. Save Task Graph (DOT Format)
+
+Parse a program and save its task graph in DOT format.
+
+**Endpoint**: `POST /api/v1/save-task-graph`
+
+**Request Body**:
+
+```json
+{
+  "program": "let a = 1\nprint a",
+  "filename": "output.dot" // optional, defaults to "task_graph.dot"
+}
+```
+
+**Example**:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/save-task-graph \
+  -H "Content-Type: application/json" \
+  -d '{
+    "program": "let a = 1\nprint a",
+    "filename": "my_graph.dot"
+  }'
+```
+
+**Response**:
+
+```json
+{
+  "message": "Task graph saved to my_graph.dot"
+}
+```
+
+### 4. Save Task Graph (JSON Format)
+
+Parse a program and save its task graph in JSON format.
+
+**Endpoint**: `POST /api/v1/save-task-graph-json`
+
+**Request Body**:
+
+```json
+{
+  "program": "let a = 1\nprint a",
+  "filename": "output.json" // optional, defaults to "task_graph.json"
+}
+```
+
+**Example**:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/save-task-graph-json \
+  -H "Content-Type: application/json" \
+  -d '{
+    "program": "let a = 1\nlet b = 2\nlet sum = a + b\nprint sum",
+    "filename": "task_graph.json"
+  }'
+```
+
+**Response**:
+
+```json
+{
+  "message": "Task graph saved as JSON to task_graph.json"
+}
+```
+
+**Generated JSON File Content**:
+
+```json
+{
+  "operations": [
+    {
+      "operator": 1.0,
+      "arguments": []
+    },
+    {
+      "operator": 2.0,
+      "arguments": []
+    },
+    {
+      "operator": "+",
+      "arguments": [0, 1]
+    }
+  ],
+  "goals": [
+    {
+      "type": "print",
+      "name": "sum",
+      "operation_id": 2
+    }
+  ]
+}
+```
+
+## Error Handling
+
+The API uses standard HTTP status codes and returns consistent error responses:
+
+### 400 Bad Request
+
+Returned when there's an error in the VoxLogicA program or invalid request data.
+
+**Example Error Response**:
+
+```json
+{
+  "detail": "Unexpected token Token('__ANON_0', 'invalid') at line 1, column 5."
+}
+```
+
+### 422 Unprocessable Entity
+
+Returned when the request body doesn't match the expected schema.
+
+**Example Error Response**:
+
+```json
+{
+  "detail": {
+    "error": "Invalid request data: field required"
+  }
+}
+```
+
+### 500 Internal Server Error
+
+Returned when there's an unexpected server error.
+
+**Example Error Response**:
+
+```json
+{
+  "detail": "Internal server error"
+}
+```
+
+## Authentication
+
+Currently, the VoxLogicA API does not require authentication. All endpoints are publicly accessible.
+
+## Rate Limiting
+
+No rate limiting is currently implemented. Consider implementing rate limiting in production environments.
+
+## Content Types
+
+- **Request Content-Type**: `application/json`
+- **Response Content-Type**: `application/json`
+
+## API Client Examples
+
+### Python with requests
+
+```python
+import requests
+import json
+
+# Start the server first: ./voxlogica serve
+
+base_url = "http://localhost:8000/api/v1"
+
+# Get version
+response = requests.get(f"{base_url}/version")
+print(f"Version: {response.json()['version']}")
+
+# Analyze a program
+program_data = {
+    "program": "let x = 5\nlet y = x * 2\nprint y",
+    "filename": "example.imgql"
+}
+
+response = requests.post(f"{base_url}/program", json=program_data)
+if response.status_code == 200:
+    result = response.json()
+    print(f"Operations: {result['operations']}")
+    print(f"Goals: {result['goals']}")
+    print(f"Task Graph:\n{result['task_graph']}")
+else:
+    print(f"Error: {response.json()['detail']}")
+
+# Save task graph as JSON
+save_data = {
+    "program": "let a = 1\nlet b = 2\nprint a + b",
+    "filename": "output.json"
+}
+
+response = requests.post(f"{base_url}/save-task-graph-json", json=save_data)
+if response.status_code == 200:
+    print(response.json()['message'])
+else:
+    print(f"Error: {response.json()['detail']}")
+```
+
+### JavaScript with fetch
+
+```javascript
+const baseUrl = "http://localhost:8000/api/v1";
+
+// Get version
+async function getVersion() {
+  const response = await fetch(`${baseUrl}/version`);
+  const data = await response.json();
+  console.log(`Version: ${data.version}`);
+}
+
+// Analyze a program
+async function analyzeProgram() {
+  const programData = {
+    program: "let x = 5\nlet y = x * 2\nprint y",
+    filename: "example.imgql",
+  };
+
+  const response = await fetch(`${baseUrl}/program`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(programData),
+  });
+
+  if (response.ok) {
+    const result = await response.json();
+    console.log(`Operations: ${result.operations}`);
+    console.log(`Goals: ${result.goals}`);
+    console.log(`Task Graph:\n${result.task_graph}`);
+  } else {
+    const error = await response.json();
+    console.error(`Error: ${error.detail}`);
+  }
+}
+
+// Save task graph as JSON
+async function saveTaskGraph() {
+  const saveData = {
+    program: "let a = 1\nlet b = 2\nprint a + b",
+    filename: "output.json",
+  };
+
+  const response = await fetch(`${baseUrl}/save-task-graph-json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(saveData),
+  });
+
+  if (response.ok) {
+    const result = await response.json();
+    console.log(result.message);
+  } else {
+    const error = await response.json();
+    console.error(`Error: ${error.detail}`);
+  }
+}
+```
+
+### curl Examples
+
+```bash
+# Get version
+curl http://localhost:8000/api/v1/version
+
+# Analyze a program
+curl -X POST http://localhost:8000/api/v1/program \
+  -H "Content-Type: application/json" \
+  -d '{"program": "let x = 5\nprint x"}'
+
+# Save task graph as DOT
+curl -X POST http://localhost:8000/api/v1/save-task-graph \
+  -H "Content-Type: application/json" \
+  -d '{"program": "let x = 5\nprint x", "filename": "graph.dot"}'
+
+# Save task graph as JSON
+curl -X POST http://localhost:8000/api/v1/save-task-graph-json \
+  -H "Content-Type: application/json" \
+  -d '{"program": "let x = 5\nprint x", "filename": "graph.json"}'
+```
+
+## Interactive Documentation
+
+The API provides interactive documentation powered by Swagger UI. When the server is running, visit:
+
+`http://localhost:8000/docs`
+
+This interface allows you to:
+
+- Explore all available endpoints
+- View request/response schemas
+- Test endpoints directly from the browser
+- Download the OpenAPI specification
+
+## Integration with CLI
+
+The API and CLI share the same underlying feature system, ensuring complete feature parity. Any functionality available in the CLI is also available through the API, and vice versa.
+
+**CLI to API Mapping**:
+
+- `./voxlogica version` → `GET /api/v1/version`
+- `./voxlogica run program.imgql` → `POST /api/v1/program`
+- `./voxlogica run program.imgql --save-task-graph graph.dot` → `POST /api/v1/save-task-graph`
+- `./voxlogica run program.imgql --save-task-graph-as-json graph.json` → `POST /api/v1/save-task-graph-json`
+
+## Production Considerations
+
+When deploying the VoxLogicA API in production:
+
+1. **Security**: Consider adding authentication and authorization
+2. **Rate Limiting**: Implement rate limiting to prevent abuse
+3. **CORS**: Configure CORS settings for web applications
+4. **Logging**: Enable detailed logging for monitoring and debugging
+5. **Error Handling**: Implement custom error pages and logging
+6. **Performance**: Consider using a production ASGI server like Gunicorn with Uvicorn workers
+7. **Monitoring**: Set up health checks and monitoring
+
+Example production deployment:
+
+```bash
+# Install production dependencies
+pip install gunicorn
+
+# Run with Gunicorn
+gunicorn implementation.python.voxlogica.main:api_app \
+  -w 4 \
+  -k uvicorn.workers.UvicornWorker \
+  --bind 0.0.0.0:8000
+```

@@ -18,9 +18,24 @@ When developing a new feature in this repository, the following workflow is mand
 
 2. **Document the Issue in META**
 
-   - Create a corresponding directory in META/ISSUES/ISSUE_X where X is the GitHub issue number. Closed issues are stored in the ARCHIVED directory. The status (open/closed) is tracked in the README.md file within each issue directory.
+   - Create a corresponding directory in META/ISSUES/ with a meaningful, descriptive name using kebab-case (e.g., `json-export-feature`, `tests-and-cli-output-fix`, `memory-leak-in-parser`). The status (open/closed) is tracked in the README.md file within each issue directory.
    - Include a README.md file within this directory that describes the issue, its status, and related information.
    - For bugs or specific technical issues, include any reproduction steps or test files in this directory.
+
+   **Issue Naming Convention:**
+
+   - **Descriptive**: Clearly indicate what the issue is about
+   - **Concise**: Keep names reasonably short (2-5 words)
+   - **Kebab-case**: Use lowercase letters with hyphens as separators
+   - **Action-oriented**: When possible, describe what was done (e.g., `fix-memory-leak` rather than `memory-problem`)
+
+   Examples of good issue names:
+
+   - `json-export-feature`
+   - `tests-and-cli-output-fix`
+   - `api-authentication-bug`
+   - `performance-optimization-parser`
+   - `docker-deployment-setup`
 
 3. **Create a Feature Branch**
 
@@ -51,7 +66,7 @@ When an issue is marked complete, the following steps are MANDATORY:
 
 1. **META Update:**
 
-   - Update the README.md in the corresponding META/ISSUES/ISSUE_X directory to mark the issue as complete.
+   - Update the README.md in the corresponding META/ISSUES/[issue-name] directory to mark the issue as complete.
    - Ensure the main branch contains the authoritative, up-to-date information.
 
 2. **GitHub Issue and Branch Workflow:**
@@ -74,15 +89,15 @@ When an issue is marked complete, the following steps are MANDATORY:
 
 ## Task Completion and Branch Deletion Policy
 
-- An issue can be marked as done by referencing the commit hash (SHA) of the merge or relevant commit in the META/ISSUES/ISSUE_X/README.md file.
+- An issue can be marked as done by referencing the commit hash (SHA) of the merge or relevant commit in the META/ISSUES/[issue-name]/README.md file.
 - Before deleting a feature branch (locally or remotely), proof MUST exist that the branch is fully merged to main. This can be shown by:
   - The branch's tip commit is reachable from main (e.g., via `git log main` or `git merge-base --is-ancestor <branch> main`).
-  - The merge commit SHA is referenced in the META/ISSUES/ISSUE_X/README.md file for traceability.
+  - The merge commit SHA is referenced in the META/ISSUES/[issue-name]/README.md file for traceability.
 - When an issue is marked as done, the corresponding GitHub issue MUST be closed, with a comment referencing the commit (SHA) from the issue description.
 
 ## Issue File Organization
 
-- All issue documentation MUST be stored in `META/ISSUES/ISSUE_X` where X is the GitHub issue number. There are no OPEN or CLOSED subdirectories; the status of each issue is tracked in its README.md file.
+- All issue documentation MUST be stored in `META/ISSUES/[issue-name]` using descriptive kebab-case names. There are no OPEN or CLOSED subdirectories; the status of each issue is tracked in its README.md file.
 - Each issue directory MUST contain a README.md file with the description, status, and other relevant information.
 - For bugs or technical issues, relevant reproduction steps, test files, or other artifacts should be stored in the issue directory.
 

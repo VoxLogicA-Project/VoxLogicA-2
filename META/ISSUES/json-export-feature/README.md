@@ -1,5 +1,9 @@
 # Issue 7: Feature: Export task graph as JSON (CLI option)
 
+## Status
+
+**COMPLETED** - JSON export feature has been implemented and is available via both CLI and API.
+
 ## Problem
 
 No CLI option to export the task graph as JSON in either the Python or F# port. This is needed for robust, automated equivalence testing and for downstream tools.
@@ -17,6 +21,35 @@ No CLI option to export the task graph as JSON in either the Python or F# port. 
 - The output is consistent across runs and platforms (modulo normalization, which is handled in the test script).
 - Documentation and CLI help are updated.
 - The new option is used in the DAG equivalence test.
+
+## Implementation
+
+**Python Port (COMPLETED):**
+
+- Added `--save-task-graph-as-json` CLI option to the `run` command
+- Implemented `handle_save_task_graph_json` feature handler in `features.py`
+- Added JSON export functionality using the existing `WorkPlan.to_json()` method
+- Feature is available via both CLI and API endpoints
+
+**F# Port (PENDING):**
+
+- Not yet implemented
+
+## Usage
+
+**CLI:**
+
+```bash
+./voxlogica run program.imgql --save-task-graph-as-json output.json
+```
+
+**API:**
+
+```bash
+curl -X POST http://localhost:8000/api/v1/save-task-graph-json \
+  -H "Content-Type: application/json" \
+  -d '{"program": "let a = 1\nprint a", "filename": "output.json"}'
+```
 
 ## Notes
 
