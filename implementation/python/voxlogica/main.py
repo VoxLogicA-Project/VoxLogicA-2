@@ -2,36 +2,23 @@
 VoxLogicA Main module - Python implementation
 """
 
+import logging
 import os
 import sys
-import importlib.metadata
+from pathlib import Path
+from typing import Any, Dict, Optional, TypeVar, Generic
+
+import typer
 import uvicorn
-from typing import (
-    Optional,
-    Dict,
-    Any,
-    Union,
-    Type,
-    get_type_hints,
-    List,
-    Callable,
-    TypeVar,
-    Generic,
-    Tuple,
-)
-from fastapi import FastAPI, HTTPException, Request, Depends, status
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
-from pydantic import BaseModel, create_model, Field
-import uvicorn
-import typer
-import logging
-import sys
-import os
-from pathlib import Path
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 
-from .features import FeatureRegistry, Feature, OperationResult
+from .features import FeatureRegistry, OperationResult
 from .error_msg import Logger, VLException
+from .version import get_version
 
 # Type variables for generic response handling
 T = TypeVar("T")
@@ -51,25 +38,41 @@ class SuccessResponse(BaseModel, Generic[T]):
 
 
 # Create CLI app with Typer
-app = typer.Typer(help="VoxLogicA - Voxel Logic Analyzer")
+app = typer.Typer(
+    name="voxlogica",
+    help="VoxLogicA - A tool for analyzing VoxLogicA programs",
+    add_completion=False,
+)
 
 # Create FastAPI app for API server
 api_app = FastAPI(
     title="VoxLogicA API",
-    description="API for VoxLogicA, a Voxel Logic Analyzer",
-    version="0.1.0",
+    description="API for VoxLogicA program analysis",
+    version=get_version(),
+)
+
+# Add CORS middleware
+api_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # API router for versioned endpoints
 api_router = APIRouter(prefix="/api/v1")
 
 
-def get_version() -> str:
-    """Get the version of the VoxLogicA package"""
-    try:
-        return importlib.metadata.version("voxlogica")
-    except importlib.metadata.PackageNotFoundError:
-        return "2.0.0-alpha.0.1"
+# Request models
+class RunRequest(BaseModel):
+    program: str
+    filename: Optional[str] = None
+    save_task_graph: Optional[str] = None
+    save_task_graph_as_dot: Optional[str] = None
+    save_task_graph_as_json: Optional[str] = None
+    save_syntax: Optional[str] = None
+    debug: Optional[bool] = False
 
 
 # ----------------- Helper Functions -----------------
@@ -83,8 +86,6 @@ def setup_logging(debug: bool = False) -> None:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[logging.StreamHandler()],
     )
-    logger = logging.getLogger("voxlogica")
-    logger.info("VoxLogicA version: %s", get_version())
 
 
 def handle_cli_feature(feature_name: str, **kwargs: Any) -> None:
@@ -109,27 +110,28 @@ def handle_cli_feature(feature_name: str, **kwargs: Any) -> None:
             else:
                 # Handle successful result
                 if hasattr(result, "data") and result.data:
-                    # For program feature, print relevant information
-                    if feature_name == "program":
-                        data = result.data
+                    data = result.data
+                    if feature_name == "run":
                         logger.info("Successfully processed program:")
                         logger.info("  Operations: %d", data.get("operations", 0))
                         logger.info("  Goals: %d", data.get("goals", 0))
                         if "task_graph" in data:
                             logger.info("  Task graph:\n%s", data["task_graph"])
-                    elif feature_name == "save_task_graph":
-                        data = result.data
-                        logger.info("%s", data.get("message", "Task graph saved"))
+                        if "saved_files" in data:
+                            for saved_file in data["saved_files"]:
+                                logger.info("  %s", saved_file)
                     elif feature_name == "version":
-                        data = result.data
                         logger.info(
                             "VoxLogicA version: %s", data.get("version", "unknown")
                         )
+        else:
+            logger.info("Feature executed successfully")
 
     except VLException as e:
         logger.error("Error: %s", str(e))
         sys.exit(1)
     except Exception as e:
+        logger = logging.getLogger("voxlogica.cli")
         logger.exception("Unexpected error")
         sys.exit(1)
 
@@ -139,9 +141,9 @@ def handle_cli_feature(feature_name: str, **kwargs: Any) -> None:
 
 @app.command()
 def version() -> None:
-    """Print the VoxLogicA version and exit"""
+    """Show the VoxLogicA version"""
+    setup_logging(False)
     handle_cli_feature("version")
-    raise typer.Exit(code=0)
 
 
 @app.command()
@@ -159,51 +161,48 @@ def run(
     ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
 ) -> None:
-    """Run a VoxLogicA session"""
-    setup_logging(debug=debug)
-    logger = logging.getLogger("voxlogica.cli")
+    """Run a VoxLogicA program"""
+    setup_logging(debug)
 
-    # Build kwargs for the feature handler
-    kwargs: Dict[str, Any] = {"filename": filename, "debug": debug}
+    # Log version
+    Logger.info(f"VoxLogicA version: {get_version()}")
 
+    # Read the program from file
     try:
-        # Read the program file
         with open(filename, "r") as f:
             program = f.read()
-        kwargs["program"] = program
+    except FileNotFoundError:
+        logger = logging.getLogger("voxlogica.cli")
+        logger.error("File not found: %s", filename)
+        raise typer.Exit(code=1)
     except Exception as e:
-        logger.error("Failed to read file %s: %s", filename, str(e))
-        raise typer.Exit(code=1) from e
+        logger = logging.getLogger("voxlogica.cli")
+        logger.error("Error reading file %s: %s", filename, str(e))
+        raise typer.Exit(code=1)
+
+    # Prepare kwargs
+    kwargs = {
+        "program": program,
+        "filename": filename,
+        "debug": debug,
+    }
 
     try:
-        # Determine which feature to run based on options
-        if save_task_graph is not None:
-            handle_cli_feature(
-                "save_task_graph", output_filename=save_task_graph, **kwargs
-            )
-        elif save_task_graph_as_dot is not None:
-            handle_cli_feature(
-                "save_task_graph", output_filename=save_task_graph_as_dot, **kwargs
-            )
-        elif save_task_graph_as_json is not None:
-            handle_cli_feature(
-                "save_task_graph_json",
-                output_filename=save_task_graph_as_json,
-                **kwargs,
-            )
-        elif save_syntax is not None:
-            logger.info(
-                "Saving syntax is not yet implemented in the new feature system"
-            )
-            raise typer.Exit(code=1)
-        else:
-            # Default to running the program
-            handle_cli_feature("program", **kwargs)
+        # Use the unified run feature with all options
+        handle_cli_feature(
+            "run",
+            save_task_graph=save_task_graph,
+            save_task_graph_as_dot=save_task_graph_as_dot,
+            save_task_graph_as_json=save_task_graph_as_json,
+            save_syntax=save_syntax,
+            **kwargs,
+        )
 
         raise typer.Exit(code=0)
     except typer.Exit:
         raise
     except Exception as e:
+        logger = logging.getLogger("voxlogica.cli")
         logger.exception("An unexpected error occurred")
         raise typer.Exit(code=1) from e
 
@@ -211,145 +210,71 @@ def run(
 # ----------------- API Endpoints -----------------
 
 
-def create_request_model(feature: Feature) -> Type[BaseModel]:
-    """Dynamically create a Pydantic model for the request"""
-    if not feature.api_endpoint or "request_model" not in feature.api_endpoint:
-        return type("EmptyRequest", (BaseModel,), {"__annotations__": {}})
-
-    # Create field definitions with proper typing
-    field_definitions: Dict[str, Any] = {}
-    for field_name, (field_type, description) in feature.api_endpoint[
-        "request_model"
-    ].items():
-        field_definitions[field_name] = (
-            field_type,
-            Field(..., description=description),
-        )
-
-    # Create the model with proper type hints
-    model_name = f"{feature.name.capitalize()}Request"
-    return create_model(model_name, **field_definitions, __base__=BaseModel)
-
-
-def register_api_endpoints():
-    """Register all API endpoints from features"""
-    for feature_name, feature in FeatureRegistry.get_all_features().items():
-        if not feature.api_endpoint:
-            continue
-
-        endpoint_config = feature.api_endpoint
-        path = endpoint_config["path"]
-        methods = endpoint_config.get("methods", ["GET"])
-        response_model = endpoint_config.get("response_model")
-
-        # Create request model if needed
-        request_model = None
-        if "request_model" in endpoint_config:
-            request_model = create_request_model(feature)
-
-        # Create a closure to capture the current feature_name
-        def create_endpoint_handler(current_feature_name: str):
-            async def endpoint_handler(*, request: Any = None):
-                try:
-                    # Get the feature handler
-                    handler = FeatureRegistry.get_feature(current_feature_name).handler
-
-                    # Prepare kwargs based on request
-                    kwargs = {}
-                    if request is not None and hasattr(request, "dict"):
-                        kwargs.update(request.dict())
-
-                    # Call the handler
-                    result = handler(**kwargs)
-
-                    # Handle the operation result
-                    if hasattr(result, "success"):
-                        if not result.success:
-                            raise HTTPException(
-                                status_code=status.HTTP_400_BAD_REQUEST,
-                                detail=result.error or "An error occurred",
-                            )
-                        return result.data
-                    return result
-
-                except HTTPException:
-                    raise
-                except VLException as e:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
-                    )
-                except Exception as e:
-                    # Log the error using the module-level logger
-                    logger = logging.getLogger("voxlogica.main")
-                    logger.error(
-                        "Error in feature '%s': %s",
-                        current_feature_name,
-                        str(e),
-                        exc_info=True,
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail="Internal server error",
-                    ) from e
-
-            return endpoint_handler
-
-        # Create the endpoint handler with the current feature_name
-        endpoint_handler = create_endpoint_handler(feature_name)
-
-        # Register the endpoint for each HTTP method
-        for method in methods:
-            method = method.lower()
-
-            # Skip unsupported methods
-            if method not in {"get", "post", "put", "delete"}:
-                logging.getLogger("voxlogica.main").warning(
-                    "Unsupported HTTP method: %s for %s", method, path
+@api_router.get("/version")
+async def get_version_endpoint():
+    """Get VoxLogicA version"""
+    try:
+        feature = FeatureRegistry.get_feature("version")
+        if not feature:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Version feature not found",
+            )
+        result = feature.handler()
+        if hasattr(result, "success"):
+            if not result.success:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=result.error or "An error occurred",
                 )
-                continue
-
-            # Create route configuration
-            route_kwargs = {
-                "path": path,
-                "response_model": response_model,
-                "responses": {
-                    status.HTTP_400_BAD_REQUEST: {"model": ErrorResponse},
-                    status.HTTP_500_INTERNAL_SERVER_ERROR: {"model": ErrorResponse},
-                },
-            }
-
-            # Add request model for methods that expect a body
-            if method in {"post", "put"} and request_model is not None:
-                route_kwargs["response_model"] = response_model
-
-                # Create a properly typed handler function
-                async def typed_handler(request: Any) -> Any:
-                    # Validate the request against the model at runtime
-                    try:
-                        # Convert request to dict if it's a Pydantic model
-                        request_data = (
-                            request.dict() if hasattr(request, "dict") else request
-                        )
-                        # Create a new instance of the request model
-                        # We know request_model is not None here because of the outer if condition
-                        assert request_model is not None  # For type checking
-                        validated_request = request_model(**request_data)
-                        return await endpoint_handler(request=validated_request)
-                    except Exception as e:
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail={"error": f"Invalid request data: {str(e)}"},
-                        )
-
-                # Register the route with the typed handler
-                getattr(api_router, method)(**route_kwargs)(typed_handler)
-            else:
-                # For methods without request body
-                getattr(api_router, method)(**route_kwargs)(endpoint_handler)
+            return result.data
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger = logging.getLogger("voxlogica.main")
+        logger.error("Error in version endpoint: %s", str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error",
+        ) from e
 
 
-# Register all API endpoints
-register_api_endpoints()
+@api_router.post("/run")
+async def run_program_endpoint(request: RunRequest):
+    """Run a VoxLogicA program with various output options"""
+    try:
+        feature = FeatureRegistry.get_feature("run")
+        if not feature:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Run feature not found",
+            )
+
+        # Convert request to kwargs
+        kwargs = request.dict()
+        result = feature.handler(**kwargs)
+
+        if hasattr(result, "success"):
+            if not result.success:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=result.error or "An error occurred",
+                )
+            return result.data
+        return result
+    except HTTPException:
+        raise
+    except VLException as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger = logging.getLogger("voxlogica.main")
+        logger.error("Error in run endpoint: %s", str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error",
+        ) from e
+
 
 # Include the router in the FastAPI app
 api_app.include_router(api_router)

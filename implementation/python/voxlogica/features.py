@@ -1,17 +1,28 @@
 """
-Feature definitions for VoxLogicA CLI and API.
+This module defines all VoxLogicA features using a unified registry system.
 This module serves as the single source of truth for all features.
 """
 
-from typing import Dict, Any, Callable, Optional, TypeVar, Generic
+from typing import (
+    Dict,
+    Any,
+    Callable,
+    Optional,
+    List,
+    Union,
+    Type,
+    TypeVar,
+    Generic,
+    Tuple,
+)
 from dataclasses import dataclass, field
 from pathlib import Path
 import tempfile
 import os
 import json
 
-from .parser import parse_program, Program as ParserProgram
-from .reducer import reduce_program, WorkPlan
+from .parser import parse_program
+from .reducer import reduce_program
 from .error_msg import Logger, VLException
 
 T = TypeVar("T")
@@ -51,9 +62,9 @@ class FeatureRegistry:
         return feature
 
     @classmethod
-    def get_feature(cls, name: str) -> Feature:
+    def get_feature(cls, name: str) -> Optional[Feature]:
         """Get a feature by name"""
-        return cls._features[name]
+        return cls._features.get(name)
 
     @classmethod
     def get_all_features(cls) -> Dict[str, Feature]:
@@ -61,147 +72,87 @@ class FeatureRegistry:
         return cls._features.copy()
 
 
-# Feature implementations
-def handle_version() -> OperationResult[Dict[str, str]]:
+# ----------------- Feature Handlers -----------------
+
+
+def handle_version(**kwargs) -> OperationResult[Dict[str, str]]:
     """Handle version request"""
-    from .main import get_version
+    from .version import get_version
 
     return OperationResult[Dict[str, str]](
         success=True, data={"version": get_version()}
     )
 
 
-def handle_program(
-    program: str, filename: Optional[str] = None, **kwargs
+def handle_run(
+    program: str,
+    filename: Optional[str] = None,
+    save_task_graph: Optional[str] = None,
+    save_task_graph_as_dot: Optional[str] = None,
+    save_task_graph_as_json: Optional[str] = None,
+    save_syntax: Optional[str] = None,
+    debug: bool = False,
+    **kwargs,
 ) -> OperationResult[Dict[str, Any]]:
-    """Handle program parsing and reduction"""
+    """Handle the unified run command with all options"""
     temp_filename = None
     try:
-        # Write the program to a temporary file if no filename is provided
-        if filename and os.path.exists(filename):
-            temp_filename = filename
-            is_temp = False
-        else:
+        # Write the program to a temporary file if needed
+        if program:
             with tempfile.NamedTemporaryFile(suffix=".imgql", delete=False) as temp:
                 temp.write(program.encode())
                 temp_filename = temp.name
-            is_temp = True
+            parse_filename = temp_filename
+        else:
+            parse_filename = filename
 
-        try:
-            # Parse and reduce the program
-            syntax = parse_program(temp_filename)
-            program_obj = reduce_program(syntax)
+        if not parse_filename:
+            return OperationResult[Dict[str, Any]](
+                success=False,
+                error="Either program content or filename must be provided",
+            )
 
-            result = {
-                "operations": len(program_obj.operations),
-                "goals": len(program_obj.goals),
-                "task_graph": str(program_obj),
-                "dot_graph": program_obj.to_dot(),
-                "syntax": str(syntax),
-            }
-            return OperationResult[Dict[str, Any]](success=True, data=result)
+        # Parse and reduce the program
+        syntax = parse_program(parse_filename)
+        program_obj = reduce_program(syntax)
 
-        finally:
-            # Clean up temporary file if we created one
-            if is_temp and os.path.exists(temp_filename):
-                try:
-                    os.unlink(temp_filename)
-                except Exception as e:
-                    Logger.warning(
-                        f"Failed to clean up temporary file {temp_filename}: {str(e)}"
-                    )
+        # Build the result
+        result = {
+            "operations": len(program_obj.operations),
+            "goals": len(program_obj.goals),
+            "task_graph": str(program_obj),
+            "syntax": str(syntax),
+        }
+
+        # Handle save options
+        saved_files = []
+
+        if save_task_graph or save_task_graph_as_dot:
+            output_file = save_task_graph or save_task_graph_as_dot
+            if output_file:
+                with open(output_file, "w") as f:
+                    f.write(program_obj.to_dot())
+                saved_files.append(f"Task graph saved as DOT to {output_file}")
+
+        if save_task_graph_as_json:
+            with open(save_task_graph_as_json, "w") as f:
+                json.dump(program_obj.to_json(), f, indent=2)
+            saved_files.append(f"Task graph saved as JSON to {save_task_graph_as_json}")
+
+        if save_syntax:
+            with open(save_syntax, "w") as f:
+                f.write(str(syntax))
+            saved_files.append(f"Syntax saved to {save_syntax}")
+
+        if saved_files:
+            result["saved_files"] = saved_files
+
+        return OperationResult[Dict[str, Any]](success=True, data=result)
 
     except VLException as e:
         return OperationResult[Dict[str, Any]](success=False, error=str(e))
     except Exception as e:
         return OperationResult[Dict[str, Any]](
-            success=False, error=f"Unexpected error: {str(e)}"
-        )
-
-    return OperationResult[Dict[str, Any]](
-        success=False, error="An unknown error occurred processing the program"
-    )
-
-
-def handle_save_task_graph(
-    program: str,
-    filename: Optional[str] = None,
-    output_filename: Optional[str] = None,
-    **kwargs,
-) -> OperationResult[Dict[str, str]]:
-    """Handle saving task graph"""
-    temp_filename = None
-    try:
-        # Write the program to a temporary file
-        with tempfile.NamedTemporaryFile(suffix=".imgql", delete=False) as temp:
-            temp.write(program.encode())
-            temp_filename = temp.name
-
-        # Parse and reduce the program
-        syntax = parse_program(temp_filename)
-        program_obj = reduce_program(syntax)
-
-        # Generate output filename
-        output = output_filename or "task_graph.dot"
-
-        # Save the task graph
-        with open(output, "w") as f:
-            f.write(program_obj.to_dot())
-
-        return OperationResult[Dict[str, str]](
-            success=True, data={"message": f"Task graph saved to {output}"}
-        )
-
-    except VLException as e:
-        return OperationResult[Dict[str, str]](success=False, error=str(e))
-    except Exception as e:
-        return OperationResult[Dict[str, str]](
-            success=False, error=f"Unexpected error: {str(e)}"
-        )
-    finally:
-        # Clean up temporary file
-        if temp_filename and os.path.exists(temp_filename):
-            try:
-                os.unlink(temp_filename)
-            except Exception as e:
-                Logger.warning(
-                    f"Failed to clean up temporary file {temp_filename}: {str(e)}"
-                )
-
-
-def handle_save_task_graph_json(
-    program: str,
-    filename: Optional[str] = None,
-    output_filename: Optional[str] = None,
-    **kwargs,
-) -> OperationResult[Dict[str, str]]:
-    """Handle saving task graph as JSON"""
-    temp_filename = None
-    try:
-        # Write the program to a temporary file
-        with tempfile.NamedTemporaryFile(suffix=".imgql", delete=False) as temp:
-            temp.write(program.encode())
-            temp_filename = temp.name
-
-        # Parse and reduce the program
-        syntax = parse_program(temp_filename)
-        program_obj = reduce_program(syntax)
-
-        # Generate output filename
-        output = output_filename or "task_graph.json"
-
-        # Save the task graph as JSON
-        with open(output, "w") as f:
-            json.dump(program_obj.to_json(), f, indent=2)
-
-        return OperationResult[Dict[str, str]](
-            success=True, data={"message": f"Task graph saved as JSON to {output}"}
-        )
-
-    except VLException as e:
-        return OperationResult[Dict[str, str]](success=False, error=str(e))
-    except Exception as e:
-        return OperationResult[Dict[str, str]](
             success=False, error=f"Unexpected error: {str(e)}"
         )
     finally:
@@ -229,11 +180,11 @@ version_feature = FeatureRegistry.register(
     )
 )
 
-program_feature = FeatureRegistry.register(
+run_feature = FeatureRegistry.register(
     Feature(
-        name="program",
-        description="Parse and reduce a VoxLogicA program",
-        handler=handle_program,
+        name="run",
+        description="Run a VoxLogicA program with various output options",
+        handler=handle_run,
         cli_options={
             "filename": {
                 "type": str,
@@ -243,12 +194,22 @@ program_feature = FeatureRegistry.register(
             "save_task_graph": {
                 "type": str,
                 "required": False,
-                "help": "Save the task graph to a file",
+                "help": "Save the task graph in DOT format",
             },
             "save_task_graph_as_dot": {
                 "type": str,
                 "required": False,
-                "help": "Save the task graph in .dot format",
+                "help": "Save the task graph in DOT format",
+            },
+            "save_task_graph_as_json": {
+                "type": str,
+                "required": False,
+                "help": "Save the task graph as JSON",
+            },
+            "save_syntax": {
+                "type": str,
+                "required": False,
+                "help": "Save the AST in text format",
             },
             "debug": {
                 "type": bool,
@@ -258,47 +219,27 @@ program_feature = FeatureRegistry.register(
             },
         },
         api_endpoint={
-            "path": "/program",
+            "path": "/run",
             "methods": ["POST"],
             "request_model": {
-                "program": (str, "The VoxLogicA program to parse and reduce"),
+                "program": (str, "The VoxLogicA program content"),
                 "filename": (Optional[str], "Optional filename for error reporting"),
+                "save_task_graph": (
+                    Optional[str],
+                    "Save task graph as DOT to this file",
+                ),
+                "save_task_graph_as_dot": (
+                    Optional[str],
+                    "Save task graph as DOT to this file",
+                ),
+                "save_task_graph_as_json": (
+                    Optional[str],
+                    "Save task graph as JSON to this file",
+                ),
+                "save_syntax": (Optional[str], "Save syntax tree to this file"),
+                "debug": (Optional[bool], "Enable debug mode"),
             },
             "response_model": Dict[str, Any],
-        },
-    )
-)
-
-save_task_graph_feature = FeatureRegistry.register(
-    Feature(
-        name="save_task_graph",
-        description="Parse, reduce, and save the task graph of a VoxLogicA program",
-        handler=handle_save_task_graph,
-        api_endpoint={
-            "path": "/save-task-graph",
-            "methods": ["POST"],
-            "request_model": {
-                "program": (str, "The VoxLogicA program to parse and reduce"),
-                "filename": (Optional[str], "Optional output filename"),
-            },
-            "response_model": Dict[str, str],
-        },
-    )
-)
-
-save_task_graph_json_feature = FeatureRegistry.register(
-    Feature(
-        name="save_task_graph_json",
-        description="Parse, reduce, and save the task graph as JSON",
-        handler=handle_save_task_graph_json,
-        api_endpoint={
-            "path": "/save-task-graph-json",
-            "methods": ["POST"],
-            "request_model": {
-                "program": (str, "The VoxLogicA program to parse and reduce"),
-                "filename": (Optional[str], "Optional output filename"),
-            },
-            "response_model": Dict[str, str],
         },
     )
 )

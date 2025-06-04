@@ -2,7 +2,7 @@
 
 ## Overview
 
-VoxLogicA provides a REST API that offers the same functionality as the command-line interface. The API is built using FastAPI and provides automatic documentation, request validation, and consistent error handling.
+VoxLogicA features a **unified CLI-API design** where every CLI command has a corresponding API endpoint with identical functionality. This ensures complete feature parity between command-line and programmatic usage. The API is built using FastAPI and provides automatic documentation, request validation, and consistent error handling.
 
 ## Starting the API Server
 
@@ -25,11 +25,20 @@ Once started, the API will be available at:
 - **Interactive Documentation**: `http://localhost:8000/docs`
 - **OpenAPI Schema**: `http://localhost:8000/openapi.json`
 
+## CLI to API Mapping
+
+| CLI Command                          | API Endpoint          | Description                  |
+| ------------------------------------ | --------------------- | ---------------------------- |
+| `voxlogica version`                  | `GET /api/v1/version` | Get VoxLogicA version        |
+| `voxlogica run [options] file.imgql` | `POST /api/v1/run`    | Run program with all options |
+
 ## Available Endpoints
 
 ### 1. Get Version
 
 Get the current VoxLogicA version.
+
+**CLI Equivalent**: `voxlogica version`
 
 **Endpoint**: `GET /api/v1/version`
 
@@ -43,33 +52,61 @@ curl http://localhost:8000/api/v1/version
 
 ```json
 {
-  "version": "0.1.0"
+  "version": "0.2.0-alpha"
 }
 ```
 
-### 2. Parse and Analyze Program
+### 2. Run Program
 
-Parse and analyze a VoxLogicA program, returning the task graph and analysis results.
+Run a VoxLogicA program with various output options. This endpoint mirrors the CLI `run` command exactly, supporting all the same options and combinations.
 
-**Endpoint**: `POST /api/v1/program`
+**CLI Equivalent**: `voxlogica run [options] file.imgql`
+
+**Endpoint**: `POST /api/v1/run`
 
 **Request Body**:
 
 ```json
 {
-  "program": "let a = 1\nlet b = 2\nlet sum = a + b\nprint sum",
-  "filename": "example.imgql" // optional
+  "program": "let a = 1\nlet b = 2\nlet c = a + b\nprint \"sum\" c",
+  "filename": "optional_filename.imgql",
+  "save_task_graph": "output.dot",
+  "save_task_graph_as_json": "output.json",
+  "save_syntax": "syntax.txt",
+  "debug": false
 }
 ```
 
-**Example**:
+**All fields except `program` are optional:**
+
+- `program` (required): The VoxLogicA program source code
+- `filename` (optional): Filename for error reporting
+- `save_task_graph` (optional): Save task graph as DOT format to this file
+- `save_task_graph_as_dot` (optional): Alternative name for DOT export
+- `save_task_graph_as_json` (optional): Save task graph as JSON to this file
+- `save_syntax` (optional): Save parsed syntax tree to this file
+- `debug` (optional): Enable debug mode
+
+**Basic Example**:
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/program \
+curl -X POST http://localhost:8000/api/v1/run \
   -H "Content-Type: application/json" \
   -d '{
-    "program": "let a = 1\nlet b = 2\nlet sum = a + b\nprint sum",
-    "filename": "example.imgql"
+    "program": "let a = 1\nlet b = 2\nlet c = a + b\nprint \"sum\" c"
+  }'
+```
+
+**Example with Multiple Exports**:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "program": "let a = 1\nlet b = 2\nlet c = a + b\nprint \"sum\" c",
+    "save_task_graph_as_json": "result.json",
+    "save_task_graph": "result.dot",
+    "debug": true
   }'
 ```
 
@@ -80,79 +117,15 @@ curl -X POST http://localhost:8000/api/v1/program \
   "operations": 3,
   "goals": 1,
   "task_graph": "goals: print(sum,2)\noperations:\n0 -> 1.0\n1 -> 2.0\n2 -> +(0,1)",
-  "syntax": "Program([Let('a', Literal(1.0)), Let('b', Literal(2.0)), Let('sum', BinaryOp('+', Var('a'), Var('b'))), Print('sum')])"
+  "syntax": "let a=1.0\nlet b=2.0\nlet c=+(a,b)\nprint \"sum\" c",
+  "saved_files": [
+    "Task graph saved as DOT to result.dot",
+    "Task graph saved as JSON to result.json"
+  ]
 }
 ```
 
-### 3. Save Task Graph (DOT Format)
-
-Parse a program and save its task graph in DOT format.
-
-**Endpoint**: `POST /api/v1/save-task-graph`
-
-**Request Body**:
-
-```json
-{
-  "program": "let a = 1\nprint a",
-  "filename": "output.dot" // optional, defaults to "task_graph.dot"
-}
-```
-
-**Example**:
-
-```bash
-curl -X POST http://localhost:8000/api/v1/save-task-graph \
-  -H "Content-Type: application/json" \
-  -d '{
-    "program": "let a = 1\nprint a",
-    "filename": "my_graph.dot"
-  }'
-```
-
-**Response**:
-
-```json
-{
-  "message": "Task graph saved to my_graph.dot"
-}
-```
-
-### 4. Save Task Graph (JSON Format)
-
-Parse a program and save its task graph in JSON format.
-
-**Endpoint**: `POST /api/v1/save-task-graph-json`
-
-**Request Body**:
-
-```json
-{
-  "program": "let a = 1\nprint a",
-  "filename": "output.json" // optional, defaults to "task_graph.json"
-}
-```
-
-**Example**:
-
-```bash
-curl -X POST http://localhost:8000/api/v1/save-task-graph-json \
-  -H "Content-Type: application/json" \
-  -d '{
-    "program": "let a = 1\nlet b = 2\nlet sum = a + b\nprint sum",
-    "filename": "task_graph.json"
-  }'
-```
-
-**Response**:
-
-```json
-{
-  "message": "Task graph saved as JSON to task_graph.json"
-}
-```
-
-**Generated JSON File Content**:
+**Generated JSON File Content** (when using `save_task_graph_as_json`):
 
 ```json
 {
