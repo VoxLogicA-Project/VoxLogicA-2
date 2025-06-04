@@ -61,10 +61,10 @@ print "result" c"""
         actual_keys == expected_keys
     ), f"Expected keys {expected_keys}, got {actual_keys}"
 
-    # Check that values are operation IDs (integers)
+    # Check that values are operation IDs (now strings in SHA256 implementation)
     for key, value in add_operation.arguments.items():
         assert isinstance(key, str), f"Key {key} should be a string"
-        assert isinstance(value, int), f"Value {value} should be an int (OperationId)"
+        assert isinstance(value, str), f"Value {value} should be a str (OperationId)"
 
 
 def test_nested_operation_arguments():

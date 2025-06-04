@@ -17,6 +17,10 @@ from typing import (
 )
 from collections import defaultdict
 import itertools
+import hashlib
+import canonicaljson
+from pathlib import Path
+import os
 
 from .parser import (
     Expression,
@@ -35,7 +39,7 @@ from .error_msg import fail, fail_with_stacktrace, Stack
 
 # Type aliases
 identifier = str
-OperationId = int
+OperationId = str
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,16 @@ class Operation:
     operator: Operator
     arguments: Arguments
 
+    def __post_init__(self):
+        # Convert arguments dict to a frozenset of items for hashability
+        object.__setattr__(
+            self, "arguments", dict(self.arguments)
+        )  # Ensure it's a proper dict
+
+    def __hash__(self):
+        # Make Operation hashable by converting arguments to frozenset
+        return hash((self.operator, frozenset(self.arguments.items())))
+
     def __str__(self) -> str:
         if not self.arguments:
             return f"{self.operator}"
@@ -139,6 +153,8 @@ class WorkPlan:
 
     operations: List[Operation]
     goals: List[Goal]
+    # Store the mapping from operations to their IDs for DOT generation
+    _operation_ids: Optional[Dict[Operation, OperationId]] = None
 
     def __str__(self) -> str:
         ops_str = "\n".join([f"{i} -> {op}" for i, op in enumerate(self.operations)])
@@ -191,14 +207,34 @@ class WorkPlan:
         """Convert the work plan to a DOT graph representation"""
         dot_str = "digraph {\n"
 
-        for i, operation in enumerate(self.operations):
-            dot_str += f'  {i} [label="[{i}] {operation}"]\n'
+        # Create a mapping from operation ID to short index for readability
+        id_to_index = {
+            op_id: i for i, (op_id, _) in enumerate(self._get_operations_with_ids())
+        }
+
+        for op_id, operation in self._get_operations_with_ids():
+            index = id_to_index[op_id]
+            # Use truncated hash for display
+            short_id = op_id[:8] if len(op_id) > 8 else op_id
+            dot_str += f'  "{op_id}" [label="[{index}] {short_id}\\n{operation}"]\n'
 
             for argument in operation.arguments.values():
-                dot_str += f"  {argument} -> {i};\n"
+                dot_str += f'  "{argument}" -> "{op_id}";\n'
 
         dot_str += "}\n"
         return dot_str
+
+    def _get_operations_with_ids(self) -> List[Tuple[OperationId, Operation]]:
+        """Helper method to get operations with their IDs for internal use"""
+        if self._operation_ids:
+            return [(self._operation_ids[op], op) for op in self.operations]
+        else:
+            # Fallback: generate sequential fake IDs for display
+            result = []
+            for i, operation in enumerate(self.operations):
+                fake_id = f"op_{i}"
+                result.append((fake_id, operation))
+            return result
 
     def to_json(self) -> dict:
         """Return a JSON-serializable dict representing the work plan."""
@@ -236,8 +272,9 @@ class WorkPlan:
         }
 
 
+@dataclass
 class InternalOperation:
-    """Internal representation of an operation"""
+    """Internal operation with ID and operation"""
 
     def __init__(self, op_id: OperationId, operation: Operation):
         self.id = op_id
@@ -245,7 +282,7 @@ class InternalOperation:
 
 
 class Operations:
-    """Collection of operations with memoization"""
+    """Collection of operations with content-addressed memoization using SHA256 hashes"""
 
     def __init__(self):
         self.by_term: Dict[
@@ -253,6 +290,36 @@ class Operations:
         ] = {}
         self.by_id: Dict[OperationId, InternalOperation] = {}
         self.memoize = True
+
+    def _compute_operation_id(
+        self, operator: Operator, arguments: Arguments
+    ) -> OperationId:
+        """Compute content-addressed SHA256 ID for an operation"""
+        # Create a canonical JSON representation of the operation
+        op_dict = {
+            "operator": self._operator_to_dict(operator),
+            "arguments": dict(sorted(arguments.items())),  # Sort for consistency
+        }
+
+        # Use canonical JSON encoding (RFC 8785)
+        canonical_json = canonicaljson.encode_canonical_json(op_dict)
+
+        # Compute SHA256 hash
+        sha256_hash = hashlib.sha256(canonical_json).hexdigest()
+        return sha256_hash
+
+    def _operator_to_dict(self, operator: Operator) -> dict:
+        """Convert operator to a dictionary for JSON serialization"""
+        if isinstance(operator, IdentifierOp):
+            return {"type": "identifier", "value": operator.value}
+        elif isinstance(operator, NumberOp):
+            return {"type": "number", "value": operator.value}
+        elif isinstance(operator, BoolOp):
+            return {"type": "bool", "value": operator.value}
+        elif isinstance(operator, StringOp):
+            return {"type": "string", "value": operator.value}
+        else:
+            raise ValueError(f"Unknown operator type: {type(operator)}")
 
     def find_or_create(self, operator: Operator, arguments: Arguments) -> OperationId:
         """Find an existing operation or create a new one"""
@@ -275,8 +342,24 @@ class Operations:
         return None
 
     def create(self, operator: Operator, arguments: Arguments) -> OperationId:
-        """Create a new operation"""
-        new_id = len(self.by_id)
+        """Create a new operation with content-addressed ID"""
+        new_id = self._compute_operation_id(operator, arguments)
+
+        # Check if this ID already exists (hash collision check)
+        if new_id in self.by_id:
+            # This should be extremely rare, but handle gracefully
+            existing_op = self.by_id[new_id]
+            if (
+                existing_op.operation.operator == operator
+                and existing_op.operation.arguments == arguments
+            ):
+                # Same operation, return existing ID
+                return new_id
+            else:
+                # Hash collision - this is extremely unlikely but theoretically possible
+                raise RuntimeError(
+                    f"SHA256 hash collision detected for operation ID: {new_id}"
+                )
 
         new_operation = InternalOperation(new_id, Operation(operator, arguments))
 
@@ -437,7 +520,7 @@ def reduce_expression(
     # This should never happen if the parser is correct
     fail("Internal error in reducer: unknown expression type")
     # This will never be reached, but added to satisfy the linter
-    return -1
+    return ""
 
 
 def reduce_command(
@@ -533,9 +616,9 @@ def reduce_program(program: Program) -> WorkPlan:
         env, imports = reduce_command(env, operations, goals, parsed_imports, command)
         commands = imports + commands
 
-    # Convert the operations dictionary to a list
-    op_list = [
-        op.operation for op in sorted(operations.by_id.values(), key=lambda x: x.id)
-    ]
+    # Convert the operations dictionary to a list and build ID mapping
+    sorted_internal_ops = sorted(operations.by_id.values(), key=lambda x: x.id)
+    op_list = [op.operation for op in sorted_internal_ops]
+    operation_ids = {op.operation: op.id for op in sorted_internal_ops}
 
-    return WorkPlan(op_list, list(goals))
+    return WorkPlan(op_list, list(goals), operation_ids)
