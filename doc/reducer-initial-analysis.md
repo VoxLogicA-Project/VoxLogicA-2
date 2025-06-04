@@ -7,7 +7,7 @@ The `Reducer` module is the core logic engine of VoxLogicA-2. It transforms pars
 ## Key Concepts
 
 - **Operator**: Atomic element (identifier, number, bool, string)
-- **Operation**: Operator applied to arguments (other operations, by ID)
+- **Operation**: Operator applied to arguments (dict with string numeric keys mapping to operation IDs)
 - **Goal**: High-level action (Save, Print)
 - **WorkPlan**: All operations and goals, ready for execution
 - **Environment**: Variable/function bindings, supports closures
@@ -28,19 +28,28 @@ The `Reducer` module is the core logic engine of VoxLogicA-2. It transforms pars
 - Extensible for new operators, commands, or expression types
 - Efficient via memoization and deduplication
 
+## Operation Arguments Structure (Updated)
+
+As of ISSUE_DAG_DICT_ARGS implementation:
+
+- **Arguments Type**: Changed from `List[OperationId]` to `Dict[str, OperationId]`
+- **Key Format**: String representations of argument positions ("0", "1", "2", etc.)
+- **Backwards Compatibility**: Parser and language remain unchanged; only reducer and downstream DAG representation affected
+- **Benefits**: Improved extensibility, clarity, and future-proofing for named arguments
+
 ## Summary Table
 
-| Concept     | Description                                                    |
-| ----------- | -------------------------------------------------------------- |
-| Operator    | Atomic element (identifier, number, bool, string)              |
-| Operation   | Operator + arguments (by operation ID)                         |
-| Goal        | High-level action (Save, Print)                                |
-| WorkPlan    | All operations and goals, ready for execution                  |
-| Environment | Variable/function bindings, supports closures                  |
-| Memoization | Ensures unique operations, avoids recomputation                |
-| Import      | Supports modular ImgQL files, prevents duplicate imports       |
-| Output      | Can generate executable program or DOT graph for visualization |
+| Concept     | Description                                                           |
+| ----------- | --------------------------------------------------------------------- |
+| Operator    | Atomic element (identifier, number, bool, string)                     |
+| Operation   | Operator + arguments (dict with string numeric keys to operation IDs) |
+| Goal        | High-level action (Save, Print)                                       |
+| WorkPlan    | All operations and goals, ready for execution                         |
+| Environment | Variable/function bindings, supports closures                         |
+| Memoization | Ensures unique operations, avoids recomputation                       |
+| Import      | Supports modular ImgQL files, prevents duplicate imports              |
+| Output      | Can generate executable program or DOT graph for visualization        |
 
 ## Conclusion
 
-`Reducer.fs` is the core of VoxLogicA-2's logic engine, responsible for transforming parsed ImgQL code into an optimized, executable plan. It is well-structured for modularity, extensibility, and efficiency, and is a strong foundation for further development or language migration.
+`Reducer.fs` is the core of VoxLogicA-2's logic engine, responsible for transforming parsed ImgQL code into an optimized, executable plan. It is well-structured for modularity, extensibility, and efficiency, and is a strong foundation for further development or language migration. The recent update to dict-based arguments improves the DAG structure for future extensibility while maintaining parser compatibility.

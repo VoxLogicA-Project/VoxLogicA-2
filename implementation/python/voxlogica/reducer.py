@@ -87,7 +87,7 @@ class StringOp(Operator):
 
 
 # Define types
-Arguments = List[OperationId]
+Arguments = Dict[str, OperationId]
 
 
 @dataclass(frozen=True)
@@ -101,7 +101,7 @@ class Operation:
         if not self.arguments:
             return f"{self.operator}"
 
-        args_str = ",".join(str(arg) for arg in self.arguments)
+        args_str = ",".join(str(arg) for arg in self.arguments.values())
         return f"{self.operator}({args_str})"
 
 
@@ -152,7 +152,7 @@ class WorkPlan:
         for i, op in enumerate(self.operations):
             if isinstance(op.operator, IdentifierOp):
                 args: List[Expression] = [
-                    ECall("unknown", f"op{arg}", []) for arg in op.arguments
+                    ECall("unknown", f"op{arg}", []) for arg in op.arguments.values()
                 ]
                 expr = ECall("unknown", op.operator.value, args)
             elif isinstance(op.operator, NumberOp):
@@ -194,7 +194,7 @@ class WorkPlan:
         for i, operation in enumerate(self.operations):
             dot_str += f'  {i} [label="[{i}] {operation}"]\n'
 
-            for argument in operation.arguments:
+            for argument in operation.arguments.values():
                 dot_str += f"  {argument} -> {i};\n"
 
         dot_str += "}\n"
@@ -202,6 +202,7 @@ class WorkPlan:
 
     def to_json(self) -> dict:
         """Return a JSON-serializable dict representing the work plan."""
+
         def op_to_dict(op):
             # Output numbers as JSON numbers, not strings
             if isinstance(op.operator, NumberOp):
@@ -212,13 +213,23 @@ class WorkPlan:
                 "operator": operator_value,
                 "arguments": op.arguments,
             }
+
         def goal_to_dict(goal):
             if isinstance(goal, GoalSave):
-                return {"type": "save", "name": goal.name, "operation_id": goal.operation_id}
+                return {
+                    "type": "save",
+                    "name": goal.name,
+                    "operation_id": goal.operation_id,
+                }
             elif isinstance(goal, GoalPrint):
-                return {"type": "print", "name": goal.name, "operation_id": goal.operation_id}
+                return {
+                    "type": "print",
+                    "name": goal.name,
+                    "operation_id": goal.operation_id,
+                }
             else:
                 return {"type": "unknown"}
+
         return {
             "operations": [op_to_dict(op) for op in self.operations],
             "goals": [goal_to_dict(goal) for goal in self.goals],
@@ -238,7 +249,7 @@ class Operations:
 
     def __init__(self):
         self.by_term: Dict[
-            Tuple[Operator, Tuple[OperationId, ...]], InternalOperation
+            Tuple[Operator, Tuple[Tuple[str, OperationId], ...]], InternalOperation
         ] = {}
         self.by_id: Dict[OperationId, InternalOperation] = {}
         self.memoize = True
@@ -246,7 +257,7 @@ class Operations:
     def find_or_create(self, operator: Operator, arguments: Arguments) -> OperationId:
         """Find an existing operation or create a new one"""
         if self.memoize:
-            key = (operator, tuple(arguments))
+            key = (operator, tuple(sorted(arguments.items())))
             if key in self.by_term:
                 return self.by_term[key].id
 
@@ -257,7 +268,7 @@ class Operations:
     ) -> Optional[OperationId]:
         """Try to find an existing operation"""
         if self.memoize:
-            key = (operator, tuple(arguments))
+            key = (operator, tuple(sorted(arguments.items())))
             if key in self.by_term:
                 return self.by_term[key].id
 
@@ -270,7 +281,7 @@ class Operations:
         new_operation = InternalOperation(new_id, Operation(operator, arguments))
 
         if self.memoize:
-            self.by_term[(operator, tuple(arguments))] = new_operation
+            self.by_term[(operator, tuple(sorted(arguments.items())))] = new_operation
 
         self.by_id[new_id] = new_operation
         return new_id
@@ -280,7 +291,7 @@ class Operations:
     ) -> None:
         """Create an alias for an existing operation"""
         operation = self.by_id[operation_id]
-        self.by_term[(operator, tuple(arguments))] = operation
+        self.by_term[(operator, tuple(sorted(arguments.items())))] = operation
 
 
 class DVal:
@@ -356,13 +367,13 @@ def reduce_expression(
     current_stack: Stack = [] if stack is None else stack
 
     if isinstance(expr, ENumber):
-        return operations.find_or_create(NumberOp(expr.value), [])
+        return operations.find_or_create(NumberOp(expr.value), {})
 
     elif isinstance(expr, EBool):
-        return operations.find_or_create(BoolOp(expr.value), [])
+        return operations.find_or_create(BoolOp(expr.value), {})
 
     elif isinstance(expr, EString):
-        return operations.find_or_create(StringOp(expr.value), [])
+        return operations.find_or_create(StringOp(expr.value), {})
 
     elif isinstance(expr, ECall):
         # If it's a variable reference without arguments
@@ -370,7 +381,7 @@ def reduce_expression(
             val = env.try_find(expr.identifier)
             if val is None:
                 # If not found, create a new operation with the identifier
-                return operations.find_or_create(IdentifierOp(expr.identifier), [])
+                return operations.find_or_create(IdentifierOp(expr.identifier), {})
 
             if isinstance(val, OperationVal):
                 return val.operation_id
@@ -387,11 +398,14 @@ def reduce_expression(
             for arg in expr.arguments
         ]
 
+        # Convert list to dict with string numeric keys
+        args_dict = {str(i): op_id for i, op_id in enumerate(args_ops)}
+
         # Check if it's a variable with arguments
         val = env.try_find(expr.identifier)
         if val is None:
             # If not found, create a new operation with the identifier and arguments
-            return operations.find_or_create(IdentifierOp(expr.identifier), args_ops)
+            return operations.find_or_create(IdentifierOp(expr.identifier), args_dict)
 
         if isinstance(val, OperationVal):
             call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
@@ -401,15 +415,17 @@ def reduce_expression(
             )
 
         if isinstance(val, FunctionVal):
-            if len(val.parameters) != len(args_ops):
+            if len(val.parameters) != len(args_dict):
                 call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
                 fail_with_stacktrace(
-                    f"Function '{expr.identifier}' expects {len(val.parameters)} arguments but was called with {len(args_ops)}",
+                    f"Function '{expr.identifier}' expects {len(val.parameters)} arguments but was called with {len(args_dict)}",
                     call_stack,
                 )
 
             # Create operation values from argument operation IDs
-            arg_vals: Sequence[DVal] = [OperationVal(op_id) for op_id in args_ops]
+            arg_vals: Sequence[DVal] = [
+                OperationVal(op_id) for op_id in args_dict.values()
+            ]
 
             # Create a new environment with function arguments bound
             func_env = val.environment.bind_list(val.parameters, arg_vals)
