@@ -69,7 +69,7 @@ def get_version() -> str:
     try:
         return importlib.metadata.version("voxlogica")
     except importlib.metadata.PackageNotFoundError:
-        return "0.1.0-dev"
+        return "2.0.0-alpha.0.1"
 
 
 # ----------------- Helper Functions -----------------
