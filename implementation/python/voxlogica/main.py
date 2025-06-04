@@ -117,9 +117,9 @@ def handle_cli_feature(feature_name: str, **kwargs: Any) -> None:
                         logger.info("  Goals: %d", data.get("goals", 0))
                         if "task_graph" in data:
                             logger.info("  Task graph:\n%s", data["task_graph"])
-                        if "saved_files" in data:
-                            for saved_file in data["saved_files"]:
-                                logger.info("  %s", saved_file)
+                        if "messages" in data:
+                            for message in data["messages"]:
+                                logger.info("  %s", message)
                     elif feature_name == "version":
                         logger.info(
                             "VoxLogicA version: %s", data.get("version", "unknown")

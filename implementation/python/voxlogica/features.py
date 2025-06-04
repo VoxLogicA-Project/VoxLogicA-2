@@ -124,26 +124,47 @@ def handle_run(
             "syntax": str(syntax),
         }
 
-        # Handle save options
-        saved_files = []
+        # Handle save options - CLI saves to files, API returns content with same keys
+        saved_files = {}
+        messages = []
 
         if save_task_graph or save_task_graph_as_dot:
+            dot_content = program_obj.to_dot()
             output_file = save_task_graph or save_task_graph_as_dot
-            if output_file:
-                with open(output_file, "w") as f:
-                    f.write(program_obj.to_dot())
-                saved_files.append(f"Task graph saved as DOT to {output_file}")
+
+            if filename:  # CLI mode - save to file
+                if output_file:
+                    with open(output_file, "w") as f:
+                        f.write(dot_content)
+                    messages.append(f"Task graph saved as DOT to {output_file}")
+            else:  # API mode - include in response with specified key
+                if output_file:
+                    saved_files[output_file] = dot_content
 
         if save_task_graph_as_json:
-            with open(save_task_graph_as_json, "w") as f:
-                json.dump(program_obj.to_json(), f, indent=2)
-            saved_files.append(f"Task graph saved as JSON to {save_task_graph_as_json}")
+            json_content = program_obj.to_json()
+
+            if filename:  # CLI mode - save to file
+                with open(save_task_graph_as_json, "w") as f:
+                    json.dump(json_content, f, indent=2)
+                messages.append(
+                    f"Task graph saved as JSON to {save_task_graph_as_json}"
+                )
+            else:  # API mode - include in response with specified key
+                saved_files[save_task_graph_as_json] = json_content
 
         if save_syntax:
-            with open(save_syntax, "w") as f:
-                f.write(str(syntax))
-            saved_files.append(f"Syntax saved to {save_syntax}")
+            syntax_content = str(syntax)
 
+            if filename:  # CLI mode - save to file
+                with open(save_syntax, "w") as f:
+                    f.write(syntax_content)
+                messages.append(f"Syntax saved to {save_syntax}")
+            else:  # API mode - include in response with specified key
+                saved_files[save_syntax] = syntax_content
+
+        if messages:
+            result["messages"] = messages
         if saved_files:
             result["saved_files"] = saved_files
 

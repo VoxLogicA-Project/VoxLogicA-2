@@ -68,13 +68,10 @@ print "sum" c"""
         assert result.success is True
         assert "saved_files" in result.data
         assert len(result.data["saved_files"]) == 1
-        assert json_file in result.data["saved_files"][0]
+        assert json_file in result.data["saved_files"]
 
-        # Verify the JSON file was created and has valid content
-        assert os.path.exists(json_file)
-        with open(json_file, "r") as f:
-            json_data = json.load(f)
-
+        # In API mode, JSON content is returned in saved_files
+        json_data = result.data["saved_files"][json_file]
         assert "operations" in json_data
         assert "goals" in json_data
         assert len(json_data["operations"]) == 3
@@ -103,13 +100,10 @@ print "sum" c"""
         assert result.success is True
         assert "saved_files" in result.data
         assert len(result.data["saved_files"]) == 1
-        assert dot_file in result.data["saved_files"][0]
+        assert dot_file in result.data["saved_files"]
 
-        # Verify the DOT file was created and has valid content
-        assert os.path.exists(dot_file)
-        with open(dot_file, "r") as f:
-            dot_content = f.read()
-
+        # In API mode, DOT content is returned in saved_files
+        dot_content = result.data["saved_files"][dot_file]
         # DOT files should contain digraph declaration
         assert "digraph" in dot_content or "graph" in dot_content
 
@@ -143,14 +137,16 @@ print "sum" c"""
         assert "saved_files" in result.data
         assert len(result.data["saved_files"]) == 2
 
-        # Both files should be mentioned in saved_files
-        saved_files_str = " ".join(result.data["saved_files"])
-        assert json_file in saved_files_str
-        assert dot_file in saved_files_str
+        # Both files should be in saved_files dictionary
+        assert json_file in result.data["saved_files"]
+        assert dot_file in result.data["saved_files"]
 
-        # Both files should exist
-        assert os.path.exists(json_file)
-        assert os.path.exists(dot_file)
+        # Verify content types
+        json_data = result.data["saved_files"][json_file]
+        dot_content = result.data["saved_files"][dot_file]
+        assert isinstance(json_data, dict)
+        assert isinstance(dot_content, str)
+        assert "digraph" in dot_content
 
     finally:
         for file in [json_file, dot_file]:

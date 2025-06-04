@@ -37,7 +37,13 @@ voxlogica run path/to/program.imgql
 voxlogica run path/to/program.imgql --debug
 
 # Save the task graph as a DOT file
-voxlogica run path/to/program.imgql --save-task-graph-as-dot graph.dot
+voxlogica run path/to/program.imgql --save-task-graph graph.dot
+
+# Save the task graph as JSON
+voxlogica run path/to/program.imgql --save-task-graph-as-json graph.json
+
+# Save multiple formats
+voxlogica run path/to/program.imgql --save-task-graph graph.dot --save-task-graph-as-json graph.json
 ```
 
 ### API Server
@@ -56,9 +62,8 @@ Once the server is running, you can access the API documentation at `http://loca
 
 ### API Endpoints
 
-- `GET /version`: Get the VoxLogicA version
-- `POST /program`: Parse and reduce a VoxLogicA program
-- `POST /save-task-graph`: Parse, reduce, and save the task graph of a VoxLogicA program
+- `GET /api/v1/version`: Get the VoxLogicA version
+- `POST /api/v1/run`: Run a VoxLogicA program with various output options
 
 ## Development
 

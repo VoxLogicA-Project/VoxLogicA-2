@@ -80,12 +80,14 @@ Run a VoxLogicA program with various output options. This endpoint mirrors the C
 **All fields except `program` are optional:**
 
 - `program` (required): The VoxLogicA program source code
-- `filename` (optional): Filename for error reporting
-- `save_task_graph` (optional): Save task graph as DOT format to this file
+- `filename` (optional): Filename for error reporting (CLI mode only)
+- `save_task_graph` (optional): Filename for DOT export (API returns content under this key, CLI saves to this file)
 - `save_task_graph_as_dot` (optional): Alternative name for DOT export
-- `save_task_graph_as_json` (optional): Save task graph as JSON to this file
-- `save_syntax` (optional): Save parsed syntax tree to this file
+- `save_task_graph_as_json` (optional): Filename for JSON export (API returns content under this key, CLI saves to this file)
+- `save_syntax` (optional): Filename for syntax export (API returns content under this key, CLI saves to this file)
 - `debug` (optional): Enable debug mode
+
+**Important:** The API returns export content in the response `saved_files` field using the provided filenames as keys, while the CLI saves to the actual files.
 
 **Basic Example**:
 
@@ -106,6 +108,7 @@ curl -X POST http://localhost:8000/api/v1/run \
     "program": "let a = 1\nlet b = 2\nlet c = a + b\nprint \"sum\" c",
     "save_task_graph_as_json": "result.json",
     "save_task_graph": "result.dot",
+    "save_syntax": "result.txt",
     "debug": true
   }'
 ```
@@ -118,14 +121,22 @@ curl -X POST http://localhost:8000/api/v1/run \
   "goals": 1,
   "task_graph": "goals: print(sum,2)\noperations:\n0 -> 1.0\n1 -> 2.0\n2 -> +(0,1)",
   "syntax": "let a=1.0\nlet b=2.0\nlet c=+(a,b)\nprint \"sum\" c",
-  "saved_files": [
-    "Task graph saved as DOT to result.dot",
-    "Task graph saved as JSON to result.json"
-  ]
+  "saved_files": {
+    "result.dot": "digraph {\n  0 [label=\"[0] 1.0\"]\n  1 [label=\"[1] 2.0\"]\n  2 [label=\"[2] +(0,1)\"]\n  0 -> 2;\n  1 -> 2;\n}\n",
+    "result.json": {
+      "operations": [
+        { "operator": 1.0, "arguments": [] },
+        { "operator": 2.0, "arguments": [] },
+        { "operator": "+", "arguments": [0, 1] }
+      ],
+      "goals": [{ "type": "print", "name": "sum", "operation_id": 2 }]
+    },
+    "result.txt": "let a=1.0\nlet b=2.0\nlet c=+(a,b)\nprint \"sum\" c"
+  }
 }
 ```
 
-**Generated JSON File Content** (when using `save_task_graph_as_json`):
+**Export Content Format** (available in `saved_files` field):
 
 ```json
 {
@@ -226,11 +237,11 @@ print(f"Version: {response.json()['version']}")
 
 # Analyze a program
 program_data = {
-    "program": "let x = 5\nlet y = x * 2\nprint y",
+    "program": "let x = 5\nlet y = x * 2\nprint \"result\" y",
     "filename": "example.imgql"
 }
 
-response = requests.post(f"{base_url}/program", json=program_data)
+response = requests.post(f"{base_url}/run", json=program_data)
 if response.status_code == 200:
     result = response.json()
     print(f"Operations: {result['operations']}")
@@ -239,15 +250,26 @@ if response.status_code == 200:
 else:
     print(f"Error: {response.json()['detail']}")
 
-# Save task graph as JSON
-save_data = {
-    "program": "let a = 1\nlet b = 2\nprint a + b",
-    "filename": "output.json"
+# Analyze with exports
+export_data = {
+    "program": "let a = 1\nlet b = 2\nprint \"sum\" (a + b)",
+    "save_task_graph_as_json": "output.json",
+    "save_task_graph": "output.dot"
 }
 
-response = requests.post(f"{base_url}/save-task-graph-json", json=save_data)
+response = requests.post(f"{base_url}/run", json=export_data)
 if response.status_code == 200:
-    print(response.json()['message'])
+    result = response.json()
+    print(f"Operations: {result['operations']}")
+
+    # Access saved files
+    if 'saved_files' in result:
+        for filename, content in result['saved_files'].items():
+            print(f"File {filename}:")
+            if isinstance(content, dict):
+                print(json.dumps(content, indent=2))
+            else:
+                print(content)
 else:
     print(f"Error: {response.json()['detail']}")
 ```
@@ -267,11 +289,11 @@ async function getVersion() {
 // Analyze a program
 async function analyzeProgram() {
   const programData = {
-    program: "let x = 5\nlet y = x * 2\nprint y",
+    program: 'let x = 5\nlet y = x * 2\nprint "result" y',
     filename: "example.imgql",
   };
 
-  const response = await fetch(`${baseUrl}/program`, {
+  const response = await fetch(`${baseUrl}/run`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
