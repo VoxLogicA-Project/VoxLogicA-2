@@ -16,120 +16,168 @@
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
           Oxygen, Ubuntu, Cantarell, sans-serif;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        min-height: 100vh;
-        padding: 20px;
-      }
-
-      .container {
-        max-width: 1200px;
-        margin: 0 auto;
-        background: white;
-        border-radius: 16px;
-        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+        height: 100vh;
         overflow: hidden;
       }
 
-      .header {
+      .app-container {
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background: white;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+      }
+
+      /* Small Android-style appbar */
+      .appbar {
         background: linear-gradient(90deg, #4f46e5 0%, #7c3aed 100%);
         color: white;
-        padding: 2rem;
-        text-align: center;
+        padding: 0.75rem 1rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
       }
 
-      .header h1 {
-        font-size: 2.5rem;
-        font-weight: 700;
-        margin-bottom: 0.5rem;
-      }
-
-      .header p {
-        font-size: 1.1rem;
-        opacity: 0.9;
-      }
-
-      .content {
-        padding: 2rem;
-      }
-
-      .upload-section {
-        margin-bottom: 2rem;
-      }
-
-      .upload-area {
-        border: 3px dashed #d1d5db;
-        border-radius: 12px;
-        padding: 3rem;
-        text-align: center;
-        background: #f9fafb;
-        transition: all 0.3s ease;
-        cursor: pointer;
-      }
-
-      .upload-area.dragover {
-        border-color: #4f46e5;
-        background: #f0f9ff;
-        transform: scale(1.02);
-      }
-
-      .upload-icon {
-        width: 64px;
-        height: 64px;
-        margin: 0 auto 1rem;
-        color: #6b7280;
-      }
-
-      .upload-text {
+      .appbar h1 {
         font-size: 1.25rem;
         font-weight: 600;
-        color: #374151;
-        margin-bottom: 0.5rem;
       }
 
-      .upload-subtext {
-        color: #6b7280;
-        font-size: 1rem;
+      .appbar-controls {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
       }
 
-      .file-input {
-        display: none;
+      /* Main content area */
+      .main-content {
+        flex: 1;
+        display: flex;
+        overflow: hidden;
       }
 
-      .program-input {
-        margin-top: 1rem;
+      /* Left panel - code editor */
+      .editor-panel {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        border-right: 2px solid #e5e7eb;
+        background: #fafafa;
       }
 
-      .program-input textarea {
+      /* Controls bar */
+      .controls-bar {
+        padding: 0.75rem;
+        background: #f9fafb;
+        border-bottom: 1px solid #e5e7eb;
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      /* Text area with drag and drop */
+      .editor-container {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .editor-textarea {
         width: 100%;
-        height: 150px;
+        height: 100%;
         padding: 1rem;
-        border: 2px solid #d1d5db;
-        border-radius: 8px;
+        border: none;
         font-family: "Monaco", "Consolas", monospace;
         font-size: 14px;
-        resize: vertical;
-        transition: border-color 0.3s ease;
-      }
-
-      .program-input textarea:focus {
+        resize: none;
         outline: none;
-        border-color: #4f46e5;
+        background: white;
+        transition: background-color 0.3s ease;
       }
 
-      .controls {
+      .editor-textarea.dragover {
+        background: #f0f9ff;
+        border: 2px dashed #4f46e5;
+      }
+
+      /* Right panel - graph visualization */
+      .graph-panel {
+        flex: 1;
         display: flex;
-        gap: 1rem;
-        margin: 1rem 0;
-        flex-wrap: wrap;
+        flex-direction: column;
+        position: relative;
       }
 
+      .graph-container {
+        flex: 1;
+        background: #f9fafb;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .graph-svg {
+        width: 100%;
+        height: 100%;
+      }
+
+      /* Resizer handle */
+      .resizer {
+        width: 8px;
+        background: #d1d5db;
+        cursor: col-resize;
+        flex-shrink: 0;
+        transition: all 0.2s ease;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .resizer::before {
+        content: "";
+        position: absolute;
+        width: 3px;
+        height: 40px;
+        background: #9ca3af;
+        border-radius: 2px;
+        transition: all 0.2s ease;
+      }
+
+      .resizer:hover {
+        background: #4f46e5;
+        width: 10px;
+      }
+
+      .resizer:hover::before {
+        background: white;
+        height: 60px;
+      }
+
+      .resizer.dragging {
+        background: #4f46e5;
+        width: 10px;
+      }
+
+      .resizer.dragging::before {
+        background: white;
+        height: 60px;
+      }
+
+      /* Small buttons */
       .btn {
-        padding: 0.75rem 1.5rem;
+        padding: 0.5rem 1rem;
         border: none;
-        border-radius: 8px;
-        font-weight: 600;
+        border-radius: 6px;
+        font-weight: 500;
         cursor: pointer;
-        transition: all 0.3s ease;
-        font-size: 1rem;
+        transition: all 0.2s ease;
+        font-size: 0.875rem;
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
       }
 
       .btn-primary {
@@ -139,7 +187,6 @@
 
       .btn-primary:hover {
         background: #4338ca;
-        transform: translateY(-2px);
       }
 
       .btn-secondary {
@@ -154,27 +201,29 @@
       .btn:disabled {
         opacity: 0.5;
         cursor: not-allowed;
-        transform: none;
       }
 
-      .visualization-section {
-        margin-top: 2rem;
+      /* File input styling */
+      .file-input {
+        display: none;
       }
 
-      .graph-container {
-        background: #f9fafb;
-        border-radius: 12px;
-        border: 2px solid #e5e7eb;
-        min-height: 500px;
-        position: relative;
-        overflow: hidden;
+      /* Message area */
+      .message-area {
+        padding: 0 0.75rem;
       }
 
-      .graph-svg {
-        width: 100%;
-        height: 500px;
+      .error-message {
+        background: #fef2f2;
+        border: 1px solid #fecaca;
+        color: #dc2626;
+        padding: 0.75rem;
+        border-radius: 6px;
+        margin: 0.5rem 0;
+        font-size: 0.875rem;
       }
 
+      /* Node styles */
       .node {
         cursor: pointer;
         transition: all 0.3s ease;
@@ -222,43 +271,27 @@
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         max-width: 300px;
         display: none;
+        z-index: 10;
       }
 
       .info-panel h3 {
         margin-bottom: 0.5rem;
         color: #374151;
+        font-size: 1rem;
       }
 
       .info-panel p {
         color: #6b7280;
-        font-size: 0.9rem;
+        font-size: 0.875rem;
         margin-bottom: 0.25rem;
-      }
-
-      .error-message {
-        background: #fef2f2;
-        border: 1px solid #fecaca;
-        color: #dc2626;
-        padding: 1rem;
-        border-radius: 8px;
-        margin: 1rem 0;
-      }
-
-      .success-message {
-        background: #f0fdf4;
-        border: 1px solid #bbf7d0;
-        color: #16a34a;
-        padding: 1rem;
-        border-radius: 8px;
-        margin: 1rem 0;
       }
 
       .loading {
         display: inline-block;
-        width: 20px;
-        height: 20px;
-        border: 3px solid #f3f3f3;
-        border-top: 3px solid #4f46e5;
+        width: 16px;
+        height: 16px;
+        border: 2px solid #f3f3f3;
+        border-top: 2px solid #4f46e5;
         border-radius: 50%;
         animation: spin 1s linear infinite;
       }
@@ -267,132 +300,84 @@
         0% {
           transform: rotate(0deg);
         }
-
         100% {
           transform: rotate(360deg);
         }
       }
 
-      .stats {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-        gap: 1rem;
-        margin: 1rem 0;
-      }
-
-      .stat-card {
-        background: #f8fafc;
-        padding: 1rem;
-        border-radius: 8px;
-        text-align: center;
-        border: 1px solid #e2e8f0;
-      }
-
-      .stat-number {
-        font-size: 2rem;
-        font-weight: 700;
-        color: #4f46e5;
-      }
-
-      .stat-label {
-        color: #64748b;
-        font-size: 0.9rem;
-        margin-top: 0.25rem;
-      }
-
+      /* Mobile responsive */
       @media (max-width: 768px) {
-        .container {
-          margin: 10px;
-          border-radius: 12px;
-        }
-
-        .header {
-          padding: 1.5rem;
-        }
-
-        .header h1 {
-          font-size: 2rem;
-        }
-
-        .content {
-          padding: 1rem;
-        }
-
-        .upload-area {
-          padding: 2rem 1rem;
-        }
-
-        .controls {
+        .main-content {
           flex-direction: column;
         }
 
-        .info-panel {
-          position: relative;
-          max-width: none;
-          margin-top: 1rem;
+        .editor-panel {
+          border-right: none;
+          border-bottom: 2px solid #e5e7eb;
+        }
+
+        .resizer {
+          display: none;
+        }
+
+        .appbar h1 {
+          font-size: 1.1rem;
+        }
+
+        .controls-bar {
+          flex-wrap: wrap;
+          gap: 0.375rem;
+        }
+
+        .btn {
+          font-size: 0.8rem;
+          padding: 0.375rem 0.75rem;
+        }
+      }
+
+      /* Very small screens */
+      @media (max-width: 480px) {
+        .appbar {
+          padding: 0.5rem;
+        }
+
+        .controls-bar {
+          padding: 0.5rem;
+        }
+
+        .btn {
+          font-size: 0.75rem;
+          padding: 0.25rem 0.5rem;
         }
       }
     </style>
   </head>
 
   <body>
-    <div class="container">
-      <div class="header">
-        <h1>VoxLogicA Task Graph Visualizer</h1>
-        <p>
-          Upload a VoxLogicA program or paste code to visualize the task graph
-          interactively
-        </p>
+    <div class="app-container">
+      <!-- Small Android-style appbar -->
+      <div class="appbar">
+        <h1>VoxLogicA Visualizer</h1>
+        <div class="appbar-controls">
+          <!-- Could add app-level controls here if needed -->
+        </div>
       </div>
 
-      <div class="content">
-        <div class="upload-section">
-          <div class="upload-area" id="uploadArea">
-            <svg
-              class="upload-icon"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
-              />
-            </svg>
-            <div class="upload-text">Drop your VoxLogicA file here</div>
-            <div class="upload-subtext">
-              or click to browse files (.imgql, .voxlogica)
-            </div>
-            <input
-              type="file"
-              class="file-input"
-              id="fileInput"
-              accept=".imgql,.voxlogica,.txt"
-            />
-          </div>
-
-          <div class="program-input">
-            <textarea
-              id="programInput"
-              placeholder='Or paste your VoxLogicA program here...
-Example:
-let a = 1
-let b = 2
-let c = a + b
-print "sum" c'
-            ></textarea>
-          </div>
-
-          <div class="controls">
+      <!-- Main content area -->
+      <div class="main-content">
+        <!-- Left panel - Code editor -->
+        <div class="editor-panel">
+          <div class="controls-bar">
             <button class="btn btn-primary" id="visualizeBtn">
-              <span id="visualizeBtnText">Visualize Graph</span>
+              <span id="visualizeBtnText">Visualize</span>
               <span
                 id="loadingSpinner"
                 class="loading"
                 style="display: none"
               ></span>
+            </button>
+            <button class="btn btn-secondary" id="loadFileBtn">
+              Load File
             </button>
             <button class="btn btn-secondary" id="clearBtn">Clear</button>
             <button class="btn btn-secondary" id="exportBtn" disabled>
@@ -401,23 +386,36 @@ print "sum" c'
             <button class="btn btn-secondary" id="exportJsonBtn" disabled>
               Export JSON
             </button>
+            <input
+              type="file"
+              class="file-input"
+              id="fileInput"
+              accept=".imgql,.voxlogica,.txt"
+            />
           </div>
 
-          <div id="messageArea"></div>
+          <div class="message-area" id="messageArea"></div>
+
+          <div class="editor-container">
+            <textarea
+              id="programInput"
+              class="editor-textarea"
+              placeholder='Paste your VoxLogicA program here or drag and drop a file...
+
+Example:
+let a = 1
+let b = 2
+let c = a + b
+print "sum" c'
+            ></textarea>
+          </div>
         </div>
 
-        <div class="stats" id="statsArea" style="display: none">
-          <div class="stat-card">
-            <div class="stat-number" id="operationsCount">0</div>
-            <div class="stat-label">Operations</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-number" id="goalsCount">0</div>
-            <div class="stat-label">Goals</div>
-          </div>
-        </div>
+        <!-- Resizer -->
+        <div class="resizer" id="resizer"></div>
 
-        <div class="visualization-section">
+        <!-- Right panel - Graph visualization -->
+        <div class="graph-panel">
           <div class="graph-container">
             <svg class="graph-svg" id="graphSvg">
               <defs>
@@ -447,8 +445,11 @@ print "sum" c'
       function edgeEndpoint(source, target, r = 25) {
         const dx = target.x - source.x;
         const dy = target.y - source.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const ratio = r / dist;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance === 0) return { x: target.x, y: target.y };
+
+        const ratio = r / distance;
         return {
           x: target.x - dx * ratio,
           y: target.y - dy * ratio,
@@ -458,105 +459,173 @@ print "sum" c'
       class VoxLogicaVisualizer {
         constructor() {
           this.initializeElements();
-          this.setupEventListeners();
+          this.attachEventListeners();
+          this.initializeResizer();
           this.currentData = null;
         }
 
         initializeElements() {
-          this.uploadArea = document.getElementById("uploadArea");
-          this.fileInput = document.getElementById("fileInput");
           this.programInput = document.getElementById("programInput");
           this.visualizeBtn = document.getElementById("visualizeBtn");
+          this.visualizeBtnText = document.getElementById("visualizeBtnText");
+          this.loadingSpinner = document.getElementById("loadingSpinner");
+          this.loadFileBtn = document.getElementById("loadFileBtn");
           this.clearBtn = document.getElementById("clearBtn");
           this.exportBtn = document.getElementById("exportBtn");
           this.exportJsonBtn = document.getElementById("exportJsonBtn");
+          this.fileInput = document.getElementById("fileInput");
           this.messageArea = document.getElementById("messageArea");
-          this.statsArea = document.getElementById("statsArea");
           this.graphSvg = document.getElementById("graphSvg");
           this.infoPanel = document.getElementById("infoPanel");
-          this.visualizeBtnText = document.getElementById("visualizeBtnText");
-          this.loadingSpinner = document.getElementById("loadingSpinner");
         }
 
-        setupEventListeners() {
-          // File upload
-          this.uploadArea.addEventListener("click", () =>
+        attachEventListeners() {
+          // Button event listeners
+          this.visualizeBtn.addEventListener("click", () =>
+            this.visualizeGraph()
+          );
+          this.loadFileBtn.addEventListener("click", () =>
             this.fileInput.click()
           );
-          this.uploadArea.addEventListener(
-            "dragover",
-            this.handleDragOver.bind(this)
-          );
-          this.uploadArea.addEventListener(
-            "dragleave",
-            this.handleDragLeave.bind(this)
-          );
-          this.uploadArea.addEventListener("drop", this.handleDrop.bind(this));
-          this.fileInput.addEventListener(
-            "change",
-            this.handleFileSelect.bind(this)
-          );
-
-          // Buttons
-          this.visualizeBtn.addEventListener(
-            "click",
-            this.visualizeGraph.bind(this)
-          );
-          this.clearBtn.addEventListener("click", this.clearAll.bind(this));
+          this.clearBtn.addEventListener("click", () => this.clearAll());
           this.exportBtn.addEventListener("click", () =>
             this.exportData("dot")
           );
           this.exportJsonBtn.addEventListener("click", () =>
             this.exportData("json")
           );
+
+          // File input
+          this.fileInput.addEventListener("change", (e) =>
+            this.handleFileSelect(e)
+          );
+
+          // Drag and drop on textarea
+          this.programInput.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            this.programInput.classList.add("dragover");
+          });
+
+          this.programInput.addEventListener("dragleave", (e) => {
+            e.preventDefault();
+            this.programInput.classList.remove("dragover");
+          });
+
+          this.programInput.addEventListener("drop", (e) => {
+            e.preventDefault();
+            this.programInput.classList.remove("dragover");
+            this.handleFileDrop(e);
+          });
         }
 
-        handleDragOver(e) {
-          e.preventDefault();
-          this.uploadArea.classList.add("dragover");
+        initializeResizer() {
+          const resizer = document.getElementById("resizer");
+          const editorPanel = document.querySelector(".editor-panel");
+          const graphPanel = document.querySelector(".graph-panel");
+          let isResizing = false;
+
+          resizer.addEventListener("mousedown", (e) => {
+            isResizing = true;
+            resizer.classList.add("dragging");
+            document.body.style.cursor = "col-resize";
+            document.body.style.userSelect = "none"; // Prevent text selection
+            e.preventDefault();
+          });
+
+          document.addEventListener("mousemove", (e) => {
+            if (!isResizing) return;
+
+            const container = document.querySelector(".main-content");
+            const containerRect = container.getBoundingClientRect();
+            const newLeftWidth = e.clientX - containerRect.left;
+            const totalWidth = containerRect.width;
+            const minWidth = 300; // Increased minimum width
+            const maxLeftWidth = totalWidth - minWidth;
+
+            if (newLeftWidth >= minWidth && newLeftWidth <= maxLeftWidth) {
+              const leftPercent = (newLeftWidth / totalWidth) * 100;
+              const rightPercent = 100 - leftPercent;
+
+              editorPanel.style.flex = `0 0 ${leftPercent}%`;
+              graphPanel.style.flex = `0 0 ${rightPercent}%`;
+            }
+          });
+
+          document.addEventListener("mouseup", () => {
+            if (isResizing) {
+              isResizing = false;
+              resizer.classList.remove("dragging");
+              document.body.style.cursor = "";
+              document.body.style.userSelect = ""; // Restore text selection
+            }
+          });
+
+          // Add touch support for mobile (if needed)
+          resizer.addEventListener("touchstart", (e) => {
+            isResizing = true;
+            resizer.classList.add("dragging");
+            e.preventDefault();
+          });
+
+          document.addEventListener("touchmove", (e) => {
+            if (!isResizing) return;
+
+            const touch = e.touches[0];
+            const container = document.querySelector(".main-content");
+            const containerRect = container.getBoundingClientRect();
+            const newLeftWidth = touch.clientX - containerRect.left;
+            const totalWidth = containerRect.width;
+            const minWidth = 300;
+            const maxLeftWidth = totalWidth - minWidth;
+
+            if (newLeftWidth >= minWidth && newLeftWidth <= maxLeftWidth) {
+              const leftPercent = (newLeftWidth / totalWidth) * 100;
+              const rightPercent = 100 - leftPercent;
+
+              editorPanel.style.flex = `0 0 ${leftPercent}%`;
+              graphPanel.style.flex = `0 0 ${rightPercent}%`;
+            }
+          });
+
+          document.addEventListener("touchend", () => {
+            if (isResizing) {
+              isResizing = false;
+              resizer.classList.remove("dragging");
+            }
+          });
         }
 
-        handleDragLeave(e) {
-          e.preventDefault();
-          this.uploadArea.classList.remove("dragover");
+        handleFileSelect(event) {
+          const file = event.target.files[0];
+          if (file) {
+            this.readFile(file);
+          }
         }
 
-        handleDrop(e) {
-          e.preventDefault();
-          this.uploadArea.classList.remove("dragover");
-          const files = e.dataTransfer.files;
+        handleFileDrop(event) {
+          const files = event.dataTransfer.files;
           if (files.length > 0) {
-            this.processFile(files[0]);
+            this.readFile(files[0]);
           }
         }
 
-        handleFileSelect(e) {
-          const files = e.target.files;
-          if (files.length > 0) {
-            this.processFile(files[0]);
-          }
-        }
-
-        async processFile(file) {
-          try {
-            const text = await file.text();
-            this.programInput.value = text;
-            this.showMessage(
-              `File "${file.name}" loaded successfully`,
-              "success"
-            );
-          } catch (error) {
-            this.showMessage(`Error reading file: ${error.message}`, "error");
-          }
+        readFile(file) {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            this.programInput.value = e.target.result;
+            this.clearMessages();
+          };
+          reader.onerror = () => {
+            this.showMessage("Error reading file", "error");
+          };
+          reader.readAsText(file);
         }
 
         async visualizeGraph() {
           const program = this.programInput.value.trim();
+
           if (!program) {
-            this.showMessage(
-              "Please enter a VoxLogicA program or upload a file",
-              "error"
-            );
+            this.showMessage("Please enter a VoxLogicA program", "error");
             return;
           }
 
@@ -576,30 +645,21 @@ print "sum" c'
               }),
             });
 
+            const data = await response.json();
+
             if (!response.ok) {
-              const error = await response.json();
-              throw new Error(error.detail || "Server error");
+              throw new Error(data.detail || "Server error");
             }
 
-            const data = await response.json();
             this.currentData = data;
-            this.updateStats(data);
             this.renderGraph(data);
             this.enableExportButtons();
-            this.showMessage("Graph visualized successfully!", "success");
           } catch (error) {
-            this.showMessage(`Error: ${error.message}`, "error");
-            console.error("Visualization error:", error);
+            console.error("Error:", error);
+            this.showMessage(error.message || "An error occurred", "error");
           } finally {
             this.setLoading(false);
           }
-        }
-
-        updateStats(data) {
-          document.getElementById("operationsCount").textContent =
-            data.operations || 0;
-          document.getElementById("goalsCount").textContent = data.goals || 0;
-          this.statsArea.style.display = "grid";
         }
 
         renderGraph(data) {
@@ -917,10 +977,6 @@ print "sum" c'
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            this.showMessage(
-              `${format.toUpperCase()} file exported successfully`,
-              "success"
-            );
           }
         }
 
@@ -928,7 +984,6 @@ print "sum" c'
           this.programInput.value = "";
           this.currentData = null;
           this.clearMessages();
-          this.statsArea.style.display = "none";
           this.infoPanel.style.display = "none";
           this.exportBtn.disabled = true;
           this.exportJsonBtn.disabled = true;
@@ -950,11 +1005,13 @@ print "sum" c'
 
         showMessage(message, type) {
           this.clearMessages();
-          const div = document.createElement("div");
-          div.className =
-            type === "error" ? "error-message" : "success-message";
-          div.textContent = message;
-          this.messageArea.appendChild(div);
+          if (type === "error") {
+            const div = document.createElement("div");
+            div.className = "error-message";
+            div.textContent = message;
+            this.messageArea.appendChild(div);
+          }
+          // Note: Removed success messages as requested
         }
 
         clearMessages() {
@@ -963,8 +1020,6 @@ print "sum" c'
       }
 
       // Initialize the visualizer when the page loads
-      // Also load a real example into the textarea for easier testing
-
       document.addEventListener("DOMContentLoaded", () => {
         const example = `let a = 1\nlet b = 2\nlet c = a + b\nprint \"sum\" c`;
         const textarea = document.getElementById("programInput");
