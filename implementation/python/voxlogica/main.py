@@ -2,6 +2,7 @@
 VoxLogicA Main module - Python implementation
 """
 
+import asyncio
 import logging
 import os
 import sys
@@ -10,12 +11,14 @@ from typing import Any, Dict, Optional, TypeVar, Generic
 
 import typer
 import uvicorn
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
 from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 from .features import FeatureRegistry, OperationResult
 from .error_msg import Logger, VLException
@@ -300,6 +303,40 @@ async def root():
 api_app.include_router(api_router)
 
 
+# ----------------- Live Reload WebSocket and File Watcher -----------------
+
+live_reload_clients = set()
+
+
+class ReloadEventHandler(FileSystemEventHandler):
+    def __init__(self, loop):
+        self.loop = loop
+
+    def on_any_event(self, event):
+        # Notify all connected clients
+        for ws in list(live_reload_clients):
+            self.loop.create_task(ws.send_text("reload"))
+
+
+@api_app.websocket("/livereload")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    live_reload_clients.add(websocket)
+    try:
+        while True:
+            await websocket.receive_text()  # Keep connection alive
+    except WebSocketDisconnect:
+        live_reload_clients.remove(websocket)
+
+
+def start_file_watcher(loop):
+    static_dir = Path(__file__).parent / "static"
+    event_handler = ReloadEventHandler(loop)
+    observer = Observer()
+    observer.schedule(event_handler, str(static_dir), recursive=True)
+    observer.start()
+
+
 # ----------------- CLI Commands -----------------
 
 
@@ -318,6 +355,8 @@ def serve(
     Logger.info(f"Interactive graph visualizer at http://{host}:{port}/")
     Logger.info(f"API documentation available at http://{host}:{port}/docs")
 
+    loop = asyncio.get_event_loop()
+    start_file_watcher(loop)
     uvicorn.run(api_app, host=host, port=port)
 
 
