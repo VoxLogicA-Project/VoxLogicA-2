@@ -66,6 +66,19 @@ VoxLogicA aims to provide a high-level, declarative language for manipulating an
 
 ---
 
+## Execution Strategy: Sequential and Parallel Modes
+
+In the initial implementation, each workflow (i.e., a single DAG representing a computation or analysis pipeline) will be executed sequentially. This means that all operations within a workflow are executed in dependency order on a single process/thread, without parallelization at the level of individual operations.
+
+For scalability, parallelization will be introduced at the dataset level: when multiple independent workflows (e.g., the same pipeline applied to different images or dataset elements) need to be executed, Dask or a similar parallel scheduler will be used to distribute these workflows across available compute resources. This approach avoids the complexity of fine-grained parallelism within a single workflow and leverages parallelism across the dataset dimension, which is often the most effective and scalable strategy for large-scale data processing.
+
+- **Sequential execution:** Each workflow/DAG is executed in order, respecting dependencies, on a single worker.
+- **Parallel execution (future):** Multiple workflows (e.g., per-dataset element) are scheduled in parallel using Dask, with each workflow running independently.
+
+This strategy enables efficient use of resources and simplifies memory management, while still allowing for future extensions to more fine-grained parallelism if needed. This sequential-per-workflow approach also greatly simplifies memory management: since only one workflow is active at a time per worker, buffer allocation and reuse can be managed without concern for concurrent accesses or complex synchronization. This allows for straightforward implementation of static buffer reuse and preallocation strategies, as described in the memory planning documentation, and defers the need for more advanced memory management until true parallel execution within a workflow is required.
+
+---
+
 ## Open Questions
 
 - How to represent and serialize datasets and workplans for distributed or remote execution?
