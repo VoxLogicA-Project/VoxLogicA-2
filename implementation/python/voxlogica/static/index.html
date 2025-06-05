@@ -261,31 +261,6 @@
         stroke-width: 3px;
       }
 
-      .info-panel {
-        position: absolute;
-        top: 10px;
-        right: 10px;
-        background: white;
-        padding: 1rem;
-        border-radius: 8px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        max-width: 300px;
-        display: none;
-        z-index: 10;
-      }
-
-      .info-panel h3 {
-        margin-bottom: 0.5rem;
-        color: #374151;
-        font-size: 1rem;
-      }
-
-      .info-panel p {
-        color: #6b7280;
-        font-size: 0.875rem;
-        margin-bottom: 0.25rem;
-      }
-
       .loading {
         display: inline-block;
         width: 16px;
@@ -460,10 +435,6 @@ print "sum" c'
                 </marker>
               </defs>
             </svg>
-            <div class="info-panel" id="infoPanel">
-              <h3 id="nodeTitle">Node Information</h3>
-              <p id="nodeInfo"></p>
-            </div>
           </div>
         </div>
       </div>
@@ -505,7 +476,6 @@ print "sum" c'
           this.fileInput = document.getElementById("fileInput");
           this.messageArea = document.getElementById("messageArea");
           this.graphSvg = document.getElementById("graphSvg");
-          this.infoPanel = document.getElementById("infoPanel");
         }
 
         attachEventListeners() {
@@ -814,7 +784,144 @@ print "sum" c'
             .attr("points", "0 0, 10 3.5, 0 7")
             .attr("fill", "#6b7280");
 
-          // Create force simulation with gentler forces
+          // Create main group for pan/zoom
+          const g = svg.append("g").attr("class", "main-group");
+
+          // Add zoom behavior (disable double-click zoom)
+          const zoom = d3
+            .zoom()
+            .scaleExtent([0.1, 4]) // Allow zoom from 10% to 400%
+            .filter((event) => {
+              // Disable double-click zoom, keep wheel and drag
+              return !event.button && event.type !== "dblclick";
+            })
+            .on("zoom", (event) => {
+              g.attr("transform", event.transform);
+            });
+
+          svg.call(zoom);
+
+          // Add zoom controls with reset button
+          const controls = svg.append("g").attr("class", "zoom-controls");
+
+          // Background for controls
+          controls
+            .append("rect")
+            .attr("x", 5)
+            .attr("y", 5)
+            .attr("width", 120)
+            .attr("height", 80)
+            .attr("fill", "rgba(255, 255, 255, 0.9)")
+            .attr("stroke", "#e5e7eb")
+            .attr("rx", 4);
+
+          // Zoom in button
+          controls
+            .append("rect")
+            .attr("x", 10)
+            .attr("y", 10)
+            .attr("width", 25)
+            .attr("height", 25)
+            .attr("fill", "#f3f4f6")
+            .attr("stroke", "#d1d5db")
+            .attr("rx", 2)
+            .style("cursor", "pointer")
+            .on("click", () => {
+              svg.transition().call(zoom.scaleBy, 1.5);
+            });
+
+          controls
+            .append("text")
+            .attr("x", 22.5)
+            .attr("y", 27)
+            .attr("text-anchor", "middle")
+            .attr("font-size", "16px")
+            .attr("font-weight", "bold")
+            .attr("fill", "#374151")
+            .style("pointer-events", "none")
+            .text("+");
+
+          // Zoom out button
+          controls
+            .append("rect")
+            .attr("x", 40)
+            .attr("y", 10)
+            .attr("width", 25)
+            .attr("height", 25)
+            .attr("fill", "#f3f4f6")
+            .attr("stroke", "#d1d5db")
+            .attr("rx", 2)
+            .style("cursor", "pointer")
+            .on("click", () => {
+              svg.transition().call(zoom.scaleBy, 0.67);
+            });
+
+          controls
+            .append("text")
+            .attr("x", 52.5)
+            .attr("y", 27)
+            .attr("text-anchor", "middle")
+            .attr("font-size", "16px")
+            .attr("font-weight", "bold")
+            .attr("fill", "#374151")
+            .style("pointer-events", "none")
+            .text("−");
+
+          // Reset zoom button
+          controls
+            .append("rect")
+            .attr("x", 70)
+            .attr("y", 10)
+            .attr("width", 50)
+            .attr("height", 25)
+            .attr("fill", "#f3f4f6")
+            .attr("stroke", "#d1d5db")
+            .attr("rx", 2)
+            .style("cursor", "pointer")
+            .on("click", () => {
+              svg.transition().call(zoom.transform, d3.zoomIdentity);
+            });
+
+          controls
+            .append("text")
+            .attr("x", 95)
+            .attr("y", 27)
+            .attr("text-anchor", "middle")
+            .attr("font-size", "11px")
+            .attr("font-weight", "500")
+            .attr("fill", "#374151")
+            .style("pointer-events", "none")
+            .text("Reset");
+
+          // Instructions
+          controls
+            .append("text")
+            .attr("x", 10)
+            .attr("y", 50)
+            .attr("font-size", "10px")
+            .attr("fill", "#6b7280")
+            .style("pointer-events", "none")
+            .text("Scroll: zoom");
+
+          controls
+            .append("text")
+            .attr("x", 10)
+            .attr("y", 65)
+            .attr("font-size", "10px")
+            .attr("fill", "#6b7280")
+            .style("pointer-events", "none")
+            .text("Drag: pan");
+
+          controls
+            .append("text")
+            .attr("x", 10)
+            .attr("y", 80)
+            .attr("font-size", "10px")
+            .attr("fill", "#6b7280")
+            .style("pointer-events", "none")
+            .text("Double-click: pin node");
+
+          // Create force simulation with predictable, stable forces
           const simulation = d3
             .forceSimulation(nodes)
             .force(
@@ -822,19 +929,19 @@ print "sum" c'
               d3
                 .forceLink(links)
                 .id((d) => d.id)
-                .distance(80)
-                .strength(0.8)
+                .distance(100)
+                .strength(0.5)
             )
-            .force("charge", d3.forceManyBody().strength(-150))
+            .force("charge", d3.forceManyBody().strength(-200))
             .force(
               "center",
-              d3.forceCenter(width / 2, height / 2).strength(0.1)
+              d3.forceCenter(width / 2, height / 2).strength(0.05)
             )
-            .force("collision", d3.forceCollide().radius(35).strength(0.8))
-            .velocityDecay(0.6); // Add damping to prevent nodes from flying away
+            .force("collision", d3.forceCollide().radius(40).strength(0.9))
+            .velocityDecay(0.8); // Higher damping for more stable behavior
 
-          // Create links group
-          const link = svg
+          // Create links group (inside zoomable group)
+          const link = g
             .append("g")
             .attr("stroke", "#999")
             .attr("stroke-opacity", 0.6)
@@ -844,8 +951,8 @@ print "sum" c'
             .attr("stroke-width", 2)
             .attr("marker-end", "url(#arrowhead)");
 
-          // Create nodes group
-          const nodeGroup = svg
+          // Create nodes group (inside zoomable group)
+          const nodeGroup = g
             .append("g")
             .attr("stroke", "#fff")
             .attr("stroke-width", 1.5);
@@ -854,9 +961,9 @@ print "sum" c'
             .selectAll("g")
             .data(nodes)
             .join("g")
-            .on("click", (event, d) => this.showNodeInfo(d))
             .on("dblclick", (event, d) => {
-              // Double-click to toggle permanent pinning
+              event.stopPropagation(); // Prevent zoom on node double-click
+              // Double-click to toggle permanent pinning only
               d.permanentlyPinned = !d.permanentlyPinned;
               if (!d.permanentlyPinned) {
                 d.fx = null;
@@ -888,8 +995,8 @@ print "sum" c'
             .attr("stroke", "#4f46e5")
             .attr("stroke-width", 2);
 
-          // Add labels
-          const labels = svg
+          // Add labels (inside zoomable group)
+          const labels = g
             .append("g")
             .selectAll("text")
             .data(nodes)
@@ -902,26 +1009,9 @@ print "sum" c'
             .attr("fill", "white")
             .attr("pointer-events", "none");
 
-          // Drag functions
+          // Drag functions - simplified and predictable
           function dragstarted(event, d) {
-            if (!event.active) simulation.alphaTarget(0.2).restart(); // Gentler restart
-
-            // Gradually unpin other nodes to prevent sudden force reactions
-            nodes.forEach((node) => {
-              if (
-                node !== d &&
-                !node.permanentlyPinned &&
-                (node.fx !== null || node.fy !== null)
-              ) {
-                // Preserve current velocity to smooth the transition
-                node.vx = node.vx || 0;
-                node.vy = node.vy || 0;
-                node.fx = null;
-                node.fy = null;
-              }
-            });
-
-            // Pin the dragged node
+            if (!event.active) simulation.alphaTarget(0.1).restart();
             d.fx = d.x;
             d.fy = d.y;
           }
@@ -933,10 +1023,10 @@ print "sum" c'
 
           function dragended(event, d) {
             if (!event.active) simulation.alphaTarget(0);
-            // Keep the dragged node fixed at the dropped position
-            // Only release if it's not permanently pinned
+            // Only release if not permanently pinned
             if (!d.permanentlyPinned) {
-              // Node stays pinned where dropped unless permanently pinned
+              d.fx = null;
+              d.fy = null;
             }
           }
 
@@ -991,36 +1081,6 @@ print "sum" c'
           return String(operator);
         }
 
-        showNodeInfo(node) {
-          const title = document.getElementById("nodeTitle");
-          const info = document.getElementById("nodeInfo");
-
-          title.textContent = `Node ${node.id}`;
-
-          // Handle arguments as dictionary
-          let argsText = "None";
-          if (node.arguments && typeof node.arguments === "object") {
-            if (Array.isArray(node.arguments)) {
-              argsText = node.arguments.join(", ");
-            } else {
-              // Dictionary format: show keys and values
-              const argEntries = Object.entries(node.arguments);
-              if (argEntries.length > 0) {
-                argsText = argEntries
-                  .map(([key, value]) => `${key}: ${value}`)
-                  .join(", ");
-              }
-            }
-          }
-
-          info.innerHTML = `
-                    <strong>Operator:</strong> ${node.operator}<br>
-                    <strong>Arguments:</strong> ${argsText}
-                `;
-
-          this.infoPanel.style.display = "block";
-        }
-
         enableExportButtons() {
           this.exportBtn.disabled = false;
           this.exportJsonBtn.disabled = false;
@@ -1065,7 +1125,6 @@ print "sum" c'
           this.programInput.value = "";
           this.currentData = null;
           this.clearMessages();
-          this.infoPanel.style.display = "none";
           this.exportBtn.disabled = true;
           this.exportJsonBtn.disabled = true;
           d3.select(this.graphSvg).selectAll("*").remove();
