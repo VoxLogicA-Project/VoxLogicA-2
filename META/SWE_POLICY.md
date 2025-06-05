@@ -113,10 +113,15 @@ When an issue is marked complete, the following steps are MANDATORY:
 - On subsequent runs, the system MUST automatically retry closing any issues marked as "pending remote close" until successful, and update the record accordingly.
 - This ensures local and remote issue states remain synchronized, and failures to close remote issues are visible and actionable.
 
-## Test Case Documentation and Traceability Policy
+## Test Case Organization and Documentation Policy
+
+- **Test Directory Structure:**
+  - Each test case MUST reside in its own subdirectory under `tests/`, named after the test (e.g., `tests/basic_test/`, `tests/test_sha256_json_export/`).
+  - The main test script for each test must be named after the directory (e.g., `basic_test.py` in `basic_test/`, or `test_sha256_json_export.py` in `test_sha256_json_export/`).
+  - This ensures clarity, modularity, and ease of navigation for all tests.
 
 - **Test Description Requirement:**
-  - Each test case (script or module) MUST define a `description` variable at the top, containing a one-paragraph summary of the test's purpose.
+  - Each test script MUST define a `description` variable at the top, containing a one-paragraph summary of the test's purpose.
   - The test runner or script MUST print this description at the start of the test run.
   - This ensures that anyone running the tests can immediately understand the intent and scope of each test.
 

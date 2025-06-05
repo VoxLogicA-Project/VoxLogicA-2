@@ -18,6 +18,8 @@ from tests.voxlogica_testinfra import run_imgql_test
 # Set working directory to project root
 os.chdir(repo_root)
 
+description = """Combinatorial explosion test: generates a chain of function declarations in .imgql where each function calls its predecessors multiple times, causing a combinatorial increase in operations. Used to stress-test the reducer's handling of complex dependencies."""
+
 
 def generate_function_explosion_imgql(depth: int, out_path: str):
     lines = [
@@ -47,6 +49,7 @@ def generate_function_explosion_imgql(depth: int, out_path: str):
 
 
 def main():
+    print(f"\nTest Description: {description}\n")
     parser = argparse.ArgumentParser(
         description="Generate and test function_explosion.imgql"
     )

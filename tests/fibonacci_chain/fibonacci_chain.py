@@ -18,6 +18,8 @@ from tests.voxlogica_testinfra import run_imgql_test
 # Set working directory to project root
 os.chdir(repo_root)
 
+description = """Stress test for the reducer: generates a Fibonacci-like chain of variable declarations in .imgql, increasing depth to test performance and correctness of deep dependency chains."""
+
 
 def generate_fibonacci_chain_imgql(depth: int, out_path: str):
     lines = ["// Fibonacci-like chain: f0 = 1, f1 = 1, fn = fn-1 + fn-2"]
@@ -31,6 +33,7 @@ def generate_fibonacci_chain_imgql(depth: int, out_path: str):
 
 
 def main():
+    print(f"\nTest Description: {description}\n")
     parser = argparse.ArgumentParser(
         description="Generate and test fibonacci_chain.imgql"
     )

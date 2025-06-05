@@ -18,6 +18,8 @@ from tests.voxlogica_testinfra import run_imgql_test
 # Set working directory to project root
 os.chdir(repo_root)
 
+description = """Basic test for VoxLogicA: generates a simple .imgql file with a function, variable, and print statement, then runs it through the test infrastructure to verify basic parsing, execution, and output."""
+
 
 def generate_test_imgql(out_path: str):
     lines = [
@@ -34,6 +36,7 @@ def generate_test_imgql(out_path: str):
 
 
 def main():
+    print(f"\nTest Description: {description}\n")
     parser = argparse.ArgumentParser(description="Generate and test test.imgql")
     parser.add_argument(
         "--keep", action="store_true", help="Keep the generated .imgql file"
