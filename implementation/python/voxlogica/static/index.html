@@ -621,6 +621,11 @@ print "sum" c'
             label: this.formatOperatorLabel(op.operator),
             operator: op.operator,
             arguments: op.arguments,
+            isGoal:
+              op.operator === "goal" ||
+              (typeof op.operator === "string" &&
+                op.operator.toLowerCase().includes("goal")),
+            permanentlyPinned: false,
           }));
 
           // Create links from arguments
@@ -694,22 +699,28 @@ print "sum" c'
             .attr("marker-end", "url(#arrowhead)");
 
           // Create nodes group
-          const node = svg
+          const nodeGroup = svg
             .append("g")
             .attr("stroke", "#fff")
-            .attr("stroke-width", 1.5)
-            .selectAll("circle")
+            .attr("stroke-width", 1.5);
+
+          const node = nodeGroup
+            .selectAll("g")
             .data(nodes)
-            .join("circle")
-            .attr("r", 25)
-            .attr("fill", "#4f46e5")
+            .join("g")
             .on("click", (event, d) => this.showNodeInfo(d))
             .on("dblclick", (event, d) => {
-              // Double-click to release a fixed node
-              d.fx = null;
-              d.fy = null;
-              if (!event.active) simulation.alphaTarget(0.3).restart();
-              setTimeout(() => simulation.alphaTarget(0), 150);
+              // Double-click to toggle permanent pinning
+              d.permanentlyPinned = !d.permanentlyPinned;
+              if (!d.permanentlyPinned) {
+                d.fx = null;
+                d.fy = null;
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                setTimeout(() => simulation.alphaTarget(0), 150);
+              } else {
+                d.fx = d.x;
+                d.fy = d.y;
+              }
             })
             .call(
               d3
@@ -718,6 +729,18 @@ print "sum" c'
                 .on("drag", dragged)
                 .on("end", dragended)
             );
+
+          // Add main circles
+          node.append("circle").attr("r", 25).attr("fill", "#4f46e5");
+
+          // Add outer circles for goal nodes
+          node
+            .filter((d) => d.isGoal)
+            .append("circle")
+            .attr("r", 30)
+            .attr("fill", "none")
+            .attr("stroke", "#4f46e5")
+            .attr("stroke-width", 2);
 
           // Add labels
           const labels = svg
@@ -736,6 +759,16 @@ print "sum" c'
           // Drag functions
           function dragstarted(event, d) {
             if (!event.active) simulation.alphaTarget(0.3).restart();
+
+            // Unpin all other nodes that aren't permanently pinned
+            nodes.forEach((node) => {
+              if (node !== d && !node.permanentlyPinned) {
+                node.fx = null;
+                node.fy = null;
+              }
+            });
+
+            // Pin the dragged node
             d.fx = d.x;
             d.fy = d.y;
           }
@@ -747,9 +780,11 @@ print "sum" c'
 
           function dragended(event, d) {
             if (!event.active) simulation.alphaTarget(0);
-            // Keep the node fixed at the dropped position
-            // d.fx = null;
-            // d.fy = null;
+            // Keep the dragged node fixed at the dropped position
+            // Only release if it's not permanently pinned
+            if (!d.permanentlyPinned) {
+              // Node stays pinned where dropped unless permanently pinned
+            }
           }
 
           // Helper function to position arrow at circle edge
@@ -788,7 +823,7 @@ print "sum" c'
                 return arc.targetY;
               });
 
-            node.attr("cx", (d) => d.x).attr("cy", (d) => d.y);
+            node.attr("transform", (d) => `translate(${d.x},${d.y})`);
 
             labels.attr("x", (d) => d.x).attr("y", (d) => d.y);
           });

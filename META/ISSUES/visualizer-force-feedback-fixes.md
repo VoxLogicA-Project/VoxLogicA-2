@@ -94,3 +94,25 @@ After studying the D3.js documentation and official examples, implemented the st
 - Arrows properly connect circle edges with visible arrowheads
 - Visual feedback is immediate and responsive
 - Double-click provides easy way to "unlock" positioned nodes
+
+## Enhanced Pinning Behavior (2024-12-19)
+
+**Smart Auto-Unpinning:**
+
+- When dragging a node, all other non-permanently-pinned nodes are automatically released
+- Only the dragged node remains pinned at drop location
+- Prevents cluttered layouts with too many fixed nodes
+
+**Permanent Pinning System:**
+
+- Single drag: Node stays pinned where dropped (temporary pin)
+- Double-click: Toggles permanent pinning state
+- Permanently pinned nodes stay fixed even when other nodes are dragged
+- Visual indication through consistent positioning
+
+**Goal Node Visualization:**
+
+- Goal nodes automatically detected (operator contains "goal")
+- Double-circle design: inner filled circle + outer stroke circle
+- Clear visual distinction from regular operation nodes
+- Maintains all drag and pinning behaviors
