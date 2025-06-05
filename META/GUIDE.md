@@ -19,12 +19,21 @@ The `META` directory contains all records, policies, and documentation related t
 - **ISSUE_DAG_DICT_ARGS**: COMPLETED (commit 843ae10) - Successfully refactored DAG operations to use dict arguments with string numeric keys instead of lists. This improves extensibility while maintaining parser compatibility. All tests pass and documentation updated.
 
 - **ISSUE_SHA256_IDS**: COMPLETED - Successfully implemented SHA256-based content-addressed IDs for all DAG nodes in the reducer module. Key achievements:
+
   - Replaced integer-based operation IDs with SHA256 hashes of canonical JSON representations
   - Used RFC 8785-compliant JSON canonicalization via `canonicaljson` library
   - Enhanced memoization with cross-session result reuse capabilities
   - Created comprehensive test suite demonstrating deterministic IDs, uniqueness, and memoization benefits
   - Maintained full backward compatibility with existing functionality
   - Foundation laid for persistent result caching and distributed execution
+
+- **sha256-node-id-export-missing**: COMPLETED - Fixed missing SHA256 node ID field in JSON exports that was breaking D3.js visualization. Key achievements:
+  - Updated `WorkPlan.to_json()` method to include explicit `id` field for each operation containing its SHA256 hash
+  - Enabled proper content-addressed references in JSON exports for downstream tools
+  - Fixed D3.js visualization link rendering by allowing argument references to be matched to node objects
+  - Created comprehensive test suite with 5 tests covering ID inclusion, argument matching, and consistency
+  - Maintained full backward compatibility - all existing tests continue to pass
+  - Export format now consistent between DOT and JSON outputs
 
 ### Architecture Updates
 

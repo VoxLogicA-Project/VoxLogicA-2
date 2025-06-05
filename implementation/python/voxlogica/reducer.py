@@ -239,13 +239,14 @@ class WorkPlan:
     def to_json(self) -> dict:
         """Return a JSON-serializable dict representing the work plan."""
 
-        def op_to_dict(op):
+        def op_to_dict(op_id, op):
             # Output numbers as JSON numbers, not strings
             if isinstance(op.operator, NumberOp):
                 operator_value = op.operator.value
             else:
                 operator_value = str(op.operator)
             return {
+                "id": op_id,  # Add the SHA256 ID field
                 "operator": operator_value,
                 "arguments": op.arguments,
             }
@@ -266,8 +267,11 @@ class WorkPlan:
             else:
                 return {"type": "unknown"}
 
+        # Use _get_operations_with_ids() to get both operation and ID
+        operations_with_ids = self._get_operations_with_ids()
+
         return {
-            "operations": [op_to_dict(op) for op in self.operations],
+            "operations": [op_to_dict(op_id, op) for op_id, op in operations_with_ids],
             "goals": [goal_to_dict(goal) for goal in self.goals],
         }
 

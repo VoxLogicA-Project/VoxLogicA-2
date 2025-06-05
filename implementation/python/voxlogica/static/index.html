@@ -416,6 +416,18 @@ print "sum" c'></textarea>
   </div>
 
   <script>
+    // Helper to compute edge endpoint on node border
+    function edgeEndpoint(source, target, r = 25) {
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const ratio = r / dist;
+      return {
+        x: target.x - dx * ratio,
+        y: target.y - dy * ratio,
+      };
+    }
+
     class VoxLogicaVisualizer {
       constructor() {
         this.initializeElements();
@@ -643,18 +655,23 @@ print "sum" c'></textarea>
           .attr("points", "0 0, 10 3.5, 0 7")
           .attr("fill", "#6b7280");
 
-        const simulation = d3
-          .forceSimulation(nodes)
-          .force(
-            "link",
-            d3
-              .forceLink(links)
-              .id((d) => d.id)
-              .distance(100)
-          )
-          .force("charge", d3.forceManyBody().strength(-300))
-          .force("center", d3.forceCenter(width / 2, height / 2))
-          .force("collision", d3.forceCollide().radius(30));
+        let simulation = null;
+        // Set this to true to enable force-directed layout, false to disable (static layout)
+        const FORCE_LAYOUT_ENABLED = false;
+        if (FORCE_LAYOUT_ENABLED) {
+          simulation = d3
+            .forceSimulation(nodes)
+            .force(
+              "link",
+              d3
+                .forceLink(links)
+                .id((d) => d.id)
+                .distance(100)
+            )
+            .force("charge", d3.forceManyBody().strength(-300))
+            .force("center", d3.forceCenter(width / 2, height / 2))
+            .force("collision", d3.forceCollide().radius(30));
+        }
 
         // Create links
         const link = svg
@@ -709,15 +726,59 @@ print "sum" c'></textarea>
           .style("font-size", "12px");
 
         // Update positions on tick
-        simulation.on("tick", () => {
-          link
-            .attr("x1", (d) => nodes[d.source].x)
-            .attr("y1", (d) => nodes[d.source].y)
-            .attr("x2", (d) => nodes[d.target].x)
-            .attr("y2", (d) => nodes[d.target].y);
+        if (FORCE_LAYOUT_ENABLED && simulation) {
+          simulation.on("tick", () => {
+            link
+              .attr("x1", d => {
+                const pt = edgeEndpoint(d.target, d.source, 25);
+                return pt.x;
+              })
+              .attr("y1", d => {
+                const pt = edgeEndpoint(d.target, d.source, 25);
+                return pt.y;
+              })
+              .attr("x2", d => {
+                const pt = edgeEndpoint(d.source, d.target, 25);
+                return pt.x;
+              })
+              .attr("y2", d => {
+                const pt = edgeEndpoint(d.source, d.target, 25);
+                return pt.y;
+              });
 
-          node.attr("transform", (d) => `translate(${d.x},${d.y})`);
-        });
+            node.attr("transform", d => `translate(${d.x},${d.y})`);
+          });
+          // Animate initial layout and dragging for smoothness
+          simulation.alpha(1).restart();
+        } else {
+          // Static layout: arrange nodes in a circle
+          const centerX = width / 2;
+          const centerY = height / 2;
+          const radius = Math.min(width, height) / 3;
+          nodes.forEach((d, i) => {
+            const angle = (2 * Math.PI * i) / nodes.length;
+            d.x = centerX + radius * Math.cos(angle);
+            d.y = centerY + radius * Math.sin(angle);
+          });
+          link
+            .attr("x1", d => {
+              const pt = edgeEndpoint(d.target, d.source, 25);
+              return pt.x;
+            })
+            .attr("y1", d => {
+              const pt = edgeEndpoint(d.target, d.source, 25);
+              return pt.y;
+            })
+            .attr("x2", d => {
+              const pt = edgeEndpoint(d.source, d.target, 25);
+              return pt.x;
+            })
+            .attr("y2", d => {
+              const pt = edgeEndpoint(d.source, d.target, 25);
+              return pt.y;
+            });
+          node.attr("transform", d => `translate(${d.x},${d.y})`);
+        }
       }
 
       formatOperatorLabel(operator) {
