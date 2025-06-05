@@ -213,10 +213,10 @@ class WorkPlan:
         }
 
         for op_id, operation in self._get_operations_with_ids():
-            index = id_to_index[op_id]
-            # Use truncated hash for display
-            short_id = op_id[:8] if len(op_id) > 8 else op_id
-            dot_str += f'  "{op_id}" [label="[{index}] {short_id}\\n{operation}"]\n'
+            # Only show the operator/function name (no index, no arguments, no hashes)
+            op_name = str(operation.operator)
+            op_label = f"{op_name}"
+            dot_str += f'  "{op_id}" [label="{op_label}"]\n'
 
             for argument in operation.arguments.values():
                 dot_str += f'  "{argument}" -> "{op_id}";\n'
