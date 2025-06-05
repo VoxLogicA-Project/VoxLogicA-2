@@ -615,20 +615,8 @@ print "sum" c'
             return;
           }
 
-          // DEBUG: Print the full operations array to inspect argument structure
-          console.log("D3 DEBUG: graphData.operations", graphData.operations);
-          graphData.operations.forEach((op, i) => {
-            console.log(`D3 DEBUG: operation[${i}]`, op);
-          });
-
-          // Build a mapping from operation IDs to node indices
-          const opIdToIndex = {};
-          graphData.operations.forEach((op, i) => {
-            opIdToIndex[op.id] = i;
-          });
-
           // Convert operations to nodes
-          const nodes = graphData.operations.map((op, i) => ({
+          const nodes = graphData.operations.map((op) => ({
             id: op.id,
             label: this.formatOperatorLabel(op.operator),
             operator: op.operator,
@@ -644,22 +632,20 @@ print "sum" c'
               !Array.isArray(op.arguments)
             ) {
               Object.values(op.arguments).forEach((argOpId) => {
-                if (opIdToIndex.hasOwnProperty(argOpId)) {
+                // Check if the referenced operation exists
+                if (
+                  graphData.operations.some((other) => other.id === argOpId)
+                ) {
                   links.push({
-                    source: argOpId, // use op id, not index
-                    target: op.id, // use op id, not index
+                    source: argOpId,
+                    target: op.id,
                   });
                 }
               });
             }
           });
 
-          // DEBUG: Print nodes and links to the console for inspection
-          console.log("D3 DEBUG: nodes", nodes);
-          console.log("D3 DEBUG: links", links);
-          // Check the browser console to verify the structure and contents of nodes and links.
-
-          // Set up D3 force simulation
+          // Set up dimensions
           const width = this.graphSvg.clientWidth || 800;
           const height = this.graphSvg.clientHeight || 500;
 
@@ -668,7 +654,7 @@ print "sum" c'
             .attr("width", width)
             .attr("height", height);
 
-          // Re-add arrow marker
+          // Add arrow marker
           svg
             .append("defs")
             .append("marker")
@@ -682,130 +668,94 @@ print "sum" c'
             .attr("points", "0 0, 10 3.5, 0 7")
             .attr("fill", "#6b7280");
 
-          let simulation = null;
-          // Set this to true to enable force-directed layout, false to disable (static layout)
-          const FORCE_LAYOUT_ENABLED = true;
-          if (FORCE_LAYOUT_ENABLED) {
-            simulation = d3
-              .forceSimulation(nodes)
-              .force(
-                "link",
-                d3
-                  .forceLink(links)
-                  .id((d) => d.id)
-                  .distance(100)
-              )
-              .force("charge", d3.forceManyBody().strength(-300))
-              .force("center", d3.forceCenter(width / 2, height / 2))
-              .force("collision", d3.forceCollide().radius(30));
-          }
+          // Create force simulation
+          const simulation = d3
+            .forceSimulation(nodes)
+            .force(
+              "link",
+              d3
+                .forceLink(links)
+                .id((d) => d.id)
+                .distance(100)
+            )
+            .force("charge", d3.forceManyBody().strength(-300))
+            .force("center", d3.forceCenter(width / 2, height / 2))
+            .force("collision", d3.forceCollide().radius(30));
 
-          // Create links
+          // Create links group
           const link = svg
             .append("g")
+            .attr("stroke", "#999")
+            .attr("stroke-opacity", 0.6)
             .selectAll("line")
             .data(links)
-            .enter()
-            .append("line")
-            .attr("class", "link")
-            // TEMP: Make links red and thicker for debug visibility
-            .attr("stroke", "red")
-            .attr("stroke-width", 4)
+            .join("line")
+            .attr("stroke-width", 2)
             .attr("marker-end", "url(#arrowhead)");
 
-          // Create nodes
+          // Create nodes group
           const node = svg
             .append("g")
-            .selectAll("g")
+            .attr("stroke", "#fff")
+            .attr("stroke-width", 1.5)
+            .selectAll("circle")
             .data(nodes)
-            .enter()
-            .append("g")
-            .attr("class", "node")
+            .join("circle")
+            .attr("r", 25)
+            .attr("fill", "#4f46e5")
+            .on("click", (event, d) => this.showNodeInfo(d))
             .call(
               d3
                 .drag()
-                .on("start", (event, d) => {
-                  if (!event.active) simulation.alphaTarget(0.3).restart();
-                  d.fx = d.x;
-                  d.fy = d.y;
-                })
-                .on("drag", (event, d) => {
-                  d.fx = event.x;
-                  d.fy = event.y;
-                })
-                .on("end", (event, d) => {
-                  if (!event.active) simulation.alphaTarget(0);
-                  d.fx = null;
-                  d.fy = null;
-                })
+                .on("start", dragstarted)
+                .on("drag", dragged)
+                .on("end", dragended)
             );
 
-          // Add circles to nodes
-          node
-            .append("circle")
-            .attr("r", 25)
-            .on("click", (event, d) => this.showNodeInfo(d));
-
-          // Add labels to nodes
-          node
-            .append("text")
+          // Add labels
+          const labels = svg
+            .append("g")
+            .selectAll("text")
+            .data(nodes)
+            .join("text")
             .text((d) => d.label)
-            .style("font-size", "12px");
+            .attr("font-size", "12px")
+            .attr("font-weight", "bold")
+            .attr("text-anchor", "middle")
+            .attr("dominant-baseline", "central")
+            .attr("fill", "white")
+            .attr("pointer-events", "none");
 
-          // Update positions on tick
-          if (FORCE_LAYOUT_ENABLED && simulation) {
-            simulation.on("tick", () => {
-              link
-                .attr("x1", (d) => {
-                  const pt = edgeEndpoint(d.target, d.source, 25);
-                  return pt.x;
-                })
-                .attr("y1", (d) => {
-                  const pt = edgeEndpoint(d.target, d.source, 25);
-                  return pt.y;
-                })
-                .attr("x2", (d) => {
-                  const pt = edgeEndpoint(d.source, d.target, 25);
-                  return pt.x;
-                })
-                .attr("y2", (d) => {
-                  const pt = edgeEndpoint(d.source, d.target, 25);
-                  return pt.y;
-                });
-
-              node.attr("transform", (d) => `translate(${d.x},${d.y})`);
-            });
-            // Animate initial layout and dragging for smoothness
-            simulation.alpha(1).restart();
-          } else {
-            // Static layout: arrange nodes in a circle
-            const centerX = width / 2;
-            const centerY = height / 2;
-            const radius = Math.min(width, height) / 3;
-            nodes.forEach((d, i) => {
-              const angle = (2 * Math.PI * i) / nodes.length;
-              d.x = centerX + radius * Math.cos(angle);
-              d.y = centerY + radius * Math.sin(angle);
-            });
-            link
-              .attr("x1", (d) => {
-                const pt = edgeEndpoint(d.target, d.source, 25);
-                return pt.x;
-              })
-              .attr("y1", (d) => {
-                const pt = edgeEndpoint(d.target, d.source, 25);
-                return pt.y;
-              })
-              .attr("x2", (d) => {
-                const pt = edgeEndpoint(d.source, d.target, 25);
-                return pt.x;
-              })
-              .attr("y2", (d) => {
-                const pt = edgeEndpoint(d.source, d.target, 25);
-                return pt.y;
-              });
-            node.attr("transform", (d) => `translate(${d.x},${d.y})`);
+          // Drag functions
+          function dragstarted(event, d) {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
           }
+
+          function dragged(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+          }
+
+          function dragended(event, d) {
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+          }
+
+          // Update positions on each tick
+          simulation.on("tick", () => {
+            link
+              .attr("x1", (d) => d.source.x)
+              .attr("y1", (d) => d.source.y)
+              .attr("x2", (d) => d.target.x)
+              .attr("y2", (d) => d.target.y);
+
+            node.attr("cx", (d) => d.x).attr("cy", (d) => d.y);
+
+            labels.attr("x", (d) => d.x).attr("y", (d) => d.y);
+          });
         }
 
         formatOperatorLabel(operator) {
