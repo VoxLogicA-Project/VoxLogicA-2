@@ -673,7 +673,7 @@ print "sum" c'
             .attr("points", "0 0, 10 3.5, 0 7")
             .attr("fill", "#6b7280");
 
-          // Create force simulation
+          // Create force simulation with gentler forces
           const simulation = d3
             .forceSimulation(nodes)
             .force(
@@ -681,11 +681,16 @@ print "sum" c'
               d3
                 .forceLink(links)
                 .id((d) => d.id)
-                .distance(100)
+                .distance(80)
+                .strength(0.8)
             )
-            .force("charge", d3.forceManyBody().strength(-300))
-            .force("center", d3.forceCenter(width / 2, height / 2))
-            .force("collision", d3.forceCollide().radius(30));
+            .force("charge", d3.forceManyBody().strength(-150))
+            .force(
+              "center",
+              d3.forceCenter(width / 2, height / 2).strength(0.1)
+            )
+            .force("collision", d3.forceCollide().radius(35).strength(0.8))
+            .velocityDecay(0.6); // Add damping to prevent nodes from flying away
 
           // Create links group
           const link = svg
@@ -758,11 +763,18 @@ print "sum" c'
 
           // Drag functions
           function dragstarted(event, d) {
-            if (!event.active) simulation.alphaTarget(0.3).restart();
+            if (!event.active) simulation.alphaTarget(0.2).restart(); // Gentler restart
 
-            // Unpin all other nodes that aren't permanently pinned
+            // Gradually unpin other nodes to prevent sudden force reactions
             nodes.forEach((node) => {
-              if (node !== d && !node.permanentlyPinned) {
+              if (
+                node !== d &&
+                !node.permanentlyPinned &&
+                (node.fx !== null || node.fy !== null)
+              ) {
+                // Preserve current velocity to smooth the transition
+                node.vx = node.vx || 0;
+                node.vy = node.vy || 0;
                 node.fx = null;
                 node.fy = null;
               }
