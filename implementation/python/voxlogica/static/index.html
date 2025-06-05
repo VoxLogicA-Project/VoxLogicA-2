@@ -704,6 +704,13 @@ print "sum" c'
             .attr("r", 25)
             .attr("fill", "#4f46e5")
             .on("click", (event, d) => this.showNodeInfo(d))
+            .on("dblclick", (event, d) => {
+              // Double-click to release a fixed node
+              d.fx = null;
+              d.fy = null;
+              if (!event.active) simulation.alphaTarget(0.3).restart();
+              setTimeout(() => simulation.alphaTarget(0), 150);
+            })
             .call(
               d3
                 .drag()
@@ -740,17 +747,46 @@ print "sum" c'
 
           function dragended(event, d) {
             if (!event.active) simulation.alphaTarget(0);
-            d.fx = null;
-            d.fy = null;
+            // Keep the node fixed at the dropped position
+            // d.fx = null;
+            // d.fy = null;
+          }
+
+          // Helper function to position arrow at circle edge
+          function linkArc(d) {
+            const dx = d.target.x - d.source.x;
+            const dy = d.target.y - d.source.y;
+            const dr = Math.sqrt(dx * dx + dy * dy);
+            const r = 25; // circle radius
+
+            // Calculate points on circle edges
+            const sourceX = d.source.x + (dx * r) / dr;
+            const sourceY = d.source.y + (dy * r) / dr;
+            const targetX = d.target.x - (dx * r) / dr;
+            const targetY = d.target.y - (dy * r) / dr;
+
+            return { sourceX, sourceY, targetX, targetY };
           }
 
           // Update positions on each tick
           simulation.on("tick", () => {
             link
-              .attr("x1", (d) => d.source.x)
-              .attr("y1", (d) => d.source.y)
-              .attr("x2", (d) => d.target.x)
-              .attr("y2", (d) => d.target.y);
+              .attr("x1", (d) => {
+                const arc = linkArc(d);
+                return arc.sourceX;
+              })
+              .attr("y1", (d) => {
+                const arc = linkArc(d);
+                return arc.sourceY;
+              })
+              .attr("x2", (d) => {
+                const arc = linkArc(d);
+                return arc.targetX;
+              })
+              .attr("y2", (d) => {
+                const arc = linkArc(d);
+                return arc.targetY;
+              });
 
             node.attr("cx", (d) => d.x).attr("cy", (d) => d.y);
 
