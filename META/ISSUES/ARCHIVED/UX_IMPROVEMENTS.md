@@ -32,7 +32,11 @@
 - Mobile: Vertical stack (textarea top, graph bottom)
 - Desktop: Side-by-side (textarea left, graph right)
 - Uses 100vh height with no main container scrollbars
-  ✅ 7. **Resizable panes**: Added draggable resizer between panels with smooth interaction
+  ✅ 7. **Resizable panes**: Added adaptive resizer with smooth interaction
+  - Desktop: Vertical resizer (8px wide) for horizontal split adjustment
+  - Mobile: Horizontal resizer (8px tall) for vertical split adjustment
+  - Visual feedback: Expands and highlights on hover/drag with indicator bar
+  - Touch support: Full touch/mobile compatibility
 
 ### Technical Implementation:
 

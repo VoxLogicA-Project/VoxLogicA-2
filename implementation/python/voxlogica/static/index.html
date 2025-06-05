@@ -313,11 +313,40 @@
 
         .editor-panel {
           border-right: none;
-          border-bottom: 2px solid #e5e7eb;
+          border-bottom: none;
         }
 
         .resizer {
-          display: none;
+          width: 100%;
+          height: 8px;
+          cursor: row-resize;
+          border-top: 2px solid #e5e7eb;
+          border-bottom: 2px solid #e5e7eb;
+        }
+
+        .resizer::before {
+          width: 40px;
+          height: 3px;
+        }
+
+        .resizer:hover {
+          height: 10px;
+          width: 100%;
+        }
+
+        .resizer:hover::before {
+          width: 60px;
+          height: 3px;
+        }
+
+        .resizer.dragging {
+          height: 10px;
+          width: 100%;
+        }
+
+        .resizer.dragging::before {
+          width: 60px;
+          height: 3px;
         }
 
         .appbar h1 {
@@ -524,10 +553,19 @@ print "sum" c'
           const graphPanel = document.querySelector(".graph-panel");
           let isResizing = false;
 
+          // Helper function to check if we're in mobile/vertical mode
+          const isMobileMode = () => window.innerWidth <= 768;
+
           resizer.addEventListener("mousedown", (e) => {
             isResizing = true;
             resizer.classList.add("dragging");
-            document.body.style.cursor = "col-resize";
+
+            if (isMobileMode()) {
+              document.body.style.cursor = "row-resize";
+            } else {
+              document.body.style.cursor = "col-resize";
+            }
+
             document.body.style.userSelect = "none"; // Prevent text selection
             e.preventDefault();
           });
@@ -537,17 +575,35 @@ print "sum" c'
 
             const container = document.querySelector(".main-content");
             const containerRect = container.getBoundingClientRect();
-            const newLeftWidth = e.clientX - containerRect.left;
-            const totalWidth = containerRect.width;
-            const minWidth = 300; // Increased minimum width
-            const maxLeftWidth = totalWidth - minWidth;
 
-            if (newLeftWidth >= minWidth && newLeftWidth <= maxLeftWidth) {
-              const leftPercent = (newLeftWidth / totalWidth) * 100;
-              const rightPercent = 100 - leftPercent;
+            if (isMobileMode()) {
+              // Vertical resizing for mobile
+              const newTopHeight = e.clientY - containerRect.top;
+              const totalHeight = containerRect.height;
+              const minHeight = 200; // Minimum height for each panel
+              const maxTopHeight = totalHeight - minHeight;
 
-              editorPanel.style.flex = `0 0 ${leftPercent}%`;
-              graphPanel.style.flex = `0 0 ${rightPercent}%`;
+              if (newTopHeight >= minHeight && newTopHeight <= maxTopHeight) {
+                const topPercent = (newTopHeight / totalHeight) * 100;
+                const bottomPercent = 100 - topPercent;
+
+                editorPanel.style.flex = `0 0 ${topPercent}%`;
+                graphPanel.style.flex = `0 0 ${bottomPercent}%`;
+              }
+            } else {
+              // Horizontal resizing for desktop
+              const newLeftWidth = e.clientX - containerRect.left;
+              const totalWidth = containerRect.width;
+              const minWidth = 300; // Minimum width for each panel
+              const maxLeftWidth = totalWidth - minWidth;
+
+              if (newLeftWidth >= minWidth && newLeftWidth <= maxLeftWidth) {
+                const leftPercent = (newLeftWidth / totalWidth) * 100;
+                const rightPercent = 100 - leftPercent;
+
+                editorPanel.style.flex = `0 0 ${leftPercent}%`;
+                graphPanel.style.flex = `0 0 ${rightPercent}%`;
+              }
             }
           });
 
@@ -560,7 +616,7 @@ print "sum" c'
             }
           });
 
-          // Add touch support for mobile (if needed)
+          // Touch support for mobile
           resizer.addEventListener("touchstart", (e) => {
             isResizing = true;
             resizer.classList.add("dragging");
@@ -573,17 +629,35 @@ print "sum" c'
             const touch = e.touches[0];
             const container = document.querySelector(".main-content");
             const containerRect = container.getBoundingClientRect();
-            const newLeftWidth = touch.clientX - containerRect.left;
-            const totalWidth = containerRect.width;
-            const minWidth = 300;
-            const maxLeftWidth = totalWidth - minWidth;
 
-            if (newLeftWidth >= minWidth && newLeftWidth <= maxLeftWidth) {
-              const leftPercent = (newLeftWidth / totalWidth) * 100;
-              const rightPercent = 100 - leftPercent;
+            if (isMobileMode()) {
+              // Vertical resizing for mobile touch
+              const newTopHeight = touch.clientY - containerRect.top;
+              const totalHeight = containerRect.height;
+              const minHeight = 200;
+              const maxTopHeight = totalHeight - minHeight;
 
-              editorPanel.style.flex = `0 0 ${leftPercent}%`;
-              graphPanel.style.flex = `0 0 ${rightPercent}%`;
+              if (newTopHeight >= minHeight && newTopHeight <= maxTopHeight) {
+                const topPercent = (newTopHeight / totalHeight) * 100;
+                const bottomPercent = 100 - topPercent;
+
+                editorPanel.style.flex = `0 0 ${topPercent}%`;
+                graphPanel.style.flex = `0 0 ${bottomPercent}%`;
+              }
+            } else {
+              // Horizontal resizing for desktop touch
+              const newLeftWidth = touch.clientX - containerRect.left;
+              const totalWidth = containerRect.width;
+              const minWidth = 300;
+              const maxLeftWidth = totalWidth - minWidth;
+
+              if (newLeftWidth >= minWidth && newLeftWidth <= maxLeftWidth) {
+                const leftPercent = (newLeftWidth / totalWidth) * 100;
+                const rightPercent = 100 - leftPercent;
+
+                editorPanel.style.flex = `0 0 ${leftPercent}%`;
+                graphPanel.style.flex = `0 0 ${rightPercent}%`;
+              }
             }
           });
 
@@ -592,6 +666,13 @@ print "sum" c'
               isResizing = false;
               resizer.classList.remove("dragging");
             }
+          });
+
+          // Handle window resize to reset layout if needed
+          window.addEventListener("resize", () => {
+            // Reset flex values when switching between mobile/desktop
+            editorPanel.style.flex = "";
+            graphPanel.style.flex = "";
           });
         }
 
