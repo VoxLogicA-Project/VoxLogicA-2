@@ -36,8 +36,22 @@ The HMR feature in VoxLogicA serve was not working properly. User reported that 
   3. Browser reload
 - Browser console messages now appear in server logs with `[BROWSER]` prefix
 
+## Additional Fixes Applied
+
+After user reported HMR still not working (though console redirection worked):
+
+6. **Fixed asyncio thread integration**: The file watcher runs in a separate thread from the asyncio event loop. Fixed by using `asyncio.run_coroutine_threadsafe()` to properly schedule WebSocket operations in the event loop.
+7. **Enhanced WebSocket client management**: Improved error handling and client cleanup in the `_notify_clients` coroutine
+8. **Fixed server lifecycle**: Moved file watcher initialization to FastAPI startup/shutdown events to ensure proper event loop access
+9. **Added global observer management**: Better lifecycle management of the file watcher observer
+
+## Root Cause of Original Issue
+
+The main issue was that the file watcher was trying to send WebSocket messages from a different thread without proper asyncio integration. The `create_task()` call was not being executed in the correct event loop context.
+
 ## Status
 
-- **Fixed**: File watcher implementation improved
-- **Testing**: Waiting for user confirmation that HMR works with browser reload
-- **Added**: Console redirection feature as bonus functionality
+- **Fixed**: File watcher implementation completely overhauled with proper asyncio integration
+- **Fixed**: Console redirection confirmed working by user
+- **Testing**: HMR should now work properly - file changes should trigger browser reload
+- **Added**: Comprehensive logging for debugging file watcher behavior

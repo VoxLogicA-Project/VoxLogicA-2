@@ -303,6 +303,19 @@ async def root():
 api_app.include_router(api_router)
 
 
+# FastAPI lifecycle events
+@api_app.on_event("startup")
+async def startup_event():
+    """Initialize file watcher when the server starts"""
+    start_file_watcher()
+
+
+@api_app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up file watcher when the server shuts down"""
+    stop_file_watcher()
+
+
 # ----------------- Live Reload WebSocket and File Watcher -----------------
 
 live_reload_clients = set()
@@ -319,14 +332,27 @@ class ReloadEventHandler(FileSystemEventHandler):
 
         self.logger.info(f"File change detected: {event.src_path} ({event.event_type})")
 
-        # Notify all connected clients
+        # Schedule the notification in the asyncio event loop
+        asyncio.run_coroutine_threadsafe(self._notify_clients(), self.loop)
+
+    async def _notify_clients(self):
+        """Notify all connected WebSocket clients about file changes"""
+        self.logger.info(f"Notifying {len(live_reload_clients)} WebSocket clients")
+
+        # Create a copy of the set to avoid modification during iteration
+        clients_to_remove = set()
+
         for ws in list(live_reload_clients):
             try:
-                self.loop.create_task(ws.send_text("reload"))
+                await ws.send_text("reload")
                 self.logger.debug(f"Sent reload signal to WebSocket client")
             except Exception as e:
                 self.logger.warning(f"Failed to send reload signal to WebSocket: {e}")
-                live_reload_clients.discard(ws)
+                clients_to_remove.add(ws)
+
+        # Remove failed clients
+        for ws in clients_to_remove:
+            live_reload_clients.discard(ws)
 
 
 @api_app.websocket("/livereload")
@@ -359,18 +385,37 @@ async def websocket_endpoint(websocket: WebSocket):
         live_reload_clients.remove(websocket)
 
 
-def start_file_watcher(loop):
+# Global observer reference
+_file_observer = None
+
+
+def start_file_watcher():
+    global _file_observer
     static_dir = Path(__file__).parent / "static"
     logger = logging.getLogger("voxlogica.filewatcher")
     logger.info(f"Starting file watcher for directory: {static_dir}")
 
+    # Get the current event loop
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
+
     event_handler = ReloadEventHandler(loop)
-    observer = Observer()
-    observer.schedule(event_handler, str(static_dir), recursive=True)
-    observer.start()
+    _file_observer = Observer()
+    _file_observer.schedule(event_handler, str(static_dir), recursive=True)
+    _file_observer.start()
 
     logger.info("File watcher started successfully")
-    return observer
+    return _file_observer
+
+
+def stop_file_watcher():
+    global _file_observer
+    if _file_observer:
+        _file_observer.stop()
+        _file_observer.join()
+        _file_observer = None
 
 
 # ----------------- CLI Commands -----------------
@@ -391,15 +436,8 @@ def serve(
     Logger.info(f"Interactive graph visualizer at http://{host}:{port}/")
     Logger.info(f"API documentation available at http://{host}:{port}/docs")
 
-    loop = asyncio.get_event_loop()
-    observer = start_file_watcher(loop)
-
-    try:
-        uvicorn.run(api_app, host=host, port=port)
-    finally:
-        if observer:
-            observer.stop()
-            observer.join()
+    # File watcher will be started automatically via FastAPI startup event
+    uvicorn.run(api_app, host=host, port=port)
 
 
 # ----------------- API Models -----------------
