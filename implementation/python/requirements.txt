@@ -1,6 +1,6 @@
 lark>=1.1.5
 fastapi>=0.100.0
-uvicorn>=0.23.0
+uvicorn[standard]>=0.23.0
 typer>=0.9.0
 pydantic>=2.0.0
 canonicaljson>=2.0.0
