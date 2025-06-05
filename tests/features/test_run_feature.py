@@ -8,6 +8,8 @@ import os
 import json
 import sys
 
+description = """Tests the 'run' feature of the VoxLogicA API, including basic program execution, JSON and DOT export, multiple export options, and error handling for invalid programs."""
+
 # Add the implementation path to sys.path
 sys.path.insert(
     0, os.path.join(os.path.dirname(__file__), "../../implementation/python")
@@ -167,3 +169,8 @@ def test_run_feature_invalid_program():
     assert result.success is False
     assert hasattr(result, "error")
     assert result.error is not None
+
+
+if __name__ == "__main__":
+    print(f"\nTest Description: {description}\n")
+    pytest.main([__file__])

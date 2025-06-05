@@ -112,3 +112,15 @@ When an issue is marked complete, the following steps are MANDATORY:
 - If the remote close fails (e.g., due to network, permissions, or API issues), the user MUST be notified and the issue marked as "pending remote close."
 - On subsequent runs, the system MUST automatically retry closing any issues marked as "pending remote close" until successful, and update the record accordingly.
 - This ensures local and remote issue states remain synchronized, and failures to close remote issues are visible and actionable.
+
+## Test Case Documentation and Traceability Policy
+
+- **Test Description Requirement:**
+  - Each test case (script or module) MUST define a `description` variable at the top, containing a one-paragraph summary of the test's purpose.
+  - The test runner or script MUST print this description at the start of the test run.
+  - This ensures that anyone running the tests can immediately understand the intent and scope of each test.
+
+- **Issue-Test Linkage:**
+  - When possible, each issue should be linked to one or more tests in the test infrastructure.
+  - The issue should be closed when the corresponding test(s) pass, providing automated traceability between issues and tests.
+  - Not all issues are directly testable, but this linkage is required whenever feasible (e.g., for bug fixes, features, or regressions).

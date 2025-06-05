@@ -19,6 +19,8 @@ if str(py_impl) not in sys.path:
 from voxlogica.parser import parse_program
 from voxlogica.reducer import reduce_program, Operations, NumberOp, IdentifierOp
 
+description = """Advanced tests for SHA256-based memoization. Demonstrates efficiency, cross-session result reuse, deep nesting, and performance benefits of content-addressed IDs in the reducer. Shows that repeated and nested computations are efficiently memoized."""
+
 
 def parse_program_text(program_text: str):
     """Helper function to parse program text directly"""
@@ -275,5 +277,6 @@ def run_all_tests():
 
 
 if __name__ == "__main__":
+    print(f"\nTest Description: {description}\n")
     success = run_all_tests()
     sys.exit(0 if success else 1)

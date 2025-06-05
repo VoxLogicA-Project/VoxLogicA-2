@@ -16,6 +16,8 @@ if str(py_impl) not in sys.path:
 from voxlogica.parser import parse_program
 from voxlogica.reducer import reduce_program
 
+description = """Ensures DAG operations use dict arguments with string numeric keys. Tests that argument keys and values are correct, nested and zero-argument operations are handled, and JSON serialization is correct for the new argument structure."""
+
 
 def parse_program_text(program_text: str):
     """Helper function to parse program text directly"""
@@ -150,6 +152,7 @@ save "output" result"""
 
 
 if __name__ == "__main__":
+    print(f"\nTest Description: {description}\n")
     test_basic_operation_with_arguments()
     test_nested_operation_arguments()
     test_zero_arguments()

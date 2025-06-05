@@ -16,6 +16,8 @@ if str(py_impl) not in sys.path:
 from voxlogica.parser import parse_program
 from voxlogica.reducer import reduce_program
 
+description = """Tests that SHA256 IDs are correctly included in JSON exports. Verifies that each operation has a valid SHA256 ID, argument references are correct, goals reference valid IDs, and that IDs are deterministic and consistent with internal tracking."""
+
 
 def parse_program_text(program_text: str):
     """Helper function to parse program text directly"""
@@ -210,3 +212,13 @@ def test_json_export_consistent_with_internal_ids():
         assert (
             goal_id in internal_ids
         ), f"Goal references ID {goal_id} not in internal IDs"
+
+
+if __name__ == "__main__":
+    print(f"\nTest Description: {description}\n")
+    test_json_export_includes_sha256_ids()
+    test_json_export_id_matches_arguments()
+    test_json_export_goal_references_valid_id()
+    test_json_export_deterministic_ids()
+    test_json_export_consistent_with_internal_ids()
+    print("All tests passed!")

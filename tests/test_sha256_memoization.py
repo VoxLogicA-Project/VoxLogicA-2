@@ -24,6 +24,8 @@ from voxlogica.reducer import (
     IdentifierOp,
 )
 
+description = """Verifies SHA256-based content-addressed IDs and memoization in the reducer. Ensures that equivalent operations produce the same ID, different operations produce different IDs, and that memoization prevents duplicate computation. Also checks argument order consistency and SHA256 ID properties."""
+
 
 def parse_program_text(program_text: str):
     """Helper function to parse program text directly"""
@@ -226,5 +228,6 @@ def run_all_tests():
 
 
 if __name__ == "__main__":
+    print(f"\nTest Description: {description}\n")
     success = run_all_tests()
     sys.exit(0 if success else 1)

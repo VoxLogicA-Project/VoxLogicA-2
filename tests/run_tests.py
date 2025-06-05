@@ -18,6 +18,12 @@ TEST_MODULES = [
     "tests.basic_test.test",
     "tests.fibonacci_chain.fibonacci_chain",
     "tests.function_explosion.function_explosion",
+    "tests.test_sha256_memoization",
+    "tests.test_sha256_memoization_advanced",
+    "tests.test_sha256_json_export",
+    "tests.test_dag_dict_args",
+    "tests.features.test_run_feature",
+    "tests.features.test_version_feature",
 ]
 
 
@@ -57,12 +63,17 @@ def main():
         summary.append((mod, status, log_file))
 
     print("\n=== Test Summary ===")
+    ICONS = {"PASSED": "\u2705", "FAILED": "\u274C", "CRASHED": "\u26A0\uFE0F"}
+    COLOR = {"PASSED": "\033[92m", "FAILED": "\033[91m", "CRASHED": "\033[93m", "END": "\033[0m"}
     for mod, status, log_file in summary:
-        print(f"{mod}: {status} (log: {log_file})")
+        icon = ICONS.get(status, "?")
+        color = COLOR.get(status, "")
+        endc = COLOR["END"] if color else ""
+        print(f"{color}{icon} {mod}: {status}{endc} (log: {log_file})")
     n_passed = sum(1 for _, s, _ in summary if s == "PASSED")
     n_failed = sum(1 for _, s, _ in summary if s == "FAILED")
     n_crashed = sum(1 for _, s, _ in summary if s == "CRASHED")
-    print(f"\n{n_passed} passed, {n_failed} failed, {n_crashed} crashed.")
+    print(f"\n{COLOR['PASSED']}{n_passed} passed{COLOR['END']}, {COLOR['FAILED']}{n_failed} failed{COLOR['END']}, {COLOR['CRASHED']}{n_crashed} crashed{COLOR['END']}.")
     if n_failed or n_crashed:
         sys.exit(1)
 
