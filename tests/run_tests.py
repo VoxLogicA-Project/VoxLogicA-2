@@ -63,8 +63,13 @@ def main():
         summary.append((mod, status, log_file))
 
     print("\n=== Test Summary ===")
-    ICONS = {"PASSED": "\u2705", "FAILED": "\u274C", "CRASHED": "\u26A0\uFE0F"}
-    COLOR = {"PASSED": "\033[92m", "FAILED": "\033[91m", "CRASHED": "\033[93m", "END": "\033[0m"}
+    ICONS = {"PASSED": "\u2705", "FAILED": "\u274c", "CRASHED": "\u26a0\ufe0f"}
+    COLOR = {
+        "PASSED": "\033[92m",
+        "FAILED": "\033[91m",
+        "CRASHED": "\033[93m",
+        "END": "\033[0m",
+    }
     for mod, status, log_file in summary:
         icon = ICONS.get(status, "?")
         color = COLOR.get(status, "")
@@ -73,7 +78,9 @@ def main():
     n_passed = sum(1 for _, s, _ in summary if s == "PASSED")
     n_failed = sum(1 for _, s, _ in summary if s == "FAILED")
     n_crashed = sum(1 for _, s, _ in summary if s == "CRASHED")
-    print(f"\n{COLOR['PASSED']}{n_passed} passed{COLOR['END']}, {COLOR['FAILED']}{n_failed} failed{COLOR['END']}, {COLOR['CRASHED']}{n_crashed} crashed{COLOR['END']}.")
+    print(
+        f"\n{COLOR['PASSED']}{n_passed} passed{COLOR['END']}, {COLOR['FAILED']}{n_failed} failed{COLOR['END']}, {COLOR['CRASHED']}{n_crashed} crashed{COLOR['END']}."
+    )
     if n_failed or n_crashed:
         sys.exit(1)
 
