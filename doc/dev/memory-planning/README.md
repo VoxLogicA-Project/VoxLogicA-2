@@ -24,6 +24,15 @@ Goal:
 
 This mapping enables static preallocation and efficient reuse of memory buffers during DAG execution, minimizing memory usage while ensuring correctness.
 
+## Formal Input Specification
+
+The input to the buffer assignment algorithm consists of:
+- The DAG structure: nodes and directed edges representing dependencies.
+- For each node, its output type (including shape and dimension).
+- A compatibility relation `compatible(A, B)`, which returns true if a value of type A can be safely written to a buffer allocated for type B. This function may be the identity (i.e., only exact matches allowed), or more permissive depending on the application.
+
+The algorithm must use this information to compute a valid and efficient mapping from nodes to buffer IDs, as described above.
+
 ## Contents
 
 - `overview.md`: High-level overview and motivation
