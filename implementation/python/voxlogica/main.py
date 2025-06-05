@@ -13,7 +13,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .features import FeatureRegistry, OperationResult
@@ -59,6 +60,11 @@ api_app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files
+static_path = Path(__file__).parent / "static"
+if static_path.exists():
+    api_app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
 # API router for versioned endpoints
 api_router = APIRouter(prefix="/api/v1")
@@ -276,6 +282,20 @@ async def run_program_endpoint(request: RunRequest):
         ) from e
 
 
+# Root endpoint - serve the interactive visualization page
+@api_app.get("/")
+async def root():
+    """Serve the interactive task graph visualizer"""
+    static_path = Path(__file__).parent / "static" / "index.html"
+    if static_path.exists():
+        return FileResponse(str(static_path))
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Visualization page not found",
+        )
+
+
 # Include the router in the FastAPI app
 api_app.include_router(api_router)
 
@@ -295,6 +315,7 @@ def serve(
     Logger.info(
         f"Starting VoxLogicA API server version {get_version()} on {host}:{port}"
     )
+    Logger.info(f"Interactive graph visualizer at http://{host}:{port}/")
     Logger.info(f"API documentation available at http://{host}:{port}/docs")
 
     uvicorn.run(api_app, host=host, port=port)
