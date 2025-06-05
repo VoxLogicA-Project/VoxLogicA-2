@@ -1,935 +1,994 @@
 <!DOCTYPE html>
 <html lang="en">
-
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VoxLogicA Task Graph Visualizer</title>
-  <script src="https://d3js.org/d3.v7.min.js"></script>
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-        Oxygen, Ubuntu, Cantarell, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      min-height: 100vh;
-      padding: 20px;
-    }
-
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-      background: white;
-      border-radius: 16px;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-      overflow: hidden;
-    }
-
-    .header {
-      background: linear-gradient(90deg, #4f46e5 0%, #7c3aed 100%);
-      color: white;
-      padding: 2rem;
-      text-align: center;
-    }
-
-    .header h1 {
-      font-size: 2.5rem;
-      font-weight: 700;
-      margin-bottom: 0.5rem;
-    }
-
-    .header p {
-      font-size: 1.1rem;
-      opacity: 0.9;
-    }
-
-    .content {
-      padding: 2rem;
-    }
-
-    .upload-section {
-      margin-bottom: 2rem;
-    }
-
-    .upload-area {
-      border: 3px dashed #d1d5db;
-      border-radius: 12px;
-      padding: 3rem;
-      text-align: center;
-      background: #f9fafb;
-      transition: all 0.3s ease;
-      cursor: pointer;
-    }
-
-    .upload-area.dragover {
-      border-color: #4f46e5;
-      background: #f0f9ff;
-      transform: scale(1.02);
-    }
-
-    .upload-icon {
-      width: 64px;
-      height: 64px;
-      margin: 0 auto 1rem;
-      color: #6b7280;
-    }
-
-    .upload-text {
-      font-size: 1.25rem;
-      font-weight: 600;
-      color: #374151;
-      margin-bottom: 0.5rem;
-    }
-
-    .upload-subtext {
-      color: #6b7280;
-      font-size: 1rem;
-    }
-
-    .file-input {
-      display: none;
-    }
-
-    .program-input {
-      margin-top: 1rem;
-    }
-
-    .program-input textarea {
-      width: 100%;
-      height: 150px;
-      padding: 1rem;
-      border: 2px solid #d1d5db;
-      border-radius: 8px;
-      font-family: "Monaco", "Consolas", monospace;
-      font-size: 14px;
-      resize: vertical;
-      transition: border-color 0.3s ease;
-    }
-
-    .program-input textarea:focus {
-      outline: none;
-      border-color: #4f46e5;
-    }
-
-    .controls {
-      display: flex;
-      gap: 1rem;
-      margin: 1rem 0;
-      flex-wrap: wrap;
-    }
-
-    .btn {
-      padding: 0.75rem 1.5rem;
-      border: none;
-      border-radius: 8px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.3s ease;
-      font-size: 1rem;
-    }
-
-    .btn-primary {
-      background: #4f46e5;
-      color: white;
-    }
-
-    .btn-primary:hover {
-      background: #4338ca;
-      transform: translateY(-2px);
-    }
-
-    .btn-secondary {
-      background: #e5e7eb;
-      color: #374151;
-    }
-
-    .btn-secondary:hover {
-      background: #d1d5db;
-    }
-
-    .btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      transform: none;
-    }
-
-    .visualization-section {
-      margin-top: 2rem;
-    }
-
-    .graph-container {
-      background: #f9fafb;
-      border-radius: 12px;
-      border: 2px solid #e5e7eb;
-      min-height: 500px;
-      position: relative;
-      overflow: hidden;
-    }
-
-    .graph-svg {
-      width: 100%;
-      height: 500px;
-    }
-
-    .node {
-      cursor: pointer;
-      transition: all 0.3s ease;
-    }
-
-    .node circle {
-      fill: #4f46e5;
-      stroke: #ffffff;
-      stroke-width: 3px;
-    }
-
-    .node:hover circle {
-      fill: #7c3aed;
-      transform: scale(1.1);
-    }
-
-    .node text {
-      fill: white;
-      text-anchor: middle;
-      dominant-baseline: central;
-      font-size: 12px;
-      font-weight: 600;
-      pointer-events: none;
-    }
-
-    .link {
-      fill: none;
-      stroke: #6b7280;
-      stroke-width: 2px;
-      marker-end: url(#arrowhead);
-    }
-
-    .link:hover {
-      stroke: #4f46e5;
-      stroke-width: 3px;
-    }
-
-    .info-panel {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      background: white;
-      padding: 1rem;
-      border-radius: 8px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-      max-width: 300px;
-      display: none;
-    }
-
-    .info-panel h3 {
-      margin-bottom: 0.5rem;
-      color: #374151;
-    }
-
-    .info-panel p {
-      color: #6b7280;
-      font-size: 0.9rem;
-      margin-bottom: 0.25rem;
-    }
-
-    .error-message {
-      background: #fef2f2;
-      border: 1px solid #fecaca;
-      color: #dc2626;
-      padding: 1rem;
-      border-radius: 8px;
-      margin: 1rem 0;
-    }
-
-    .success-message {
-      background: #f0fdf4;
-      border: 1px solid #bbf7d0;
-      color: #16a34a;
-      padding: 1rem;
-      border-radius: 8px;
-      margin: 1rem 0;
-    }
-
-    .loading {
-      display: inline-block;
-      width: 20px;
-      height: 20px;
-      border: 3px solid #f3f3f3;
-      border-top: 3px solid #4f46e5;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-    }
-
-    @keyframes spin {
-      0% {
-        transform: rotate(0deg);
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VoxLogicA Task Graph Visualizer</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
       }
 
-      100% {
-        transform: rotate(360deg);
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Oxygen, Ubuntu, Cantarell, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px;
       }
-    }
 
-    .stats {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 1rem;
-      margin: 1rem 0;
-    }
-
-    .stat-card {
-      background: #f8fafc;
-      padding: 1rem;
-      border-radius: 8px;
-      text-align: center;
-      border: 1px solid #e2e8f0;
-    }
-
-    .stat-number {
-      font-size: 2rem;
-      font-weight: 700;
-      color: #4f46e5;
-    }
-
-    .stat-label {
-      color: #64748b;
-      font-size: 0.9rem;
-      margin-top: 0.25rem;
-    }
-
-    @media (max-width: 768px) {
       .container {
-        margin: 10px;
-        border-radius: 12px;
+        max-width: 1200px;
+        margin: 0 auto;
+        background: white;
+        border-radius: 16px;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
       }
 
       .header {
-        padding: 1.5rem;
+        background: linear-gradient(90deg, #4f46e5 0%, #7c3aed 100%);
+        color: white;
+        padding: 2rem;
+        text-align: center;
       }
 
       .header h1 {
-        font-size: 2rem;
+        font-size: 2.5rem;
+        font-weight: 700;
+        margin-bottom: 0.5rem;
+      }
+
+      .header p {
+        font-size: 1.1rem;
+        opacity: 0.9;
       }
 
       .content {
-        padding: 1rem;
+        padding: 2rem;
+      }
+
+      .upload-section {
+        margin-bottom: 2rem;
       }
 
       .upload-area {
-        padding: 2rem 1rem;
+        border: 3px dashed #d1d5db;
+        border-radius: 12px;
+        padding: 3rem;
+        text-align: center;
+        background: #f9fafb;
+        transition: all 0.3s ease;
+        cursor: pointer;
+      }
+
+      .upload-area.dragover {
+        border-color: #4f46e5;
+        background: #f0f9ff;
+        transform: scale(1.02);
+      }
+
+      .upload-icon {
+        width: 64px;
+        height: 64px;
+        margin: 0 auto 1rem;
+        color: #6b7280;
+      }
+
+      .upload-text {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: #374151;
+        margin-bottom: 0.5rem;
+      }
+
+      .upload-subtext {
+        color: #6b7280;
+        font-size: 1rem;
+      }
+
+      .file-input {
+        display: none;
+      }
+
+      .program-input {
+        margin-top: 1rem;
+      }
+
+      .program-input textarea {
+        width: 100%;
+        height: 150px;
+        padding: 1rem;
+        border: 2px solid #d1d5db;
+        border-radius: 8px;
+        font-family: "Monaco", "Consolas", monospace;
+        font-size: 14px;
+        resize: vertical;
+        transition: border-color 0.3s ease;
+      }
+
+      .program-input textarea:focus {
+        outline: none;
+        border-color: #4f46e5;
       }
 
       .controls {
-        flex-direction: column;
+        display: flex;
+        gap: 1rem;
+        margin: 1rem 0;
+        flex-wrap: wrap;
+      }
+
+      .btn {
+        padding: 0.75rem 1.5rem;
+        border: none;
+        border-radius: 8px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        font-size: 1rem;
+      }
+
+      .btn-primary {
+        background: #4f46e5;
+        color: white;
+      }
+
+      .btn-primary:hover {
+        background: #4338ca;
+        transform: translateY(-2px);
+      }
+
+      .btn-secondary {
+        background: #e5e7eb;
+        color: #374151;
+      }
+
+      .btn-secondary:hover {
+        background: #d1d5db;
+      }
+
+      .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .visualization-section {
+        margin-top: 2rem;
+      }
+
+      .graph-container {
+        background: #f9fafb;
+        border-radius: 12px;
+        border: 2px solid #e5e7eb;
+        min-height: 500px;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .graph-svg {
+        width: 100%;
+        height: 500px;
+      }
+
+      .node {
+        cursor: pointer;
+        transition: all 0.3s ease;
+      }
+
+      .node circle {
+        fill: #4f46e5;
+        stroke: #ffffff;
+        stroke-width: 3px;
+      }
+
+      .node:hover circle {
+        fill: #7c3aed;
+        transform: scale(1.1);
+      }
+
+      .node text {
+        fill: white;
+        text-anchor: middle;
+        dominant-baseline: central;
+        font-size: 12px;
+        font-weight: 600;
+        pointer-events: none;
+      }
+
+      .link {
+        fill: none;
+        stroke: #6b7280;
+        stroke-width: 2px;
+        marker-end: url(#arrowhead);
+      }
+
+      .link:hover {
+        stroke: #4f46e5;
+        stroke-width: 3px;
       }
 
       .info-panel {
-        position: relative;
-        max-width: none;
-        margin-top: 1rem;
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: white;
+        padding: 1rem;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        max-width: 300px;
+        display: none;
       }
-    }
-  </style>
-</head>
 
-<body>
-  <div class="container">
-    <div class="header">
-      <h1>VoxLogicA Task Graph Visualizer</h1>
-      <p>
-        Upload a VoxLogicA program or paste code to visualize the task graph
-        interactively
-      </p>
-    </div>
+      .info-panel h3 {
+        margin-bottom: 0.5rem;
+        color: #374151;
+      }
 
-    <div class="content">
-      <div class="upload-section">
-        <div class="upload-area" id="uploadArea">
-          <svg class="upload-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-          </svg>
-          <div class="upload-text">Drop your VoxLogicA file here</div>
-          <div class="upload-subtext">
-            or click to browse files (.imgql, .voxlogica)
+      .info-panel p {
+        color: #6b7280;
+        font-size: 0.9rem;
+        margin-bottom: 0.25rem;
+      }
+
+      .error-message {
+        background: #fef2f2;
+        border: 1px solid #fecaca;
+        color: #dc2626;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+      }
+
+      .success-message {
+        background: #f0fdf4;
+        border: 1px solid #bbf7d0;
+        color: #16a34a;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+      }
+
+      .loading {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 3px solid #f3f3f3;
+        border-top: 3px solid #4f46e5;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 1rem;
+        margin: 1rem 0;
+      }
+
+      .stat-card {
+        background: #f8fafc;
+        padding: 1rem;
+        border-radius: 8px;
+        text-align: center;
+        border: 1px solid #e2e8f0;
+      }
+
+      .stat-number {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #4f46e5;
+      }
+
+      .stat-label {
+        color: #64748b;
+        font-size: 0.9rem;
+        margin-top: 0.25rem;
+      }
+
+      @media (max-width: 768px) {
+        .container {
+          margin: 10px;
+          border-radius: 12px;
+        }
+
+        .header {
+          padding: 1.5rem;
+        }
+
+        .header h1 {
+          font-size: 2rem;
+        }
+
+        .content {
+          padding: 1rem;
+        }
+
+        .upload-area {
+          padding: 2rem 1rem;
+        }
+
+        .controls {
+          flex-direction: column;
+        }
+
+        .info-panel {
+          position: relative;
+          max-width: none;
+          margin-top: 1rem;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>VoxLogicA Task Graph Visualizer</h1>
+        <p>
+          Upload a VoxLogicA program or paste code to visualize the task graph
+          interactively
+        </p>
+      </div>
+
+      <div class="content">
+        <div class="upload-section">
+          <div class="upload-area" id="uploadArea">
+            <svg
+              class="upload-icon"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+              />
+            </svg>
+            <div class="upload-text">Drop your VoxLogicA file here</div>
+            <div class="upload-subtext">
+              or click to browse files (.imgql, .voxlogica)
+            </div>
+            <input
+              type="file"
+              class="file-input"
+              id="fileInput"
+              accept=".imgql,.voxlogica,.txt"
+            />
           </div>
-          <input type="file" class="file-input" id="fileInput" accept=".imgql,.voxlogica,.txt" />
-        </div>
 
-        <div class="program-input">
-          <textarea id="programInput" placeholder='Or paste your VoxLogicA program here...
+          <div class="program-input">
+            <textarea
+              id="programInput"
+              placeholder='Or paste your VoxLogicA program here...
 Example:
 let a = 1
 let b = 2
 let c = a + b
-print "sum" c'></textarea>
+print "sum" c'
+            ></textarea>
+          </div>
+
+          <div class="controls">
+            <button class="btn btn-primary" id="visualizeBtn">
+              <span id="visualizeBtnText">Visualize Graph</span>
+              <span
+                id="loadingSpinner"
+                class="loading"
+                style="display: none"
+              ></span>
+            </button>
+            <button class="btn btn-secondary" id="clearBtn">Clear</button>
+            <button class="btn btn-secondary" id="exportBtn" disabled>
+              Export DOT
+            </button>
+            <button class="btn btn-secondary" id="exportJsonBtn" disabled>
+              Export JSON
+            </button>
+          </div>
+
+          <div id="messageArea"></div>
         </div>
 
-        <div class="controls">
-          <button class="btn btn-primary" id="visualizeBtn">
-            <span id="visualizeBtnText">Visualize Graph</span>
-            <span id="loadingSpinner" class="loading" style="display: none"></span>
-          </button>
-          <button class="btn btn-secondary" id="clearBtn">Clear</button>
-          <button class="btn btn-secondary" id="exportBtn" disabled>
-            Export DOT
-          </button>
-          <button class="btn btn-secondary" id="exportJsonBtn" disabled>
-            Export JSON
-          </button>
+        <div class="stats" id="statsArea" style="display: none">
+          <div class="stat-card">
+            <div class="stat-number" id="operationsCount">0</div>
+            <div class="stat-label">Operations</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number" id="goalsCount">0</div>
+            <div class="stat-label">Goals</div>
+          </div>
         </div>
 
-        <div id="messageArea"></div>
-      </div>
-
-      <div class="stats" id="statsArea" style="display: none">
-        <div class="stat-card">
-          <div class="stat-number" id="operationsCount">0</div>
-          <div class="stat-label">Operations</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-number" id="goalsCount">0</div>
-          <div class="stat-label">Goals</div>
-        </div>
-      </div>
-
-      <div class="visualization-section">
-        <div class="graph-container">
-          <svg class="graph-svg" id="graphSvg">
-            <defs>
-              <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-                <polygon points="0 0, 10 3.5, 0 7" fill="#6b7280" />
-              </marker>
-            </defs>
-          </svg>
-          <div class="info-panel" id="infoPanel">
-            <h3 id="nodeTitle">Node Information</h3>
-            <p id="nodeInfo"></p>
+        <div class="visualization-section">
+          <div class="graph-container">
+            <svg class="graph-svg" id="graphSvg">
+              <defs>
+                <marker
+                  id="arrowhead"
+                  markerWidth="10"
+                  markerHeight="7"
+                  refX="9"
+                  refY="3.5"
+                  orient="auto"
+                >
+                  <polygon points="0 0, 10 3.5, 0 7" fill="#6b7280" />
+                </marker>
+              </defs>
+            </svg>
+            <div class="info-panel" id="infoPanel">
+              <h3 id="nodeTitle">Node Information</h3>
+              <p id="nodeInfo"></p>
+            </div>
           </div>
         </div>
       </div>
     </div>
-  </div>
 
-  <script>
-    // Helper to compute edge endpoint on node border
-    function edgeEndpoint(source, target, r = 25) {
-      const dx = target.x - source.x;
-      const dy = target.y - source.y;
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const ratio = r / dist;
-      return {
-        x: target.x - dx * ratio,
-        y: target.y - dy * ratio,
-      };
-    }
-
-    class VoxLogicaVisualizer {
-      constructor() {
-        this.initializeElements();
-        this.setupEventListeners();
-        this.currentData = null;
+    <script>
+      // Helper to compute edge endpoint on node border
+      function edgeEndpoint(source, target, r = 25) {
+        const dx = target.x - source.x;
+        const dy = target.y - source.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const ratio = r / dist;
+        return {
+          x: target.x - dx * ratio,
+          y: target.y - dy * ratio,
+        };
       }
 
-      initializeElements() {
-        this.uploadArea = document.getElementById("uploadArea");
-        this.fileInput = document.getElementById("fileInput");
-        this.programInput = document.getElementById("programInput");
-        this.visualizeBtn = document.getElementById("visualizeBtn");
-        this.clearBtn = document.getElementById("clearBtn");
-        this.exportBtn = document.getElementById("exportBtn");
-        this.exportJsonBtn = document.getElementById("exportJsonBtn");
-        this.messageArea = document.getElementById("messageArea");
-        this.statsArea = document.getElementById("statsArea");
-        this.graphSvg = document.getElementById("graphSvg");
-        this.infoPanel = document.getElementById("infoPanel");
-        this.visualizeBtnText = document.getElementById("visualizeBtnText");
-        this.loadingSpinner = document.getElementById("loadingSpinner");
-      }
-
-      setupEventListeners() {
-        // File upload
-        this.uploadArea.addEventListener("click", () =>
-          this.fileInput.click()
-        );
-        this.uploadArea.addEventListener(
-          "dragover",
-          this.handleDragOver.bind(this)
-        );
-        this.uploadArea.addEventListener(
-          "dragleave",
-          this.handleDragLeave.bind(this)
-        );
-        this.uploadArea.addEventListener("drop", this.handleDrop.bind(this));
-        this.fileInput.addEventListener(
-          "change",
-          this.handleFileSelect.bind(this)
-        );
-
-        // Buttons
-        this.visualizeBtn.addEventListener(
-          "click",
-          this.visualizeGraph.bind(this)
-        );
-        this.clearBtn.addEventListener("click", this.clearAll.bind(this));
-        this.exportBtn.addEventListener("click", () =>
-          this.exportData("dot")
-        );
-        this.exportJsonBtn.addEventListener("click", () =>
-          this.exportData("json")
-        );
-      }
-
-      handleDragOver(e) {
-        e.preventDefault();
-        this.uploadArea.classList.add("dragover");
-      }
-
-      handleDragLeave(e) {
-        e.preventDefault();
-        this.uploadArea.classList.remove("dragover");
-      }
-
-      handleDrop(e) {
-        e.preventDefault();
-        this.uploadArea.classList.remove("dragover");
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-          this.processFile(files[0]);
+      class VoxLogicaVisualizer {
+        constructor() {
+          this.initializeElements();
+          this.setupEventListeners();
+          this.currentData = null;
         }
-      }
 
-      handleFileSelect(e) {
-        const files = e.target.files;
-        if (files.length > 0) {
-          this.processFile(files[0]);
+        initializeElements() {
+          this.uploadArea = document.getElementById("uploadArea");
+          this.fileInput = document.getElementById("fileInput");
+          this.programInput = document.getElementById("programInput");
+          this.visualizeBtn = document.getElementById("visualizeBtn");
+          this.clearBtn = document.getElementById("clearBtn");
+          this.exportBtn = document.getElementById("exportBtn");
+          this.exportJsonBtn = document.getElementById("exportJsonBtn");
+          this.messageArea = document.getElementById("messageArea");
+          this.statsArea = document.getElementById("statsArea");
+          this.graphSvg = document.getElementById("graphSvg");
+          this.infoPanel = document.getElementById("infoPanel");
+          this.visualizeBtnText = document.getElementById("visualizeBtnText");
+          this.loadingSpinner = document.getElementById("loadingSpinner");
         }
-      }
 
-      async processFile(file) {
-        try {
-          const text = await file.text();
-          this.programInput.value = text;
-          this.showMessage(
-            `File "${file.name}" loaded successfully`,
-            "success"
+        setupEventListeners() {
+          // File upload
+          this.uploadArea.addEventListener("click", () =>
+            this.fileInput.click()
           );
-        } catch (error) {
-          this.showMessage(`Error reading file: ${error.message}`, "error");
-        }
-      }
-
-      async visualizeGraph() {
-        const program = this.programInput.value.trim();
-        if (!program) {
-          this.showMessage(
-            "Please enter a VoxLogicA program or upload a file",
-            "error"
+          this.uploadArea.addEventListener(
+            "dragover",
+            this.handleDragOver.bind(this)
           );
-          return;
+          this.uploadArea.addEventListener(
+            "dragleave",
+            this.handleDragLeave.bind(this)
+          );
+          this.uploadArea.addEventListener("drop", this.handleDrop.bind(this));
+          this.fileInput.addEventListener(
+            "change",
+            this.handleFileSelect.bind(this)
+          );
+
+          // Buttons
+          this.visualizeBtn.addEventListener(
+            "click",
+            this.visualizeGraph.bind(this)
+          );
+          this.clearBtn.addEventListener("click", this.clearAll.bind(this));
+          this.exportBtn.addEventListener("click", () =>
+            this.exportData("dot")
+          );
+          this.exportJsonBtn.addEventListener("click", () =>
+            this.exportData("json")
+          );
         }
 
-        this.setLoading(true);
-        this.clearMessages();
+        handleDragOver(e) {
+          e.preventDefault();
+          this.uploadArea.classList.add("dragover");
+        }
 
-        try {
-          const response = await fetch("/api/v1/run", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              program: program,
-              save_task_graph_as_json: "graph.json",
-              save_task_graph: "graph.dot",
-            }),
+        handleDragLeave(e) {
+          e.preventDefault();
+          this.uploadArea.classList.remove("dragover");
+        }
+
+        handleDrop(e) {
+          e.preventDefault();
+          this.uploadArea.classList.remove("dragover");
+          const files = e.dataTransfer.files;
+          if (files.length > 0) {
+            this.processFile(files[0]);
+          }
+        }
+
+        handleFileSelect(e) {
+          const files = e.target.files;
+          if (files.length > 0) {
+            this.processFile(files[0]);
+          }
+        }
+
+        async processFile(file) {
+          try {
+            const text = await file.text();
+            this.programInput.value = text;
+            this.showMessage(
+              `File "${file.name}" loaded successfully`,
+              "success"
+            );
+          } catch (error) {
+            this.showMessage(`Error reading file: ${error.message}`, "error");
+          }
+        }
+
+        async visualizeGraph() {
+          const program = this.programInput.value.trim();
+          if (!program) {
+            this.showMessage(
+              "Please enter a VoxLogicA program or upload a file",
+              "error"
+            );
+            return;
+          }
+
+          this.setLoading(true);
+          this.clearMessages();
+
+          try {
+            const response = await fetch("/api/v1/run", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                program: program,
+                save_task_graph_as_json: "graph.json",
+                save_task_graph: "graph.dot",
+              }),
+            });
+
+            if (!response.ok) {
+              const error = await response.json();
+              throw new Error(error.detail || "Server error");
+            }
+
+            const data = await response.json();
+            this.currentData = data;
+            this.updateStats(data);
+            this.renderGraph(data);
+            this.enableExportButtons();
+            this.showMessage("Graph visualized successfully!", "success");
+          } catch (error) {
+            this.showMessage(`Error: ${error.message}`, "error");
+            console.error("Visualization error:", error);
+          } finally {
+            this.setLoading(false);
+          }
+        }
+
+        updateStats(data) {
+          document.getElementById("operationsCount").textContent =
+            data.operations || 0;
+          document.getElementById("goalsCount").textContent = data.goals || 0;
+          this.statsArea.style.display = "grid";
+        }
+
+        renderGraph(data) {
+          // Clear previous graph
+          d3.select(this.graphSvg).selectAll("*").remove();
+
+          // Parse JSON data to get nodes and links
+          let graphData;
+          if (data.saved_files && data.saved_files["graph.json"]) {
+            graphData = data.saved_files["graph.json"];
+          } else {
+            this.showMessage("No graph data available", "error");
+            return;
+          }
+
+          // DEBUG: Print the full operations array to inspect argument structure
+          console.log("D3 DEBUG: graphData.operations", graphData.operations);
+          graphData.operations.forEach((op, i) => {
+            console.log(`D3 DEBUG: operation[${i}]`, op);
           });
 
-          if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || "Server error");
+          // Build a mapping from operation IDs to node indices
+          const opIdToIndex = {};
+          graphData.operations.forEach((op, i) => {
+            opIdToIndex[op.id] = i;
+          });
+
+          // Convert operations to nodes
+          const nodes = graphData.operations.map((op, i) => ({
+            id: op.id,
+            label: this.formatOperatorLabel(op.operator),
+            operator: op.operator,
+            arguments: op.arguments,
+          }));
+
+          // Create links from arguments
+          const links = [];
+          graphData.operations.forEach((op) => {
+            if (
+              op.arguments &&
+              typeof op.arguments === "object" &&
+              !Array.isArray(op.arguments)
+            ) {
+              Object.values(op.arguments).forEach((argOpId) => {
+                if (opIdToIndex.hasOwnProperty(argOpId)) {
+                  links.push({
+                    source: argOpId, // use op id, not index
+                    target: op.id, // use op id, not index
+                  });
+                }
+              });
+            }
+          });
+
+          // DEBUG: Print nodes and links to the console for inspection
+          console.log("D3 DEBUG: nodes", nodes);
+          console.log("D3 DEBUG: links", links);
+          // Check the browser console to verify the structure and contents of nodes and links.
+
+          // Set up D3 force simulation
+          const width = this.graphSvg.clientWidth || 800;
+          const height = this.graphSvg.clientHeight || 500;
+
+          const svg = d3
+            .select(this.graphSvg)
+            .attr("width", width)
+            .attr("height", height);
+
+          // Re-add arrow marker
+          svg
+            .append("defs")
+            .append("marker")
+            .attr("id", "arrowhead")
+            .attr("markerWidth", 10)
+            .attr("markerHeight", 7)
+            .attr("refX", 9)
+            .attr("refY", 3.5)
+            .attr("orient", "auto")
+            .append("polygon")
+            .attr("points", "0 0, 10 3.5, 0 7")
+            .attr("fill", "#6b7280");
+
+          let simulation = null;
+          // Set this to true to enable force-directed layout, false to disable (static layout)
+          const FORCE_LAYOUT_ENABLED = true;
+          if (FORCE_LAYOUT_ENABLED) {
+            simulation = d3
+              .forceSimulation(nodes)
+              .force(
+                "link",
+                d3
+                  .forceLink(links)
+                  .id((d) => d.id)
+                  .distance(100)
+              )
+              .force("charge", d3.forceManyBody().strength(-300))
+              .force("center", d3.forceCenter(width / 2, height / 2))
+              .force("collision", d3.forceCollide().radius(30));
           }
 
-          const data = await response.json();
-          this.currentData = data;
-          this.updateStats(data);
-          this.renderGraph(data);
-          this.enableExportButtons();
-          this.showMessage("Graph visualized successfully!", "success");
-        } catch (error) {
-          this.showMessage(`Error: ${error.message}`, "error");
-          console.error("Visualization error:", error);
-        } finally {
-          this.setLoading(false);
-        }
-      }
+          // Create links
+          const link = svg
+            .append("g")
+            .selectAll("line")
+            .data(links)
+            .enter()
+            .append("line")
+            .attr("class", "link")
+            // TEMP: Make links red and thicker for debug visibility
+            .attr("stroke", "red")
+            .attr("stroke-width", 4)
+            .attr("marker-end", "url(#arrowhead)");
 
-      updateStats(data) {
-        document.getElementById("operationsCount").textContent =
-          data.operations || 0;
-        document.getElementById("goalsCount").textContent = data.goals || 0;
-        this.statsArea.style.display = "grid";
-      }
-
-      renderGraph(data) {
-        // Clear previous graph
-        d3.select(this.graphSvg).selectAll("*").remove();
-
-        // Parse JSON data to get nodes and links
-        let graphData;
-        if (data.saved_files && data.saved_files["graph.json"]) {
-          graphData = data.saved_files["graph.json"];
-        } else {
-          this.showMessage("No graph data available", "error");
-          return;
-        }
-
-        // DEBUG: Print the full operations array to inspect argument structure
-        console.log("D3 DEBUG: graphData.operations", graphData.operations);
-        graphData.operations.forEach((op, i) => {
-          console.log(`D3 DEBUG: operation[${i}]`, op);
-        });
-
-        // Build a mapping from operation IDs to node indices
-        const opIdToIndex = {};
-        graphData.operations.forEach((op, i) => {
-          opIdToIndex[op.id] = i;
-        });
-
-        // Convert operations to nodes
-        const nodes = graphData.operations.map((op, i) => ({
-          id: op.id,
-          label: this.formatOperatorLabel(op.operator),
-          operator: op.operator,
-          arguments: op.arguments,
-        }));
-
-        // Create links from arguments
-        const links = [];
-        graphData.operations.forEach((op) => {
-          if (
-            op.arguments &&
-            typeof op.arguments === "object" &&
-            !Array.isArray(op.arguments)
-          ) {
-            Object.values(op.arguments).forEach((argOpId) => {
-              if (opIdToIndex.hasOwnProperty(argOpId)) {
-                links.push({
-                  source: argOpId, // use op id, not index
-                  target: op.id,   // use op id, not index
-                });
-              }
-            });
-          }
-        });
-
-        // DEBUG: Print nodes and links to the console for inspection
-        console.log("D3 DEBUG: nodes", nodes);
-        console.log("D3 DEBUG: links", links);
-        // Check the browser console to verify the structure and contents of nodes and links.
-
-        // Set up D3 force simulation
-        const width = this.graphSvg.clientWidth || 800;
-        const height = this.graphSvg.clientHeight || 500;
-
-        const svg = d3
-          .select(this.graphSvg)
-          .attr("width", width)
-          .attr("height", height);
-
-        // Re-add arrow marker
-        svg
-          .append("defs")
-          .append("marker")
-          .attr("id", "arrowhead")
-          .attr("markerWidth", 10)
-          .attr("markerHeight", 7)
-          .attr("refX", 9)
-          .attr("refY", 3.5)
-          .attr("orient", "auto")
-          .append("polygon")
-          .attr("points", "0 0, 10 3.5, 0 7")
-          .attr("fill", "#6b7280");
-
-        let simulation = null;
-        // Set this to true to enable force-directed layout, false to disable (static layout)
-        const FORCE_LAYOUT_ENABLED = true;
-        if (FORCE_LAYOUT_ENABLED) {
-          simulation = d3
-            .forceSimulation(nodes)
-            .force(
-              "link",
+          // Create nodes
+          const node = svg
+            .append("g")
+            .selectAll("g")
+            .data(nodes)
+            .enter()
+            .append("g")
+            .attr("class", "node")
+            .call(
               d3
-                .forceLink(links)
-                .id((d) => d.id)
-                .distance(100)
-            )
-            .force("charge", d3.forceManyBody().strength(-300))
-            .force("center", d3.forceCenter(width / 2, height / 2))
-            .force("collision", d3.forceCollide().radius(30));
-        }
+                .drag()
+                .on("start", (event, d) => {
+                  if (!event.active) simulation.alphaTarget(0.3).restart();
+                  d.fx = d.x;
+                  d.fy = d.y;
+                })
+                .on("drag", (event, d) => {
+                  d.fx = event.x;
+                  d.fy = event.y;
+                })
+                .on("end", (event, d) => {
+                  if (!event.active) simulation.alphaTarget(0);
+                  d.fx = null;
+                  d.fy = null;
+                })
+            );
 
-        // Create links
-        const link = svg
-          .append("g")
-          .selectAll("line")
-          .data(links)
-          .enter()
-          .append("line")
-          .attr("class", "link")
-          // TEMP: Make links red and thicker for debug visibility
-          .attr("stroke", "red")
-          .attr("stroke-width", 4)
-          .attr("marker-end", "url(#arrowhead)");
+          // Add circles to nodes
+          node
+            .append("circle")
+            .attr("r", 25)
+            .on("click", (event, d) => this.showNodeInfo(d));
 
-        // Create nodes
-        const node = svg
-          .append("g")
-          .selectAll("g")
-          .data(nodes)
-          .enter()
-          .append("g")
-          .attr("class", "node")
-          .call(
-            d3
-              .drag()
-              .on("start", (event, d) => {
-                if (!event.active) simulation.alphaTarget(0.3).restart();
-                d.fx = d.x;
-                d.fy = d.y;
-              })
-              .on("drag", (event, d) => {
-                d.fx = event.x;
-                d.fy = event.y;
-              })
-              .on("end", (event, d) => {
-                if (!event.active) simulation.alphaTarget(0);
-                d.fx = null;
-                d.fy = null;
-              })
-          );
+          // Add labels to nodes
+          node
+            .append("text")
+            .text((d) => d.label)
+            .style("font-size", "12px");
 
-        // Add circles to nodes
-        node
-          .append("circle")
-          .attr("r", 25)
-          .on("click", (event, d) => this.showNodeInfo(d));
+          // Update positions on tick
+          if (FORCE_LAYOUT_ENABLED && simulation) {
+            simulation.on("tick", () => {
+              link
+                .attr("x1", (d) => {
+                  const pt = edgeEndpoint(d.target, d.source, 25);
+                  return pt.x;
+                })
+                .attr("y1", (d) => {
+                  const pt = edgeEndpoint(d.target, d.source, 25);
+                  return pt.y;
+                })
+                .attr("x2", (d) => {
+                  const pt = edgeEndpoint(d.source, d.target, 25);
+                  return pt.x;
+                })
+                .attr("y2", (d) => {
+                  const pt = edgeEndpoint(d.source, d.target, 25);
+                  return pt.y;
+                });
 
-        // Add labels to nodes
-        node
-          .append("text")
-          .text((d) => d.label)
-          .style("font-size", "12px");
-
-        // Update positions on tick
-        if (FORCE_LAYOUT_ENABLED && simulation) {
-          simulation.on("tick", () => {
+              node.attr("transform", (d) => `translate(${d.x},${d.y})`);
+            });
+            // Animate initial layout and dragging for smoothness
+            simulation.alpha(1).restart();
+          } else {
+            // Static layout: arrange nodes in a circle
+            const centerX = width / 2;
+            const centerY = height / 2;
+            const radius = Math.min(width, height) / 3;
+            nodes.forEach((d, i) => {
+              const angle = (2 * Math.PI * i) / nodes.length;
+              d.x = centerX + radius * Math.cos(angle);
+              d.y = centerY + radius * Math.sin(angle);
+            });
             link
-              .attr("x1", d => {
+              .attr("x1", (d) => {
                 const pt = edgeEndpoint(d.target, d.source, 25);
                 return pt.x;
               })
-              .attr("y1", d => {
+              .attr("y1", (d) => {
                 const pt = edgeEndpoint(d.target, d.source, 25);
                 return pt.y;
               })
-              .attr("x2", d => {
+              .attr("x2", (d) => {
                 const pt = edgeEndpoint(d.source, d.target, 25);
                 return pt.x;
               })
-              .attr("y2", d => {
+              .attr("y2", (d) => {
                 const pt = edgeEndpoint(d.source, d.target, 25);
                 return pt.y;
               });
-
-            node.attr("transform", d => `translate(${d.x},${d.y})`);
-          });
-          // Animate initial layout and dragging for smoothness
-          simulation.alpha(1).restart();
-        } else {
-          // Static layout: arrange nodes in a circle
-          const centerX = width / 2;
-          const centerY = height / 2;
-          const radius = Math.min(width, height) / 3;
-          nodes.forEach((d, i) => {
-            const angle = (2 * Math.PI * i) / nodes.length;
-            d.x = centerX + radius * Math.cos(angle);
-            d.y = centerY + radius * Math.sin(angle);
-          });
-          link
-            .attr("x1", d => {
-              const pt = edgeEndpoint(d.target, d.source, 25);
-              return pt.x;
-            })
-            .attr("y1", d => {
-              const pt = edgeEndpoint(d.target, d.source, 25);
-              return pt.y;
-            })
-            .attr("x2", d => {
-              const pt = edgeEndpoint(d.source, d.target, 25);
-              return pt.x;
-            })
-            .attr("y2", d => {
-              const pt = edgeEndpoint(d.source, d.target, 25);
-              return pt.y;
-            });
-          node.attr("transform", d => `translate(${d.x},${d.y})`);
-        }
-      }
-
-      formatOperatorLabel(operator) {
-        if (typeof operator === "string") {
-          return operator.length > 8
-            ? operator.substring(0, 8) + "..."
-            : operator;
-        }
-        return String(operator);
-      }
-
-      showNodeInfo(node) {
-        const title = document.getElementById("nodeTitle");
-        const info = document.getElementById("nodeInfo");
-
-        title.textContent = `Node ${node.id}`;
-
-        // Handle arguments as dictionary
-        let argsText = "None";
-        if (node.arguments && typeof node.arguments === "object") {
-          if (Array.isArray(node.arguments)) {
-            argsText = node.arguments.join(", ");
-          } else {
-            // Dictionary format: show keys and values
-            const argEntries = Object.entries(node.arguments);
-            if (argEntries.length > 0) {
-              argsText = argEntries
-                .map(([key, value]) => `${key}: ${value}`)
-                .join(", ");
-            }
+            node.attr("transform", (d) => `translate(${d.x},${d.y})`);
           }
         }
 
-        info.innerHTML = `
+        formatOperatorLabel(operator) {
+          if (typeof operator === "string") {
+            return operator.length > 8
+              ? operator.substring(0, 8) + "..."
+              : operator;
+          }
+          return String(operator);
+        }
+
+        showNodeInfo(node) {
+          const title = document.getElementById("nodeTitle");
+          const info = document.getElementById("nodeInfo");
+
+          title.textContent = `Node ${node.id}`;
+
+          // Handle arguments as dictionary
+          let argsText = "None";
+          if (node.arguments && typeof node.arguments === "object") {
+            if (Array.isArray(node.arguments)) {
+              argsText = node.arguments.join(", ");
+            } else {
+              // Dictionary format: show keys and values
+              const argEntries = Object.entries(node.arguments);
+              if (argEntries.length > 0) {
+                argsText = argEntries
+                  .map(([key, value]) => `${key}: ${value}`)
+                  .join(", ");
+              }
+            }
+          }
+
+          info.innerHTML = `
                     <strong>Operator:</strong> ${node.operator}<br>
                     <strong>Arguments:</strong> ${argsText}
                 `;
 
-        this.infoPanel.style.display = "block";
-      }
-
-      enableExportButtons() {
-        this.exportBtn.disabled = false;
-        this.exportJsonBtn.disabled = false;
-      }
-
-      exportData(format) {
-        if (!this.currentData || !this.currentData.saved_files) {
-          this.showMessage("No data to export", "error");
-          return;
+          this.infoPanel.style.display = "block";
         }
 
-        let filename, content, mimeType;
-
-        if (format === "dot") {
-          filename = "task_graph.dot";
-          content = this.currentData.saved_files["graph.dot"];
-          mimeType = "text/plain";
-        } else if (format === "json") {
-          filename = "task_graph.json";
-          content = JSON.stringify(
-            this.currentData.saved_files["graph.json"],
-            null,
-            2
-          );
-          mimeType = "application/json";
+        enableExportButtons() {
+          this.exportBtn.disabled = false;
+          this.exportJsonBtn.disabled = false;
         }
 
-        if (content) {
-          const blob = new Blob([content], { type: mimeType });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = filename;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-          this.showMessage(
-            `${format.toUpperCase()} file exported successfully`,
-            "success"
-          );
-        }
-      }
-
-      clearAll() {
-        this.programInput.value = "";
-        this.currentData = null;
-        this.clearMessages();
-        this.statsArea.style.display = "none";
-        this.infoPanel.style.display = "none";
-        this.exportBtn.disabled = true;
-        this.exportJsonBtn.disabled = true;
-        d3.select(this.graphSvg).selectAll("*").remove();
-        this.fileInput.value = "";
-      }
-
-      setLoading(loading) {
-        if (loading) {
-          this.visualizeBtnText.style.display = "none";
-          this.loadingSpinner.style.display = "inline-block";
-          this.visualizeBtn.disabled = true;
-        } else {
-          this.visualizeBtnText.style.display = "inline";
-          this.loadingSpinner.style.display = "none";
-          this.visualizeBtn.disabled = false;
-        }
-      }
-
-      showMessage(message, type) {
-        this.clearMessages();
-        const div = document.createElement("div");
-        div.className =
-          type === "error" ? "error-message" : "success-message";
-        div.textContent = message;
-        this.messageArea.appendChild(div);
-      }
-
-      clearMessages() {
-        this.messageArea.innerHTML = "";
-      }
-    }
-
-    // Initialize the visualizer when the page loads
-    // Also load a real example into the textarea for easier testing
-
-    document.addEventListener("DOMContentLoaded", () => {
-      const example = `let a = 1\nlet b = 2\nlet c = a + b\nprint \"sum\" c`;
-      const textarea = document.getElementById("programInput");
-      if (textarea && !textarea.value.trim()) {
-        textarea.value = example;
-      }
-      new VoxLogicaVisualizer();
-    });
-
-    // --- Live reload via WebSocket ---
-    (function () {
-      const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const wsUrl = wsProto + '://' + window.location.host + '/livereload';
-      try {
-        const ws = new WebSocket(wsUrl);
-        ws.onmessage = function (event) {
-          if (event.data === 'reload') {
-            window.location.reload();
+        exportData(format) {
+          if (!this.currentData || !this.currentData.saved_files) {
+            this.showMessage("No data to export", "error");
+            return;
           }
-        };
-      } catch (e) {
-        // Fail silently if WebSocket is not available
-      }
-    })();
-  </script>
-</body>
 
+          let filename, content, mimeType;
+
+          if (format === "dot") {
+            filename = "task_graph.dot";
+            content = this.currentData.saved_files["graph.dot"];
+            mimeType = "text/plain";
+          } else if (format === "json") {
+            filename = "task_graph.json";
+            content = JSON.stringify(
+              this.currentData.saved_files["graph.json"],
+              null,
+              2
+            );
+            mimeType = "application/json";
+          }
+
+          if (content) {
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            this.showMessage(
+              `${format.toUpperCase()} file exported successfully`,
+              "success"
+            );
+          }
+        }
+
+        clearAll() {
+          this.programInput.value = "";
+          this.currentData = null;
+          this.clearMessages();
+          this.statsArea.style.display = "none";
+          this.infoPanel.style.display = "none";
+          this.exportBtn.disabled = true;
+          this.exportJsonBtn.disabled = true;
+          d3.select(this.graphSvg).selectAll("*").remove();
+          this.fileInput.value = "";
+        }
+
+        setLoading(loading) {
+          if (loading) {
+            this.visualizeBtnText.style.display = "none";
+            this.loadingSpinner.style.display = "inline-block";
+            this.visualizeBtn.disabled = true;
+          } else {
+            this.visualizeBtnText.style.display = "inline";
+            this.loadingSpinner.style.display = "none";
+            this.visualizeBtn.disabled = false;
+          }
+        }
+
+        showMessage(message, type) {
+          this.clearMessages();
+          const div = document.createElement("div");
+          div.className =
+            type === "error" ? "error-message" : "success-message";
+          div.textContent = message;
+          this.messageArea.appendChild(div);
+        }
+
+        clearMessages() {
+          this.messageArea.innerHTML = "";
+        }
+      }
+
+      // Initialize the visualizer when the page loads
+      // Also load a real example into the textarea for easier testing
+
+      document.addEventListener("DOMContentLoaded", () => {
+        const example = `let a = 1\nlet b = 2\nlet c = a + b\nprint \"sum\" c`;
+        const textarea = document.getElementById("programInput");
+        if (textarea && !textarea.value.trim()) {
+          textarea.value = example;
+        }
+        new VoxLogicaVisualizer();
+      });
+
+      // --- Live reload via WebSocket ---
+      (function () {
+        const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
+        const wsUrl = wsProto + "://" + window.location.host + "/livereload";
+        try {
+          const ws = new WebSocket(wsUrl);
+          ws.onmessage = function (event) {
+            if (event.data === "reload") {
+              window.location.reload();
+            }
+          };
+
+          // Redirect browser console to server
+          const originalLog = console.log;
+          const originalError = console.error;
+          const originalWarn = console.warn;
+
+          console.log = function (...args) {
+            originalLog.apply(console, args);
+            try {
+              ws.send(JSON.stringify({ type: "log", message: args.join(" ") }));
+            } catch (e) {}
+          };
+
+          console.error = function (...args) {
+            originalError.apply(console, args);
+            try {
+              ws.send(
+                JSON.stringify({ type: "error", message: args.join(" ") })
+              );
+            } catch (e) {}
+          };
+
+          console.warn = function (...args) {
+            originalWarn.apply(console, args);
+            try {
+              ws.send(
+                JSON.stringify({ type: "warn", message: args.join(" ") })
+              );
+            } catch (e) {}
+          };
+
+          // Test the console redirection
+          console.log("Browser console connected to server");
+        } catch (e) {
+          // Fail silently if WebSocket is not available
+        }
+      })();
+    </script>
+  </body>
 </html>

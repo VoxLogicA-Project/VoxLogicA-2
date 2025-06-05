@@ -311,30 +311,66 @@ live_reload_clients = set()
 class ReloadEventHandler(FileSystemEventHandler):
     def __init__(self, loop):
         self.loop = loop
+        self.logger = logging.getLogger("voxlogica.filewatcher")
 
     def on_any_event(self, event):
+        if event.is_directory:
+            return
+
+        self.logger.info(f"File change detected: {event.src_path} ({event.event_type})")
+
         # Notify all connected clients
         for ws in list(live_reload_clients):
-            self.loop.create_task(ws.send_text("reload"))
+            try:
+                self.loop.create_task(ws.send_text("reload"))
+                self.logger.debug(f"Sent reload signal to WebSocket client")
+            except Exception as e:
+                self.logger.warning(f"Failed to send reload signal to WebSocket: {e}")
+                live_reload_clients.discard(ws)
 
 
 @api_app.websocket("/livereload")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     live_reload_clients.add(websocket)
+    logger = logging.getLogger("voxlogica.browser")
     try:
         while True:
-            await websocket.receive_text()  # Keep connection alive
+            message = await websocket.receive_text()
+            # Handle console messages from browser
+            try:
+                import json
+
+                data = json.loads(message)
+                if isinstance(data, dict) and "type" in data and "message" in data:
+                    msg_type = data["type"]
+                    msg_content = data["message"]
+                    if msg_type == "log":
+                        logger.info(f"[BROWSER] {msg_content}")
+                    elif msg_type == "error":
+                        logger.error(f"[BROWSER ERROR] {msg_content}")
+                    elif msg_type == "warn":
+                        logger.warning(f"[BROWSER WARN] {msg_content}")
+                # else: just keep connection alive for other messages
+            except (json.JSONDecodeError, KeyError):
+                # Not a console message, just keep connection alive
+                pass
     except WebSocketDisconnect:
         live_reload_clients.remove(websocket)
 
 
 def start_file_watcher(loop):
     static_dir = Path(__file__).parent / "static"
+    logger = logging.getLogger("voxlogica.filewatcher")
+    logger.info(f"Starting file watcher for directory: {static_dir}")
+
     event_handler = ReloadEventHandler(loop)
     observer = Observer()
     observer.schedule(event_handler, str(static_dir), recursive=True)
     observer.start()
+
+    logger.info("File watcher started successfully")
+    return observer
 
 
 # ----------------- CLI Commands -----------------
@@ -356,8 +392,14 @@ def serve(
     Logger.info(f"API documentation available at http://{host}:{port}/docs")
 
     loop = asyncio.get_event_loop()
-    start_file_watcher(loop)
-    uvicorn.run(api_app, host=host, port=port)
+    observer = start_file_watcher(loop)
+
+    try:
+        uvicorn.run(api_app, host=host, port=port)
+    finally:
+        if observer:
+            observer.stop()
+            observer.join()
 
 
 # ----------------- API Models -----------------
