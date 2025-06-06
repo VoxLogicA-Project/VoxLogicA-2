@@ -1,4 +1,6 @@
 from setuptools import setup, find_packages
+
+# Import version from the package
 from voxlogica.version import __version__
 
 setup(

@@ -30,6 +30,8 @@ MANDATORY: At the start of a new chat, confirm you know all the rules by writing
 
 MANDATORY: The AI is responsible for keeping the META directory and GUIDE.md up to date, concise, and free of redundancy.
 
+MANDATORY: Do not record temporary information into important files such as GUIDE.md or SWE_POLICY.md. We are not keeping temporary records by now, except for the issues in the OPEN directory, which are not temporary but rather open issues.
+
 MANDATORY: In any chat, when executing any command, it is required to follow the policies in the META directory and all SWE decisions therein.
 
 MANDATORY: The AI is responsible for checking and maintaining the documentation (in doc/) so that it is accurate with respect to the current implementation, and must act on changes appropriately.
