@@ -51,17 +51,6 @@ class WorkPlan:
         """Add a goal to the work plan"""
         self.goals.add(operation_id)
     
-    def add_operation(self, op_id: OperationId, operator: Constant | str, arguments: Arguments) -> None:
-        """Add an operation to the work plan"""
-        self.operations[op_id] = Operation(operator, arguments)
-
-class Operations:
-    """Collection of operations with content-addressed memoization using SHA256 hashes"""
-    
-    def __init__(self):
-        self.created_operations: Set[OperationId] = set()
-        self.memoize = True
-    
     def _compute_operation_id(self, operator: Constant | str, arguments: Arguments) -> OperationId:
         """Compute content-addressed SHA256 ID for an operation"""
         op_dict = {"operator": operator, "arguments": arguments}
@@ -69,24 +58,14 @@ class Operations:
         sha256_hash = hashlib.sha256(canonical_json).hexdigest()
         return sha256_hash
     
-    def find_or_create(self, operator: Constant | str, arguments: Arguments) -> OperationId:
-        """Find an existing operation or create a new one"""
+    def add_operation(self, operator: Constant | str, arguments: Arguments) -> OperationId:
+        """Add an operation to the work plan if not already present, return operation ID"""
         operation_id = self._compute_operation_id(operator, arguments)
         
-        if self.memoize and operation_id in self.created_operations:
-            return operation_id
-        
-        return self.create(operator, arguments)
-    
-    def create(self, operator: Constant | str, arguments: Arguments) -> OperationId:
-        """Create a new operation with content-addressed ID"""
-        operation_id = self._compute_operation_id(operator, arguments)
-        
-        if self.memoize:
-            self.created_operations.add(operation_id)
+        if operation_id not in self.operations:
+            self.operations[operation_id] = Operation(operator, arguments)
         
         return operation_id
-
 
 class OperationVal:
     """Operation value"""
@@ -133,7 +112,6 @@ class Environment:
 
 def reduce_expression(
     env: Environment,
-    operations: Operations,
     work_plan: WorkPlan,
     expr: Expression,
     stack: Optional[Stack] = None,
@@ -142,18 +120,15 @@ def reduce_expression(
     current_stack: Stack = [] if stack is None else stack
     
     if isinstance(expr, ENumber):
-        op_id = operations.find_or_create(expr.value, {})
-        work_plan.add_operation(op_id, expr.value, {})
+        op_id = work_plan.add_operation(expr.value, {})
         return op_id
     
     elif isinstance(expr, EBool):
-        op_id = operations.find_or_create(expr.value, {})
-        work_plan.add_operation(op_id, expr.value, {})
+        op_id = work_plan.add_operation(expr.value, {})
         return op_id
     
     elif isinstance(expr, EString):
-        op_id = operations.find_or_create(expr.value, {})
-        work_plan.add_operation(op_id, expr.value, {})
+        op_id = work_plan.add_operation(expr.value, {})
         return op_id
     
     elif isinstance(expr, ECall):
@@ -162,8 +137,7 @@ def reduce_expression(
             val = env.try_find(expr.identifier)
             if val is None:
                 # If not found, create a new operation with the identifier
-                op_id = operations.find_or_create(expr.identifier, {})
-                work_plan.add_operation(op_id, expr.identifier, {})
+                op_id = work_plan.add_operation(expr.identifier, {})
                 return op_id
             
             if isinstance(val, OperationVal):
@@ -177,7 +151,7 @@ def reduce_expression(
         # It's a function call with arguments
         this_stack: Stack = [(expr.identifier, expr.position)] + current_stack
         args_ops = [
-            reduce_expression(env, operations, work_plan, arg, this_stack)
+            reduce_expression(env, work_plan, arg, this_stack)
             for arg in expr.arguments
         ]
         
@@ -188,8 +162,7 @@ def reduce_expression(
         val = env.try_find(expr.identifier)
         if val is None:
             # If not found, create a new operation with the identifier and arguments
-            op_id = operations.find_or_create(expr.identifier, args_dict)
-            work_plan.add_operation(op_id, expr.identifier, args_dict)
+            op_id = work_plan.add_operation(expr.identifier, args_dict)
             return op_id
         
         if isinstance(val, OperationVal):
@@ -217,7 +190,7 @@ def reduce_expression(
             
             # Reduce the function body in the new environment
             func_stack: Stack = [(expr.identifier, expr.position)] + current_stack
-            return reduce_expression(func_env, operations, work_plan, val.expression, func_stack)
+            return reduce_expression(func_env, work_plan, val.expression, func_stack)
     
     # This should never happen if the parser is correct
     fail("Internal error in reducer: unknown expression type")
@@ -226,7 +199,6 @@ def reduce_expression(
 
 def reduce_command(
     env: Environment,
-    operations: Operations,
     work_plan: WorkPlan,
     parsed_imports: Set[str],
     command: Command,
@@ -236,7 +208,7 @@ def reduce_command(
     if isinstance(command, Declaration):
         if not command.arguments:
             # It's a simple variable declaration
-            op_id = reduce_expression(env, operations, work_plan, command.expression)
+            op_id = reduce_expression(env, work_plan, command.expression)
             return env.bind(command.identifier, OperationVal(op_id)), []
         else:
             # It's a function declaration
@@ -249,12 +221,12 @@ def reduce_command(
             )
     
     elif isinstance(command, Save):
-        op_id = reduce_expression(env, operations, work_plan, command.expression)
+        op_id = reduce_expression(env, work_plan, command.expression)
         work_plan.add_goal(op_id)
         return env, []
     
     elif isinstance(command, Print):
-        op_id = reduce_expression(env, operations, work_plan, command.expression)
+        op_id = reduce_expression(env, work_plan, command.expression)
         work_plan.add_goal(op_id)
         return env, []
     
@@ -282,7 +254,6 @@ def reduce_command(
 
 def reduce_program(program: Program) -> WorkPlan:
     """Reduce a program to a work plan"""
-    operations = Operations()
     work_plan = WorkPlan()
     env = Environment()
     parsed_imports: Set[str] = set()
@@ -293,7 +264,7 @@ def reduce_program(program: Program) -> WorkPlan:
     # Process commands until there are none left
     while commands:
         command = commands.pop(0)
-        env, imports = reduce_command(env, operations, work_plan, parsed_imports, command)
+        env, imports = reduce_command(env, work_plan, parsed_imports, command)
         commands = imports + commands
     
     return work_plan
