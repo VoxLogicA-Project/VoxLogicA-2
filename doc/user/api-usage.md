@@ -129,7 +129,7 @@ curl -X POST http://localhost:8000/api/v1/run \
         { "operator": 2.0, "arguments": [] },
         { "operator": "+", "arguments": [0, 1] }
       ],
-      "goals": [{ "type": "print", "name": "sum", "operation_id": 2 }]
+      "goals": [{ "operation_id": 2 }]
     },
     "result.txt": "let a=1.0\nlet b=2.0\nlet c=+(a,b)\nprint \"sum\" c"
   }

@@ -7,9 +7,13 @@ from typing import (
     List,
     Set,
     Optional,
-    Union,
     Sequence,
+    TYPE_CHECKING,
 )
+from dataclasses import dataclass
+
+if TYPE_CHECKING:
+    pass
 import hashlib
 import canonicaljson
 
@@ -29,63 +33,60 @@ from voxlogica.parser import (
 from voxlogica.error_msg import fail, fail_with_stacktrace, Stack
 
 # Type aliases
-identifier = str
-OperationId = str
-Constant = str | bool | int | float
-Arguments = Dict[str, OperationId]
+type identifier = str
+type OperationId = str
+type Constant = str | bool | int | float
+type Arguments = Dict[str, OperationId]
 
-# Simple operation structure: (operator, arguments)
-Operation = tuple[Union[Constant, str], Arguments]
-
-# Goals
-Goal = tuple[str, str, OperationId]  # (type, name, operation_id)
+@dataclass
+class Operation:
+    """Operation with operator and arguments"""
+    operator: Constant | str
+    arguments: Arguments
 
 class WorkPlan:
     """A topologically sorted DAG of operations with goals"""
     
     def __init__(self):
         self.operations: Dict[OperationId, Operation] = {}
-        self.goals: List[Goal] = []
+        self.goals: List[OperationId] = []
     
-    def add_operation(self, op_id: OperationId, operator: Union[Constant, str], arguments: Arguments) -> None:
+    def add_operation(self, op_id: OperationId, operator: Constant | str, arguments: Arguments) -> None:
         """Add an operation to the work plan"""
-        self.operations[op_id] = (operator, arguments)
+        self.operations[op_id] = Operation(operator, arguments)
     
-    def add_goal(self, goal_type: str, name: str, operation_id: OperationId) -> None:
+    def add_goal(self, operation_id: OperationId) -> None:
         """Add a goal to the work plan"""
-        self.goals.append((goal_type, name, operation_id))
+        self.goals.append(operation_id)
     
     def __str__(self) -> str:
-        goals_str = ",".join([f"{t}({n},{oid})" for t, n, oid in self.goals])
+        goals_str = ",".join(self.goals)
         ops_str = "\n".join([f"{i} -> {self._format_operation(op)}" for i, (oid, op) in enumerate(self.operations.items())])
         return f"goals: {goals_str}\noperations:\n{ops_str}"
     
     def _format_operation(self, op: Operation) -> str:
         """Format an operation for display"""
-        operator, arguments = op
-        if not arguments:
-            return str(operator)
-        args_str = ",".join(arguments.values())
-        return f"{operator}({args_str})"
+        if not op.arguments:
+            return str(op.operator)
+        args_str = ",".join(op.arguments.values())
+        return f"{op.operator}({args_str})"
     
     def to_json(self, buffer_assignment: Optional[Dict[OperationId, int]] = None) -> dict:
         """Convert to JSON format"""
         operations_list = []
-        for op_id, (operator, arguments) in self.operations.items():
+        for op_id, op in self.operations.items():
             op_dict = {
                 "id": op_id,
-                "operator": operator,
-                "arguments": arguments,
+                "operator": op.operator,
+                "arguments": op.arguments,
             }
             if buffer_assignment and op_id in buffer_assignment:
                 op_dict["buffer_id"] = buffer_assignment[op_id]
             operations_list.append(op_dict)
         
         goals_list = []
-        for goal_type, name, operation_id in self.goals:
+        for operation_id in self.goals:
             goals_list.append({
-                "type": goal_type,
-                "name": name,
                 "operation_id": operation_id,
             })
         
@@ -97,8 +98,8 @@ class WorkPlan:
     def to_dot(self, buffer_assignment: Optional[Dict[OperationId, int]] = None) -> str:
         """Convert to DOT format"""
         dot_str = "digraph {\n"
-        for op_id, (operator, arguments) in self.operations.items():
-            op_name = str(operator)
+        for op_id, op in self.operations.items():
+            op_name = str(op.operator)
             op_label = f"{op_name}"
             
             if buffer_assignment and op_id in buffer_assignment:
@@ -107,7 +108,7 @@ class WorkPlan:
             
             dot_str += f'  "{op_id}" [label="{op_label}"]\n'
             
-            for argument in arguments.values():
+            for argument in op.arguments.values():
                 dot_str += f'  "{argument}" -> "{op_id}";\n'
         
         dot_str += "}\n"
@@ -121,14 +122,14 @@ class Operations:
         self.by_content: Dict[tuple, OperationId] = {}
         self.memoize = True
     
-    def _compute_operation_id(self, operator: Union[Constant, str], arguments: Arguments) -> OperationId:
+    def _compute_operation_id(self, operator: Constant | str, arguments: Arguments) -> OperationId:
         """Compute content-addressed SHA256 ID for an operation"""
         op_dict = {"operator": operator, "arguments": arguments}
         canonical_json = canonicaljson.encode_canonical_json(op_dict)
         sha256_hash = hashlib.sha256(canonical_json).hexdigest()
         return sha256_hash
     
-    def find_or_create(self, operator: Union[Constant, str], arguments: Arguments) -> OperationId:
+    def find_or_create(self, operator: Constant | str, arguments: Arguments) -> OperationId:
         """Find an existing operation or create a new one"""
         if self.memoize:
             key = (operator, tuple(sorted(arguments.items())))
@@ -137,7 +138,7 @@ class Operations:
         
         return self.create(operator, arguments)
     
-    def create(self, operator: Union[Constant, str], arguments: Arguments) -> OperationId:
+    def create(self, operator: Constant | str, arguments: Arguments) -> OperationId:
         """Create a new operation with content-addressed ID"""
         new_id = self._compute_operation_id(operator, arguments)
         
@@ -147,9 +148,6 @@ class Operations:
         
         return new_id
 
-
-# Dynamic values for evaluation
-DVal = Union["OperationVal", "FunctionVal"]
 
 class OperationVal:
     """Operation value"""
@@ -162,6 +160,9 @@ class FunctionVal:
         self.environment = environment
         self.parameters = parameters
         self.expression = expression
+
+# Dynamic values for evaluation
+DVal = OperationVal | FunctionVal
 
 class Environment:
     """Environment for variable bindings"""
@@ -310,12 +311,12 @@ def reduce_command(
     
     elif isinstance(command, Save):
         op_id = reduce_expression(env, operations, work_plan, command.expression)
-        work_plan.add_goal("save", command.identifier, op_id)
+        work_plan.add_goal(op_id)
         return env, []
     
     elif isinstance(command, Print):
         op_id = reduce_expression(env, operations, work_plan, command.expression)
-        work_plan.add_goal("print", command.identifier, op_id)
+        work_plan.add_goal(op_id)
         return env, []
     
     elif isinstance(command, Import):
