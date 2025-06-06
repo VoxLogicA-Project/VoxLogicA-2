@@ -7,13 +7,10 @@ from typing import (
     List,
     Set,
     Optional,
-    Sequence,
-    TYPE_CHECKING,
+    Sequence
 )
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-if TYPE_CHECKING:
-    pass
 import hashlib
 import canonicaljson
 
@@ -44,82 +41,25 @@ class Operation:
     operator: Constant | str
     arguments: Arguments
 
+@dataclass
 class WorkPlan:
     """A topologically sorted DAG of operations with goals"""
-    
-    def __init__(self):
-        self.operations: Dict[OperationId, Operation] = {}
-        self.goals: List[OperationId] = []
+    operations: Dict[OperationId, Operation] = field(default_factory=dict)
+    goals: Set[OperationId] = field(default_factory=set)
+
+    def add_goal(self, operation_id: OperationId) -> None:
+        """Add a goal to the work plan"""
+        self.goals.add(operation_id)
     
     def add_operation(self, op_id: OperationId, operator: Constant | str, arguments: Arguments) -> None:
         """Add an operation to the work plan"""
         self.operations[op_id] = Operation(operator, arguments)
-    
-    def add_goal(self, operation_id: OperationId) -> None:
-        """Add a goal to the work plan"""
-        self.goals.append(operation_id)
-    
-    def __str__(self) -> str:
-        goals_str = ",".join(self.goals)
-        ops_str = "\n".join([f"{i} -> {self._format_operation(op)}" for i, (oid, op) in enumerate(self.operations.items())])
-        return f"goals: {goals_str}\noperations:\n{ops_str}"
-    
-    def _format_operation(self, op: Operation) -> str:
-        """Format an operation for display"""
-        if not op.arguments:
-            return str(op.operator)
-        args_str = ",".join(op.arguments.values())
-        return f"{op.operator}({args_str})"
-    
-    def to_json(self, buffer_assignment: Optional[Dict[OperationId, int]] = None) -> dict:
-        """Convert to JSON format"""
-        operations_list = []
-        for op_id, op in self.operations.items():
-            op_dict = {
-                "id": op_id,
-                "operator": op.operator,
-                "arguments": op.arguments,
-            }
-            if buffer_assignment and op_id in buffer_assignment:
-                op_dict["buffer_id"] = buffer_assignment[op_id]
-            operations_list.append(op_dict)
-        
-        goals_list = []
-        for operation_id in self.goals:
-            goals_list.append({
-                "operation_id": operation_id,
-            })
-        
-        return {
-            "operations": operations_list,
-            "goals": goals_list,
-        }
-    
-    def to_dot(self, buffer_assignment: Optional[Dict[OperationId, int]] = None) -> str:
-        """Convert to DOT format"""
-        dot_str = "digraph {\n"
-        for op_id, op in self.operations.items():
-            op_name = str(op.operator)
-            op_label = f"{op_name}"
-            
-            if buffer_assignment and op_id in buffer_assignment:
-                buffer_id = buffer_assignment[op_id]
-                op_label = f"{op_name}\\nbuf:{buffer_id}"
-            
-            dot_str += f'  "{op_id}" [label="{op_label}"]\n'
-            
-            for argument in op.arguments.values():
-                dot_str += f'  "{argument}" -> "{op_id}";\n'
-        
-        dot_str += "}\n"
-        return dot_str
-
 
 class Operations:
     """Collection of operations with content-addressed memoization using SHA256 hashes"""
     
     def __init__(self):
-        self.by_content: Dict[tuple, OperationId] = {}
+        self.created_operations: Set[OperationId] = set()
         self.memoize = True
     
     def _compute_operation_id(self, operator: Constant | str, arguments: Arguments) -> OperationId:
@@ -131,22 +71,21 @@ class Operations:
     
     def find_or_create(self, operator: Constant | str, arguments: Arguments) -> OperationId:
         """Find an existing operation or create a new one"""
-        if self.memoize:
-            key = (operator, tuple(sorted(arguments.items())))
-            if key in self.by_content:
-                return self.by_content[key]
+        operation_id = self._compute_operation_id(operator, arguments)
+        
+        if self.memoize and operation_id in self.created_operations:
+            return operation_id
         
         return self.create(operator, arguments)
     
     def create(self, operator: Constant | str, arguments: Arguments) -> OperationId:
         """Create a new operation with content-addressed ID"""
-        new_id = self._compute_operation_id(operator, arguments)
+        operation_id = self._compute_operation_id(operator, arguments)
         
         if self.memoize:
-            key = (operator, tuple(sorted(arguments.items())))
-            self.by_content[key] = new_id
+            self.created_operations.add(operation_id)
         
-        return new_id
+        return operation_id
 
 
 class OperationVal:
