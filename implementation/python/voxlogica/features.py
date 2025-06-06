@@ -19,6 +19,7 @@ import json
 from .parser import parse_program
 from .reducer import reduce_program
 from .error_msg import Logger, VLException
+from .converters import to_json, to_dot
 
 T = TypeVar("T")
 
@@ -148,7 +149,7 @@ def handle_run(
         messages = []
 
         if save_task_graph or save_task_graph_as_dot:
-            dot_content = program_obj.to_dot(buffer_assignment)
+            dot_content = to_dot(program_obj, buffer_assignment)
             output_file = save_task_graph or save_task_graph_as_dot
 
             if filename:  # CLI mode - save to file
@@ -161,7 +162,7 @@ def handle_run(
                     saved_files[output_file] = dot_content
 
         if save_task_graph_as_json:
-            json_content = program_obj.to_json(buffer_assignment)
+            json_content = to_json(program_obj, buffer_assignment)
 
             if filename:  # CLI mode - save to file
                 with open(save_task_graph_as_json, "w") as f:

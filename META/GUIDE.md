@@ -10,9 +10,17 @@ The `META` directory contains all records, policies, and documentation related t
 - **Policies:** SWE policies and best practices are documented here (e.g., `SWE_POLICY.md`).
 - **Guides:** This `GUIDE.md` provides an overview and must be kept up to date.
 - **Emergent Structure:** The structure of `META` is flexible and should evolve as needed. Do not use rigid templates or boundaries.
-- **Issues:** All issues are organized in `META/ISSUES/OPEN` (for open issues) and `META/ISSUES/CLOSED` (for closed issues), with directories named ISSUE_X where X is the GitHub issue number. Each issue directory contains a README.md file and any other relevant files for that issue.
+- **Issues:** All issues are organized in `META/ISSUES/OPEN` (for open issues) and `META/ISSUES/CLOSED` (for closed issues), with directories named using descriptive kebab-case names. Each issue directory contains a README.md file and any other relevant files for that issue.
 
 ## Current Working Memory
+
+### Active Issues
+
+- **workplan-converter-refactoring**: OPEN - Refactoring WorkPlan class from traditional class with conversion methods to dataclass with external converter functions. This architectural change improves separation of concerns by extracting conversion logic into a new `voxlogica.converters` package with dedicated JSON and DOT converter functions.
+
+### Organizational Changes
+
+- **Issue Directory Structure**: COMPLETED (2025-06-06) - Restructured META/ISSUES to use OPEN/CLOSED subdirectories for better organization. All archived issues moved to CLOSED/, and policies updated to reflect the preferred OPEN/CLOSED structure. This improves visual clarity and follows established software engineering practices for issue management.
 
 ### Recent Completions
 
