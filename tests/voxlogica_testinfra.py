@@ -23,10 +23,10 @@ def get_supported_languages():
 def get_voxlogica_cmd(language, imgql_path):
     repo_root = Path(__file__).resolve().parent.parent
     if language == "python":
+        # Use the installed voxlogica command from the venv
+        voxlogica_path = repo_root / ".venv" / "bin" / "voxlogica"
         return [
-            sys.executable,
-            "-m",
-            "implementation.python.voxlogica.main",
+            str(voxlogica_path),
             "run",
             str(imgql_path),
         ], repo_root
