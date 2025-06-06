@@ -10,7 +10,7 @@ correctness (no overlapping lifetimes and type compatibility).
 # https://www.researchgate.net/publication/244252294_SIRA_Schedule_Independent_Register_Allocation_for_Software_Pipelining
 
 from typing import Dict, List, Callable, Any, Set, Optional
-from .reducer import WorkPlan, Operation, OperationId, Goal, GoalSave, GoalPrint
+from .reducer import WorkPlan, Operation, OperationId, Goal
 from collections import defaultdict, deque
 
 
