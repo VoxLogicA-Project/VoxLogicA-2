@@ -110,7 +110,6 @@ When an issue is marked complete, the following steps are MANDATORY:
 ## Remote Issue Closure Synchronization Policy
 
 - When an issue is closed locally, the corresponding remote (GitHub) issue MUST be closed immediately.
-- After attempting to close the remote issue, record the result (success or failure) in local working memory.
 - If the remote close fails (e.g., due to network, permissions, or API issues), the user MUST be notified and the issue marked as "pending remote close."
 - On subsequent runs, the system MUST automatically retry closing any issues marked as "pending remote close" until successful, and update the record accordingly.
 - This ensures local and remote issue states remain synchronized, and failures to close remote issues are visible and actionable.
