@@ -10,6 +10,10 @@ implementation: implementation
 
 # WHAT **NOT** TO DO
 
+- Do not run arbitrary credible commands to run tests or execute the tool: use the two main scripts in tests and in the root dir of the repo. They take care of loading the correct venv
+
+- Do not create venvs: they are already there.
+
 - Do not write tests OUTSIDE of the tests directory
 
 - Do not write tests randomly in the test directory: the testing infrastructure is well documented and new tests go there

@@ -98,18 +98,15 @@ Arguments = Dict[str, OperationId]
 class Operation:
     """Operation in the work plan"""
 
+    id: OperationId
     operator: Operator
     arguments: Arguments
 
     def __post_init__(self):
-        # Convert arguments dict to a frozenset of items for hashability
-        object.__setattr__(
-            self, "arguments", dict(self.arguments)
-        )  # Ensure it's a proper dict
+        object.__setattr__(self, "arguments", dict(self.arguments))
 
     def __hash__(self):
-        # Make Operation hashable by converting arguments to frozenset
-        return hash((self.operator, frozenset(self.arguments.items())))
+        return hash((self.id, self.operator, frozenset(self.arguments.items())))
 
     def __str__(self) -> str:
         if not self.arguments:
@@ -153,8 +150,6 @@ class WorkPlan:
 
     operations: List[Operation]
     goals: List[Goal]
-    # Store the mapping from operations to their IDs for DOT generation
-    _operation_ids: Optional[Dict[Operation, OperationId]] = None
 
     def __str__(self) -> str:
         ops_str = "\n".join([f"{i} -> {op}" for i, op in enumerate(self.operations)])
@@ -206,15 +201,9 @@ class WorkPlan:
     def to_dot(self, buffer_assignment: Optional[Dict[OperationId, int]] = None) -> str:
         """Convert the work plan to a DOT graph representation"""
         dot_str = "digraph {\n"
-
-        # Create a mapping from operation ID to short index for readability
-        id_to_index = {
-            op_id: i for i, (op_id, _) in enumerate(self._get_operations_with_ids())
-        }
-
-        for op_id, operation in self._get_operations_with_ids():
-            # Only show the operator/function name (no index, no arguments, no hashes)
-            op_name = str(operation.operator)
+        for op in self.operations:
+            op_id = op.id
+            op_name = str(op.operator)
             op_label = f"{op_name}"
 
             # Add buffer assignment to label if available
@@ -224,30 +213,18 @@ class WorkPlan:
 
             dot_str += f'  "{op_id}" [label="{op_label}"]\n'
 
-            for argument in operation.arguments.values():
+            for argument in op.arguments.values():
                 dot_str += f'  "{argument}" -> "{op_id}";\n'
 
         dot_str += "}\n"
         return dot_str
-
-    def _get_operations_with_ids(self) -> List[Tuple[OperationId, Operation]]:
-        """Helper method to get operations with their IDs for internal use"""
-        if self._operation_ids:
-            return [(self._operation_ids[op], op) for op in self.operations]
-        else:
-            # Fallback: generate sequential fake IDs for display
-            result = []
-            for i, operation in enumerate(self.operations):
-                fake_id = f"op_{i}"
-                result.append((fake_id, operation))
-            return result
 
     def to_json(
         self, buffer_assignment: Optional[Dict[OperationId, int]] = None
     ) -> dict:
         """Return a JSON-serializable dict representing the work plan."""
 
-        def op_to_dict(op_id, op):
+        def op_to_dict(op):
             # Output numbers as JSON numbers, not strings
             if isinstance(op.operator, NumberOp):
                 operator_value = op.operator.value
@@ -255,14 +232,14 @@ class WorkPlan:
                 operator_value = str(op.operator)
 
             result = {
-                "id": op_id,  # Add the SHA256 ID field
+                "id": op.id,  # Add the SHA256 ID field
                 "operator": operator_value,
                 "arguments": op.arguments,
             }
 
             # Add buffer assignment if available
-            if buffer_assignment and op_id in buffer_assignment:
-                result["buffer_id"] = buffer_assignment[op_id]
+            if buffer_assignment and op.id in buffer_assignment:
+                result["buffer_id"] = buffer_assignment[op.id]
 
             return result
 
@@ -282,11 +259,8 @@ class WorkPlan:
             else:
                 return {"type": "unknown"}
 
-        # Use _get_operations_with_ids() to get both operation and ID
-        operations_with_ids = self._get_operations_with_ids()
-
         return {
-            "operations": [op_to_dict(op_id, op) for op_id, op in operations_with_ids],
+            "operations": [op_to_dict(op) for op in self.operations],
             "goals": [goal_to_dict(goal) for goal in self.goals],
         }
 
@@ -315,10 +289,7 @@ class Operations:
     ) -> OperationId:
         """Compute content-addressed SHA256 ID for an operation"""
         # Create a canonical JSON representation of the operation
-        op_dict = {
-            "operator": self._operator_to_dict(operator),
-            "arguments": dict(sorted(arguments.items())),  # Sort for consistency
-        }
+        op_dict = {"operator": self._operator_to_dict(operator), "arguments": arguments}
 
         # Use canonical JSON encoding (RFC 8785)
         canonical_json = canonicaljson.encode_canonical_json(op_dict)
@@ -380,7 +351,9 @@ class Operations:
                     f"SHA256 hash collision detected for operation ID: {new_id}"
                 )
 
-        new_operation = InternalOperation(new_id, Operation(operator, arguments))
+        new_operation = InternalOperation(
+            new_id, Operation(new_id, operator, arguments)
+        )
 
         if self.memoize:
             self.by_term[(operator, tuple(sorted(arguments.items())))] = new_operation
@@ -637,7 +610,9 @@ def reduce_program(program: Program) -> WorkPlan:
 
     # Convert the operations dictionary to a list and build ID mapping
     sorted_internal_ops = sorted(operations.by_id.values(), key=lambda x: x.id)
-    op_list = [op.operation for op in sorted_internal_ops]
-    operation_ids = {op.operation: op.id for op in sorted_internal_ops}
+    op_list = [
+        Operation(op.id, op.operation.operator, op.operation.arguments)
+        for op in sorted_internal_ops
+    ]
 
-    return WorkPlan(op_list, list(goals), operation_ids)
+    return WorkPlan(op_list, list(goals))
