@@ -1,7 +1,9 @@
-let f(x,y) = x + y
+// Test file for buffer allocation analysis
+// This creates a simple computation graph with dependencies
 
-let y = f(a,b)
-
-let x = load(y)
-
-print "ciao" x
+let a = 1.0
+let b = 2.0  
+let c = a + b
+let d = c * 3.0
+let e = a + d
+save "output.txt" e

@@ -15,6 +15,39 @@ from voxlogica.reducer import WorkPlan, OperationId
 from typing import Dict, Set, List, Any, Tuple
 from collections import defaultdict, deque
 
+def print_buffer_assignment(
+    workplan: WorkPlan, 
+    buffer_assignment: Dict[OperationId, int], 
+    type_assignment_func: Callable[[OperationId], Any]
+) -> None:
+    """
+    Print a formatted console output of the buffer assignment.
+    
+    Args:
+        workplan: The WorkPlan containing operations
+        buffer_assignment: Dictionary mapping OperationId to buffer_id
+        type_assignment_func: Function that returns the type for each operation ID
+    """
+    print("\n=== Buffer Assignment ===\n")
+    
+    # Group operations by buffer ID
+    buffer_to_ops = defaultdict(list)
+    for op_id, buffer_id in buffer_assignment.items():
+        buffer_to_ops[buffer_id].append(op_id)
+    
+    # Print each buffer and its assigned operations
+    for buffer_id in sorted(buffer_to_ops.keys()):
+        print(f"Buffer {buffer_id}:")
+        for op_id in buffer_to_ops[buffer_id]:
+            operation = workplan.operations[op_id]
+            op_type = type_assignment_func(op_id)
+            print(f"  {op_id[:8]}: {operation.operator} (type: {op_type})")
+        print()
+    
+    print(f"Total buffers allocated: {len(buffer_to_ops)}")
+    print(f"Total operations: {len(workplan.operations)}")
+    print()
+
 def allocate_buffers(workplan: WorkPlan, type_assignment: Dict[OperationId, Any]) -> Dict[OperationId, int]:
     """
     Allocate buffers for operations in a WorkPlan with the constraint that
@@ -37,6 +70,7 @@ def allocate_buffers(workplan: WorkPlan, type_assignment: Dict[OperationId, Any]
     
     # Process nodes in reverse topological order (outputs first)
     buffer_allocation = {}
+    buffer_to_operation = {}  # Maps buffer_id to operation_id that uses it
     type_to_buffers = defaultdict(list)  # Maps type to list of buffer_ids of that type
     next_buffer_id = 0
     
@@ -159,8 +193,8 @@ def test_buffer_allocation():
     # Add operations
     op_a = workplan.add_operation("load", {})
     op_b = workplan.add_operation("process", {"input": op_a})
-    op_c = workplan.add_operation("combine", {"input1": op_b})
-    op_d = workplan.add_operation("transform", {"input": op_c})
+    op_c = workplan.add_operation("combine", {"input1": op_b, "input2": op_d})
+    op_d = workplan.add_operation("transform", {"input": op_a})
     
     # Set goal
     workplan.add_goal(op_c)
@@ -187,7 +221,7 @@ if __name__ == "__main__":
 
 def compute_buffer_allocation(
     workplan: WorkPlan,
-    type_assignment: Dict[OperationId, Any],
+    type_assignment: Callable[[OperationId], Any],
     type_compatibility: Callable[[Any, Any], bool],
 ) -> Dict[OperationId, int]:
     """
@@ -203,4 +237,6 @@ def compute_buffer_allocation(
     Returns:
         Dictionary mapping operation IDs to buffer IDs (integers starting from 0)
     """
-    return allocate_buffers(workplan, type_assignment)
+    # Convert the type assignment function to a dictionary for allocate_buffers
+    type_assignment_dict = {op_id: type_assignment(op_id) for op_id in workplan.operations}
+    return allocate_buffers(workplan, type_assignment_dict)
