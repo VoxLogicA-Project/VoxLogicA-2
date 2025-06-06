@@ -81,6 +81,7 @@ class RunRequest(BaseModel):
     save_task_graph_as_dot: Optional[str] = None
     save_task_graph_as_json: Optional[str] = None
     save_syntax: Optional[str] = None
+    compute_memory_assignment: Optional[bool] = False
     debug: Optional[bool] = False
 
 
@@ -168,6 +169,11 @@ def run(
     save_syntax: Optional[str] = typer.Option(
         None, help="Save the AST in text format and exit"
     ),
+    compute_memory_assignment: bool = typer.Option(
+        False,
+        "--compute-memory-assignment",
+        help="Compute and display memory buffer assignments",
+    ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
 ) -> None:
     """Run a VoxLogicA program"""
@@ -204,6 +210,7 @@ def run(
             save_task_graph_as_dot=save_task_graph_as_dot,
             save_task_graph_as_json=save_task_graph_as_json,
             save_syntax=save_syntax,
+            compute_memory_assignment=compute_memory_assignment,
             **kwargs,
         )
 

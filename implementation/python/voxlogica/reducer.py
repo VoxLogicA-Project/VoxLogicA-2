@@ -203,7 +203,7 @@ class WorkPlan:
 
         return Program(declarations + goals_cmds)
 
-    def to_dot(self) -> str:
+    def to_dot(self, buffer_assignment: Optional[Dict[OperationId, int]] = None) -> str:
         """Convert the work plan to a DOT graph representation"""
         dot_str = "digraph {\n"
 
@@ -216,6 +216,12 @@ class WorkPlan:
             # Only show the operator/function name (no index, no arguments, no hashes)
             op_name = str(operation.operator)
             op_label = f"{op_name}"
+
+            # Add buffer assignment to label if available
+            if buffer_assignment and op_id in buffer_assignment:
+                buffer_id = buffer_assignment[op_id]
+                op_label = f"{op_name}\\nbuf:{buffer_id}"
+
             dot_str += f'  "{op_id}" [label="{op_label}"]\n'
 
             for argument in operation.arguments.values():
@@ -236,7 +242,9 @@ class WorkPlan:
                 result.append((fake_id, operation))
             return result
 
-    def to_json(self) -> dict:
+    def to_json(
+        self, buffer_assignment: Optional[Dict[OperationId, int]] = None
+    ) -> dict:
         """Return a JSON-serializable dict representing the work plan."""
 
         def op_to_dict(op_id, op):
@@ -245,11 +253,18 @@ class WorkPlan:
                 operator_value = op.operator.value
             else:
                 operator_value = str(op.operator)
-            return {
+
+            result = {
                 "id": op_id,  # Add the SHA256 ID field
                 "operator": operator_value,
                 "arguments": op.arguments,
             }
+
+            # Add buffer assignment if available
+            if buffer_assignment and op_id in buffer_assignment:
+                result["buffer_id"] = buffer_assignment[op_id]
+
+            return result
 
         def goal_to_dict(goal):
             if isinstance(goal, GoalSave):

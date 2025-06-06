@@ -208,6 +208,30 @@
         display: none;
       }
 
+      /* Checkbox styling */
+      .checkbox-container {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.875rem;
+        color: #374151;
+        cursor: pointer;
+        padding: 0.5rem;
+        border-radius: 6px;
+        transition: all 0.2s ease;
+      }
+
+      .checkbox-container:hover {
+        background: #f3f4f6;
+      }
+
+      .checkbox-container input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        accent-color: #4f46e5;
+        cursor: pointer;
+      }
+
       /* Message area */
       .message-area {
         padding: 0 0.75rem;
@@ -390,6 +414,11 @@
             <button class="btn btn-secondary" id="exportJsonBtn" disabled>
               Export JSON
             </button>
+            <label class="checkbox-container">
+              <input type="checkbox" id="memoryAssignmentCheckbox" />
+              <span class="checkmark"></span>
+              Show buffer assignments
+            </label>
             <input
               type="file"
               class="file-input"
@@ -476,6 +505,9 @@ print "sum" c'
           this.fileInput = document.getElementById("fileInput");
           this.messageArea = document.getElementById("messageArea");
           this.graphSvg = document.getElementById("graphSvg");
+          this.memoryAssignmentCheckbox = document.getElementById(
+            "memoryAssignmentCheckbox"
+          );
         }
 
         attachEventListeners() {
@@ -693,6 +725,8 @@ print "sum" c'
                 program: program,
                 save_task_graph_as_json: "graph.json",
                 save_task_graph: "graph.dot",
+                compute_memory_assignment:
+                  this.memoryAssignmentCheckbox.checked,
               }),
             });
 
@@ -729,9 +763,10 @@ print "sum" c'
           // Convert operations to nodes
           const nodes = graphData.operations.map((op) => ({
             id: op.id,
-            label: this.formatOperatorLabel(op.operator),
+            label: this.formatOperatorLabel(op.operator, op.buffer_id),
             operator: op.operator,
             arguments: op.arguments,
+            buffer_id: op.buffer_id,
             isGoal:
               op.operator === "goal" ||
               (typeof op.operator === "string" &&
@@ -1072,13 +1107,21 @@ print "sum" c'
           });
         }
 
-        formatOperatorLabel(operator) {
+        formatOperatorLabel(operator, bufferId) {
+          let label;
           if (typeof operator === "string") {
-            return operator.length > 8
-              ? operator.substring(0, 8) + "..."
-              : operator;
+            label =
+              operator.length > 8 ? operator.substring(0, 8) + "..." : operator;
+          } else {
+            label = String(operator);
           }
-          return String(operator);
+
+          // Add buffer ID if available
+          if (bufferId !== undefined && bufferId !== null) {
+            label += `\nbuf:${bufferId}`;
+          }
+
+          return label;
         }
 
         enableExportButtons() {

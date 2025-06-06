@@ -91,6 +91,7 @@ def handle_run(
     save_task_graph_as_dot: Optional[str] = None,
     save_task_graph_as_json: Optional[str] = None,
     save_syntax: Optional[str] = None,
+    compute_memory_assignment: bool = False,
     debug: bool = False,
     **kwargs,
 ) -> OperationResult[Dict[str, Any]]:
@@ -116,6 +117,29 @@ def handle_run(
         syntax = parse_program(parse_filename)
         program_obj = reduce_program(syntax)
 
+        # Compute buffer allocation if requested
+        buffer_assignment = None
+        if compute_memory_assignment:
+            from .buffer_allocation import (
+                compute_buffer_allocation,
+                print_buffer_assignment,
+            )
+
+            # For testing, assume all nodes have "basic_type" and use equality compatibility
+            def type_assignment(op_id):
+                return "basic_type"
+
+            def type_compatibility(type1, type2):
+                return type1 == type2
+
+            buffer_assignment = compute_buffer_allocation(
+                program_obj, type_assignment, type_compatibility
+            )
+
+            # Print the assignment to console if running from CLI
+            if filename:  # CLI mode
+                print_buffer_assignment(program_obj, buffer_assignment, type_assignment)
+
         # Build the result
         result = {
             "operations": len(program_obj.operations),
@@ -129,7 +153,7 @@ def handle_run(
         messages = []
 
         if save_task_graph or save_task_graph_as_dot:
-            dot_content = program_obj.to_dot()
+            dot_content = program_obj.to_dot(buffer_assignment)
             output_file = save_task_graph or save_task_graph_as_dot
 
             if filename:  # CLI mode - save to file
@@ -142,7 +166,7 @@ def handle_run(
                     saved_files[output_file] = dot_content
 
         if save_task_graph_as_json:
-            json_content = program_obj.to_json()
+            json_content = program_obj.to_json(buffer_assignment)
 
             if filename:  # CLI mode - save to file
                 with open(save_task_graph_as_json, "w") as f:
@@ -232,6 +256,12 @@ run_feature = FeatureRegistry.register(
                 "required": False,
                 "help": "Save the AST in text format",
             },
+            "compute_memory_assignment": {
+                "type": bool,
+                "required": False,
+                "default": False,
+                "help": "Compute and display memory buffer assignments",
+            },
             "debug": {
                 "type": bool,
                 "required": False,
@@ -258,6 +288,10 @@ run_feature = FeatureRegistry.register(
                     "Save task graph as JSON to this file",
                 ),
                 "save_syntax": (Optional[str], "Save syntax tree to this file"),
+                "compute_memory_assignment": (
+                    Optional[bool],
+                    "Compute and display memory buffer assignments",
+                ),
                 "debug": (Optional[bool], "Enable debug mode"),
             },
             "response_model": Dict[str, Any],
