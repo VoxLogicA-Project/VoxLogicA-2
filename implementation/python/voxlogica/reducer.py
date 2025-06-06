@@ -2,6 +2,8 @@
 VoxLogicA Reducer module - Python implementation (simplified)
 """
 
+from __future__ import annotations
+
 from typing import (
     Dict,
     List,
@@ -67,17 +69,17 @@ class WorkPlan:
         
         return operation_id
 
+@dataclass
 class OperationVal:
     """Operation value"""
-    def __init__(self, operation_id: OperationId):
-        self.operation_id = operation_id
+    operation_id: OperationId
 
+@dataclass
 class FunctionVal:
     """Function value"""
-    def __init__(self, environment: "Environment", parameters: List[identifier], expression: Expression):
-        self.environment = environment
-        self.parameters = parameters
-        self.expression = expression
+    environment: Environment
+    parameters: List[identifier]
+    expression: Expression
 
 # Dynamic values for evaluation
 DVal = OperationVal | FunctionVal
