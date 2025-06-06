@@ -1,3 +1,16 @@
+
+
+
+
+https://chatgpt.com/share/684323ec-9d74-8004-8883-f94d7df6e798
+
+
+
+
+
+
+
+
 # Static Buffer Reuse and Memory Planning for DAG Execution
 
 This directory documents algorithms, design decisions, and implementation notes for static memory planning and buffer reuse in the execution of DAGs (Directed Acyclic Graphs) of computational tasks, with a focus on Python and scientific computing workflows (e.g., VoxLogicA, PyTorch, Dask).
