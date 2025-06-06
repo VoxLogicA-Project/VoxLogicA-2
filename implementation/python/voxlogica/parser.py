@@ -3,9 +3,8 @@ VoxLogicA Parser module - Python implementation using Lark
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from typing import List, Union
 from pathlib import Path
-import os
 from lark import Lark, Transformer, v_args, Tree
 
 Position = str

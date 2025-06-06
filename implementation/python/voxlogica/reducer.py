@@ -8,13 +8,12 @@ from typing import (
     Set,
     Optional,
     Union,
-    Any,
     Sequence,
 )
 import hashlib
 import canonicaljson
 
-from .parser import (
+from voxlogica.parser import (
     Expression,
     ECall,
     ENumber,
@@ -27,7 +26,7 @@ from .parser import (
     Import,
     Program,
 )
-from .error_msg import fail, fail_with_stacktrace, Stack
+from voxlogica.error_msg import fail, fail_with_stacktrace, Stack
 
 # Type aliases
 identifier = str
@@ -327,7 +326,7 @@ def reduce_command(
         parsed_imports.add(command.path)
         
         # Import the file and get its commands
-        from .parser import parse_import
+        from voxlogica.parser import parse_import
         
         try:
             import_commands = parse_import(command.path)

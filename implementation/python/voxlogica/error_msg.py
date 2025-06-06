@@ -2,11 +2,8 @@
 VoxLogicA Error Message module - Python implementation
 """
 
-import sys
-import time
 import logging
-from typing import List, Tuple, Optional, Callable, Any, Dict, TypeVar, Generic
-from io import StringIO
+from typing import List, Tuple, Optional, Any, TypeVar
 from dataclasses import dataclass, field
 
 # Type variable for generic types

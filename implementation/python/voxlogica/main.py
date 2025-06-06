@@ -4,23 +4,22 @@ VoxLogicA Main module - Python implementation
 
 import asyncio
 import logging
-import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, TypeVar, Generic
+from typing import Any, Optional, TypeVar, Generic
 
 import typer
 import uvicorn
 from fastapi import FastAPI, HTTPException, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
-from fastapi.responses import RedirectResponse, FileResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from .features import FeatureRegistry, OperationResult
+from .features import FeatureRegistry
 from .error_msg import Logger, VLException
 from .version import get_version
 
