@@ -1,4 +1,7 @@
-let a = 1
-let b = 2
-let c = a + b
-print "sum" c
+let f(x,y) = x + y
+
+let y = f(a,b)
+
+let x = load(y)
+
+print "ciao" x
