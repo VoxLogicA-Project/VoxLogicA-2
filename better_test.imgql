@@ -1,0 +1,11 @@
+// Better test for buffer allocation
+// Two independent chains that can reuse buffers
+
+let x = 1.0
+let y = 2.0
+let a = x + y
+let z = 3.0
+let w = 4.0
+let b = z + w
+let result = a + b
+save "output.txt" result

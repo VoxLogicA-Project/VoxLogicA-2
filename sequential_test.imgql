@@ -1,0 +1,8 @@
+// Sequential operations with no interdependencies
+// Each operation only uses the result of the previous one
+
+let a = 1.0
+let b = a + 2.0    // a can be freed after this
+let c = b + 3.0    // b can be freed after this  
+let d = c + 4.0    // c can be freed after this
+save "output.txt" d
