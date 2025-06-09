@@ -35,3 +35,12 @@ The Dynamic Scheduler is an execution engine for VoxLogica-2 that implements per
 - **Extensible:** Can be replaced with other embedded databases if future requirements change.
 
 SQLite is the only practical, portable, and robust choice that meets all requirements for performance, reliability, and future extensibility in this context.
+
+
+### Implementation
+
+A VoxLogica workplan (DAG) is compiled directly to a Dask lazy graph. Each node in the workplan is represented as a Dask delayed function, with dependencies corresponding to the DAG structure. Dask's scheduler manages parallel execution, efficiently utilizing all available CPU cores and handling dependencies automatically.
+
+For constructs like "for each" loops over datasets, the dataset is represented as a Dask collection (such as a Dask array, dataframe, or bag). The body of the loop is compiled to a function, which is mapped over the collection using Dask's lazy map/apply methods. This enables chunked, parallel, and memory-efficient processing, as Dask only loads and processes data as needed.
+
+Persistence is streamlined: each node execution checks SQLite (using SHA256 content addressing) for existing results before running, and stores new results upon completion. This ensures deduplication, robust recovery, and efficient storage. The combination of Dask for execution and SQLite for persistence provides scalable, fault-tolerant, and efficient execution of complex VoxLogica workflows, including those with large datasets and data-dependent control flow.
