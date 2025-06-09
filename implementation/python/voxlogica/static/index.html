@@ -1204,7 +1204,17 @@ print "sum" c'
 
       // Initialize the visualizer when the page loads
       document.addEventListener("DOMContentLoaded", () => {
-        const example = `let a = 1\nlet b = 2\nlet c = a + b\nprint \"sum\" c`;
+        const example = `
+let a = f(x)
+let b = f(a)
+let c = f(b)
+let d = f(c)
+let e = g(x)
+let m = g(e)
+let j = g(m)
+let k = g(j)
+let h = f(d,k)
+`;
         const textarea = document.getElementById("programInput");
         if (textarea && !textarea.value.trim()) {
           textarea.value = example;

@@ -1,40 +1,28 @@
-"""
-Static Buffer Allocation for DAG Execution
-
-This module implements the static buffer reuse algorithm.
-Given a workplan (DAG), a type assignment function, and a type compatibility function,
-it computes an optimal buffer allocation that minimizes memory usage while ensuring
-correctness (no overlapping lifetimes and type compatibility).
-"""
-
-# https://www.researchgate.net/publication/244252294_SIRA_Schedule_Independent_Register_Allocation_for_Software_Pipelining
-
-from typing import Dict, Callable, Any
+from typing import Dict, Callable, Any, Set, List, Tuple
+from collections import defaultdict, deque
 from voxlogica.reducer import WorkPlan, OperationId
 
-from typing import Dict, Set, List, Any, Tuple
-from collections import defaultdict, deque
 
 def print_buffer_assignment(
-    workplan: WorkPlan, 
-    buffer_assignment: Dict[OperationId, int], 
-    type_assignment_func: Callable[[OperationId], Any]
+    workplan: WorkPlan,
+    buffer_assignment: Dict[OperationId, int],
+    type_assignment_func: Callable[[OperationId], Any],
 ) -> None:
     """
     Print a formatted console output of the buffer assignment.
-    
+
     Args:
         workplan: The WorkPlan containing operations
         buffer_assignment: Dictionary mapping OperationId to buffer_id
         type_assignment_func: Function that returns the type for each operation ID
     """
     print("\n=== Buffer Assignment ===\n")
-    
+
     # Group operations by buffer ID
-    buffer_to_ops = defaultdict(list)
+    buffer_to_ops: Dict[int, List[OperationId]] = defaultdict(list)
     for op_id, buffer_id in buffer_assignment.items():
         buffer_to_ops[buffer_id].append(op_id)
-    
+
     # Print each buffer and its assigned operations
     for buffer_id in sorted(buffer_to_ops.keys()):
         print(f"Buffer {buffer_id}:")
@@ -43,263 +31,97 @@ def print_buffer_assignment(
             op_type = type_assignment_func(op_id)
             print(f"  {op_id[:8]}: {operation.operator} (type: {op_type})")
         print()
-    
+
     print(f"Total buffers allocated: {len(buffer_to_ops)}")
     print(f"Total operations: {len(workplan.operations)}")
     print()
 
-def allocate_buffers(workplan: WorkPlan, type_assignment: Dict[OperationId, Any]) -> Dict[OperationId, int]:
-    """
-    Allocate buffers for operations in a WorkPlan with the constraint that
-    operations with overlapping lifetimes cannot share buffers, and only operations 
-    of the same type can potentially share buffers.
-    
-    Args:
-        workplan: The WorkPlan containing operations and goals
-        type_assignment: Dictionary mapping OperationId to type (any Python object)
-    
-    Returns:
-        Dictionary mapping OperationId to buffer_id (int)
-    """
-    
-    # Build dependency graph
-    dependencies, dependents = _build_dependency_graph(workplan)
-    
-    # Get topological ordering
-    topo_order = _topological_sort(workplan, dependencies)
-    
-    # Compute operation lifetimes (when each operation is live)
-    lifetimes = _compute_operation_lifetimes(workplan, dependencies, dependents, topo_order)
-    
-    # Process nodes in REVERSE topological order (outputs first)
-    buffer_allocation = {}
-    buffer_to_operations = defaultdict(set)  # Maps buffer_id to set of operations using it
-    type_to_buffers = defaultdict(list)  # Maps type to list of buffer_ids of that type
-    next_buffer_id = 0
-    
-    for operation_id in reversed(topo_order):  # Reverse topological order
-        op_type = type_assignment[operation_id]
-        
-        # Find available buffer of the correct type
-        available_buffer = _find_available_buffer_with_lifetimes(
-            operation_id, op_type, lifetimes, 
-            buffer_allocation, buffer_to_operations, type_to_buffers
-        )
-        
-        if available_buffer is not None:
-            # Reuse existing buffer
-            buffer_allocation[operation_id] = available_buffer
-            buffer_to_operations[available_buffer].add(operation_id)
-        else:
-            # Allocate new buffer
-            buffer_allocation[operation_id] = next_buffer_id
-            buffer_to_operations[next_buffer_id].add(operation_id)
-            type_to_buffers[op_type].append(next_buffer_id)
-            next_buffer_id += 1
-    
-    return buffer_allocation
 
-def _build_dependency_graph(workplan: WorkPlan) -> Tuple[Dict[OperationId, Set[OperationId]], Dict[OperationId, Set[OperationId]]]:
+def _build_dependency_graph(
+    workplan: WorkPlan,
+) -> Tuple[Dict[OperationId, Set[OperationId]], Dict[OperationId, Set[OperationId]]]:
     """
     Build dependency graph from WorkPlan.
-    
+
     Returns:
         Tuple of (dependencies, dependents) where:
-        - dependencies[op] = set of operations that op depends on
-        - dependents[op] = set of operations that depend on op
+        - dependencies[op] = set of operations that op depends on (parents)
+        - dependents[op] = set of operations that depend on op (children)
     """
-    dependencies = defaultdict(set)
-    dependents = defaultdict(set)
-    
+    dependencies: Dict[OperationId, Set[OperationId]] = defaultdict(set)
+    dependents: Dict[OperationId, Set[OperationId]] = defaultdict(set)
+
     for operation_id, operation in workplan.operations.items():
         for arg_name, dependency_id in operation.arguments.items():
             if dependency_id in workplan.operations:
                 dependencies[operation_id].add(dependency_id)
                 dependents[dependency_id].add(operation_id)
-    
+
     return dict(dependencies), dict(dependents)
 
-def _topological_sort(workplan: WorkPlan, dependencies: Dict[OperationId, Set[OperationId]]) -> List[OperationId]:
+
+def _topological_sort(
+    workplan: WorkPlan, dependencies: Dict[OperationId, Set[OperationId]]
+) -> List[OperationId]:
     """
     Perform topological sort using Kahn's algorithm.
-    
+
     Returns:
-        List of operation_ids in topological order
+        List of operation_ids in topological order.
     """
     # Calculate in-degrees
-    in_degree = defaultdict(int)
+    in_degree: Dict[OperationId, int] = defaultdict(int)
     for operation_id in workplan.operations:
         in_degree[operation_id] = len(dependencies.get(operation_id, set()))
-    
+
     # Find nodes with no incoming edges
     queue = deque([op_id for op_id in workplan.operations if in_degree[op_id] == 0])
-    result = []
-    
+    result: List[OperationId] = []
+
     while queue:
         current = queue.popleft()
         result.append(current)
-        
-        # Get all operations that depend on current
-        for operation_id, deps in dependencies.items():
+
+        # Reduce in-degree of dependents
+        for op_id, deps in dependencies.items():
             if current in deps:
-                in_degree[operation_id] -= 1
-                if in_degree[operation_id] == 0:
-                    queue.append(operation_id)
-    
+                in_degree[op_id] -= 1
+                if in_degree[op_id] == 0:
+                    queue.append(op_id)
+
     if len(result) != len(workplan.operations):
         raise ValueError("Cycle detected in WorkPlan")
-    
+
     return result
 
+
 def _compute_operation_lifetimes(
-    workplan: WorkPlan, 
-    dependencies: Dict[OperationId, Set[OperationId]], 
-    dependents: Dict[OperationId, Set[OperationId]], 
-    topo_order: List[OperationId]
+    workplan: WorkPlan,
+    dependents: Dict[OperationId, Set[OperationId]],
+    topo_order: List[OperationId],
 ) -> Dict[OperationId, Tuple[int, int]]:
     """
     Compute the lifetime of each operation as (start_time, end_time) where
-    start_time is when the operation is computed and end_time is when its
-    result is last needed (i.e., the latest time among its direct dependents).
-    
+    start_time = topological position of the operation,
+    end_time = maximum position among its direct dependents (or start_time if none).
+
     Returns:
-        Dictionary mapping OperationId to (start_time, end_time) tuple
+        Dictionary mapping OperationId to (start_time, end_time) tuple.
     """
-    # Create position mapping for topological order
-    position = {op_id: i for i, op_id in enumerate(topo_order)}
-    
-    lifetimes = {}
-    
+    position: Dict[OperationId, int] = {op_id: i for i, op_id in enumerate(topo_order)}
+    lifetimes: Dict[OperationId, Tuple[int, int]] = {}
+
     for op_id in workplan.operations:
-        # Start time is when the operation is computed
         start_time = position[op_id]
-        
-        # End time is the latest time among direct dependents
-        # If no dependents, the operation is only live during its own computation
-        direct_dependents = dependents.get(op_id, set())
-        if direct_dependents:
-            end_time = max(position[dep] for dep in direct_dependents)
+        deps = dependents.get(op_id, set())
+        if deps:
+            end_time = max(position[dep] for dep in deps)
         else:
-            # Operation is a goal or has no dependents, live only during its computation
             end_time = start_time
-            
         lifetimes[op_id] = (start_time, end_time)
-    
+
     return lifetimes
 
-def _find_available_buffer_with_lifetimes(
-    operation_id: OperationId, 
-    op_type: Any, 
-    lifetimes: Dict[OperationId, Tuple[int, int]],
-    buffer_allocation: Dict[OperationId, int],
-    buffer_to_operations: Dict[int, Set[OperationId]],
-    type_to_buffers: Dict[Any, List[int]]
-) -> int | None:
-    """
-    Find an available buffer of the correct type that doesn't have lifetime
-    conflicts with the given operation.
-    
-    Returns:
-        Buffer ID if available, None if no buffer can be reused
-    """
-    # Get all buffers of the correct type
-    available_buffers = type_to_buffers.get(op_type, [])
-    
-    # Get the lifetime of the current operation
-    current_start, current_end = lifetimes[operation_id]
-    
-    # Check each buffer for conflicts
-    for buffer_id in available_buffers:
-        # Check if this buffer has any operations with overlapping lifetimes
-        buffer_available = True
-        
-        for other_op in buffer_to_operations.get(buffer_id, set()):
-            other_start, other_end = lifetimes[other_op]
-            
-            # Check if lifetimes overlap
-            overlap = not (current_end < other_start or other_end < current_start)
-            
-            if overlap:
-                buffer_available = False
-                break
-        
-        if buffer_available:
-            return buffer_id
-    
-    return None
-
-def _find_available_buffer(
-    operation_id: OperationId, 
-    op_type: Any, 
-    dependencies: Dict[OperationId, Set[OperationId]], 
-    dependents: Dict[OperationId, Set[OperationId]], 
-    buffer_allocation: Dict[OperationId, int],
-    type_to_buffers: Dict[Any, List[int]]
-) -> int | None:
-    """
-    Find an available buffer of the correct type that doesn't interfere
-    with parents or children of the given operation.
-    
-    Returns:
-        Buffer ID if available, None if no buffer can be reused
-    """
-    # Get all buffers of the correct type
-    available_buffers = type_to_buffers.get(op_type, [])
-    
-    # Get parents and children of current operation
-    parents = dependencies.get(operation_id, set())
-    children = dependents.get(operation_id, set())
-    interfering_ops = parents | children
-    
-    # Find buffers that are not used by interfering operations
-    for buffer_id in available_buffers:
-        # Check if this buffer is used by any interfering operation
-        buffer_is_available = True
-        for interfering_op in interfering_ops:
-            if interfering_op in buffer_allocation and buffer_allocation[interfering_op] == buffer_id:
-                buffer_is_available = False
-                break
-        
-        if buffer_is_available:
-            return buffer_id
-    
-    return None
-
-# Example usage and testing
-def test_buffer_allocation():
-    """Test the buffer allocation algorithm with a simple example"""
-    
-    # Create a simple WorkPlan: A -> B -> C, A -> D -> C
-    workplan = WorkPlan()
-    
-    # Add operations
-    op_a = workplan.add_operation("load", {})
-    op_d = workplan.add_operation("transform", {"input": op_a})
-    op_b = workplan.add_operation("process", {"input": op_a})
-    op_c = workplan.add_operation("combine", {"input1": op_b, "input2": op_d})
-    
-    # Set goal
-    workplan.add_goal(op_c)
-    
-    # Define types
-    type_assignment = {
-        op_a: "tensor",
-        op_b: "tensor", 
-        op_c: "tensor",
-        op_d: "scalar"
-    }
-    
-    # Allocate buffers
-    allocation = allocate_buffers(workplan, type_assignment)
-    
-    print("Buffer allocation:")
-    for op_id, buffer_id in allocation.items():
-        print(f"  {op_id[:8]}... -> buffer {buffer_id} (type: {type_assignment[op_id]})")
-    
-    return allocation
-
-if __name__ == "__main__":
-    test_buffer_allocation()
 
 def compute_buffer_allocation(
     workplan: WorkPlan,
@@ -310,15 +132,91 @@ def compute_buffer_allocation(
     Compute buffer allocation for a workplan using static analysis.
 
     Args:
-        workplan: The workplan containing operations and goals
-        type_assignment: Function that returns the type for each operation ID
-        type_compatibility: Function that returns True if two types are compatible
-
-        It is assumed that the workplan nodes are in topological order.
+        workplan: The workplan containing operations
+        type_assignment: Function mapping operation IDs to types
+        type_compatibility: Function that returns True if two types are compatible (symmetric)
 
     Returns:
         Dictionary mapping operation IDs to buffer IDs (integers starting from 0)
     """
-    # Convert the type assignment function to a dictionary for allocate_buffers
-    type_assignment_dict = {op_id: type_assignment(op_id) for op_id in workplan.operations}
-    return allocate_buffers(workplan, type_assignment_dict)
+    # Build dependency graph
+    dependencies, dependents = _build_dependency_graph(workplan)
+    # Topological ordering
+    topo_order = _topological_sort(workplan, dependencies)
+    # Compute lifetimes of operations
+    lifetimes = _compute_operation_lifetimes(workplan, dependents, topo_order)
+
+    buffer_allocation: Dict[OperationId, int] = {}
+    buffer_to_operations: Dict[int, Set[OperationId]] = {}
+    next_buffer_id = 0
+
+    # Process operations in reverse topological order
+    for op_id in reversed(topo_order):
+        op_type = type_assignment(op_id)
+        # Compute descendants of op_id (all reachable children)
+        visited: Set[OperationId] = set()
+        queue = deque([op_id])
+        visited.add(op_id)
+        while queue:
+            curr = queue.popleft()
+            for child in dependents.get(curr, set()):
+                if child not in visited:
+                    visited.add(child)
+                    queue.append(child)
+        descendants = visited
+
+        assigned = False
+        for buffer_id, ops in buffer_to_operations.items():
+            # Type compatibility check for all ops in buffer
+            if all(type_compatibility(type_assignment(u), op_type) for u in ops):
+                conflict = False
+                for u in ops:
+                    # Parent-child conflict: direct child of op_id
+                    if u in dependents.get(op_id, set()):
+                        conflict = True
+                        break
+                    # Concurrency conflict: no ancestor-descendant relationship
+                    if u not in descendants:
+                        conflict = True
+                        break
+                    # Lifetime overlap conflict
+                    (start_v, end_v) = lifetimes[op_id]
+                    (start_u, end_u) = lifetimes[u]
+                    if not (end_u < start_v or end_v < start_u):
+                        conflict = True
+                        break
+                if not conflict:
+                    buffer_allocation[op_id] = buffer_id
+                    buffer_to_operations[buffer_id].add(op_id)
+                    assigned = True
+                    break
+
+        if not assigned:
+            buffer_allocation[op_id] = next_buffer_id
+            buffer_to_operations[next_buffer_id] = {op_id}
+            next_buffer_id += 1
+
+    return buffer_allocation
+
+
+def allocate_buffers(
+    workplan: WorkPlan, type_assignment: Dict[OperationId, Any]
+) -> Dict[OperationId, int]:
+    """
+    Allocate buffers for operations in a WorkPlan with type-equality compatibility.
+
+    Args:
+        workplan: The WorkPlan containing operations
+        type_assignment: Dictionary mapping OperationId to type
+
+    Returns:
+        Dictionary mapping OperationId to buffer IDs (integers starting from 0)
+    """
+
+    # Define compatibility as equality
+    def type_compat(t1: Any, t2: Any) -> bool:
+        return t1 == t2
+
+    # Convert dict to function
+    type_assign_func = lambda op: type_assignment[op]
+    return compute_buffer_allocation(workplan, type_assign_func, type_compat)
