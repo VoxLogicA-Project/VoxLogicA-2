@@ -1,46 +1,36 @@
-# Dynamic Scheduler for VoxLogica-2
+# Distributed Semantics for VoxLogica-2 Workplans
 
-## Introduction
+## Problem Statement
 
-The Dynamic Scheduler is an execution engine for VoxLogica-2 that implements persistent, storage-backed execution of DAGs. Unlike traditional buffer-based approaches, it persists all intermediate results to storage, enabling scalable, memory-efficient, and distributed-ready computation. This design supports efficient execution of large DAGs, cross-platform operation, and future peer-to-peer workload distribution.
+Design and implement a distributed execution semantics for VoxLogica-2 workplans (DAGs), enabling scalable, persistent, and memory-efficient computation across large and potentially distributed datasets.
+
+## Requirements
+
+- **Immutability:** All node results are immutable and content-addressed (SHA256).
+- **Persistence:** Intermediate and final results are persisted to storage, not kept in RAM.
+- **Concurrency:** Support for concurrent, thread-safe execution and storage operations.
+- **Scalability:** Efficiently handle large DAGs (10K+ nodes) and datasets.
+- **Extensibility:** Storage and execution layers must be abstract and replaceable.
+- **Cross-platform:** Identical operation on macOS, Linux, and Windows.
+- **Distributed/P2P Ready:** Storage and execution model must support future distributed and peer-to-peer extensions.
+- **API:** All features accessible via CLI and HTTP API.
 
 ## Architectural Choices
 
-### Storage Backend
-- **SQLite** (in WAL mode) is the default persistent storage backend.
-- All node results and metadata are stored in SQLite, with binary data content-addressed by SHA256 hash.
-- The design allows for alternative or hybrid backends (e.g., filesystem), but SQLite is the recommended baseline.
+- **Storage Backend:**
+  - Use **SQLite** in WAL (Write-Ahead Logging) mode as the default persistent, immutable storage for all node results and metadata.
+  - Binary data is content-addressed by SHA256 hash.
+  - Design allows for alternative or hybrid backends (e.g., filesystem), but SQLite is the baseline.
 
-### Node Execution and Scheduling
-- Nodes are executed dynamically as soon as dependencies are satisfied.
-- Results are immutable and content-addressed.
-- All storage operations are atomic and thread-safe.
+- **Execution Engine:**
+  - Compile VoxLogica-2 workplans (DAGs) directly to **Dask** lazy delayed graphs.
+  - Dask manages parallel execution, dependency resolution, and efficient CPU utilization.
+  - For language features like `foreach`, `accumulate`, or `mapreduce` over large datasets, compile these to Dask collections (arrays, dataframes, bags) and use Dask's lazy map/apply primitives, with persistence and deduplication handled via SQLite.
 
-### API and Integration
-- A well-defined, abstract storage interface enables backend replacement and language-agnostic access.
-- All features are available via both CLI and HTTP API.
+- **Future-Proofing:**
+  - All storage is local-first and content-addressed, enabling future peer-to-peer sharing, deduplication, and distributed execution.
+  - Abstract interfaces for storage and execution allow for backend replacement and language-agnostic integration.
 
-### Distributed/P2P Readiness
-- Content-addressed storage (SHA256) enables future peer-to-peer sharing and deduplication.
-- All operations are local-first, but the design is ready for distributed extensions.
+---
 
-## Why SQLite?
-
-- **Cross-platform:** Works identically on macOS, Linux, and Windows.
-- **No server required:** Embedded, no network or daemon needed.
-- **Performance:** Satisfies high throughput and concurrency requirements for metadata and binary blobs.
-- **Portability:** Single-file, easy to move or copy.
-- **Reliability:** ACID-compliant, mature, and widely used.
-- **Bundled with Python:** No user C compilation or external dependency management is required.
-- **Extensible:** Can be replaced with other embedded databases if future requirements change.
-
-SQLite is the only practical, portable, and robust choice that meets all requirements for performance, reliability, and future extensibility in this context.
-
-
-### Implementation
-
-A VoxLogica workplan (DAG) is compiled directly to a Dask lazy graph. Each node in the workplan is represented as a Dask delayed function, with dependencies corresponding to the DAG structure. Dask's scheduler manages parallel execution, efficiently utilizing all available CPU cores and handling dependencies automatically.
-
-For constructs like "for each" loops over datasets, the dataset is represented as a Dask collection (such as a Dask array, dataframe, or bag). The body of the loop is compiled to a function, which is mapped over the collection using Dask's lazy map/apply methods. This enables chunked, parallel, and memory-efficient processing, as Dask only loads and processes data as needed.
-
-Persistence is streamlined: each node execution checks SQLite (using SHA256 content addressing) for existing results before running, and stores new results upon completion. This ensures deduplication, robust recovery, and efficient storage. The combination of Dask for execution and SQLite for persistence provides scalable, fault-tolerant, and efficient execution of complex VoxLogica workflows, including those with large datasets and data-dependent control flow.
+This architecture enables robust, scalable, and distributed-ready execution of complex VoxLogica-2 workflows, with a clear path to advanced data-parallel primitives and distributed computation in future versions.
