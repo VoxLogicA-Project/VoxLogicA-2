@@ -66,16 +66,25 @@ VoxLogicA aims to provide a high-level, declarative language for manipulating an
 
 ---
 
-## Execution Strategy: Sequential and Parallel Modes
+## Execution Strategy: Sequential and Alternative Execution Models
 
-In the initial implementation, each workflow (i.e., a single DAG representing a computation or analysis pipeline) will be executed sequentially. This means that all operations within a workflow are executed in dependency order on a single process/thread, without parallelization at the level of individual operations.
+### Primary Implementation: Sequential Execution
+In the current implementation, each workflow (i.e., a single DAG representing a computation or analysis pipeline) is executed sequentially. This means that all operations within a workflow are executed in dependency order on a single process/thread, without parallelization at the level of individual operations.
 
-For scalability, parallelization will be introduced at the dataset level: when multiple independent workflows (e.g., the same pipeline applied to different images or dataset elements) need to be executed, Dask or a similar parallel scheduler will be used to distribute these workflows across available compute resources. This approach avoids the complexity of fine-grained parallelism within a single workflow and leverages parallelism across the dataset dimension, which is often the most effective and scalable strategy for large-scale data processing.
+For scalability, parallelization is introduced at the dataset level: when multiple independent workflows (e.g., the same pipeline applied to different images or dataset elements) need to be executed, Dask or a similar parallel scheduler is used to distribute these workflows across available compute resources. This approach avoids the complexity of fine-grained parallelism within a single workflow and leverages parallelism across the dataset dimension, which is often the most effective and scalable strategy for large-scale data processing.
 
 - **Sequential execution:** Each workflow/DAG is executed in order, respecting dependencies, on a single worker.
-- **Parallel execution (future):** Multiple workflows (e.g., per-dataset element) are scheduled in parallel using Dask, with each workflow running independently.
+- **Dataset-level parallelism:** Multiple workflows (e.g., per-dataset element) are scheduled in parallel using Dask, with each workflow running independently.
 
-This strategy enables efficient use of resources and simplifies memory management, while still allowing for future extensions to more fine-grained parallelism if needed. This sequential-per-workflow approach also greatly simplifies memory management: since only one workflow is active at a time per worker, buffer allocation and reuse can be managed without concern for concurrent accesses or complex synchronization. This allows for straightforward implementation of static buffer reuse and preallocation strategies, as described in the memory planning documentation, and defers the need for more advanced memory management until true parallel execution within a workflow is required.
+This sequential-per-workflow approach greatly simplifies memory management: since only one workflow is active at a time per worker, buffer allocation and reuse can be managed without concern for concurrent accesses or complex synchronization. This allows for straightforward implementation of static buffer reuse and preallocation strategies, as described in the memory planning documentation.
+
+### Alternative Execution Models
+VoxLogica-2 is designed to support multiple execution backends as alternatives to sequential execution:
+
+- **Dynamic Scheduling with Storage-Based Memory**: Alternative execution engines that avoid buffer allocation in favor of persistent storage of intermediate results, enabling distributed and peer-to-peer execution patterns.
+- **Actual DAG Node Execution**: Alternative backends that implement actual node execution (vs the current structure-only DAG computation) with caching and persistence capabilities.
+
+These alternative execution models can coexist with the sequential execution approach, providing flexibility for different use cases and deployment scenarios.
 
 ---
 
