@@ -88,6 +88,7 @@ def handle_run(
     save_task_graph_as_json: Optional[str] = None,
     save_syntax: Optional[str] = None,
     compute_memory_assignment: bool = False,
+    execute: bool = False,
     debug: bool = False,
     **kwargs,
 ) -> OperationResult[Dict[str, Any]]:
@@ -112,6 +113,39 @@ def handle_run(
         # Parse and reduce the program
         syntax = parse_program(parse_filename)
         program_obj = reduce_program(syntax)
+
+        # Execute the workplan if requested
+        execution_result = None
+        if execute:
+            from .execution import execute_workplan
+            
+            try:
+                execution_result = execute_workplan(program_obj)
+                if execution_result.success:
+                    if filename:  # CLI mode
+                        print(f"Execution completed successfully!")
+                        print(f"  Operations completed: {len(execution_result.completed_operations)}")
+                        print(f"  Execution time: {execution_result.execution_time:.2f}s")
+                else:
+                    error_msg = f"Execution failed with {len(execution_result.failed_operations)} errors"
+                    if filename:  # CLI mode
+                        print(error_msg)
+                        for op_id, error in execution_result.failed_operations.items():
+                            print(f"  {op_id[:8]}...: {error}")
+                    else:
+                        return OperationResult[Dict[str, Any]](
+                            success=False,
+                            error=error_msg
+                        )
+            except Exception as e:
+                error_msg = f"Execution failed: {str(e)}"
+                if filename:  # CLI mode
+                    print(error_msg)
+                else:
+                    return OperationResult[Dict[str, Any]](
+                        success=False,
+                        error=error_msg
+                    )
 
         # Compute buffer allocation if requested
         buffer_assignment = None
@@ -143,6 +177,18 @@ def handle_run(
             "task_graph": str(program_obj),
             "syntax": str(syntax),
         }
+
+        # Add execution results if execution was performed
+        if execution_result:
+            result["execution"] = {
+                "success": execution_result.success,
+                "completed_operations": len(execution_result.completed_operations),
+                "failed_operations": len(execution_result.failed_operations),
+                "execution_time": execution_result.execution_time,
+                "total_operations": execution_result.total_operations
+            }
+            if execution_result.failed_operations:
+                result["execution"]["errors"] = execution_result.failed_operations
 
         # Handle save options - CLI saves to files, API returns content with same keys
         saved_files = {}
@@ -258,6 +304,12 @@ run_feature = FeatureRegistry.register(
                 "default": False,
                 "help": "Compute and display memory buffer assignments",
             },
+            "execute": {
+                "type": bool,
+                "required": False,
+                "default": False,
+                "help": "Actually execute the workplan (not just analyze)",
+            },
             "debug": {
                 "type": bool,
                 "required": False,
@@ -287,6 +339,10 @@ run_feature = FeatureRegistry.register(
                 "compute_memory_assignment": (
                     Optional[bool],
                     "Compute and display memory buffer assignments",
+                ),
+                "execute": (
+                    Optional[bool],
+                    "Actually execute the workplan (not just analyze)",
                 ),
                 "debug": (Optional[bool], "Enable debug mode"),
             },

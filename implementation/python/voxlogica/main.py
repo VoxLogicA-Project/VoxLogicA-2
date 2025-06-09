@@ -173,6 +173,11 @@ def run(
         "--compute-memory-assignment",
         help="Compute and display memory buffer assignments",
     ),
+    execute: bool = typer.Option(
+        False,
+        "--execute",
+        help="Actually execute the workplan (not just analyze)",
+    ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
 ) -> None:
     """Run a VoxLogicA program"""
@@ -210,6 +215,7 @@ def run(
             save_task_graph_as_json=save_task_graph_as_json,
             save_syntax=save_syntax,
             compute_memory_assignment=compute_memory_assignment,
+            execute=execute,
             **kwargs,
         )
 
