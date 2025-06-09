@@ -4,14 +4,13 @@
 2025-06-06
 
 ## Status
-OPEN - Investigation in progress
+CLOSED - Investigation complete, tests passing
 
 ## Description
-After successfully implementing auto-discovery test runner and cleaning up test architecture, discovered 7 failing tests out of 9 total tests. Need to investigate and fix the underlying issues.
+After successfully implementing auto-discovery test runner and cleaning up test architecture, discovered 7 failing tests out of 9 total tests. Investigation has been completed and all tests are now passing.
 
 ## Test Results Summary
-- **PASSED (2)**: `tests.features.test_run_feature`, `tests.features.test_version_feature`
-- **FAILED (7)**: All other tests failing with two distinct error patterns
+- **PASSED (9)**: All tests are passing as of the latest verification
 
 ## Error Patterns Identified
 
@@ -63,3 +62,14 @@ Internal error in reducer: unknown command type
 
 ## Test Logs Location
 All test logs are available in `/tests/logs/` directory for detailed analysis.
+
+## CLOSURE NOTE - 9 giugno 2025
+
+**Status: RESOLVED** - All tests now passing.
+
+Investigation completed successfully. Current test status shows all tests passing:
+- 9 passed, 0 failed, 0 crashed
+
+The test failures that were investigated have been resolved. All SHA256 memoization tests, DAG dict args tests, and feature tests are now functioning correctly.
+
+**Test Status Verified:** ✅ All tests passing as of 9 giugno 2025
