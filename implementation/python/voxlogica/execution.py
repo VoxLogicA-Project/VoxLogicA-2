@@ -22,7 +22,7 @@ import importlib
 import sys
 from pathlib import Path
 
-from voxlogica.reducer import WorkPlan, Operation, OperationId
+from voxlogica.reducer import WorkPlan, Operation, OperationId, Goal
 from voxlogica.storage import StorageBackend, get_storage
 
 # Logger setup
@@ -209,7 +209,7 @@ class ExecutionEngine:
     def _generate_execution_id(self, workplan: WorkPlan) -> str:
         """Generate execution ID from workplan goals"""
         import hashlib
-        goals_str = ",".join(sorted(workplan.goals))
+        goals_str = ",".join(sorted(f"{goal.operation}:{goal.id}:{goal.name}" for goal in workplan.goals))
         return hashlib.sha256(goals_str.encode()).hexdigest()
 
 class ExecutionSession:
@@ -249,8 +249,8 @@ class ExecutionSession:
         self._compile_pure_operations_to_dask(dependencies)
         
         # Execute the pure computation DAG first
-        computation_goals = [op_id for op_id in self.workplan.goals 
-                           if op_id in self.pure_operations]
+        computation_goals = [goal.id for goal in self.workplan.goals 
+                           if goal.id in self.pure_operations]
         
         if computation_goals:
             goal_computations = [self.delayed_graph[goal_id] for goal_id in computation_goals]
@@ -282,100 +282,58 @@ class ExecutionSession:
                 self.pure_operations[op_id] = operation
     
     def _execute_goal_operations(self):
-        """Execute side-effect operations (print, save, etc.) after pure computation"""
-        for op_id in self.workplan.goals:
-            if op_id in self.goal_operations:
-                try:
-                    self._execute_goal_operation(op_id, self.goal_operations[op_id])
-                    with self._status_lock:
-                        self.completed.add(op_id)
-                except Exception as e:
-                    Logger.error(f"Goal operation {op_id[:8]}... failed: {e}")
-                    with self._status_lock:
-                        self.failed[op_id] = str(e)
-    
-    def _execute_goal_operation(self, op_id: OperationId, operation: Operation):
-        """Execute a single goal operation (print, save, etc.)"""
-        operator = str(operation.operator).lower()
-        
-        # Resolve arguments from storage or direct values
-        resolved_args = {}
-        for arg_name, arg_value in operation.arguments.items():
-            if arg_value in self.workplan.operations:
-                # Dependency - get from storage
-                if self.storage.exists(arg_value):
-                    resolved_args[arg_name] = self.storage.retrieve(arg_value)
-                else:
-                    raise Exception(f"Missing dependency result for {arg_value}")
-            else:
-                # Direct value
-                resolved_args[arg_name] = arg_value
-        
-        # Execute the goal operation
-        if operator == 'print':
-            self._handle_print_goal(resolved_args)
-        elif operator == 'save':
-            self._handle_save_goal(resolved_args)
+        """Execute side-effect operations (print, save, etc.) as special Dask nodes"""
+        for goal in self.workplan.goals:
+            try:
+                # Execute the goal operation with the computed result
+                self._execute_goal_with_result(goal)
+                
+                with self._status_lock:
+                    self.completed.add(goal.id)
+            except Exception as e:
+                Logger.error(f"Goal operation {goal.operation} '{goal.name}' failed: {e}")
+                with self._status_lock:
+                    self.failed[goal.id] = str(e)
+                    
+    def _execute_goal_with_result(self, goal):
+        """Execute a goal operation with the result from storage"""
+        # Get the computed result from storage
+        if self.storage.exists(goal.id):
+            result = self.storage.retrieve(goal.id)
         else:
-            # Try to load as primitive for unknown goal operations
-            primitive_func = self.primitives.load_primitive(operator)
-            if primitive_func:
-                primitive_func(**resolved_args)
-            else:
-                raise Exception(f"Unknown goal operation: {operator}")
-    
-    def _handle_print_goal(self, args: Dict[str, Any]):
-        """Handle print goal operation"""
-        if 'message' in args and 'value' in args:
-            print(f"{args['message']}: {args['value']}")
-        elif 'message' in args:
-            print(args['message'])
-        elif 'value' in args:
-            print(args['value'])
+            raise Exception(f"Missing computed result for goal operation {goal.id}")
+        
+        # Execute the appropriate goal action
+        if goal.operation == 'print':
+            print(f"{goal.name}: {result}")
+        elif goal.operation == 'save':
+            self._save_result_to_file(result, goal.name)
         else:
-            # Print all arguments
-            for key, val in args.items():
-                print(f"{key}: {val}")
-    
-    def _handle_save_goal(self, args: Dict[str, Any]):
-        """Handle save goal operation"""
+            raise Exception(f"Unknown goal operation: {goal.operation}")
+            
+    def _save_result_to_file(self, result, filename: str):
+        """Save a result to a file"""
         import json
         import pickle
         from pathlib import Path
         
-        if 'value' not in args:
-            raise Exception("Save operation requires 'value' argument")
-        if 'filename' not in args:
-            raise Exception("Save operation requires 'filename' argument")
-        
-        value = args['value']
-        filename = args['filename']
-        format_type = args.get('format', 'auto')
-        
         filepath = Path(filename)
         filepath.parent.mkdir(parents=True, exist_ok=True)
         
-        # Determine format
-        if format_type == "auto":
-            ext = filepath.suffix.lower()
-            if ext == ".json":
-                format_type = "json"
-            elif ext == ".pkl" or ext == ".pickle":
-                format_type = "pickle"
-            else:
-                format_type = "txt"
+        # Determine format from file extension
+        ext = filepath.suffix.lower()
         
-        Logger.info(f"Saving value to {filepath} (format: {format_type})")
+        Logger.info(f"Saving result to {filepath}")
         
-        if format_type == "json":
+        if ext == ".json":
             with open(filepath, 'w') as f:
-                json.dump(value, f, indent=2, default=str)
-        elif format_type == "pickle":
+                json.dump(result, f, indent=2, default=str)
+        elif ext in [".pkl", ".pickle"]:
             with open(filepath, 'wb') as f:
-                pickle.dump(value, f)
-        else:  # txt format
+                pickle.dump(result, f)
+        else:  # txt format or no extension
             with open(filepath, 'w') as f:
-                f.write(str(value))
+                f.write(str(result))
     
     def cancel(self):
         """Cancel execution"""

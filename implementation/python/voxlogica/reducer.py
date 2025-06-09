@@ -44,14 +44,21 @@ class Operation:
     arguments: Arguments
 
 @dataclass
+class Goal:
+    """Goal with operation type, operation ID, and name"""
+    operation: str  # "print" or "save"
+    id: OperationId
+    name: str
+
+@dataclass
 class WorkPlan:
     """A topologically sorted DAG of operations with goals"""
     operations: Dict[OperationId, Operation] = field(default_factory=dict)
-    goals: Set[OperationId] = field(default_factory=set)
+    goals: List[Goal] = field(default_factory=list)
 
-    def add_goal(self, operation_id: OperationId) -> None:
+    def add_goal(self, operation: str, operation_id: OperationId, name: str) -> None:
         """Add a goal to the work plan"""
-        self.goals.add(operation_id)
+        self.goals.append(Goal(operation, operation_id, name))
     
     def _compute_operation_id(self, operator: Constant | str, arguments: Arguments) -> OperationId:
         """Compute content-addressed SHA256 ID for an operation"""
@@ -224,12 +231,12 @@ def reduce_command(
     
     elif isinstance(command, Save):
         op_id = reduce_expression(env, work_plan, command.expression)
-        work_plan.add_goal(op_id)
+        work_plan.add_goal("save", op_id, command.identifier)
         return env, []
     
     elif isinstance(command, Print):
         op_id = reduce_expression(env, work_plan, command.expression)
-        work_plan.add_goal(op_id)
+        work_plan.add_goal("print", op_id, command.identifier)
         return env, []
     
     elif isinstance(command, Import):
