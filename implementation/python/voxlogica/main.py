@@ -121,11 +121,11 @@ def handle_cli_feature(feature_name: str, **kwargs: Any) -> None:
                 if hasattr(result, "data") and result.data:
                     data = result.data
                     if feature_name == "run":
-                        logger.info("Successfully processed program:")
-                        logger.info("  Operations: %d", data.get("operations", 0))
-                        logger.info("  Goals: %d", data.get("goals", 0))
+                        logger.debug("Successfully processed program:")
+                        logger.debug("  Operations: %d", data.get("operations", 0))
+                        logger.debug("  Goals: %d", data.get("goals", 0))
                         if "task_graph" in data:
-                            logger.info("  Task graph:\n%s", data["task_graph"])
+                            logger.debug("  Task graph:\n%s", data["task_graph"])
                         if "messages" in data:
                             for message in data["messages"]:
                                 logger.info("  %s", message)

@@ -88,6 +88,9 @@ class Logger:
             self._logger = logging.getLogger('voxlogica')
             self._logger.setLevel(logging.INFO)
             
+            # Prevent propagation to root logger to avoid duplicate messages
+            self._logger.propagate = False
+            
             # Create console handler with a higher log level
             ch = logging.StreamHandler()
             ch.setLevel(logging.INFO)
