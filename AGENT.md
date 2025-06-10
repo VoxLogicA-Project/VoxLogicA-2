@@ -8,6 +8,8 @@ tests: all test-related infrastructure
 
 implementation: implementation
 
+Unless specifically instructed otherwise, do not create new directories or files outside of the tests, meta or implementation directories. It is forbidden to create new directories or files in the root directory or in places different from the ones above.
+
 # WHAT **NOT** TO DO
 
 - Do not run arbitrary credible commands to run tests or execute the tool: use the two main scripts in tests and in the root dir of the repo. They take care of loading the correct venv
