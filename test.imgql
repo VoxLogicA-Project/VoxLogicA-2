@@ -1,10 +1,8 @@
 // Test file for buffer allocation analysis
 // This creates a simple computation graph with dependencies
 
-let a = 1.0
-let b = 2.0  
-let c = a + b
-let d = c * 3.0
-let e = a + d
-print "output.txt" e
+let a = 
+      timewaste(20,208)
+    + timewaste(20,203)
+print "time wasted" a
 

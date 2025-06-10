@@ -97,7 +97,7 @@ class Logger:
             
             # Create formatter and add it to the handlers
             formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+                '[%(asctime)s] %(message)s'
             )
             ch.setFormatter(formatter)
             
