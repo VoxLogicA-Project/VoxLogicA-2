@@ -9,7 +9,8 @@ from typing import (
     List,
     Set,
     Optional,
-    Sequence
+    Sequence,
+    Tuple
 )
 from dataclasses import dataclass, field
 
@@ -29,13 +30,13 @@ from voxlogica.parser import (
     Import,
     Program,
 )
-from voxlogica.error_msg import fail, fail_with_stacktrace, Stack
 
 # Type aliases
 type identifier = str
 type OperationId = str
 type Constant = str | bool | int | float
 type Arguments = Dict[str, OperationId]
+Stack = list[Tuple[str, str]]
 
 @dataclass
 class Operation:
@@ -110,7 +111,7 @@ class Environment:
     def bind_list(self, ide_list: List[identifier], expr_list: Sequence[DVal]) -> "Environment":
         """Create a new environment with multiple bindings"""
         if len(ide_list) != len(expr_list):
-            fail("Internal error in module Reducer. Please report.")
+            raise RuntimeError("Internal error in module Reducer. Please report.")
         
         env = self
         for ide, expr in zip(ide_list, expr_list):
@@ -153,9 +154,7 @@ def reduce_expression(
                 return val.operation_id
             
             call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
-            fail_with_stacktrace(
-                f"Function '{expr.identifier}' called without arguments", call_stack
-            )
+            raise RuntimeError(f"Function '{expr.identifier}' called without arguments\n" + "\n".join(f"{identifier} at {position}" for identifier, position in call_stack))
         
         # It's a function call with arguments
         this_stack: Stack = [(expr.identifier, expr.position)] + current_stack
@@ -176,17 +175,15 @@ def reduce_expression(
         
         if isinstance(val, OperationVal):
             call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
-            fail_with_stacktrace(
-                f"'{expr.identifier}' is not a function but was called with arguments",
-                call_stack,
+            raise RuntimeError(
+                f"'{expr.identifier}' is not a function but was called with arguments\n" + "\n".join(f"{identifier} at {position}" for identifier, position in call_stack),
             )
         
         if isinstance(val, FunctionVal):
             if len(val.parameters) != len(args_dict):
                 call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
-                fail_with_stacktrace(
-                    f"Function '{expr.identifier}' expects {len(val.parameters)} arguments but was called with {len(args_dict)}",
-                    call_stack,
+                raise RuntimeError(
+                    f"Function '{expr.identifier}' expects {len(val.parameters)} arguments but was called with {len(args_dict)}\n" + "\n".join(f"{identifier} at {position}" for identifier, position in call_stack),
                 )
             
             # Create operation values from argument operation IDs
@@ -202,7 +199,7 @@ def reduce_expression(
             return reduce_expression(func_env, work_plan, val.expression, func_stack)
     
     # This should never happen if the parser is correct
-    fail("Internal error in reducer: unknown expression type")
+    raise RuntimeError("Internal error in reducer: unknown expression type")
     return ""
 
 
@@ -253,11 +250,11 @@ def reduce_command(
             import_commands = parse_import(command.path)
             return env, import_commands
         except Exception as e:
-            fail(f"Failed to import '{command.path}': {str(e)}")
+            raise RuntimeError(f"Failed to import '{command.path}': {str(e)}")
             return env, []
     
     # This should never happen if the parser is correct
-    fail("Internal error in reducer: unknown command type")
+    raise RuntimeError("Internal error in reducer: unknown command type")
     return env, []
 
 
