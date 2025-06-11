@@ -10,6 +10,8 @@ import inspect
 from typing import Dict, Callable, Any
 import logging
 
+from voxlogica.main import VERBOSE_LEVEL
+
 logger = logging.getLogger(__name__)
 
 # Cache for dynamically registered primitives
@@ -85,7 +87,7 @@ def register_primitives():
                     
                     _primitives_list_cache[name] = description
                     
-        logger.info(f"Registered {len(sitk_functions)} SimpleITK primitives dynamically")
+        logger.log(VERBOSE_LEVEL,f"Registered {len(sitk_functions)} SimpleITK primitives dynamically")
         _dynamic_primitives_cache = sitk_functions
         return sitk_functions
         
@@ -98,3 +100,86 @@ def list_primitives():
     # Ensure dynamic primitives are registered
     register_primitives()
     return _primitives_list_cache.copy()
+
+def get_serializers():
+    """Return serializers provided by SimpleITK primitives"""
+    from typing import Dict, Type, Callable, Any
+    from pathlib import Path
+    
+    def write_image_wrapper(image, filepath: Path) -> None:
+        """Wrapper for SimpleITK WriteImage with error handling"""
+        try:
+            sitk.WriteImage(image, str(filepath))
+        except Exception as e:
+            raise RuntimeError(f"Failed to write image to {filepath}: {e}")
+    
+    def write_transform_wrapper(transform, filepath: Path) -> None:
+        """Wrapper for SimpleITK WriteTransform with error handling"""
+        try:
+            sitk.WriteTransform(transform, str(filepath))
+        except Exception as e:
+            raise RuntimeError(f"Failed to write transform to {filepath}: {e}")
+    
+    def write_png_slice(image, filepath: Path) -> None:
+        """Convert 3D image to 2D slice and save as PNG"""
+        try:
+            # Extract middle slice if 3D
+            if image.GetDimension() == 3:
+                size = image.GetSize()
+                middle_slice = size[2] // 2
+                slice_image = image[:, :, middle_slice]
+            else:
+                slice_image = image
+            
+            sitk.WriteImage(slice_image, str(filepath))
+        except Exception as e:
+            raise RuntimeError(f"Failed to write PNG slice to {filepath}: {e}")
+    
+    # Get SimpleITK Image type
+    sitk_image_type = sitk.Image
+    
+    # For transforms, we need to handle the fact that SimpleITK transforms 
+    # might be different classes, so we'll use a more general approach
+    def is_sitk_image(obj):
+        """Check if object is a SimpleITK Image"""
+        return hasattr(obj, 'GetSize') and hasattr(obj, 'GetSpacing') and hasattr(obj, 'GetOrigin')
+    
+    def is_sitk_transform(obj):
+        """Check if object is a SimpleITK Transform"""
+        return hasattr(obj, 'GetParameters') and hasattr(obj, 'GetFixedParameters')
+    
+    def universal_image_writer(obj, filepath: Path) -> None:
+        """Write SimpleITK image using duck typing"""
+        if is_sitk_image(obj):
+            write_image_wrapper(obj, filepath)
+        else:
+            raise TypeError(f"Object is not a SimpleITK Image: {type(obj)}")
+    
+    def universal_transform_writer(obj, filepath: Path) -> None:
+        """Write SimpleITK transform using duck typing"""
+        if is_sitk_transform(obj):
+            write_transform_wrapper(obj, filepath)
+        else:
+            raise TypeError(f"Object is not a SimpleITK Transform: {type(obj)}")
+    
+    return {
+        # Medical imaging formats (compound extensions first)
+        '.nii.gz': {sitk_image_type: universal_image_writer},
+        '.nii': {sitk_image_type: universal_image_writer},
+        '.mha': {sitk_image_type: universal_image_writer},
+        '.mhd': {sitk_image_type: universal_image_writer},
+        '.nrrd': {sitk_image_type: universal_image_writer},
+        '.vtk': {sitk_image_type: universal_image_writer},
+        
+        # DICOM formats
+        '.dcm': {sitk_image_type: universal_image_writer},
+        '.dicom': {sitk_image_type: universal_image_writer},
+        
+        # Standard image formats (with 2D conversion)
+        '.png': {sitk_image_type: write_png_slice},
+        '.jpg': {sitk_image_type: write_png_slice},
+        '.jpeg': {sitk_image_type: write_png_slice},
+        '.tiff': {sitk_image_type: write_png_slice},
+        '.tif': {sitk_image_type: write_png_slice},
+        '.bmp': {sitk_image_type: write_png_slice},
+    }

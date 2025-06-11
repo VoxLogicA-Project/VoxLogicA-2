@@ -4,15 +4,68 @@
 2025-06-11
 
 ## Status
-**OPEN** - Investigation Required
+**RESOLVED** - Completed via Custom Serializers Implementation
 
 ## Priority
 Medium - Affects user workflow and data integrity expectations
 
-## Description
-There is a significant inconsistency between how SimpleITK images are stored in the database versus how they are saved to disk via the `save` command. The database stores full binary image data (~9MB pickled blobs), while the `save` command creates small text files (~1KB) containing only the string representation of the image metadata.
+## Resolution
+This issue has been fully resolved through the implementation of a comprehensive custom serializer system. See `/META/ISSUES/CLOSED/save-command-custom-serializers/` for complete implementation details.
 
-## Problem Statement
+## Resolution Summary
+
+### Solution Implemented
+A comprehensive custom serializer system was implemented that provides:
+
+1. **Domain-Specific Format Support**: Medical imaging formats (`.nii.gz`, `.nii`, `.mha`, `.png`, etc.)
+2. **Suffix Matching Engine**: Handles compound extensions like `.nii.gz` correctly  
+3. **Type-Aware Serialization**: Different serializers based on object type
+4. **Extensible Architecture**: Easy addition of new formats through primitive modules
+5. **Graceful Fallback**: Maintains existing behavior for unsupported formats
+
+### Before Resolution
+```imgql
+save "image.nii.gz" processed    # → 1KB text file (metadata only)
+save "slice.png" processed       # → 1KB text file (not a real image)
+```
+
+### After Resolution  
+```imgql
+save "image.nii.gz" processed    # → 9KB compressed NIfTI medical image
+save "slice.png" processed       # → Valid PNG image (middle slice)
+```
+
+### Technical Implementation
+- **Location**: `implementation/python/voxlogica/execution.py` + `primitives/simpleitk/__init__.py`
+- **Key Classes**: `CustomSerializerRegistry`, `SuffixMatcher`, enhanced `ExecutionSession`
+- **Integration**: Seamless integration with existing save logic, no API changes
+- **Performance**: No overhead for existing operations, lazy loading of serializers
+
+### Supported Formats Added
+- **Medical**: `.nii.gz`, `.nii`, `.mha`, `.mhd`, `.nrrd`, `.vtk`, `.dcm`, `.dicom`
+- **Standard**: `.png`, `.jpg`, `.jpeg`, `.tiff`, `.tif`, `.bmp` (with 3D→2D conversion)
+- **Existing**: `.pkl`, `.pickle`, `.json`, `.bin`, text fallback (unchanged)
+
+### User Impact
+- ✅ **Data integrity**: Saved files now contain actual image data
+- ✅ **Workflow compatibility**: Files work with external medical imaging tools
+- ✅ **Format flexibility**: Support for industry-standard formats
+- ✅ **Backward compatibility**: All existing save operations work identically
+
+## Resolution Date
+2024-12-28
+
+## Related Issues
+- ✅ **Custom Serializers**: `/META/ISSUES/CLOSED/save-command-custom-serializers/` (solution)
+- ✅ **Binary Dump**: `/META/ISSUES/CLOSED/save-command-constant-storage-fix/` (prerequisite)
+- 🔄 **Image Compression**: `/META/ISSUES/OPEN/image-compression-database-storage/` (complementary)
+
+---
+
+## Original Problem Description (Historical Record)
+
+### Original Problem Statement
+There was a significant inconsistency between how SimpleITK images were stored in the database versus how they were saved to disk via the `save` command. The database stored full binary image data (~9MB pickled blobs), while the `save` command created small text files (~1KB) containing only the string representation of the image metadata.
 When users execute:
 ```imgql
 let img = ReadImage("tests/chris_t1.nii.gz")

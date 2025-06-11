@@ -7,7 +7,7 @@ of DAG nodes with content-addressed deduplication and persistent storage.
 """
 
 import logging
-from typing import Dict, Set, Any, Optional, List, Callable, Union
+from typing import Dict, Set, Any, Optional, List, Callable, Union, Type
 from collections import defaultdict, deque
 from dataclasses import dataclass
 import dask
@@ -28,6 +28,116 @@ from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 from voxlogica.main import VERBOSE_LEVEL
 
 logger = logging.getLogger("voxlogica.execution")
+
+# Type aliases for custom serializers
+SerializerFunc = Callable[[Any, Path], None]
+TypeSerializerMap = Dict[Type, SerializerFunc]
+SerializerRegistry = Dict[str, TypeSerializerMap]
+
+class SuffixMatcher:
+    """Handles suffix matching for custom serializers"""
+    
+    def match_suffix(self, filepath: Path, available_suffixes: Set[str]) -> Optional[str]:
+        """
+        Match longest available suffix from filepath
+        
+        Args:
+            filepath: Target file path
+            available_suffixes: Set of known suffix patterns
+            
+        Returns:
+            Longest matching suffix or None
+        """
+        path_str = str(filepath).lower()
+        
+        # Sort by length descending - longest match wins
+        suffixes = sorted(available_suffixes, key=len, reverse=True)
+        
+        for suffix in suffixes:
+            if path_str.endswith(suffix.lower()):
+                return suffix
+                
+        return None
+
+class CustomSerializerRegistry:
+    """Registry for custom file format serializers"""
+    
+    def __init__(self):
+        self._serializers: SerializerRegistry = {}
+        self._loaded = False
+    
+    def register_serializers(self, suffix: str, type_serializers: TypeSerializerMap) -> None:
+        """Register serializers for a file suffix"""
+        if suffix not in self._serializers:
+            self._serializers[suffix] = {}
+        
+        self._serializers[suffix].update(type_serializers)
+    
+    def get_serializer(self, suffix: str, obj_type: Type) -> Optional[SerializerFunc]:
+        """Get serializer for suffix and object type"""
+        if suffix not in self._serializers:
+            return None
+            
+        type_map = self._serializers[suffix]
+        
+        # Exact type match first
+        if obj_type in type_map:
+            return type_map[obj_type]
+        
+        # Inheritance-based match
+        for registered_type, serializer in type_map.items():
+            if isinstance(obj_type, type) and issubclass(obj_type, registered_type):
+                return serializer
+                
+        # Check if obj_type is an instance and try isinstance checks
+        for registered_type, serializer in type_map.items():
+            try:
+                # Create a dummy instance to test isinstance (if obj_type is a class)
+                if hasattr(obj_type, '__mro__'):
+                    for base_type in obj_type.__mro__:
+                        if base_type == registered_type:
+                            return serializer
+            except:
+                pass
+        
+        return None
+    
+    def get_available_suffixes(self) -> Set[str]:
+        """Get all registered suffixes"""
+        self._ensure_loaded()
+        return set(self._serializers.keys())
+    
+    def _ensure_loaded(self) -> None:
+        """Lazy load serializers from primitive modules"""
+        if self._loaded:
+            return
+            
+        # Discover and load serializers from all primitive modules
+        self._load_from_primitives()
+        self._loaded = True
+    
+    def _load_from_primitives(self) -> None:
+        """Load serializers from all loaded primitive modules"""
+        try:
+            # Import primitive modules and collect serializers
+            # For now, specifically handle SimpleITK since it's the main use case
+            self._load_simpleitk_serializers()
+        except Exception as e:
+            logger.warning(f"Failed to load some serializers: {e}")
+    
+    def _load_simpleitk_serializers(self) -> None:
+        """Load serializers from SimpleITK primitive module"""
+        try:
+            # Check if SimpleITK primitives are available
+            from voxlogica.primitives.simpleitk import get_serializers
+            serializers = get_serializers()
+            for suffix, type_map in serializers.items():
+                self.register_serializers(suffix, type_map)
+                logger.debug(f"Registered serializers for {suffix} from SimpleITK")
+        except ImportError:
+            logger.debug("SimpleITK primitives not available")
+        except Exception as e:
+            logger.warning(f"Failed to load SimpleITK serializers: {e}")
 
 @dataclass
 class ExecutionResult:
@@ -373,6 +483,10 @@ class ExecutionSession:
         # Dask delayed graph
         self.delayed_graph: Dict[NodeId, Any] = {}
         
+        # Custom serializer infrastructure
+        self._serializer_registry = CustomSerializerRegistry()
+        self._suffix_matcher = SuffixMatcher()
+        
         # Separate pure operations from side-effect goals
         self.pure_operations: Dict[NodeId, Operation] = {}
         self.goal_operations: Dict[NodeId, Operation] = {}
@@ -499,8 +613,8 @@ class ExecutionSession:
         else:
             raise Exception(f"Unknown goal operation: {goal.operation}")
             
-    def _save_result_to_file(self, result, filename: str, operation_id: str = None):
-        """Save a result to a file"""
+    def _save_result_to_file(self, result, filename: str, operation_id: Optional[str] = None):
+        """Save a result to a file with custom serializer support"""
         import json
         import pickle
         import sqlite3
@@ -510,6 +624,10 @@ class ExecutionSession:
         filepath.parent.mkdir(parents=True, exist_ok=True)
         ext = filepath.suffix.lower()
         logger.info(f"Saving result to {filepath}")
+        
+        # Try custom serializers first
+        if self._try_custom_serializer(result, filepath):
+            return
         
         # For binary files (.bin, no extension), dump raw pickled data from database
         if ext == ".bin" or ext == "":
@@ -536,6 +654,40 @@ class ExecutionSession:
         else:  # txt format 
             with open(filepath, 'w') as f:
                 f.write(str(result))
+    
+    def _try_custom_serializer(self, result, filepath: Path) -> bool:
+        """
+        Attempt to save using custom serializer
+        
+        Returns:
+            True if custom serializer was used successfully, False otherwise
+        """
+        try:
+            # Find matching serializer
+            available_suffixes = self._serializer_registry.get_available_suffixes()
+            suffix = self._suffix_matcher.match_suffix(filepath, available_suffixes)
+            
+            if not suffix:
+                return False
+            
+            # Get type-appropriate serializer
+            serializer = self._serializer_registry.get_serializer(suffix, type(result))
+            
+            if not serializer:
+                logger.debug(f"No serializer found for type {type(result)} with suffix {suffix}")
+                return False
+            
+            # Execute serialization
+            logger.log(VERBOSE_LEVEL,f"Using custom serializer for {suffix} format")
+            serializer(result, filepath)
+            logger.log(VERBOSE_LEVEL,f"Saved {type(result).__name__} to {filepath}")
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Custom serializer failed for {filepath}: {e}")
+            # Fall back to standard serialization
+            return False
     
     def cancel(self):
         """Cancel execution"""

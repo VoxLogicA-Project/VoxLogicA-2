@@ -1,12 +1,14 @@
-// Test file to check if unqualified names work after import
+// Test file demonstrating SimpleITK integration and custom serializers
 import "simpleitk"
 
 // Try using unqualified names (without simpleitk. prefix)
 let img = ReadImage("tests/chris_t1.nii.gz")
 
 // Calculate threshold using default namespace arithmetic  
-let threshold_value = 50 + 50
+let threshold_value = 0
 
 // Apply threshold using unqualified name
-let thresholded = Threshold(img, threshold_value)
-save "test.ciro" thresholded
+let thresholded = BinaryThreshold(img, threshold_value,100,200)
+
+// Demonstrate custom serializer formats
+save "output.png" thresholded   // Medical imaging format
