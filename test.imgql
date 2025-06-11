@@ -1,6 +1,8 @@
 // Test file for buffer allocation analysis
 // This creates a simple computation graph with dependencies
 
+import "test"
+
 let a = 
       timewaste(20,20)
     + timewaste(20,20)
