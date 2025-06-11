@@ -436,7 +436,7 @@ class ExecutionSession:
                 with self._status_lock:
                     self.failed[goal.id] = str(e)
                     
-    def _execute_pure_operation(self, operation: Operation, operation_id: NodeId, dependency_results: List[Any]) -> Any:
+    def _execute_pure_operation(self, operation: Operation, operation_id: NodeId, *dependency_results) -> Any:
         """Execute a single pure operation with content-addressed deduplication"""
         if self.cancelled:
             raise Exception("Execution cancelled")
@@ -458,7 +458,8 @@ class ExecutionSession:
                 primitive_func = self.primitives.load_primitive(str(operation.operator.value) if isinstance(operation.operator, ConstantValue) else str(operation.operator))
                 if primitive_func is None:
                     raise Exception(f"No primitive implementation for operator: {operation.operator}")
-                resolved_args = self._resolve_arguments(operation, dependency_results)
+                resolved_args = self._resolve_arguments(operation, list(dependency_results))
+                logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... resolved args: {list(resolved_args.keys())}")
                 result = primitive_func(**resolved_args)
             # Unwrap ConstantValue if returned as result
             if isinstance(result, ConstantValue):
@@ -545,14 +546,69 @@ class ExecutionSession:
     
     def _compile_pure_operations_to_dask(self, dependencies: Dict[NodeId, Set[NodeId]]):
         """Compile pure operations to Dask delayed graph"""
-        for op_id, operation in self.pure_operations.items():
+        # Compile operations in topological order to ensure dependencies are compiled first
+        topo_order = self._topological_sort(dependencies)
+        
+        for op_id in topo_order:
+            if op_id not in self.pure_operations:
+                continue
+                
+            operation = self.pure_operations[op_id]
+            
+            # Build dependency list in argument order (not dependency set order!)
             dep_delayed = []
-            for dep_id in dependencies.get(op_id, set()):
-                if dep_id in self.delayed_graph:
+            for arg_name in sorted(operation.arguments.keys()):  # Sort to ensure consistent order: '0', '1', '2', etc.
+                dep_id = operation.arguments[arg_name]
+                if dep_id in dependencies.get(op_id, set()) and dep_id in self.delayed_graph:
                     dep_delayed.append(self.delayed_graph[dep_id])
+                elif dep_id in self.delayed_graph:
+                    # This dependency might not be in the dependencies dict if it's a constant
+                    dep_delayed.append(self.delayed_graph[dep_id])
+            
+            # Pass dependency results as individual arguments, not a list
+            # This allows Dask to properly resolve dependencies
             self.delayed_graph[op_id] = delayed(self._execute_pure_operation)(
-                operation, op_id, dep_delayed
+                operation, op_id, *dep_delayed
             )
+
+    def _topological_sort(self, dependencies: Dict[NodeId, Set[NodeId]]) -> List[NodeId]:
+        """Topological sort of operations based on dependencies"""
+        # Kahn's algorithm for topological sorting
+        in_degree = {op_id: 0 for op_id in self.pure_operations}
+        
+        # Calculate in-degrees (how many dependencies each operation has)
+        for op_id, deps in dependencies.items():
+            if op_id in in_degree:
+                in_degree[op_id] = len(deps)
+        
+        # Start with nodes that have no dependencies
+        queue = deque([op_id for op_id, degree in in_degree.items() if degree == 0])
+        result = []
+        
+        while queue:
+            current = queue.popleft()
+            result.append(current)
+            
+            # Remove this node and update in-degrees of operations that depend on it
+            for op_id, deps in dependencies.items():
+                if current in deps and op_id in in_degree:
+                    in_degree[op_id] -= 1
+                    if in_degree[op_id] == 0:
+                        queue.append(op_id)
+        
+        if len(result) != len(self.pure_operations):
+            # Debug information
+            logger.error("Topological sort failed:")
+            logger.error(f"Pure operations: {len(self.pure_operations)}")
+            logger.error(f"Sorted result: {len(result)}")
+            remaining = set(self.pure_operations.keys()) - set(result)
+            logger.error(f"Remaining operations: {[op_id[:8] + '...' for op_id in remaining]}")
+            for op_id in remaining:
+                if op_id in dependencies:
+                    logger.error(f"  {op_id[:8]}... depends on: {[dep_id[:8] + '...' for dep_id in dependencies[op_id]]}")
+            raise ValueError("Cycle detected in dependencies")
+        
+        return result
 
     def _is_literal_operation(self, operation: Operation) -> bool:
         """Check if an operation represents a literal value (constant)"""
