@@ -92,11 +92,13 @@ class RunRequest(BaseModel):
 def setup_logging(debug: bool = False) -> None:
     """Set up logging configuration"""
     log_level = logging.DEBUG if debug else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler()],
-    )
+    formatter = logging.Formatter('[%(asctime)s] %(message)s')
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+    root = logging.getLogger()
+    root.handlers = []  # Remove any existing handlers
+    root.addHandler(handler)
+    root.setLevel(log_level)
 
 
 def handle_cli_feature(feature_name: str, **kwargs: Any) -> None:
