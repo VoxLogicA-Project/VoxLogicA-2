@@ -1,39 +1,33 @@
-# Dynamic Scheduler with On-DB Memory Allocation Design
+# Dynamic Scheduler Design Documents Creation
 
-## Issue Summary
-Design an execution semantics for VoxLogica-2 that implements a dynamic scheduler with database-backed memory allocation for DAG node results.
+## Issue Description
+User requested creation of design documents for the Dynamic Scheduler with Database-Backed Memory Allocation system as specified in `/doc/dev/dynamic-scheduler/PROMPT.md`.
 
-## Requirements
-- DAG nodes have SHA256 IDs for unique identification
-- Computed node results must be persisted to database
-- Support for multiple data types: strings, numbers, booleans, files (as blobs)
-- High-performance storage and retrieval requirements
-- Serverless database preferred (SQLite, JSON-based)
-- Optional memory-mapped file optimization for large blob data
-- In general, employ a zero-copy approach even for writing to the database: ideally nodes write directly to it
+## Status: IN PROGRESS
 
-## Context
-This is part of the VoxLogica-2 execution engine development, focusing on efficient caching and memory management for large-scale image processing workflows.
+## Date: June 9, 2025
 
-## Status
-Open - Design phase
+## Requirements Analysis
+Based on PROMPT.md, need to create:
 
-## Related Files
-- `/doc/dev/dynamic-scheduler/PROMPT.md` - Original requirement specification
-- `/doc/dev/SEMANTICS.md` - Overall language semantics
+1. **Architectural Design Document**: Complete system architecture with component diagrams
+2. **Storage Schema**: Storage schema and documentation (database schema OR filesystem structure)
+3. **API Specification**: Detailed API interface definitions with examples
+4. **Implementation Plan**: Step-by-step implementation roadmap with milestones
+5. **Testing Strategy**: Unit testing, integration testing, and performance testing approaches
+6. **Deployment Guide**: Configuration, deployment, and operational procedures
 
-## CLOSURE NOTE - 9 giugno 2025
+## Key Technical Requirements
+- Alternative execution engine to VoxLogica-2's sequential execution
+- Database-backed memory allocation with zero-copy approach
+- Storage of DAG node results (primitives, binary data, large objects, nested records, datasets)
+- Support for streaming I/O and concurrent access
+- Cross-platform compatibility (macOS, Linux, Windows)  
+- Peer-to-peer distribution readiness
+- Integration with existing VoxLogica-2 CLI/API
 
-**Status: SUPERSEDED** by comprehensive PROMPT.md document revision.
+## Target Directory
+All design documents will be created in `/doc/dev/dynamic-scheduler/`
 
-This issue was superseded by the successful revision of `/doc/dev/dynamic-scheduler/PROMPT.md` which properly clarified the requirements for an alternative execution backend. The design requirements in this issue have been incorporated into the updated PROMPT.md document.
-
-**Related Work:**
-- PROMPT.md document revised to present dynamic scheduler as alternative execution backend
-- Requirements clarified for storage-based memory management vs buffer allocation
-- Integration strategy defined for coexistence with sequential execution
-- Alternative execution models documented in SEMANTICS.md
-
-**Resolution:** Requirements have been properly documented and clarified. Implementation work can proceed based on the revised PROMPT.md specification.
-
----
+## Approach
+Will create comprehensive design documents following software engineering best practices, focusing on practical implementation while maintaining the alternative nature of this execution backend.
