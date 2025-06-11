@@ -54,7 +54,7 @@ class StorageBackend:
         # Initialize database schema
         self._init_database()
         
-        logger.info(f"Storage backend initialized: {self.db_path}")
+        logger.debug(f"Storage backend initialized: {self.db_path}")
     
     def _get_connection(self) -> sqlite3.Connection:
         """Get thread-local database connection."""

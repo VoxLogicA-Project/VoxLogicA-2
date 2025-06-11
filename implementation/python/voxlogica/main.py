@@ -112,9 +112,23 @@ class ElapsedMsFormatter(logging.Formatter):
         return super().format(record)
 
 
-def setup_logging(debug: bool = False) -> None:
+VERBOSE_LEVEL = 15  # Between INFO (20) and DEBUG (10)
+logging.addLevelName(VERBOSE_LEVEL, "VERBOSE")
+
+def verbose(self, message, *args, **kwargs):
+    if self.isEnabledFor(VERBOSE_LEVEL):
+        self._log(VERBOSE_LEVEL, message, args, **kwargs)
+logging.Logger.verbose = verbose  # type: ignore[attr-defined]
+
+
+def setup_logging(debug: bool = False, verbose: bool = False) -> None:
     """Set up logging configuration"""
-    log_level = logging.DEBUG if debug else logging.INFO
+    if debug:
+        log_level = logging.DEBUG
+    elif verbose:
+        log_level = VERBOSE_LEVEL
+    else:
+        log_level = logging.INFO
     formatter = ElapsedMsFormatter('%(elapsed)s %(message)s')
     handler = logging.StreamHandler()
     handler.setFormatter(formatter)
@@ -204,9 +218,10 @@ def run(
         help="Actually execute the workplan (not just analyze)",
     ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging (between info and debug)"),
 ) -> None:
     """Run a VoxLogicA program"""
-    setup_logging(debug)
+    setup_logging(debug, verbose)
 
     # Log version
     logger.info(f"VoxLogicA version: {get_version()}")
@@ -227,6 +242,7 @@ def run(
         "program": program,
         "filename": filename,
         "debug": debug,
+        "verbose": verbose,
     }
 
     try:

@@ -25,6 +25,7 @@ from pathlib import Path
 from voxlogica.reducer import WorkPlan, Operation, ConstantValue, Goal, NodeId
 from voxlogica.storage import StorageBackend, get_storage
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
+from voxlogica.main import VERBOSE_LEVEL
 
 logger = logging.getLogger("voxlogica.execution")
 
@@ -141,7 +142,7 @@ class ExecutionEngine:
         if execution_id is None:
             execution_id = self._generate_execution_id(workplan)
                 
-        logger.info(f"Starting execution {execution_id[:8]}... with {len(workplan.operations)} operations")
+        logger.log(VERBOSE_LEVEL,f"Starting execution {execution_id[:8]}... with {len(workplan.operations)} operations")
         
         start_time = time.time()
         
@@ -157,9 +158,9 @@ class ExecutionEngine:
                 completed, failed = session.execute()
                 
                 execution_time = time.time() - start_time
-                logger.info(f"Execution {execution_id[:8]}... completed in {execution_time:.2f}s")
-                logger.info(f"  Completed: {len(completed)}/{len(workplan.operations)}")
-                logger.info(f"  Failed: {len(failed)}")
+                logger.log(VERBOSE_LEVEL,f"Execution {execution_id[:8]}... completed in {execution_time:.2f}s")
+                logger.log(VERBOSE_LEVEL,f"  Completed: {len(completed)}/{len(workplan.operations)}")
+                logger.log(VERBOSE_LEVEL,f"  Failed: {len(failed)}")
                 
                 return ExecutionResult(
                     success=(len(failed) == 0),
@@ -256,7 +257,7 @@ class ExecutionSession:
             goal_computations = [self.delayed_graph[goal_id] for goal_id in computation_goals]
             
             try:
-                logger.info(f"Executing {len(goal_computations)} computation goals with Dask")
+                logger.log(VERBOSE_LEVEL,f"Executing {len(goal_computations)} computation goals with Dask")
                 compute(*goal_computations)
             except Exception as e:
                 logger.error(f"Dask computation failed: {e}")
@@ -302,19 +303,19 @@ class ExecutionSession:
         if self.cancelled:
             raise Exception("Execution cancelled")
         if self.storage.exists(operation_id):
-            logger.info(f"Operation {operation_id[:8]}... found in storage, skipping")
+            logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... found in storage, skipping")
             result = self.storage.retrieve(operation_id)
             with self._status_lock:
                 self.completed.add(operation_id)
             return result
         if not self.storage.mark_running(operation_id):
-            logger.info(f"Operation {operation_id[:8]}... being computed by another worker, waiting")
+            logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... being computed by another worker, waiting")
             return self._wait_for_result(operation_id)
         try:
-            logger.info(f"Executing operation {operation_id[:8]}... ({operation.operator})")
+            logger.log(VERBOSE_LEVEL, f"[START] Executing operation {operation_id[:8]}... ({operation.operator})")
             if self._is_literal_operation(operation):
                 result = operation.operator.value if isinstance(operation.operator, ConstantValue) else operation.operator
-                logger.info(f"Operation {operation_id[:8]}... is literal: {result}")
+                logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... is literal: {result}")
             else:
                 primitive_func = self.primitives.load_primitive(str(operation.operator.value) if isinstance(operation.operator, ConstantValue) else str(operation.operator))
                 if primitive_func is None:
@@ -327,7 +328,7 @@ class ExecutionSession:
             self.storage.store(operation_id, result)
             with self._status_lock:
                 self.completed.add(operation_id)
-            logger.info(f"Operation {operation_id[:8]}... completed successfully")
+            logger.log(VERBOSE_LEVEL, f"[DONE] Operation {operation_id[:8]}... completed successfully")
             return result
         except Exception as e:
             error_msg = f"Operation {operation_id[:8]}... failed: {e}"

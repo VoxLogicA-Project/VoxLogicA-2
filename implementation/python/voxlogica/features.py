@@ -93,6 +93,7 @@ def handle_run(
     compute_memory_assignment: bool = False,
     execute: bool = False,
     debug: bool = False,
+    verbose: bool = False,
     **kwargs,
 ) -> OperationResult[Dict[str, Any]]:
     """Handle the unified run command with all options"""
@@ -326,6 +327,12 @@ run_feature = FeatureRegistry.register(
                 "default": False,
                 "help": "Enable debug mode",
             },
+            "verbose": {
+                "type": bool,
+                "required": False,
+                "default": False,
+                "help": "Enable verbose logging (between info and debug)",
+            },
         },
         api_endpoint={
             "path": "/run",
@@ -355,6 +362,7 @@ run_feature = FeatureRegistry.register(
                     "Actually execute the workplan (not just analyze)",
                 ),
                 "debug": (Optional[bool], "Enable debug mode"),
+                "verbose": (Optional[bool], "Enable verbose logging (between info and debug)"),
             },
             "response_model": Dict[str, Any],
         },
