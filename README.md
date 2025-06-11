@@ -59,7 +59,7 @@ Options:
 - `--save-task-graph-as-json <file>`: Save the task graph as JSON and exit
 - `--save-syntax <file>`: Save the AST in text format and exit
 - `--compute-memory-assignment`: Compute and display memory buffer assignments
-- `--execute`: Actually execute the workplan (not just analyze)
+- `--execute` / `--no-execute`: Execute the workplan (default: --execute)
 - `--debug`: Enable debug mode
 - `--help`: Show help for this command and exit
 

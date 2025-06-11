@@ -16,3 +16,4 @@ let saved = WriteImage(thresholded, "chris_t1_thresholded_unqualified.nii.gz")
 // Print confirmation
 print "Image thresholded with unqualified names, value" threshold_value
 print "Saved to" saved
+save "test.bin" thresholded

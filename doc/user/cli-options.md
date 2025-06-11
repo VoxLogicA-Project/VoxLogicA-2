@@ -35,6 +35,7 @@ python -m voxlogica.main run <filename> [OPTIONS]
 | `--save-task-graph-as-program <file>` | str  | Save the task graph in VoxLogicA format and exit |
 | `--save-syntax <file>`                | str  | Save the AST in text format and exit             |
 | `--save-task-graph-as-json <file>`    | str  | Save the task graph as JSON and exit             |
+| `--execute` / `--no-execute`          | flag | Execute the workplan (default: --execute)        |
 | `--debug`                             | flag | Enable debug mode (more verbose logging)         |
 
 **Example:**

@@ -213,9 +213,9 @@ def run(
         help="Compute and display memory buffer assignments",
     ),
     execute: bool = typer.Option(
-        False,
-        "--execute",
-        help="Actually execute the workplan (not just analyze)",
+        True,
+        "--execute/--no-execute",
+        help="Execute the workplan (default: --execute)",
     ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging (between info and debug)"),

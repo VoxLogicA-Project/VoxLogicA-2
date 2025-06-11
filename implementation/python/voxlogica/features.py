@@ -91,7 +91,7 @@ def handle_run(
     save_task_graph_as_json: Optional[str] = None,
     save_syntax: Optional[str] = None,
     compute_memory_assignment: bool = False,
-    execute: bool = False,
+    execute: bool = True,
     debug: bool = False,
     verbose: bool = False,
     **kwargs,
@@ -350,8 +350,8 @@ run_feature = FeatureRegistry.register(
             "execute": {
                 "type": bool,
                 "required": False,
-                "default": False,
-                "help": "Actually execute the workplan (not just analyze)",
+                "default": True,
+                "help": "Execute the workplan (default: true)",
             },
             "debug": {
                 "type": bool,

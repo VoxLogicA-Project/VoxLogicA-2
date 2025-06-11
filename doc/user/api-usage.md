@@ -85,6 +85,7 @@ Run a VoxLogicA program with various output options. This endpoint mirrors the C
 - `save_task_graph_as_dot` (optional): Alternative name for DOT export
 - `save_task_graph_as_json` (optional): Filename for JSON export (API returns content under this key, CLI saves to this file)
 - `save_syntax` (optional): Filename for syntax export (API returns content under this key, CLI saves to this file)
+- `execute` (optional): Execute the workplan (default: true)
 - `debug` (optional): Enable debug mode
 
 **Important:** The API returns export content in the response `saved_files` field using the provided filenames as keys, while the CLI saves to the actual files.
