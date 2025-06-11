@@ -351,8 +351,8 @@ class ExecutionSession:
             result = result.value
         # Execute the appropriate goal action
         if goal.operation == 'print':
-            print(f"{goal.name}: {result}")
-        elif goal.operation == 'save':
+            logger.info(f"{goal.name}={result}")
+        elif goal.operation == 'save':            
             self._save_result_to_file(result, goal.name)
         else:
             raise Exception(f"Unknown goal operation: {goal.operation}")
