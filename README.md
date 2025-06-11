@@ -15,8 +15,11 @@ There's a convenience script in the root directory to run VoxLogicA:
 # Run VoxLogicA without manually activating the virtual environment
 ./voxlogica run test.imgql
 
-# Show help
+# Show help for the main CLI
 ./voxlogica --help
+
+# Show help for a subcommand (e.g., run)
+./voxlogica run --help
 
 # Show version
 ./voxlogica version
@@ -26,6 +29,62 @@ There's a convenience script in the root directory to run VoxLogicA:
 ```
 
 This script automatically activates the virtual environment and runs the Python implementation.
+
+## CLI Reference
+
+### Main Command
+
+```
+./voxlogica [OPTIONS] COMMAND [ARGS]...
+```
+
+- `--help` : Show the main help message and exit.
+
+#### Commands:
+- `version` : Show the VoxLogicA version
+- `run` : Run a VoxLogicA program
+- `serve` : Start the VoxLogicA API server
+
+### `run` Command
+
+```
+./voxlogica run [OPTIONS] FILENAME
+```
+
+- `FILENAME` (required): VoxLogicA session file to run
+
+Options:
+- `--save-task-graph <file>`: Save the task graph
+- `--save-task-graph-as-dot <file>`: Save the task graph in .dot format and exit
+- `--save-task-graph-as-json <file>`: Save the task graph as JSON and exit
+- `--save-syntax <file>`: Save the AST in text format and exit
+- `--compute-memory-assignment`: Compute and display memory buffer assignments
+- `--execute`: Actually execute the workplan (not just analyze)
+- `--debug`: Enable debug mode
+- `--help`: Show help for this command and exit
+
+### `serve` Command
+
+```
+./voxlogica serve [OPTIONS]
+```
+
+Options:
+- `--host <host>`: Host to bind the API server (default: 127.0.0.1)
+- `--port <port>`: Port to bind the API server (default: 8000)
+- `--debug`: Enable debug mode
+- `--help`: Show help for this command and exit
+
+### `version` Command
+
+```
+./voxlogica version [OPTIONS]
+```
+
+Options:
+- `--help`: Show help for this command and exit
+
+---
 
 For detailed documentation, see:
 

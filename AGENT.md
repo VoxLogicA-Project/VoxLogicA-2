@@ -39,3 +39,7 @@ MANDATORY: In any chat, when executing any command, it is required to follow the
 MANDATORY: The AI is responsible for checking and maintaining the documentation (in doc/) so that it is accurate with respect to the current implementation, and must act on changes appropriately.
 
 MANDATORY: The AI MUST always verify its answers before responding to any user question. This is to be treated as a core agent policy.
+
+MANDATORY: The AI must read README.md in the root directory at the start of each new chat. This file describes the tool usage and conventions for running and testing VoxLogicA.
+
+MANDATORY: For all testing and usage, the AI must use the main executable script (./voxlogica) as an end user would, not by invoking Python modules directly (e.g., not with python -m or similar). All CLI and API usage must follow the documented user workflow.

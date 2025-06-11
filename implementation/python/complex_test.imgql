@@ -1,9 +1,0 @@
-// More complex test case for buffer allocation
-let a = 1
-let b = 2  
-let c = a + b
-let d = a * 2
-let e = c + d
-let f = b * 3
-let result = e + f
-print "complex_test" result
