@@ -381,6 +381,9 @@ class ExecutionSession:
     def execute(self) -> tuple[Set[NodeId], Dict[NodeId, str]]:
         """Execute the workplan and return completed/failed operation sets"""
         
+        # Store constants in storage first so they can be retrieved by goals
+        self._store_constants()
+        
         # Build dependency graph for topological ordering
         dependencies = self._build_dependency_graph()
         
@@ -492,27 +495,45 @@ class ExecutionSession:
         if goal.operation == 'print':
             logger.info(f"{goal.name}={result}")
         elif goal.operation == 'save':            
-            self._save_result_to_file(result, goal.name)
+            self._save_result_to_file(result, goal.name, goal.id)
         else:
             raise Exception(f"Unknown goal operation: {goal.operation}")
             
-    def _save_result_to_file(self, result, filename: str):
+    def _save_result_to_file(self, result, filename: str, operation_id: str = None):
         """Save a result to a file"""
         import json
         import pickle
+        import sqlite3
         from pathlib import Path
         from voxlogica.converters.json_converter import WorkPlanJSONEncoder
         filepath = Path(filename)
         filepath.parent.mkdir(parents=True, exist_ok=True)
         ext = filepath.suffix.lower()
         logger.info(f"Saving result to {filepath}")
-        if ext == ".json":
+        
+        # For binary files (.bin, no extension), dump raw pickled data from database
+        if ext == ".bin" or ext == "":
+            if operation_id and self.storage.exists(operation_id):
+                # Get raw pickled data directly from database
+                with self.storage._get_connection() as conn:
+                    cursor = conn.execute("SELECT data FROM results WHERE operation_id = ?", (operation_id,))
+                    row = cursor.fetchone()
+                    if row:
+                        raw_pickled_data = row[0]  # This is the raw pickle bytes
+                        with open(filepath, 'wb') as f:
+                            f.write(raw_pickled_data)
+                        logger.info(f"Saved raw pickled data ({len(raw_pickled_data)} bytes) to {filepath}")
+                        return
+            # Fallback to regular pickle if no operation_id or not in storage
+            with open(filepath, 'wb') as f:
+                pickle.dump(result, f)
+        elif ext == ".json":
             with open(filepath, 'w') as f:
                 json.dump(result, f, indent=2, cls=WorkPlanJSONEncoder)
         elif ext in [".pkl", ".pickle"]:
             with open(filepath, 'wb') as f:
                 pickle.dump(result, f)
-        else:  # txt format or no extension
+        else:  # txt format 
             with open(filepath, 'w') as f:
                 f.write(str(result))
     
@@ -686,6 +707,16 @@ class ExecutionSession:
             time.sleep(0.1)  # Poll every 100ms
         
         raise Exception(f"Timeout waiting for operation {operation_id[:8]}... to complete")
+
+    def _store_constants(self):
+        """Store all ConstantValue nodes in storage so they can be retrieved by goals"""
+        for node_id, node in self.workplan.nodes.items():
+            if isinstance(node, ConstantValue):
+                # Check if already stored to avoid duplicate work
+                if not self.storage.exists(node_id):
+                    # Store the constant value
+                    self.storage.store(node_id, node.value)
+                    logger.debug(f"Stored constant {node_id[:8]}... = {node.value}")
 
 def unwrap_node(obj):
     import dataclasses

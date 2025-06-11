@@ -9,4 +9,4 @@ let threshold_value = 50 + 50
 
 // Apply threshold using unqualified name
 let thresholded = Threshold(img, threshold_value)
-save "test.bin" thresholded
+save "test.ciro" thresholded

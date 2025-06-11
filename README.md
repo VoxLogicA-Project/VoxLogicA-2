@@ -1,5 +1,7 @@
 # VoxLogicA 2.0.0-alpha.0.2
 
+⚠️ **Pre-Alpha Software**: This software is in pre-alpha stage and we constantly make breaking changes as there are no users yet.
+
 This is the source code of the new iteration of the spatial model checker VoxLogicA. The current implementation includes:
 
 - VoxLogicA program parsing and analysis
