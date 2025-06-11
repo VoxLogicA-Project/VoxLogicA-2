@@ -1,1223 +1,1205 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>VoxLogicA Task Graph Visualizer</title>
-    <script src="https://d3js.org/d3.v7.min.js"></script>
-    <style>
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VoxLogicA Task Graph Visualizer</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .app-container {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: white;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+    }
+
+    /* Small Android-style appbar */
+    .appbar {
+      background: linear-gradient(90deg, #4f46e5 0%, #7c3aed 100%);
+      color: white;
+      padding: 0.75rem 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    .appbar h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+
+    .appbar-controls {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    /* Main content area */
+    .main-content {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* Left panel - code editor */
+    .editor-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      border-right: 2px solid #e5e7eb;
+      background: #fafafa;
+    }
+
+    /* Controls bar */
+    .controls-bar {
+      padding: 0.75rem;
+      background: #f9fafb;
+      border-bottom: 1px solid #e5e7eb;
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    /* Text area with drag and drop */
+    .editor-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .editor-textarea {
+      width: 100%;
+      height: 100%;
+      padding: 1rem;
+      border: none;
+      font-family: "Monaco", "Consolas", monospace;
+      font-size: 14px;
+      resize: none;
+      outline: none;
+      background: white;
+      transition: background-color 0.3s ease;
+    }
+
+    .editor-textarea.dragover {
+      background: #f0f9ff;
+      border: 2px dashed #4f46e5;
+    }
+
+    /* Right panel - graph visualization */
+    .graph-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    .graph-container {
+      flex: 1;
+      background: #f9fafb;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .graph-svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Resizer handle */
+    .resizer {
+      width: 8px;
+      background: #d1d5db;
+      cursor: col-resize;
+      flex-shrink: 0;
+      transition: all 0.2s ease;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .resizer::before {
+      content: "";
+      position: absolute;
+      width: 3px;
+      height: 40px;
+      background: #9ca3af;
+      border-radius: 2px;
+      transition: all 0.2s ease;
+    }
+
+    .resizer:hover {
+      background: #4f46e5;
+      width: 10px;
+    }
+
+    .resizer:hover::before {
+      background: white;
+      height: 60px;
+    }
+
+    .resizer.dragging {
+      background: #4f46e5;
+      width: 10px;
+    }
+
+    .resizer.dragging::before {
+      background: white;
+      height: 60px;
+    }
+
+    /* Small buttons */
+    .btn {
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 6px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-size: 0.875rem;
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+
+    .btn-primary {
+      background: #4f46e5;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #4338ca;
+    }
+
+    .btn-secondary {
+      background: #e5e7eb;
+      color: #374151;
+    }
+
+    .btn-secondary:hover {
+      background: #d1d5db;
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* File input styling */
+    .file-input {
+      display: none;
+    }
+
+    /* Checkbox styling */
+    .checkbox-container {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.875rem;
+      color: #374151;
+      cursor: pointer;
+      padding: 0.5rem;
+      border-radius: 6px;
+      transition: all 0.2s ease;
+    }
+
+    .checkbox-container:hover {
+      background: #f3f4f6;
+    }
+
+    .checkbox-container input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: #4f46e5;
+      cursor: pointer;
+    }
+
+    /* Message area */
+    .message-area {
+      padding: 0 0.75rem;
+    }
+
+    .error-message {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #dc2626;
+      padding: 0.75rem;
+      border-radius: 6px;
+      margin: 0.5rem 0;
+      font-size: 0.875rem;
+    }
+
+    /* Node styles */
+    .node {
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+
+    .node circle {
+      fill: #4f46e5;
+      stroke: #ffffff;
+      stroke-width: 3px;
+    }
+
+    .node:hover circle {
+      fill: #7c3aed;
+      transform: scale(1.1);
+    }
+
+    .node text {
+      fill: white;
+      text-anchor: middle;
+      dominant-baseline: central;
+      font-size: 12px;
+      font-weight: 600;
+      pointer-events: none;
+    }
+
+    .link {
+      fill: none;
+      stroke: #6b7280;
+      stroke-width: 2px;
+      marker-end: url(#arrowhead);
+    }
+
+    .link:hover {
+      stroke: #4f46e5;
+      stroke-width: 3px;
+    }
+
+    .loading {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid #f3f3f3;
+      border-top: 2px solid #4f46e5;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% {
+        transform: rotate(0deg);
       }
 
-      body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          Oxygen, Ubuntu, Cantarell, sans-serif;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        height: 100vh;
-        overflow: hidden;
+      100% {
+        transform: rotate(360deg);
       }
+    }
 
-      .app-container {
-        height: 100vh;
-        display: flex;
-        flex-direction: column;
-        background: white;
-        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-      }
-
-      /* Small Android-style appbar */
-      .appbar {
-        background: linear-gradient(90deg, #4f46e5 0%, #7c3aed 100%);
-        color: white;
-        padding: 0.75rem 1rem;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        flex-shrink: 0;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-      }
-
-      .appbar h1 {
-        font-size: 1.25rem;
-        font-weight: 600;
-      }
-
-      .appbar-controls {
-        display: flex;
-        gap: 0.5rem;
-        align-items: center;
-      }
-
-      /* Main content area */
+    /* Mobile responsive */
+    @media (max-width: 768px) {
       .main-content {
-        flex: 1;
-        display: flex;
-        overflow: hidden;
+        flex-direction: column;
       }
 
-      /* Left panel - code editor */
       .editor-panel {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        border-right: 2px solid #e5e7eb;
-        background: #fafafa;
+        border-right: none;
+        border-bottom: none;
       }
 
-      /* Controls bar */
-      .controls-bar {
-        padding: 0.75rem;
-        background: #f9fafb;
-        border-bottom: 1px solid #e5e7eb;
-        display: flex;
-        gap: 0.5rem;
-        flex-wrap: wrap;
-        align-items: center;
-      }
-
-      /* Text area with drag and drop */
-      .editor-container {
-        flex: 1;
-        position: relative;
-        overflow: hidden;
-      }
-
-      .editor-textarea {
-        width: 100%;
-        height: 100%;
-        padding: 1rem;
-        border: none;
-        font-family: "Monaco", "Consolas", monospace;
-        font-size: 14px;
-        resize: none;
-        outline: none;
-        background: white;
-        transition: background-color 0.3s ease;
-      }
-
-      .editor-textarea.dragover {
-        background: #f0f9ff;
-        border: 2px dashed #4f46e5;
-      }
-
-      /* Right panel - graph visualization */
-      .graph-panel {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        position: relative;
-      }
-
-      .graph-container {
-        flex: 1;
-        background: #f9fafb;
-        position: relative;
-        overflow: hidden;
-      }
-
-      .graph-svg {
-        width: 100%;
-        height: 100%;
-      }
-
-      /* Resizer handle */
       .resizer {
-        width: 8px;
-        background: #d1d5db;
-        cursor: col-resize;
-        flex-shrink: 0;
-        transition: all 0.2s ease;
-        position: relative;
-        display: flex;
-        align-items: center;
-        justify-content: center;
+        width: 100%;
+        height: 8px;
+        cursor: row-resize;
+        border-top: 2px solid #e5e7eb;
+        border-bottom: 2px solid #e5e7eb;
       }
 
       .resizer::before {
-        content: "";
-        position: absolute;
-        width: 3px;
-        height: 40px;
-        background: #9ca3af;
-        border-radius: 2px;
-        transition: all 0.2s ease;
+        width: 40px;
+        height: 3px;
       }
 
       .resizer:hover {
-        background: #4f46e5;
-        width: 10px;
+        height: 10px;
+        width: 100%;
       }
 
       .resizer:hover::before {
-        background: white;
-        height: 60px;
+        width: 60px;
+        height: 3px;
       }
 
       .resizer.dragging {
-        background: #4f46e5;
-        width: 10px;
+        height: 10px;
+        width: 100%;
       }
 
       .resizer.dragging::before {
-        background: white;
-        height: 60px;
+        width: 60px;
+        height: 3px;
       }
 
-      /* Small buttons */
+      .appbar h1 {
+        font-size: 1.1rem;
+      }
+
+      .controls-bar {
+        flex-wrap: wrap;
+        gap: 0.375rem;
+      }
+
       .btn {
-        padding: 0.5rem 1rem;
-        border: none;
-        border-radius: 6px;
-        font-weight: 500;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        font-size: 0.875rem;
-        display: flex;
-        align-items: center;
-        gap: 0.25rem;
+        font-size: 0.8rem;
+        padding: 0.375rem 0.75rem;
       }
+    }
 
-      .btn-primary {
-        background: #4f46e5;
-        color: white;
-      }
-
-      .btn-primary:hover {
-        background: #4338ca;
-      }
-
-      .btn-secondary {
-        background: #e5e7eb;
-        color: #374151;
-      }
-
-      .btn-secondary:hover {
-        background: #d1d5db;
-      }
-
-      .btn:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-
-      /* File input styling */
-      .file-input {
-        display: none;
-      }
-
-      /* Checkbox styling */
-      .checkbox-container {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        font-size: 0.875rem;
-        color: #374151;
-        cursor: pointer;
+    /* Very small screens */
+    @media (max-width: 480px) {
+      .appbar {
         padding: 0.5rem;
-        border-radius: 6px;
-        transition: all 0.2s ease;
       }
 
-      .checkbox-container:hover {
-        background: #f3f4f6;
+      .controls-bar {
+        padding: 0.5rem;
       }
 
-      .checkbox-container input[type="checkbox"] {
-        width: 16px;
-        height: 16px;
-        accent-color: #4f46e5;
-        cursor: pointer;
+      .btn {
+        font-size: 0.75rem;
+        padding: 0.25rem 0.5rem;
       }
+    }
+  </style>
+</head>
 
-      /* Message area */
-      .message-area {
-        padding: 0 0.75rem;
-      }
-
-      .error-message {
-        background: #fef2f2;
-        border: 1px solid #fecaca;
-        color: #dc2626;
-        padding: 0.75rem;
-        border-radius: 6px;
-        margin: 0.5rem 0;
-        font-size: 0.875rem;
-      }
-
-      /* Node styles */
-      .node {
-        cursor: pointer;
-        transition: all 0.3s ease;
-      }
-
-      .node circle {
-        fill: #4f46e5;
-        stroke: #ffffff;
-        stroke-width: 3px;
-      }
-
-      .node:hover circle {
-        fill: #7c3aed;
-        transform: scale(1.1);
-      }
-
-      .node text {
-        fill: white;
-        text-anchor: middle;
-        dominant-baseline: central;
-        font-size: 12px;
-        font-weight: 600;
-        pointer-events: none;
-      }
-
-      .link {
-        fill: none;
-        stroke: #6b7280;
-        stroke-width: 2px;
-        marker-end: url(#arrowhead);
-      }
-
-      .link:hover {
-        stroke: #4f46e5;
-        stroke-width: 3px;
-      }
-
-      .loading {
-        display: inline-block;
-        width: 16px;
-        height: 16px;
-        border: 2px solid #f3f3f3;
-        border-top: 2px solid #4f46e5;
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-      }
-
-      @keyframes spin {
-        0% {
-          transform: rotate(0deg);
-        }
-        100% {
-          transform: rotate(360deg);
-        }
-      }
-
-      /* Mobile responsive */
-      @media (max-width: 768px) {
-        .main-content {
-          flex-direction: column;
-        }
-
-        .editor-panel {
-          border-right: none;
-          border-bottom: none;
-        }
-
-        .resizer {
-          width: 100%;
-          height: 8px;
-          cursor: row-resize;
-          border-top: 2px solid #e5e7eb;
-          border-bottom: 2px solid #e5e7eb;
-        }
-
-        .resizer::before {
-          width: 40px;
-          height: 3px;
-        }
-
-        .resizer:hover {
-          height: 10px;
-          width: 100%;
-        }
-
-        .resizer:hover::before {
-          width: 60px;
-          height: 3px;
-        }
-
-        .resizer.dragging {
-          height: 10px;
-          width: 100%;
-        }
-
-        .resizer.dragging::before {
-          width: 60px;
-          height: 3px;
-        }
-
-        .appbar h1 {
-          font-size: 1.1rem;
-        }
-
-        .controls-bar {
-          flex-wrap: wrap;
-          gap: 0.375rem;
-        }
-
-        .btn {
-          font-size: 0.8rem;
-          padding: 0.375rem 0.75rem;
-        }
-      }
-
-      /* Very small screens */
-      @media (max-width: 480px) {
-        .appbar {
-          padding: 0.5rem;
-        }
-
-        .controls-bar {
-          padding: 0.5rem;
-        }
-
-        .btn {
-          font-size: 0.75rem;
-          padding: 0.25rem 0.5rem;
-        }
-      }
-    </style>
-  </head>
-
-  <body>
-    <div class="app-container">
-      <!-- Small Android-style appbar -->
-      <div class="appbar">
-        <h1>VoxLogicA Visualizer</h1>
-        <div class="appbar-controls">
-          <!-- Could add app-level controls here if needed -->
-        </div>
+<body>
+  <div class="app-container">
+    <!-- Small Android-style appbar -->
+    <div class="appbar">
+      <h1>VoxLogicA Visualizer</h1>
+      <div class="appbar-controls">
+        <!-- Could add app-level controls here if needed -->
       </div>
+    </div>
 
-      <!-- Main content area -->
-      <div class="main-content">
-        <!-- Left panel - Code editor -->
-        <div class="editor-panel">
-          <div class="controls-bar">
-            <button class="btn btn-primary" id="visualizeBtn">
-              <span id="visualizeBtnText">Visualize</span>
-              <span
-                id="loadingSpinner"
-                class="loading"
-                style="display: none"
-              ></span>
-            </button>
-            <button class="btn btn-secondary" id="loadFileBtn">
-              Load File
-            </button>
-            <button class="btn btn-secondary" id="clearBtn">Clear</button>
-            <button class="btn btn-secondary" id="exportBtn" disabled>
-              Export DOT
-            </button>
-            <button class="btn btn-secondary" id="exportJsonBtn" disabled>
-              Export JSON
-            </button>
-            <label class="checkbox-container">
-              <input type="checkbox" id="memoryAssignmentCheckbox" />
-              <span class="checkmark"></span>
-              Show buffer assignments
-            </label>
-            <input
-              type="file"
-              class="file-input"
-              id="fileInput"
-              accept=".imgql,.voxlogica,.txt"
-            />
-          </div>
+    <!-- Main content area -->
+    <div class="main-content">
+      <!-- Left panel - Code editor -->
+      <div class="editor-panel">
+        <div class="controls-bar">
+          <button class="btn btn-primary" id="visualizeBtn">
+            <span id="visualizeBtnText">Visualize</span>
+            <span id="loadingSpinner" class="loading" style="display: none"></span>
+          </button>
+          <button class="btn btn-secondary" id="loadFileBtn">
+            Load File
+          </button>
+          <button class="btn btn-secondary" id="clearBtn">Clear</button>
+          <button class="btn btn-secondary" id="exportBtn" disabled>
+            Export DOT
+          </button>
+          <button class="btn btn-secondary" id="exportJsonBtn" disabled>
+            Export JSON
+          </button>
+          <label class="checkbox-container">
+            <input type="checkbox" id="memoryAssignmentCheckbox" />
+            <span class="checkmark"></span>
+            Show buffer assignments
+          </label>
+          <input type="file" class="file-input" id="fileInput" accept=".imgql,.voxlogica,.txt" />
+        </div>
 
-          <div class="message-area" id="messageArea"></div>
+        <div class="message-area" id="messageArea"></div>
 
-          <div class="editor-container">
-            <textarea
-              id="programInput"
-              class="editor-textarea"
-              placeholder='Paste your VoxLogicA program here or drag and drop a file...
+        <div class="editor-container">
+          <textarea id="programInput" class="editor-textarea" placeholder='Paste your VoxLogicA program here or drag and drop a file...
 
 Example:
 let a = 1
 let b = 2
 let c = a + b
-print "sum" c'
-            ></textarea>
-          </div>
+print "sum" c'></textarea>
         </div>
+      </div>
 
-        <!-- Resizer -->
-        <div class="resizer" id="resizer"></div>
+      <!-- Resizer -->
+      <div class="resizer" id="resizer"></div>
 
-        <!-- Right panel - Graph visualization -->
-        <div class="graph-panel">
-          <div class="graph-container">
-            <svg class="graph-svg" id="graphSvg">
-              <defs>
-                <marker
-                  id="arrowhead"
-                  markerWidth="10"
-                  markerHeight="7"
-                  refX="9"
-                  refY="3.5"
-                  orient="auto"
-                >
-                  <polygon points="0 0, 10 3.5, 0 7" fill="#6b7280" />
-                </marker>
-              </defs>
-            </svg>
-          </div>
+      <!-- Right panel - Graph visualization -->
+      <div class="graph-panel">
+        <div class="graph-container">
+          <svg class="graph-svg" id="graphSvg">
+            <defs>
+              <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                <polygon points="0 0, 10 3.5, 0 7" fill="#6b7280" />
+              </marker>
+            </defs>
+          </svg>
         </div>
       </div>
     </div>
+  </div>
 
-    <script>
-      // Helper to compute edge endpoint on node border
-      function edgeEndpoint(source, target, r = 25) {
-        const dx = target.x - source.x;
-        const dy = target.y - source.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
+  <script>
+    // Helper to compute edge endpoint on node border
+    function edgeEndpoint(source, target, r = 25) {
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
 
-        if (distance === 0) return { x: target.x, y: target.y };
+      if (distance === 0) return { x: target.x, y: target.y };
 
-        const ratio = r / distance;
-        return {
-          x: target.x - dx * ratio,
-          y: target.y - dy * ratio,
-        };
+      const ratio = r / distance;
+      return {
+        x: target.x - dx * ratio,
+        y: target.y - dy * ratio,
+      };
+    }
+
+    class VoxLogicaVisualizer {
+      constructor() {
+        this.initializeElements();
+        this.attachEventListeners();
+        this.initializeResizer();
+        this.currentData = null;
       }
 
-      class VoxLogicaVisualizer {
-        constructor() {
-          this.initializeElements();
-          this.attachEventListeners();
-          this.initializeResizer();
-          this.currentData = null;
-        }
+      initializeElements() {
+        this.programInput = document.getElementById("programInput");
+        this.visualizeBtn = document.getElementById("visualizeBtn");
+        this.visualizeBtnText = document.getElementById("visualizeBtnText");
+        this.loadingSpinner = document.getElementById("loadingSpinner");
+        this.loadFileBtn = document.getElementById("loadFileBtn");
+        this.clearBtn = document.getElementById("clearBtn");
+        this.exportBtn = document.getElementById("exportBtn");
+        this.exportJsonBtn = document.getElementById("exportJsonBtn");
+        this.fileInput = document.getElementById("fileInput");
+        this.messageArea = document.getElementById("messageArea");
+        this.graphSvg = document.getElementById("graphSvg");
+        this.memoryAssignmentCheckbox = document.getElementById(
+          "memoryAssignmentCheckbox"
+        );
+      }
 
-        initializeElements() {
-          this.programInput = document.getElementById("programInput");
-          this.visualizeBtn = document.getElementById("visualizeBtn");
-          this.visualizeBtnText = document.getElementById("visualizeBtnText");
-          this.loadingSpinner = document.getElementById("loadingSpinner");
-          this.loadFileBtn = document.getElementById("loadFileBtn");
-          this.clearBtn = document.getElementById("clearBtn");
-          this.exportBtn = document.getElementById("exportBtn");
-          this.exportJsonBtn = document.getElementById("exportJsonBtn");
-          this.fileInput = document.getElementById("fileInput");
-          this.messageArea = document.getElementById("messageArea");
-          this.graphSvg = document.getElementById("graphSvg");
-          this.memoryAssignmentCheckbox = document.getElementById(
-            "memoryAssignmentCheckbox"
-          );
-        }
+      attachEventListeners() {
+        // Button event listeners
+        this.visualizeBtn.addEventListener("click", () =>
+          this.visualizeGraph()
+        );
+        this.loadFileBtn.addEventListener("click", () =>
+          this.fileInput.click()
+        );
+        this.clearBtn.addEventListener("click", () => this.clearAll());
+        this.exportBtn.addEventListener("click", () =>
+          this.exportData("dot")
+        );
+        this.exportJsonBtn.addEventListener("click", () =>
+          this.exportData("json")
+        );
 
-        attachEventListeners() {
-          // Button event listeners
-          this.visualizeBtn.addEventListener("click", () =>
-            this.visualizeGraph()
-          );
-          this.loadFileBtn.addEventListener("click", () =>
-            this.fileInput.click()
-          );
-          this.clearBtn.addEventListener("click", () => this.clearAll());
-          this.exportBtn.addEventListener("click", () =>
-            this.exportData("dot")
-          );
-          this.exportJsonBtn.addEventListener("click", () =>
-            this.exportData("json")
-          );
+        // File input
+        this.fileInput.addEventListener("change", (e) =>
+          this.handleFileSelect(e)
+        );
 
-          // File input
-          this.fileInput.addEventListener("change", (e) =>
-            this.handleFileSelect(e)
-          );
+        // Drag and drop on textarea
+        this.programInput.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          this.programInput.classList.add("dragover");
+        });
 
-          // Drag and drop on textarea
-          this.programInput.addEventListener("dragover", (e) => {
-            e.preventDefault();
-            this.programInput.classList.add("dragover");
-          });
+        this.programInput.addEventListener("dragleave", (e) => {
+          e.preventDefault();
+          this.programInput.classList.remove("dragover");
+        });
 
-          this.programInput.addEventListener("dragleave", (e) => {
-            e.preventDefault();
-            this.programInput.classList.remove("dragover");
-          });
+        this.programInput.addEventListener("drop", (e) => {
+          e.preventDefault();
+          this.programInput.classList.remove("dragover");
+          this.handleFileDrop(e);
+        });
+      }
 
-          this.programInput.addEventListener("drop", (e) => {
-            e.preventDefault();
-            this.programInput.classList.remove("dragover");
-            this.handleFileDrop(e);
-          });
-        }
+      initializeResizer() {
+        const resizer = document.getElementById("resizer");
+        const editorPanel = document.querySelector(".editor-panel");
+        const graphPanel = document.querySelector(".graph-panel");
+        let isResizing = false;
 
-        initializeResizer() {
-          const resizer = document.getElementById("resizer");
-          const editorPanel = document.querySelector(".editor-panel");
-          const graphPanel = document.querySelector(".graph-panel");
-          let isResizing = false;
+        // Helper function to check if we're in mobile/vertical mode
+        const isMobileMode = () => window.innerWidth <= 768;
 
-          // Helper function to check if we're in mobile/vertical mode
-          const isMobileMode = () => window.innerWidth <= 768;
+        resizer.addEventListener("mousedown", (e) => {
+          isResizing = true;
+          resizer.classList.add("dragging");
 
-          resizer.addEventListener("mousedown", (e) => {
-            isResizing = true;
-            resizer.classList.add("dragging");
-
-            if (isMobileMode()) {
-              document.body.style.cursor = "row-resize";
-            } else {
-              document.body.style.cursor = "col-resize";
-            }
-
-            document.body.style.userSelect = "none"; // Prevent text selection
-            e.preventDefault();
-          });
-
-          document.addEventListener("mousemove", (e) => {
-            if (!isResizing) return;
-
-            const container = document.querySelector(".main-content");
-            const containerRect = container.getBoundingClientRect();
-
-            if (isMobileMode()) {
-              // Vertical resizing for mobile
-              const newTopHeight = e.clientY - containerRect.top;
-              const totalHeight = containerRect.height;
-              const minHeight = 200; // Minimum height for each panel
-              const maxTopHeight = totalHeight - minHeight;
-
-              if (newTopHeight >= minHeight && newTopHeight <= maxTopHeight) {
-                const topPercent = (newTopHeight / totalHeight) * 100;
-                const bottomPercent = 100 - topPercent;
-
-                editorPanel.style.flex = `0 0 ${topPercent}%`;
-                graphPanel.style.flex = `0 0 ${bottomPercent}%`;
-              }
-            } else {
-              // Horizontal resizing for desktop
-              const newLeftWidth = e.clientX - containerRect.left;
-              const totalWidth = containerRect.width;
-              const minWidth = 300; // Minimum width for each panel
-              const maxLeftWidth = totalWidth - minWidth;
-
-              if (newLeftWidth >= minWidth && newLeftWidth <= maxLeftWidth) {
-                const leftPercent = (newLeftWidth / totalWidth) * 100;
-                const rightPercent = 100 - leftPercent;
-
-                editorPanel.style.flex = `0 0 ${leftPercent}%`;
-                graphPanel.style.flex = `0 0 ${rightPercent}%`;
-              }
-            }
-          });
-
-          document.addEventListener("mouseup", () => {
-            if (isResizing) {
-              isResizing = false;
-              resizer.classList.remove("dragging");
-              document.body.style.cursor = "";
-              document.body.style.userSelect = ""; // Restore text selection
-            }
-          });
-
-          // Touch support for mobile
-          resizer.addEventListener("touchstart", (e) => {
-            isResizing = true;
-            resizer.classList.add("dragging");
-            e.preventDefault();
-          });
-
-          document.addEventListener("touchmove", (e) => {
-            if (!isResizing) return;
-
-            const touch = e.touches[0];
-            const container = document.querySelector(".main-content");
-            const containerRect = container.getBoundingClientRect();
-
-            if (isMobileMode()) {
-              // Vertical resizing for mobile touch
-              const newTopHeight = touch.clientY - containerRect.top;
-              const totalHeight = containerRect.height;
-              const minHeight = 200;
-              const maxTopHeight = totalHeight - minHeight;
-
-              if (newTopHeight >= minHeight && newTopHeight <= maxTopHeight) {
-                const topPercent = (newTopHeight / totalHeight) * 100;
-                const bottomPercent = 100 - topPercent;
-
-                editorPanel.style.flex = `0 0 ${topPercent}%`;
-                graphPanel.style.flex = `0 0 ${bottomPercent}%`;
-              }
-            } else {
-              // Horizontal resizing for desktop touch
-              const newLeftWidth = touch.clientX - containerRect.left;
-              const totalWidth = containerRect.width;
-              const minWidth = 300;
-              const maxLeftWidth = totalWidth - minWidth;
-
-              if (newLeftWidth >= minWidth && newLeftWidth <= maxLeftWidth) {
-                const leftPercent = (newLeftWidth / totalWidth) + 100;
-                const rightPercent = 100 - leftPercent;
-
-                editorPanel.style.flex = `0 0 ${leftPercent}%`;
-                graphPanel.style.flex = `0 0 ${rightPercent}%`;
-              }
-            }
-          });
-
-          document.addEventListener("touchend", () => {
-            if (isResizing) {
-              isResizing = false;
-              resizer.classList.remove("dragging");
-            }
-          });
-
-          // Handle window resize to reset layout if needed
-          window.addEventListener("resize", () => {
-            // Reset flex values when switching between mobile/desktop
-            editorPanel.style.flex = "";
-            graphPanel.style.flex = "";
-          });
-        }
-
-        handleFileSelect(event) {
-          const file = event.target.files[0];
-          if (file) {
-            this.readFile(file);
-          }
-        }
-
-        handleFileDrop(event) {
-          const files = event.dataTransfer.files;
-          if (files.length > 0) {
-            this.readFile(files[0]);
-          }
-        }
-
-        readFile(file) {
-          const reader = new FileReader();
-          reader.onload = (e) => {
-            this.programInput.value = e.target.result;
-            this.clearMessages();
-          };
-          reader.onerror = () => {
-            this.showMessage("Error reading file", "error");
-          };
-          reader.readAsText(file);
-        }
-
-        async visualizeGraph() {
-          const program = this.programInput.value.trim();
-
-          if (!program) {
-            this.showMessage("Please enter a VoxLogicA program", "error");
-            return;
-          }
-
-          this.setLoading(true);
-          this.clearMessages();
-
-          try {
-            const response = await fetch("/api/v1/run", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                program: program,
-                save_task_graph_as_json: "graph.json",
-                save_task_graph: "graph.dot",
-                compute_memory_assignment:
-                  this.memoryAssignmentCheckbox.checked,
-              }),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-              throw new Error(data.detail || "Server error");
-            }
-
-            this.currentData = data;
-            this.renderGraph(data);
-            this.enableExportButtons();
-          } catch (error) {
-            console.error("Error:", error);
-            this.showMessage(error.message || "An error occurred", "error");
-          } finally {
-            this.setLoading(false);
-          }
-        }
-
-        renderGraph(data) {
-          // Clear previous graph
-          d3.select(this.graphSvg).selectAll("*").remove();
-
-          // Parse JSON data to get nodes and links
-          let graphData;
-          if (data.saved_files && data.saved_files["graph.json"]) {
-            graphData = data.saved_files["graph.json"];
+          if (isMobileMode()) {
+            document.body.style.cursor = "row-resize";
           } else {
-            this.showMessage("No graph data available", "error");
-            return;
+            document.body.style.cursor = "col-resize";
           }
 
-          // Convert nodes to D3 nodes
-          const nodes = graphData.nodes.map((node) => {
-            // Fallback for missing type field
-            const nodeType = node.type || (typeof node.value !== "undefined" ? "constant" : "operation");
-            return {
-              id: node.id,
-              label: nodeType === "constant" 
-                ? `const: ${node.value}` 
-                : this.formatOperatorLabel(node.operator, node.buffer_id),
-              operator: nodeType === "constant" ? "constant" : node.operator,
-              arguments: node.arguments || {},
-              buffer_id: node.buffer_id,
-              type: nodeType,
-              value: node.value, // for constants
-              isGoal:
-                nodeType === "operation" && (
-                  node.operator === "goal" ||
-                  (typeof node.operator === "string" &&
-                    node.operator.toLowerCase().includes("goal"))
-                ),
-              permanentlyPinned: false,
-            };
-          });
+          document.body.style.userSelect = "none"; // Prevent text selection
+          e.preventDefault();
+        });
 
-          // Create links from arguments
-          const links = [];
-          graphData.nodes.forEach((node) => {
-            if (
-              node.type === "operation" &&
-              node.arguments &&
-              typeof node.arguments === "object" &&
-              !Array.isArray(node.arguments)
-            ) {
-              Object.values(node.arguments).forEach((argNodeId) => {
-                // Check if the referenced node exists
-                if (
-                  graphData.nodes.some((other) => other.id === argNodeId)
-                ) {
-                  links.push({
-                    source: argNodeId,
-                    target: node.id,
-                  });
-                }
-              });
+        document.addEventListener("mousemove", (e) => {
+          if (!isResizing) return;
+
+          const container = document.querySelector(".main-content");
+          const containerRect = container.getBoundingClientRect();
+
+          if (isMobileMode()) {
+            // Vertical resizing for mobile
+            const newTopHeight = e.clientY - containerRect.top;
+            const totalHeight = containerRect.height;
+            const minHeight = 200; // Minimum height for each panel
+            const maxTopHeight = totalHeight - minHeight;
+
+            if (newTopHeight >= minHeight && newTopHeight <= maxTopHeight) {
+              const topPercent = (newTopHeight / totalHeight) * 100;
+              const bottomPercent = 100 - topPercent;
+
+              editorPanel.style.flex = `0 0 ${topPercent}%`;
+              graphPanel.style.flex = `0 0 ${bottomPercent}%`;
             }
+          } else {
+            // Horizontal resizing for desktop
+            const newLeftWidth = e.clientX - containerRect.left;
+            const totalWidth = containerRect.width;
+            const minWidth = 300; // Minimum width for each panel
+            const maxLeftWidth = totalWidth - minWidth;
+
+            if (newLeftWidth >= minWidth && newLeftWidth <= maxLeftWidth) {
+              const leftPercent = (newLeftWidth / totalWidth) * 100;
+              const rightPercent = 100 - leftPercent;
+
+              editorPanel.style.flex = `0 0 ${leftPercent}%`;
+              graphPanel.style.flex = `0 0 ${rightPercent}%`;
+            }
+          }
+        });
+
+        document.addEventListener("mouseup", () => {
+          if (isResizing) {
+            isResizing = false;
+            resizer.classList.remove("dragging");
+            document.body.style.cursor = "";
+            document.body.style.userSelect = ""; // Restore text selection
+          }
+        });
+
+        // Touch support for mobile
+        resizer.addEventListener("touchstart", (e) => {
+          isResizing = true;
+          resizer.classList.add("dragging");
+          e.preventDefault();
+        });
+
+        document.addEventListener("touchmove", (e) => {
+          if (!isResizing) return;
+
+          const touch = e.touches[0];
+          const container = document.querySelector(".main-content");
+          const containerRect = container.getBoundingClientRect();
+
+          if (isMobileMode()) {
+            // Vertical resizing for mobile touch
+            const newTopHeight = touch.clientY - containerRect.top;
+            const totalHeight = containerRect.height;
+            const minHeight = 200;
+            const maxTopHeight = totalHeight - minHeight;
+
+            if (newTopHeight >= minHeight && newTopHeight <= maxTopHeight) {
+              const topPercent = (newTopHeight / totalHeight) * 100;
+              const bottomPercent = 100 - topPercent;
+
+              editorPanel.style.flex = `0 0 ${topPercent}%`;
+              graphPanel.style.flex = `0 0 ${bottomPercent}%`;
+            }
+          } else {
+            // Horizontal resizing for desktop touch
+            const newLeftWidth = touch.clientX - containerRect.left;
+            const totalWidth = containerRect.width;
+            const minWidth = 300;
+            const maxLeftWidth = totalWidth - minWidth;
+
+            if (newLeftWidth >= minWidth && newLeftWidth <= maxLeftWidth) {
+              const leftPercent = (newLeftWidth / totalWidth) + 100;
+              const rightPercent = 100 - leftPercent;
+
+              editorPanel.style.flex = `0 0 ${leftPercent}%`;
+              graphPanel.style.flex = `0 0 ${rightPercent}%`;
+            }
+          }
+        });
+
+        document.addEventListener("touchend", () => {
+          if (isResizing) {
+            isResizing = false;
+            resizer.classList.remove("dragging");
+          }
+        });
+
+        // Handle window resize to reset layout if needed
+        window.addEventListener("resize", () => {
+          // Reset flex values when switching between mobile/desktop
+          editorPanel.style.flex = "";
+          graphPanel.style.flex = "";
+        });
+      }
+
+      handleFileSelect(event) {
+        const file = event.target.files[0];
+        if (file) {
+          this.readFile(file);
+        }
+      }
+
+      handleFileDrop(event) {
+        const files = event.dataTransfer.files;
+        if (files.length > 0) {
+          this.readFile(files[0]);
+        }
+      }
+
+      readFile(file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          this.programInput.value = e.target.result;
+          this.clearMessages();
+        };
+        reader.onerror = () => {
+          this.showMessage("Error reading file", "error");
+        };
+        reader.readAsText(file);
+      }
+
+      async visualizeGraph() {
+        const program = this.programInput.value.trim();
+
+        if (!program) {
+          this.showMessage("Please enter a VoxLogicA program", "error");
+          return;
+        }
+
+        this.setLoading(true);
+        this.clearMessages();
+
+        try {
+          const response = await fetch("/api/v1/run", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              program: program,
+              save_task_graph_as_json: "graph.json",
+              save_task_graph: "graph.dot",
+              compute_memory_assignment:
+                this.memoryAssignmentCheckbox.checked,
+            }),
           });
 
-          // Set up dimensions
-          const width = this.graphSvg.clientWidth || 800;
-          const height = this.graphSvg.clientHeight || 500;
+          const data = await response.json();
 
-          const svg = d3
-            .select(this.graphSvg)
-            .attr("width", width)
-            .attr("height", height);
+          if (!response.ok) {
+            throw new Error(data.detail || "Server error");
+          }
 
-          // Add arrow marker
-          svg
-            .append("defs")
-            .append("marker")
-            .attr("id", "arrowhead")
-            .attr("markerWidth", 10)
-            .attr("markerHeight", 7)
-            .attr("refX", 9)
-            .attr("refY", 3.5)
-            .attr("orient", "auto")
-            .append("polygon")
-            .attr("points", "0 0, 10 3.5, 0 7")
-            .attr("fill", "#6b7280");
+          this.currentData = data;
+          this.renderGraph(data);
+          this.enableExportButtons();
+        } catch (error) {
+          console.error("Error:", error);
+          this.showMessage(error.message || "An error occurred", "error");
+        } finally {
+          this.setLoading(false);
+        }
+      }
 
-          // Create main group for pan/zoom
-          const g = svg.append("g").attr("class", "main-group");
+      renderGraph(data) {
+        // Clear previous graph
+        d3.select(this.graphSvg).selectAll("*").remove();
 
-          // Add zoom behavior (disable double-click zoom)
-          const zoom = d3
-            .zoom()
-            .scaleExtent([0.1, 4]) // Allow zoom from 10% to 400%
-            .filter((event) => {
-              // Disable double-click zoom, keep wheel and drag
-              return !event.button && event.type !== "dblclick";
-            })
-            .on("zoom", (event) => {
-              g.attr("transform", event.transform);
-            });
+        // Parse JSON data to get nodes and links
+        let graphData;
+        if (data.saved_files && data.saved_files["graph.json"]) {
+          graphData = data.saved_files["graph.json"];
+        } else {
+          this.showMessage("No graph data available", "error");
+          return;
+        }
 
-          svg.call(zoom);
+        // Convert nodes to D3 nodes
+        const nodes = graphData.nodes.map((node) => {
+          // Fallback for missing type field
+          const nodeType = node.type || (typeof node.value !== "undefined" ? "constant" : "operation");
+          return {
+            id: node.id,
+            label: nodeType === "constant"
+              ? `const: ${node.value}`
+              : this.formatOperatorLabel(node.operator, node.buffer_id),
+            operator: nodeType === "constant" ? "constant" : node.operator,
+            arguments: node.arguments || {},
+            buffer_id: node.buffer_id,
+            type: nodeType,
+            value: node.value, // for constants
+            isGoal:
+              nodeType === "operation" && (
+                node.operator === "goal" ||
+                (typeof node.operator === "string" &&
+                  node.operator.toLowerCase().includes("goal"))
+              ),
+            permanentlyPinned: false,
+          };
+        });
 
-          // Add zoom controls with reset button
-          const controls = svg.append("g").attr("class", "zoom-controls");
-
-          // Background for controls
-          controls
-            .append("rect")
-            .attr("x", 5)
-            .attr("y", 5)
-            .attr("width", 120)
-            .attr("height", 80)
-            .attr("fill", "rgba(255, 255, 255, 0.9)")
-            .attr("stroke", "#e5e7eb")
-            .attr("rx", 4);
-
-          // Zoom in button
-          controls
-            .append("rect")
-            .attr("x", 10)
-            .attr("y", 10)
-            .attr("width", 25)
-            .attr("height", 25)
-            .attr("fill", "#f3f4f6")
-            .attr("stroke", "#d1d5db")
-            .attr("rx", 2)
-            .style("cursor", "pointer")
-            .on("click", () => {
-              svg.transition().call(zoom.scaleBy, 1.5);
-            });
-
-          controls
-            .append("text")
-            .attr("x", 22.5)
-            .attr("y", 27)
-            .attr("text-anchor", "middle")
-            .attr("font-size", "16px")
-            .attr("font-weight", "bold")
-            .attr("fill", "#374151")
-            .style("pointer-events", "none")
-            .text("+");
-
-          // Zoom out button
-          controls
-            .append("rect")
-            .attr("x", 40)
-            .attr("y", 10)
-            .attr("width", 25)
-            .attr("height", 25)
-            .attr("fill", "#f3f4f6")
-            .attr("stroke", "#d1d5db")
-            .attr("rx", 2)
-            .style("cursor", "pointer")
-            .on("click", () => {
-              svg.transition().call(zoom.scaleBy, 0.67);
-            });
-
-          controls
-            .append("text")
-            .attr("x", 52.5)
-            .attr("y", 27)
-            .attr("text-anchor", "middle")
-            .attr("font-size", "16px")
-            .attr("font-weight", "bold")
-            .attr("fill", "#374151")
-            .style("pointer-events", "none")
-            .text("−");
-
-          // Reset zoom button
-          controls
-            .append("rect")
-            .attr("x", 70)
-            .attr("y", 10)
-            .attr("width", 50)
-            .attr("height", 25)
-            .attr("fill", "#f3f4f6")
-            .attr("stroke", "#d1d5db")
-            .attr("rx", 2)
-            .style("cursor", "pointer")
-            .on("click", () => {
-              svg.transition().call(zoom.transform, d3.zoomIdentity);
-            });
-
-          controls
-            .append("text")
-            .attr("x", 95)
-            .attr("y", 27)
-            .attr("text-anchor", "middle")
-            .attr("font-size", "11px")
-            .attr("font-weight", "500")
-            .attr("fill", "#374151")
-            .style("pointer-events", "none")
-            .text("Reset");
-
-          // Instructions
-          controls
-            .append("text")
-            .attr("x", 10)
-            .attr("y", 50)
-            .attr("font-size", "10px")
-            .attr("fill", "#6b7280")
-            .style("pointer-events", "none")
-            .text("Scroll: zoom");
-
-          controls
-            .append("text")
-            .attr("x", 10)
-            .attr("y", 65)
-            .attr("font-size", "10px")
-            .attr("fill", "#6b7280")
-            .style("pointer-events", "none")
-            .text("Drag: pan");
-
-          controls
-            .append("text")
-            .attr("x", 10)
-            .attr("y", 80)
-            .attr("font-size", "10px")
-            .attr("fill", "#6b7280")
-            .style("pointer-events", "none")
-            .text("Double-click: pin node");
-
-          // Create force simulation with predictable, stable forces
-          const simulation = d3
-            .forceSimulation(nodes)
-            .force(
-              "link",
-              d3
-                .forceLink(links)
-                .id((d) => d.id)
-                .distance(100)
-                .strength(0.5)
-            )
-            .force("charge", d3.forceManyBody().strength(-200))
-            .force(
-              "center",
-              d3.forceCenter(width / 2, height / 2).strength(0.05)
-            )
-            .force("collision", d3.forceCollide().radius(40).strength(0.9))
-            .velocityDecay(0.8); // Higher damping for more stable behavior
-
-          // Create links group (inside zoomable group)
-          const link = g
-            .append("g")
-            .attr("stroke", "#999")
-            .attr("stroke-opacity", 0.6)
-            .selectAll("line")
-            .data(links)
-            .join("line")
-            .attr("stroke-width", 2)
-            .attr("marker-end", "url(#arrowhead)");
-
-          // Create nodes group (inside zoomable group)
-          const nodeGroup = g
-            .append("g")
-            .attr("stroke", "#fff")
-            .attr("stroke-width", 1.5);
-
-          const node = nodeGroup
-            .selectAll("g")
-            .data(nodes)
-            .join("g")
-            .on("dblclick", (event, d) => {
-              event.stopPropagation(); // Prevent zoom on node double-click
-              // Double-click to toggle permanent pinning only
-              d.permanentlyPinned = !d.permanentlyPinned;
-              if (!d.permanentlyPinned) {
-                d.fx = null;
-                d.fy = null;
-                if (!event.active) simulation.alphaTarget(0.3).restart();
-                setTimeout(() => simulation.alphaTarget(0), 150);
-              } else {
-                d.fx = d.x;
-                d.fy = d.y;
+        // Create links from arguments
+        const links = [];
+        graphData.nodes.forEach((node) => {
+          if (
+            node.type === "operation" &&
+            node.arguments &&
+            typeof node.arguments === "object" &&
+            !Array.isArray(node.arguments)
+          ) {
+            Object.values(node.arguments).forEach((argNodeId) => {
+              // Check if the referenced node exists
+              if (
+                graphData.nodes.some((other) => other.id === argNodeId)
+              ) {
+                links.push({
+                  source: argNodeId,
+                  target: node.id,
+                });
               }
-            })
-            .call(
-              d3
-                .drag()
-                .on("start", dragstarted)
-                .on("drag", dragged)
-                .on("end", dragended)
-            );
-
-          // Add main circles
-          node.append("circle")
-            .attr("r", 25)
-            .attr("fill", (d) => d.type === "constant" ? "#059669" : "#4f46e5");
-
-          // Add outer circles for goal nodes
-          node
-            .filter((d) => d.isGoal)
-            .append("circle")
-            .attr("r", 30)
-            .attr("fill", "none")
-            .attr("stroke", "#4f46e5")
-            .attr("stroke-width", 2);
-
-          // Add labels (inside zoomable group)
-          const labels = g
-            .append("g")
-            .selectAll("text")
-            .data(nodes)
-            .join("text")
-            .text((d) => d.label)
-            .attr("font-size", "12px")
-            .attr("font-weight", "bold")
-            .attr("text-anchor", "middle")
-            .attr("dominant-baseline", "central")
-            .attr("fill", "white")
-            .attr("pointer-events", "none");
-
-          // Drag functions - simplified and predictable
-          function dragstarted(event, d) {
-            if (!event.active) simulation.alphaTarget(0.1).restart();
-            d.fx = d.x;
-            d.fy = d.y;
+            });
           }
+        });
 
-          function dragged(event, d) {
-            d.fx = event.x;
-            d.fy = event.y;
-          }
+        // Set up dimensions
+        const width = this.graphSvg.clientWidth || 800;
+        const height = this.graphSvg.clientHeight || 500;
 
-          function dragended(event, d) {
-            if (!event.active) simulation.alphaTarget(0);
-            // Only release if not permanently pinned
+        const svg = d3
+          .select(this.graphSvg)
+          .attr("width", width)
+          .attr("height", height);
+
+        // Add arrow marker
+        svg
+          .append("defs")
+          .append("marker")
+          .attr("id", "arrowhead")
+          .attr("markerWidth", 10)
+          .attr("markerHeight", 7)
+          .attr("refX", 9)
+          .attr("refY", 3.5)
+          .attr("orient", "auto")
+          .append("polygon")
+          .attr("points", "0 0, 10 3.5, 0 7")
+          .attr("fill", "#6b7280");
+
+        // Create main group for pan/zoom
+        const g = svg.append("g").attr("class", "main-group");
+
+        // Add zoom behavior (disable double-click zoom)
+        const zoom = d3
+          .zoom()
+          .scaleExtent([0.1, 4]) // Allow zoom from 10% to 400%
+          .filter((event) => {
+            // Disable double-click zoom, keep wheel and drag
+            return !event.button && event.type !== "dblclick";
+          })
+          .on("zoom", (event) => {
+            g.attr("transform", event.transform);
+          });
+
+        svg.call(zoom);
+
+        // Add zoom controls with reset button
+        const controls = svg.append("g").attr("class", "zoom-controls");
+
+        // Background for controls
+        controls
+          .append("rect")
+          .attr("x", 5)
+          .attr("y", 5)
+          .attr("width", 120)
+          .attr("height", 80)
+          .attr("fill", "rgba(255, 255, 255, 0.9)")
+          .attr("stroke", "#e5e7eb")
+          .attr("rx", 4);
+
+        // Zoom in button
+        controls
+          .append("rect")
+          .attr("x", 10)
+          .attr("y", 10)
+          .attr("width", 25)
+          .attr("height", 25)
+          .attr("fill", "#f3f4f6")
+          .attr("stroke", "#d1d5db")
+          .attr("rx", 2)
+          .style("cursor", "pointer")
+          .on("click", () => {
+            svg.transition().call(zoom.scaleBy, 1.5);
+          });
+
+        controls
+          .append("text")
+          .attr("x", 22.5)
+          .attr("y", 27)
+          .attr("text-anchor", "middle")
+          .attr("font-size", "16px")
+          .attr("font-weight", "bold")
+          .attr("fill", "#374151")
+          .style("pointer-events", "none")
+          .text("+");
+
+        // Zoom out button
+        controls
+          .append("rect")
+          .attr("x", 40)
+          .attr("y", 10)
+          .attr("width", 25)
+          .attr("height", 25)
+          .attr("fill", "#f3f4f6")
+          .attr("stroke", "#d1d5db")
+          .attr("rx", 2)
+          .style("cursor", "pointer")
+          .on("click", () => {
+            svg.transition().call(zoom.scaleBy, 0.67);
+          });
+
+        controls
+          .append("text")
+          .attr("x", 52.5)
+          .attr("y", 27)
+          .attr("text-anchor", "middle")
+          .attr("font-size", "16px")
+          .attr("font-weight", "bold")
+          .attr("fill", "#374151")
+          .style("pointer-events", "none")
+          .text("−");
+
+        // Reset zoom button
+        controls
+          .append("rect")
+          .attr("x", 70)
+          .attr("y", 10)
+          .attr("width", 50)
+          .attr("height", 25)
+          .attr("fill", "#f3f4f6")
+          .attr("stroke", "#d1d5db")
+          .attr("rx", 2)
+          .style("cursor", "pointer")
+          .on("click", () => {
+            svg.transition().call(zoom.transform, d3.zoomIdentity);
+          });
+
+        controls
+          .append("text")
+          .attr("x", 95)
+          .attr("y", 27)
+          .attr("text-anchor", "middle")
+          .attr("font-size", "11px")
+          .attr("font-weight", "500")
+          .attr("fill", "#374151")
+          .style("pointer-events", "none")
+          .text("Reset");
+
+        // Instructions
+        controls
+          .append("text")
+          .attr("x", 10)
+          .attr("y", 50)
+          .attr("font-size", "10px")
+          .attr("fill", "#6b7280")
+          .style("pointer-events", "none")
+          .text("Scroll: zoom");
+
+        controls
+          .append("text")
+          .attr("x", 10)
+          .attr("y", 65)
+          .attr("font-size", "10px")
+          .attr("fill", "#6b7280")
+          .style("pointer-events", "none")
+          .text("Drag: pan");
+
+        controls
+          .append("text")
+          .attr("x", 10)
+          .attr("y", 80)
+          .attr("font-size", "10px")
+          .attr("fill", "#6b7280")
+          .style("pointer-events", "none")
+          .text("Double-click: pin node");
+
+        // Create force simulation with predictable, stable forces
+        const simulation = d3
+          .forceSimulation(nodes)
+          .force(
+            "link",
+            d3
+              .forceLink(links)
+              .id((d) => d.id)
+              .distance(100)
+              .strength(0.5)
+          )
+          .force("charge", d3.forceManyBody().strength(-200))
+          .force(
+            "center",
+            d3.forceCenter(width / 2, height / 2).strength(0.05)
+          )
+          .force("collision", d3.forceCollide().radius(40).strength(0.9))
+          .velocityDecay(0.8); // Higher damping for more stable behavior
+
+        // Create links group (inside zoomable group)
+        const link = g
+          .append("g")
+          .attr("stroke", "#999")
+          .attr("stroke-opacity", 0.6)
+          .selectAll("line")
+          .data(links)
+          .join("line")
+          .attr("stroke-width", 2)
+          .attr("marker-end", "url(#arrowhead)");
+
+        // Create nodes group (inside zoomable group)
+        const nodeGroup = g
+          .append("g")
+          .attr("stroke", "#fff")
+          .attr("stroke-width", 1.5);
+
+        const node = nodeGroup
+          .selectAll("g")
+          .data(nodes)
+          .join("g")
+          .on("dblclick", (event, d) => {
+            event.stopPropagation(); // Prevent zoom on node double-click
+            // Double-click to toggle permanent pinning only
+            d.permanentlyPinned = !d.permanentlyPinned;
             if (!d.permanentlyPinned) {
               d.fx = null;
               d.fy = null;
+              if (!event.active) simulation.alphaTarget(0.3).restart();
+              setTimeout(() => simulation.alphaTarget(0), 150);
+            } else {
+              d.fx = d.x;
+              d.fy = d.y;
             }
-          }
+          })
+          .call(
+            d3
+              .drag()
+              .on("start", dragstarted)
+              .on("drag", dragged)
+              .on("end", dragended)
+          );
 
-          // Helper function to position arrow at circle edge
-          function linkArc(d) {
-            const dx = d.target.x - d.source.x;
-            const dy = d.target.y - d.source.y;
-            const dr = Math.sqrt(dx * dx + dy * dy);
-            const r = 25; // circle radius
+        // Add main circles
+        node.append("circle")
+          .attr("r", 25)
+          .attr("fill", (d) => d.type === "constant" ? "#059669" : "#4f46e5");
 
-            // Calculate points on circle edges
-            const sourceX = d.source.x + (dx * r) / dr;
-            const sourceY = d.source.y + (dy * r) / dr;
-            const targetX = d.target.x - (dx * r) / dr;
-            const targetY = d.target.y - (dy * r) / dr;
+        // Add outer circles for goal nodes
+        node
+          .filter((d) => d.isGoal)
+          .append("circle")
+          .attr("r", 30)
+          .attr("fill", "none")
+          .attr("stroke", "#4f46e5")
+          .attr("stroke-width", 2);
 
-            return { sourceX, sourceY, targetX, targetY };
-          }
+        // Add labels (inside zoomable group)
+        const labels = g
+          .append("g")
+          .selectAll("text")
+          .data(nodes)
+          .join("text")
+          .text((d) => d.label)
+          .attr("font-size", "12px")
+          .attr("font-weight", "bold")
+          .attr("text-anchor", "middle")
+          .attr("dominant-baseline", "central")
+          .attr("fill", "white")
+          .attr("pointer-events", "none");
 
-          // Update positions on each tick
-          simulation.on("tick", () => {
-            link
-              .attr("x1", (d) => {
-                const arc = linkArc(d);
-                return arc.sourceX;
-              })
-              .attr("y1", (d) => {
-                const arc = linkArc(d);
-                return arc.sourceY;
-              })
-              .attr("x2", (d) => {
-                const arc = linkArc(d);
-                return arc.targetX;
-              })
-              .attr("y2", (d) => {
-                const arc = linkArc(d);
-                return arc.targetY;
-              });
-
-            node.attr("transform", (d) => `translate(${d.x},${d.y})`);
-
-            labels.attr("x", (d) => d.x).attr("y", (d) => d.y);
-          });
+        // Drag functions - simplified and predictable
+        function dragstarted(event, d) {
+          if (!event.active) simulation.alphaTarget(0.1).restart();
+          d.fx = d.x;
+          d.fy = d.y;
         }
 
-        formatOperatorLabel(operator, bufferId) {
-          let label;
-          if (typeof operator === "string") {
-            label =
-              operator.length > 8 ? operator.substring(0, 8) + "..." : operator;
-          } else {
-            label = String(operator);
-          }
-
-          // Add buffer ID if available
-          if (bufferId !== undefined && bufferId !== null) {
-            label += `\nbuf:${bufferId}`;
-          }
-
-          return label;
+        function dragged(event, d) {
+          d.fx = event.x;
+          d.fy = event.y;
         }
 
-        enableExportButtons() {
-          this.exportBtn.disabled = false;
-          this.exportJsonBtn.disabled = false;
-        }
-
-        exportData(format) {
-          if (!this.currentData || !this.currentData.saved_files) {
-            this.showMessage("No data to export", "error");
-            return;
-          }
-
-          let filename, content, mimeType;
-
-          if (format === "dot") {
-            filename = "task_graph.dot";
-            content = this.currentData.saved_files["graph.dot"];
-            mimeType = "text/plain";
-          } else if (format === "json") {
-            filename = "task_graph.json";
-            content = JSON.stringify(
-              this.currentData.saved_files["graph.json"],
-              null,
-              2
-            );
-            mimeType = "application/json";
-          }
-
-          if (content) {
-            const blob = new Blob([content], { type: mimeType });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+        function dragended(event, d) {
+          if (!event.active) simulation.alphaTarget(0);
+          // Only release if not permanently pinned
+          if (!d.permanentlyPinned) {
+            d.fx = null;
+            d.fy = null;
           }
         }
 
-        clearAll() {
-          this.programInput.value = "";
-          this.currentData = null;
-          this.clearMessages();
-          this.exportBtn.disabled = true;
-          this.exportJsonBtn.disabled = true;
-          d3.select(this.graphSvg).selectAll("*").remove();
-          this.fileInput.value = "";
+        // Helper function to position arrow at circle edge
+        function linkArc(d) {
+          const dx = d.target.x - d.source.x;
+          const dy = d.target.y - d.source.y;
+          const dr = Math.sqrt(dx * dx + dy * dy);
+          const r = 25; // circle radius
+
+          // Calculate points on circle edges
+          const sourceX = d.source.x + (dx * r) / dr;
+          const sourceY = d.source.y + (dy * r) / dr;
+          const targetX = d.target.x - (dx * r) / dr;
+          const targetY = d.target.y - (dy * r) / dr;
+
+          return { sourceX, sourceY, targetX, targetY };
         }
 
-        setLoading(loading) {
-          if (loading) {
-            this.visualizeBtnText.style.display = "none";
-            this.loadingSpinner.style.display = "inline-block";
-            this.visualizeBtn.disabled = true;
-          } else {
-            this.visualizeBtnText.style.display = "inline";
-            this.loadingSpinner.style.display = "none";
-            this.visualizeBtn.disabled = false;
-          }
+        // Update positions on each tick
+        simulation.on("tick", () => {
+          link
+            .attr("x1", (d) => {
+              const arc = linkArc(d);
+              return arc.sourceX;
+            })
+            .attr("y1", (d) => {
+              const arc = linkArc(d);
+              return arc.sourceY;
+            })
+            .attr("x2", (d) => {
+              const arc = linkArc(d);
+              return arc.targetX;
+            })
+            .attr("y2", (d) => {
+              const arc = linkArc(d);
+              return arc.targetY;
+            });
+
+          node.attr("transform", (d) => `translate(${d.x},${d.y})`);
+
+          labels.attr("x", (d) => d.x).attr("y", (d) => d.y);
+        });
+      }
+
+      formatOperatorLabel(operator, bufferId) {
+        let label;
+        if (typeof operator === "string") {
+          label =
+            operator.length > 8 ? operator.substring(0, 8) + "..." : operator;
+        } else {
+          label = String(operator);
         }
 
-        showMessage(message, type) {
-          this.clearMessages();
-          if (type === "error") {
-            const div = document.createElement("div");
-            div.className = "error-message";
-            div.textContent = message;
-            this.messageArea.appendChild(div);
-          }
-          // Note: Removed success messages as requested
+        // Add buffer ID if available
+        if (bufferId !== undefined && bufferId !== null) {
+          label += `\nbuf:${bufferId}`;
         }
 
-        clearMessages() {
-          this.messageArea.innerHTML = "";
+        return label;
+      }
+
+      enableExportButtons() {
+        this.exportBtn.disabled = false;
+        this.exportJsonBtn.disabled = false;
+      }
+
+      exportData(format) {
+        if (!this.currentData || !this.currentData.saved_files) {
+          this.showMessage("No data to export", "error");
+          return;
+        }
+
+        let filename, content, mimeType;
+
+        if (format === "dot") {
+          filename = "task_graph.dot";
+          content = this.currentData.saved_files["graph.dot"];
+          mimeType = "text/plain";
+        } else if (format === "json") {
+          filename = "task_graph.json";
+          content = JSON.stringify(
+            this.currentData.saved_files["graph.json"],
+            null,
+            2
+          );
+          mimeType = "application/json";
+        }
+
+        if (content) {
+          const blob = new Blob([content], { type: mimeType });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
         }
       }
 
-      // Initialize the visualizer when the page loads
-      document.addEventListener("DOMContentLoaded", () => {
-        const example = `
+      clearAll() {
+        this.programInput.value = "";
+        this.currentData = null;
+        this.clearMessages();
+        this.exportBtn.disabled = true;
+        this.exportJsonBtn.disabled = true;
+        d3.select(this.graphSvg).selectAll("*").remove();
+        this.fileInput.value = "";
+      }
+
+      setLoading(loading) {
+        if (loading) {
+          this.visualizeBtnText.style.display = "none";
+          this.loadingSpinner.style.display = "inline-block";
+          this.visualizeBtn.disabled = true;
+        } else {
+          this.visualizeBtnText.style.display = "inline";
+          this.loadingSpinner.style.display = "none";
+          this.visualizeBtn.disabled = false;
+        }
+      }
+
+      showMessage(message, type) {
+        this.clearMessages();
+        if (type === "error") {
+          const div = document.createElement("div");
+          div.className = "error-message";
+          div.textContent = message;
+          this.messageArea.appendChild(div);
+        }
+        // Note: Removed success messages as requested
+      }
+
+      clearMessages() {
+        this.messageArea.innerHTML = "";
+      }
+    }
+
+    // Initialize the visualizer when the page loads
+    document.addEventListener("DOMContentLoaded", () => {
+      const example = `
 let a = f(x)
 let b = f(a)
 let c = f(b)
@@ -1228,61 +1210,62 @@ let j = g(m)
 let k = g(j)
 let h = f(d,k)
 `;
-        const textarea = document.getElementById("programInput");
-        if (textarea && !textarea.value.trim()) {
-          textarea.value = example;
-        }
-        new VoxLogicaVisualizer();
-      });
+      const textarea = document.getElementById("programInput");
+      if (textarea && !textarea.value.trim()) {
+        textarea.value = example;
+      }
+      new VoxLogicaVisualizer();
+    });
 
-      // --- Live reload via WebSocket ---
-      (function () {
-        const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
-        const wsUrl = wsProto + "://" + window.location.host + "/livereload";
-        try {
-          const ws = new WebSocket(wsUrl);
-          ws.onmessage = function (event) {
-            if (event.data === "reload") {
-              window.location.reload();
-            }
-          };
+    // --- Live reload via WebSocket ---
+    (function () {
+      const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
+      const wsUrl = wsProto + "://" + window.location.host + "/livereload";
+      try {
+        const ws = new WebSocket(wsUrl);
+        ws.onmessage = function (event) {
+          if (event.data === "reload") {
+            window.location.reload();
+          }
+        };
 
-          // Redirect browser console to server
-          const originalLog = console.log;
-          const originalError = console.error;
-          const originalWarn = console.warn;
+        // Redirect browser console to server
+        const originalLog = console.log;
+        const originalError = console.error;
+        const originalWarn = console.warn;
 
-          console.log = function (...args) {
-            originalLog.apply(console, args);
-            try {
-              ws.send(JSON.stringify({ type: "log", message: args.join(" ") }));
-            } catch (e) {}
-          };
+        console.log = function (...args) {
+          originalLog.apply(console, args);
+          try {
+            ws.send(JSON.stringify({ type: "log", message: args.join(" ") }));
+          } catch (e) { }
+        };
 
-          console.error = function (...args) {
-            originalError.apply(console, args);
-            try {
-              ws.send(
-                JSON.stringify({ type: "error", message: args.join(" ") })
-              );
-            } catch (e) {}
-          };
+        console.error = function (...args) {
+          originalError.apply(console, args);
+          try {
+            ws.send(
+              JSON.stringify({ type: "error", message: args.join(" ") })
+            );
+          } catch (e) { }
+        };
 
-          console.warn = function (...args) {
-            originalWarn.apply(console, args);
-            try {
-              ws.send(
-                JSON.stringify({ type: "warn", message: args.join(" ") })
-              );
-            } catch (e) {}
-          };
+        console.warn = function (...args) {
+          originalWarn.apply(console, args);
+          try {
+            ws.send(
+              JSON.stringify({ type: "warn", message: args.join(" ") })
+            );
+          } catch (e) { }
+        };
 
-          // Test the console redirection
-          console.log("Browser console connected to server");
-        } catch (e) {
-          // Fail silently if WebSocket is not available
-        }
-      })();
-    </script>
-  </body>
+        // Test the console redirection
+        console.log("Browser console connected to server");
+      } catch (e) {
+        // Fail silently if WebSocket is not available
+      }
+    })();
+  </script>
+</body>
+
 </html>

@@ -136,7 +136,7 @@ def handle_cli_feature(feature_name: str, **kwargs: Any) -> None:
                                 logger.info("  %s", message)
                         # Print the result as JSON for CLI output if not None
                         import json as _json
-                        print(_json.dumps(data, indent=2, cls=WorkPlanJSONEncoder))
+                        logger.debug(_json.dumps(data, indent=2, cls=WorkPlanJSONEncoder))
                     elif feature_name == "version":
                         logger.info(
                             "VoxLogicA version: %s", data.get("version", "unknown")
