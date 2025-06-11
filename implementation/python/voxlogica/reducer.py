@@ -138,7 +138,8 @@ def reduce_expression(
         return op_id
     
     elif isinstance(expr, EString):
-        op_id = work_plan.add_operation(expr.value, {})
+        # Wrap string in quotes so execution engine recognizes as literal
+        op_id = work_plan.add_operation(f'"{expr.value}"', {})
         return op_id
     
     elif isinstance(expr, ECall):

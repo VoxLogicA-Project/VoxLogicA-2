@@ -189,7 +189,7 @@ grammar = r"""
     op_expr: expression OPERATOR expression
     paren_expr: "(" expression ")"
     
-    identifier: /[a-z][a-zA-Z0-9]*/
+    identifier: /[a-zA-Z_][a-zA-Z0-9_]*/
     
     // Make the OPERATOR pattern more specific to exclude "//" sequence
     OPERATOR: /(?!\/{2})[A-Z#;:_'.|!$%&\/^=*\-+<>?@~\\]+/
