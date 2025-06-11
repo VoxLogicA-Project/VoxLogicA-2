@@ -1,7 +1,0 @@
-// Simple sequential test
-let a = 1.0
-let b = 2.0
-let c = 3.0
-let d = 4.0
-let result = a + b + c + d
-save "output.txt" result
