@@ -40,12 +40,11 @@ def to_json(work_plan: Any, buffer_assignment: Optional[Dict[str, int]] = None) 
     def unwrap(v):
         import dataclasses
         if dataclasses.is_dataclass(v) and not isinstance(v, type):
-            return {k: unwrap(getattr(v, k)) for k in v.__dataclass_fields__}
+            return {k: WorkPlanJSONEncoder()._unwrap(getattr(v, k)) for k in v.__dataclass_fields__}
         if isinstance(v, dict):
-            return {unwrap(k): unwrap(val) for k, val in v.items()}
+            return {WorkPlanJSONEncoder()._unwrap(k): WorkPlanJSONEncoder()._unwrap(val) for k, val in v.items()}
         if isinstance(v, (list, tuple, set)):
-            return [unwrap(i) for i in v]
-        # Handle ConstantValue objects specially
+            return [WorkPlanJSONEncoder()._unwrap(i) for i in v]
         if isinstance(v, ConstantValue):
             return v.value
         return v
@@ -56,14 +55,14 @@ def to_json(work_plan: Any, buffer_assignment: Optional[Dict[str, int]] = None) 
             node_dict = {
                 "id": node_id,
                 "type": "operation",
-                "operator": unwrap(node.operator),
-                "arguments": unwrap(node.arguments),
+                "operator": WorkPlanJSONEncoder()._unwrap(node.operator),
+                "arguments": WorkPlanJSONEncoder()._unwrap(node.arguments),
             }
         elif isinstance(node, ConstantValue):
             node_dict = {
                 "id": node_id,
                 "type": "constant",
-                "value": unwrap(node.value),
+                "value": WorkPlanJSONEncoder()._unwrap(node.value),
             }
         else:
             continue
@@ -74,7 +73,7 @@ def to_json(work_plan: Any, buffer_assignment: Optional[Dict[str, int]] = None) 
     goals_list = []
     for goal in work_plan.goals:
         goals_list.append({
-            "operation": unwrap(goal.operation),
+            "operation": WorkPlanJSONEncoder()._unwrap(goal.operation),
             "id": goal.id,
             "name": goal.name,
         })

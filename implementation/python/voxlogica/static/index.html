@@ -654,7 +654,7 @@ print "sum" c'
               const maxLeftWidth = totalWidth - minWidth;
 
               if (newLeftWidth >= minWidth && newLeftWidth <= maxLeftWidth) {
-                const leftPercent = (newLeftWidth / totalWidth) * 100;
+                const leftPercent = (newLeftWidth / totalWidth) + 100;
                 const rightPercent = 100 - leftPercent;
 
                 editorPanel.style.flex = `0 0 ${leftPercent}%`;
@@ -761,24 +761,28 @@ print "sum" c'
           }
 
           // Convert nodes to D3 nodes
-          const nodes = graphData.nodes.map((node) => ({
-            id: node.id,
-            label: node.type === "constant" 
-              ? `const: ${node.value}` 
-              : this.formatOperatorLabel(node.operator, node.buffer_id),
-            operator: node.type === "constant" ? "constant" : node.operator,
-            arguments: node.arguments || {},
-            buffer_id: node.buffer_id,
-            type: node.type,
-            value: node.value, // for constants
-            isGoal:
-              node.type === "operation" && (
-                node.operator === "goal" ||
-                (typeof node.operator === "string" &&
-                  node.operator.toLowerCase().includes("goal"))
-              ),
-            permanentlyPinned: false,
-          }));
+          const nodes = graphData.nodes.map((node) => {
+            // Fallback for missing type field
+            const nodeType = node.type || (typeof node.value !== "undefined" ? "constant" : "operation");
+            return {
+              id: node.id,
+              label: nodeType === "constant" 
+                ? `const: ${node.value}` 
+                : this.formatOperatorLabel(node.operator, node.buffer_id),
+              operator: nodeType === "constant" ? "constant" : node.operator,
+              arguments: node.arguments || {},
+              buffer_id: node.buffer_id,
+              type: nodeType,
+              value: node.value, // for constants
+              isGoal:
+                nodeType === "operation" && (
+                  node.operator === "goal" ||
+                  (typeof node.operator === "string" &&
+                    node.operator.toLowerCase().includes("goal"))
+                ),
+              permanentlyPinned: false,
+            };
+          });
 
           // Create links from arguments
           const links = [];

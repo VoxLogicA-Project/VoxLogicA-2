@@ -453,8 +453,8 @@ class ExecutionSession:
             if arg_value in dep_results_map:
                 resolved[arg_name] = dep_results_map[arg_value]
             else:
-                # Direct value (should not happen with content-addressed IDs)
-                resolved[arg_name] = arg_value
+                # This branch should not be reached with content-addressed IDs
+                raise RuntimeError(f"Unexpected direct value for argument '{arg_name}': {arg_value}. This indicates a logic error in argument resolution.")
         
         # Map numeric string keys to semantic argument names for known operators
         resolved = self._map_arguments_to_semantic_names(operation.operator, resolved)
