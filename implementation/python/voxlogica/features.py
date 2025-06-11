@@ -264,6 +264,38 @@ def handle_run(
                 )
 
 
+def handle_list_primitives(
+    namespace: Optional[str] = None,
+    **kwargs
+) -> OperationResult[Dict[str, Any]]:
+    """Handle listing available primitives"""
+    try:
+        from voxlogica.execution import PrimitivesLoader
+        
+        loader = PrimitivesLoader()
+        primitives = loader.list_primitives(namespace)
+        
+        # Also get list of available namespaces
+        namespaces = loader.list_namespaces()
+        
+        result = {
+            "primitives": primitives,
+            "namespaces": namespaces,
+            "namespace_filter": namespace
+        }
+        
+        return OperationResult[Dict[str, Any]](
+            success=True,
+            data=result
+        )
+        
+    except Exception as e:
+        return OperationResult[Dict[str, Any]](
+            success=False,
+            error=f"Failed to list primitives: {str(e)}"
+        )
+
+
 # Register all features
 version_feature = FeatureRegistry.register(
     Feature(
@@ -363,6 +395,22 @@ run_feature = FeatureRegistry.register(
                 ),
                 "debug": (Optional[bool], "Enable debug mode"),
                 "verbose": (Optional[bool], "Enable verbose logging (between info and debug)"),
+            },
+            "response_model": Dict[str, Any],
+        },
+    )
+)
+
+list_primitives_feature = FeatureRegistry.register(
+    Feature(
+        name="list_primitives",
+        description="List available primitives",
+        handler=handle_list_primitives,
+        api_endpoint={
+            "path": "/list-primitives",
+            "methods": ["GET"],
+            "request_model": {
+                "namespace": (Optional[str], "Namespace to filter primitives"),
             },
             "response_model": Dict[str, Any],
         },

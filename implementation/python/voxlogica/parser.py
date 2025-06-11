@@ -189,10 +189,13 @@ grammar = r"""
     op_expr: expression OPERATOR expression
     paren_expr: "(" expression ")"
     
-    identifier: /[a-zA-Z_][a-zA-Z0-9_]*/
+    identifier: qualified_identifier | simple_identifier
+    qualified_identifier: simple_identifier "." simple_identifier
+    simple_identifier: /[a-zA-Z_][a-zA-Z0-9_]*/
     
-    // Make the OPERATOR pattern more specific to exclude "//" sequence
-    OPERATOR: /(?!\/{2})[A-Z#;:_'.|!$%&\/^=*\-+<>?@~\\]+/
+    // Make the OPERATOR pattern more specific to exclude "//" sequence and "."
+    // Removed "." from operator pattern to avoid conflicts with qualified identifiers
+    OPERATOR: /(?!\/{2})[A-Z#;:_'|!$%&\/^=*\-+<>?@~\\]+/
     number: SIGNED_NUMBER -> float
     boolean: "true" -> true
            | "false" -> false
@@ -280,7 +283,15 @@ class VoxLogicATransformer(Transformer):
         return expr
 
     @v_args(inline=True)
-    def identifier(self, token):
+    def identifier(self, identifier):
+        return identifier
+
+    @v_args(inline=True)
+    def qualified_identifier(self, namespace, primitive):
+        return f"{namespace}.{primitive}"
+
+    @v_args(inline=True)
+    def simple_identifier(self, token):
         return str(token)
 
     @v_args(inline=True)

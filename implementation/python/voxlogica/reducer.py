@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 
 import hashlib
 import canonicaljson
+import logging
+
+logger = logging.getLogger(__name__)
 
 from voxlogica.parser import (
     Expression,
@@ -62,6 +65,7 @@ class WorkPlan:
     """A topologically sorted DAG of operations with goals"""
     nodes: Dict[NodeId, Node] = field(default_factory=dict)
     goals: List[Goal] = field(default_factory=list)
+    _imported_namespaces: Set[str] = field(default_factory=set)
 
     def add_goal(self, operation: str, operation_id: NodeId, name: str) -> None:
         """Add a goal to the work plan"""
@@ -267,15 +271,32 @@ def reduce_command(
         
         parsed_imports.add(command.path)
         
-        # Import the file and get its commands
-        from voxlogica.parser import parse_import
+        # Check if this is a namespace import or file import
+        # Remove quotes from the path
+        import_path = command.path.strip('"\'')
         
-        try:
-            import_commands = parse_import(command.path)
-            return env, import_commands
-        except Exception as e:
-            raise RuntimeError(f"Failed to import '{command.path}': {str(e)}")
+        # Check if it's a known namespace (no file extension, single word)
+        is_namespace_import = ('.' not in import_path and 
+                              '/' not in import_path and 
+                              not import_path.endswith('.imgql'))
+        
+        if is_namespace_import:
+            # This is a namespace import - signal the execution engine
+            # We'll store this information in the workplan for now
+            # The execution engine will handle the actual namespace import
+            work_plan._imported_namespaces.add(import_path)
+            logger.debug(f"Marked namespace '{import_path}' for import")
             return env, []
+        else:
+            # This is a file import - use existing logic
+            from .parser import parse_import
+            
+            try:
+                import_commands = parse_import(import_path)
+                return env, import_commands
+            except Exception as e:
+                raise RuntimeError(f"Failed to import '{import_path}': {str(e)}")
+                return env, []
     
     # This should never happen if the parser is correct
     raise RuntimeError("Internal error in reducer: unknown command type")

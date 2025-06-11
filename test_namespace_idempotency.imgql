@@ -1,0 +1,13 @@
+// Test for namespace import idempotency
+import "simpleitk"
+import "simpleitk"
+import "simpleitk"
+
+// Test arithmetic operations still work (default namespace)
+let result1 = 50 + 59
+
+// Test qualified operations
+let result2 = simpleitk.Add(result1, 10)
+
+print "First addition result" result1
+print "SimpleITK Add result" result2

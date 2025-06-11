@@ -1,4 +1,18 @@
-let img = load_sitk_image("tests/chris_t1.nii.gz")
-let thresholded = threshold(img, 100)
-let saved = save_sitk_image(thresholded, "chris_t1_thresholded.nii.gz")
-print "saved" saved
+// Import the simpleitk namespace to access SimpleITK primitives
+import "simpleitk"
+
+// Load image using actual SimpleITK function names
+let img = simpleitk.ReadImage("tests/chris_t1.nii.gz")
+
+// Calculate threshold using default namespace arithmetic (50+59=109)
+let threshold_value = 50 + 59
+
+// Apply threshold using actual SimpleITK function names
+let thresholded = simpleitk.Threshold(img, threshold_value)
+
+// Save the result using actual SimpleITK function names
+let saved = simpleitk.WriteImage(thresholded, "chris_t1_thresholded.nii.gz")
+
+// Print confirmation (print should be available by default)
+print "Image thresholded with value" threshold_value
+print "Saved to" saved

@@ -48,7 +48,7 @@ class ExecutionStatus:
     progress: float  # 0.0 to 1.0
 
 class PrimitivesLoader:
-    """Dynamic loader for primitive operations from primitives/ directory"""
+    """Namespace-aware loader for primitive operations"""
     
     def __init__(self, primitives_dir: Optional[Path] = None):
         if primitives_dir is None:
@@ -57,7 +57,10 @@ class PrimitivesLoader:
         
         self.primitives_dir = primitives_dir
         self._cache: Dict[str, Callable] = {}
+        self._namespaces: Dict[str, Dict[str, Callable]] = {}
+        self._imported_namespaces: Set[str] = set()
         self._ensure_primitives_dir()
+        self._discover_namespaces()
     
     def _ensure_primitives_dir(self):
         """Ensure primitives directory exists and has __init__.py"""
@@ -66,52 +69,181 @@ class PrimitivesLoader:
         if not init_file.exists():
             init_file.write_text("# VoxLogica-2 Primitives Directory")
     
+    def _discover_namespaces(self):
+        """Discover and initialize all namespaces"""
+        # Always import default namespace for backward compatibility
+        self._import_namespace('default')
+        
+        # Discover all namespace directories
+        for item in self.primitives_dir.iterdir():
+            if item.is_dir() and not item.name.startswith('_'):
+                namespace_name = item.name
+                if namespace_name not in self._namespaces:
+                    self._load_namespace(namespace_name)
+    
+    def _load_namespace(self, namespace_name: str):
+        """Load a namespace and its primitives"""
+        if namespace_name in self._namespaces:
+            return
+        
+        try:
+            namespace_dir = self.primitives_dir / namespace_name
+            if not namespace_dir.exists():
+                logger.warning(f"Namespace directory does not exist: {namespace_name}")
+                return
+            
+            # Import the namespace module
+            namespace_module_path = f"voxlogica.primitives.{namespace_name}"
+            namespace_module = importlib.import_module(namespace_module_path)
+            
+            # Load static primitives (files in the namespace directory)
+            static_primitives = {}
+            for item in namespace_dir.iterdir():
+                if item.is_file() and item.suffix == '.py' and not item.name.startswith('_'):
+                    module_name = item.stem
+                    try:
+                        module_path = f"{namespace_module_path}.{module_name}"
+                        module = importlib.import_module(module_path)
+                        if hasattr(module, 'execute'):
+                            static_primitives[module_name] = module.execute
+                            logger.debug(f"Loaded static primitive '{module_name}' from {namespace_name}")
+                    except Exception as e:
+                        logger.error(f"Error loading static primitive {module_name} from {namespace_name}: {e}")
+            
+            # Load dynamic primitives if namespace supports it
+            dynamic_primitives = {}
+            if hasattr(namespace_module, 'register_primitives'):
+                try:
+                    dynamic_primitives = namespace_module.register_primitives()
+                    logger.debug(f"Loaded {len(dynamic_primitives)} dynamic primitives from {namespace_name}")
+                except Exception as e:
+                    logger.error(f"Error loading dynamic primitives from {namespace_name}: {e}")
+            
+            # Combine static and dynamic primitives
+            all_primitives = {**static_primitives, **dynamic_primitives}
+            self._namespaces[namespace_name] = all_primitives
+            
+            logger.debug(f"Loaded namespace '{namespace_name}' with {len(all_primitives)} primitives")
+            
+        except Exception as e:
+            logger.error(f"Error loading namespace '{namespace_name}': {e}")
+            self._namespaces[namespace_name] = {}
+    
+    def _import_namespace(self, namespace_name: str):
+        """Mark a namespace as imported (available for unqualified lookups)"""
+        if namespace_name not in self._namespaces:
+            self._load_namespace(namespace_name)
+        self._imported_namespaces.add(namespace_name)
+        logger.debug(f"Imported namespace: {namespace_name}")
+    
     def load_primitive(self, operator_name: str) -> Optional[Callable]:
-        """Load a primitive operation by name"""
+        """Load a primitive operation by name (qualified or unqualified)"""
         if operator_name in self._cache:
             return self._cache[operator_name]
         
-        try:
-            # Convert operator name to module name
-            module_name = self._operator_to_module_name(operator_name)
-            module_path = f"voxlogica.primitives.{module_name}"
-            
-            # Import the module
-            module = importlib.import_module(module_path)
-            
-            # Look for execute function
-            if hasattr(module, 'execute'):
-                primitive_func = module.execute
-                self._cache[operator_name] = primitive_func
-                logger.debug(f"Loaded primitive '{operator_name}' from {module_path}")
-                return primitive_func
-            else:
-                logger.warning(f"Primitive module {module_path} has no 'execute' function")
-                return None
-                
-        except ImportError as e:
-            logger.debug(f"Could not load primitive '{operator_name}': {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Error loading primitive '{operator_name}': {e}")
-            return None
-    
-    def _operator_to_module_name(self, operator_name: str) -> str:
-        """Convert operator name to Python module name"""
-        # Handle special cases
-        if operator_name in ['+', 'add', 'addition']:
-            return 'addition'
-        elif operator_name in ['-', 'sub', 'subtract']:
-            return 'subtraction'
-        elif operator_name in ['*', 'mul', 'multiply']:
-            return 'multiplication'
-        elif operator_name in ['/', 'div', 'divide']:
-            return 'division'
-        elif operator_name == 'print':
-            return 'print_primitive'
+        primitive_func = None
+        
+        # Check if operator name is qualified (namespace.primitive)
+        if '.' in operator_name:
+            namespace_name, primitive_name = operator_name.split('.', 1)
+            primitive_func = self._load_qualified_primitive(namespace_name, primitive_name)
         else:
-            # Default: use operator name as module name, sanitized
-            return operator_name.replace('-', '_').replace(' ', '_').lower()
+            # Unqualified name - check in resolution order
+            primitive_func = self._load_unqualified_primitive(operator_name)
+        
+        if primitive_func:
+            self._cache[operator_name] = primitive_func
+            logger.debug(f"Loaded primitive '{operator_name}'")
+        
+        return primitive_func
+    
+    def _load_qualified_primitive(self, namespace_name: str, primitive_name: str) -> Optional[Callable]:
+        """Load a primitive from a specific namespace"""
+        if namespace_name not in self._namespaces:
+            self._load_namespace(namespace_name)
+        
+        if namespace_name in self._namespaces:
+            primitives = self._namespaces[namespace_name]
+            return primitives.get(primitive_name)
+        
+        return None
+    
+    def _load_unqualified_primitive(self, operator_name: str) -> Optional[Callable]:
+        """Load an unqualified primitive following resolution order"""
+        # Resolution order: default namespace -> imported namespaces
+        search_order = ['default'] + [ns for ns in self._imported_namespaces if ns != 'default']
+        
+        for namespace_name in search_order:
+            if namespace_name in self._namespaces:
+                primitives = self._namespaces[namespace_name]
+                
+                # Check direct name match
+                if operator_name in primitives:
+                    return primitives[operator_name]
+                
+                # Check operator aliases for default namespace
+                if namespace_name == 'default':
+                    aliased_name = self._resolve_operator_alias(operator_name)
+                    if aliased_name and aliased_name in primitives:
+                        return primitives[aliased_name]
+        
+        return None
+    
+    def _resolve_operator_alias(self, operator_name: str) -> Optional[str]:
+        """Resolve operator aliases for backward compatibility"""
+        aliases = {
+            '+': 'addition',
+            'add': 'addition',
+            '-': 'subtraction', 
+            'sub': 'subtraction',
+            'subtract': 'subtraction',
+            '*': 'multiplication',
+            'mul': 'multiplication',
+            'multiply': 'multiplication',
+            '/': 'division',
+            'div': 'division',
+            'divide': 'division',
+            'print': 'print_primitive',
+        }
+        return aliases.get(operator_name)
+    
+    def import_namespace(self, namespace_name: str):
+        """Import a namespace for unqualified access"""
+        self._import_namespace(namespace_name)
+    
+    def list_namespaces(self) -> List[str]:
+        """List all available namespaces"""
+        return list(self._namespaces.keys())
+    
+    def list_primitives(self, namespace_name: Optional[str] = None) -> Dict[str, str]:
+        """List primitives in a namespace or all namespaces"""
+        if namespace_name:
+            if namespace_name not in self._namespaces:
+                self._load_namespace(namespace_name)
+            
+            # Try to get descriptions from namespace module
+            try:
+                namespace_module_path = f"voxlogica.primitives.{namespace_name}"
+                namespace_module = importlib.import_module(namespace_module_path)
+                if hasattr(namespace_module, 'list_primitives'):
+                    return namespace_module.list_primitives()
+            except Exception:
+                pass
+            
+            # Fallback to primitive names without descriptions
+            if namespace_name in self._namespaces:
+                return {name: f"Primitive from {namespace_name} namespace" 
+                       for name in self._namespaces[namespace_name].keys()}
+            return {}
+        else:
+            # List all primitives from all namespaces
+            all_primitives = {}
+            for ns_name in self._namespaces:
+                ns_primitives = self.list_primitives(ns_name)
+                for prim_name, description in ns_primitives.items():
+                    qualified_name = f"{ns_name}.{prim_name}"
+                    all_primitives[qualified_name] = description
+            return all_primitives
 
 class ExecutionEngine:
     """
@@ -147,6 +279,12 @@ class ExecutionEngine:
         start_time = time.time()
         
         try:
+            # Handle namespace imports from the workplan
+            if hasattr(workplan, '_imported_namespaces'):
+                for namespace_name in workplan._imported_namespaces:
+                    self.primitives.import_namespace(namespace_name)
+                    logger.debug(f"Imported namespace '{namespace_name}' for execution")
+            
             # Create execution session
             session = ExecutionSession(execution_id, workplan, self.storage, self.primitives)
             

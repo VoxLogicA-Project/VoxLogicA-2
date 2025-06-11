@@ -266,6 +266,49 @@ def run(
         raise typer.Exit(code=1) from e
 
 
+@app.command("list-primitives")
+def list_primitives(
+    namespace: Optional[str] = typer.Argument(None, help="Namespace to filter primitives (optional)")
+) -> None:
+    """List available primitives"""
+    setup_logging(False)
+    
+    try:
+        from voxlogica.features import handle_list_primitives
+        
+        result = handle_list_primitives(namespace=namespace)
+        
+        if not result.success:
+            logger.error(f"Error: {result.error}")
+            raise typer.Exit(code=1)
+            
+        # Display results in a user-friendly format
+        data = result.data
+        
+        if data.get('namespace_filter'):
+            print(f"Primitives in namespace '{data['namespace_filter']}':")
+        else:
+            print("All available primitives:")
+            
+        primitives = data.get('primitives', {})
+        if not primitives:
+            print("  No primitives found.")
+        else:
+            for name, description in sorted(primitives.items()):
+                print(f"  {name:<30} {description}")
+                
+        # Show available namespaces if listing all
+        if not data.get('namespace_filter'):
+            namespaces = data.get('namespaces', [])
+            if namespaces:
+                print(f"\nAvailable namespaces: {', '.join(sorted(namespaces))}")
+                print("Use 'voxlogica list-primitives <namespace>' to filter by namespace.")
+                
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        raise typer.Exit(code=1)
+
+
 # ----------------- API Endpoints -----------------
 
 
