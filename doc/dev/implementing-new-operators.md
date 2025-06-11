@@ -80,6 +80,26 @@ Always include proper error handling:
 - Use `ValueError` for operation-specific errors
 - Chain exceptions using `from e` to preserve the original exception
 
+## Type Adaptation for Numeric Arguments (SimpleITK and Similar Primitives)
+
+When wrapping external libraries (such as SimpleITK) that require strict argument types (e.g., `uint8_t`, `float`), VoxLogicA automatically adapts numeric argument types for compatibility:
+
+- **float → int**: If the primitive function expects an `int` (or `uint8_t`) and the argument is a float with no fractional part, it is cast to `int`.
+- **int → float**: If the primitive function expects a `float` and the argument is an `int`, it is cast to `float`.
+
+This ensures that ImgQL scripts can use either `0`, `0.0`, `255`, or `255.0` interchangeably, and the correct type will be passed to the underlying library.
+
+**Example:**
+```python
+# In the SimpleITK wrapper:
+if param.annotation in [int] and isinstance(arg, float) and arg.is_integer():
+    arg = int(arg)
+elif param.annotation in [float] and isinstance(arg, int):
+    arg = float(arg)
+```
+
+This logic is applied automatically for all dynamically wrapped primitives.
+
 ## Example: Basic Mathematical Operations
 
 ### Addition Operator (`addition.py`)

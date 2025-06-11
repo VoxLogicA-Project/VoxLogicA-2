@@ -4,11 +4,11 @@ import "simpleitk"
 // Try using unqualified names (without simpleitk. prefix)
 let img = ReadImage("tests/chris_t1.nii.gz")
 
-// Calculate threshold using default namespace arithmetic  
-let threshold_value = 0
-
 // Apply threshold using unqualified name
-let thresholded = BinaryThreshold(img, threshold_value,100,200)
+let thresholded = BinaryThreshold(img,150,99999,1,0)
+
+let stats = simpleitk.MinimumMaximum(thresholded)
+print "stats" index(stats,1)
 
 // Demonstrate custom serializer formats
 save "output.png" thresholded   // Medical imaging format

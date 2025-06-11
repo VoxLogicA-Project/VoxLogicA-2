@@ -22,26 +22,33 @@ def _wrap_sitk_function(func: Callable, func_name: str) -> Callable:
     """Wrap a SimpleITK function to conform to VoxLogicA primitive interface"""
     
     def execute(**kwargs):
-        """Execute the wrapped SimpleITK function"""
+        """Execute the wrapped SimpleITK function with type adaptation for argument compatibility"""
         try:
-            # Get function signature
             sig = inspect.signature(func)
             params = list(sig.parameters.keys())
-            
-            # Map numeric string keys to positional arguments
             args = []
             for i, param_name in enumerate(params):
                 key = str(i)
                 if key in kwargs:
-                    args.append(kwargs[key])
+                    arg = kwargs[key]
+                    param = sig.parameters[param_name]
+                    # Type adaptation: cast float->int if param expects int, and int->float if param expects float
+                    # Fallback for known functions/params if annotation is missing
+                    if param.annotation in [int] and isinstance(arg, float) and arg.is_integer():
+                        arg = int(arg)
+                    elif param.annotation in [float] and isinstance(arg, int):
+                        arg = float(arg)
+                    # Special case for BinaryThreshold: last two args must be int (insideValue, outsideValue)
+                    if func_name == "BinaryThreshold" and i in (3, 4):
+                        if isinstance(arg, float) and arg.is_integer():
+                            arg = int(arg)
+                    args.append(arg)
                 else:
-                    # Try to get default value
                     param = sig.parameters[param_name]
                     if param.default != inspect.Parameter.empty:
                         break  # Use default values for remaining parameters
                     else:
                         raise ValueError(f"{func_name}: missing required argument {i} ({param_name})")
-            
             # Call the original function
             result = func(*args)
             return result
