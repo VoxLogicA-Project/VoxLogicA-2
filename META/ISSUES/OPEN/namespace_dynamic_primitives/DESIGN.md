@@ -15,6 +15,7 @@ VoxLogicA-2 currently implements each primitive as a separate Python file in `im
   - Operator names may be qualified (e.g., `simpleitk.GaussianBlur`).
 - **Import Command Extension:**
   - The `import` command in ImgQL can now import primitive namespaces and submodules, not just files. For example, `import "default"` or `import "simpleitk"` is permitted and will make the corresponding namespace's primitives available.
+  - Qualified imports can also apply to files for more precise control.
 - **Backward Compatibility:**
   - Existing static primitives and operator loading must continue to work.
 - **Documentation:**
@@ -33,9 +34,11 @@ VoxLogicA-2 currently implements each primitive as a separate Python file in `im
   - The loader resolves operator names to the correct namespace and primitive.
 - **Import Command Semantics:**
   - The `import` command is extended to support importing primitive namespaces and submodules. When a namespace is imported, all its primitives become available in the current scope. This includes static, dynamic, and default namespaces.
+  - The `default` namespace is automatically available without explicit import for backward compatibility.
+  - Qualified imports can also apply to files for more precise control.
 - **SimpleITK Example:**
   - `primitives/simpleitk/__init__.py` implements `register_primitives()` by introspecting the SimpleITK module and exposing all suitable functions as primitives.
-  - Each function is wrapped to conform to the `execute(**kwargs)` interface.
+  - Each function is wrapped to conform to the primitive interface, handling argument mapping from VoxLogicA's internal format to SimpleITK's expected parameters.
 
 ## Implementation Sketch
 1. **Refactor Loader:**
@@ -48,15 +51,35 @@ VoxLogicA-2 currently implements each primitive as a separate Python file in `im
 3. **Dynamic Namespace Example:**
    - In `primitives/simpleitk/__init__.py`, implement `register_primitives()`:
      - Use `dir(SimpleITK)` and `inspect` to enumerate functions.
-     - For each function, create a wrapper that adapts the signature to `execute(**kwargs)`.
+     - For each function, create a wrapper that adapts VoxLogicA's argument format to SimpleITK's expected parameters.
      - Return a mapping `{ 'GaussianBlur': wrapper, ... }`.
 4. **Documentation:**
    - Update `doc/dev/implementing-new-operators.md` and related docs to describe namespaces and dynamic loading.
 
-## Open Questions
-- How to handle name collisions between static and dynamic primitives?
-- Should dynamic namespaces support selective exposure (e.g., only a whitelist of functions)?
-- How to document dynamically registered primitives for end users?
+## Namespace Collision Resolution Strategy
+- **Qualified Names Take Precedence**: `simpleitk.GaussianBlur` always resolves to the SimpleITK namespace, avoiding any ambiguity
+- **Unqualified Name Resolution Order**: 
+  1. User-defined constants and functions (highest priority)
+  2. `default` namespace (for backward compatibility)
+  3. Explicitly imported namespaces (in import order)
+  4. Error if ambiguous between multiple namespaces
+- **Explicit Resolution**: Users can always use qualified names to avoid ambiguity
+
+## Performance Considerations
+- **Lazy Loading**: Dynamic namespaces should only introspect libraries when first accessed to avoid startup overhead
+- **Caching**: Introspection results should be cached to avoid repeated discovery overhead
+- **Selective Exposure**: Support whitelist/blacklist patterns for large libraries like SimpleITK
+
+## Error Handling Strategy
+- **Graceful Degradation**: Failed dynamic namespaces should not break the entire system
+- **Clear Error Messages**: Distinguish between "namespace not found" vs "function not available" 
+- **Validation**: Dynamic primitives should validate their availability during registration
+- **Fallback Mechanism**: Option to disable problematic dynamic namespaces
+
+## Dynamic Function Validation
+- **Runtime Type Adaptation**: Automatic conversion of basic constants between SimpleITK and VoxLogicA parameter formats
+- **Runtime Validation**: Validate inputs/outputs in the `simpleitk` module where possible
+- **Signature Inspection**: Use `inspect` module to validate function signatures during registration
 
 ## References
 - See AGENT.md for project policies.
