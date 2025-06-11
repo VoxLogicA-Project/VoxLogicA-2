@@ -1,7 +1,0 @@
-import simpleitk
-let img=simpleitk.load_sitk_image("tests/chris_t1.nii.gz")
-let threshold_value=+(50.0,59.0)
-let thresholded=simpleitk.threshold(img,threshold_value)
-let saved=simpleitk.save_sitk_image(thresholded,"chris_t1_thresholded.nii.gz")
-print "Image thresholded with value" threshold_value
-print "Saved to" saved

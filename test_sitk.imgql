@@ -1,18 +1,18 @@
-// Import the simpleitk namespace to access SimpleITK primitives
+// Test file to check if unqualified names work after import
 import "simpleitk"
 
-// Load image using actual SimpleITK function names
-let img = simpleitk.ReadImage("tests/chris_t1.nii.gz")
+// Try using unqualified names (without simpleitk. prefix)
+let img = ReadImage("tests/chris_t1.nii.gz")
 
-// Calculate threshold using default namespace arithmetic (50+59=109)
-let threshold_value = 50 + 59
+// Calculate threshold using default namespace arithmetic  
+let threshold_value = 50 + 50
 
-// Apply threshold using actual SimpleITK function names
-let thresholded = simpleitk.Threshold(img, threshold_value)
+// Apply threshold using unqualified name
+let thresholded = Threshold(img, threshold_value)
 
-// Save the result using actual SimpleITK function names
-let saved = simpleitk.WriteImage(thresholded, "chris_t1_thresholded.nii.gz")
+// Save the result using unqualified name
+let saved = WriteImage(thresholded, "chris_t1_thresholded_unqualified.nii.gz")
 
-// Print confirmation (print should be available by default)
-print "Image thresholded with value" threshold_value
+// Print confirmation
+print "Image thresholded with unqualified names, value" threshold_value
 print "Saved to" saved
