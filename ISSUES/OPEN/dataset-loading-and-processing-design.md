@@ -37,6 +37,23 @@ VoxLogicA-2 aims to support scalable, reproducible, and efficient processing of 
 - Derived datasets (e.g., after map/reduce) are hashed as operations over their dependencies, preserving full provenance.
 - Element/block-level memoization is not required unless chunk-level granularity is needed for very large datasets (can be added via Merkle tree structure if needed).
 
+## Dask Graph Integration for Dataset Processing
+
+When compiling VoxLogicA-2 programs to Dask, dataset operations such as `map`, `reduce`, and `filter` are represented as nodes in the Dask graph. For expressions like:
+
+```voxlogica
+let h(x) = f(g(x))
+map(h, load_dataset(URI))
+```
+
+- The `load_dataset(URI)` node produces a Dask collection (e.g., dask.array, dask.bag).
+- The function `h(x)` is compiled as a Dask subgraph (using `dask.delayed` or equivalent), representing the computation `f(g(x))`.
+- The `map` primitive is compiled to a Dask mapping operation (e.g., `map`, `map_blocks`, or `map_partitions`), applying the subgraph for `h` to each element or chunk of the dataset.
+- Dask's scheduler is informed that `h` is a Dask graph, enabling full task parallelism: each element/chunk is processed in parallel, and the internal structure of `h` can itself be parallelized if it is complex.
+- The resulting Dask graph is compact and lazy: it contains a node for loading the dataset and a parallel set of subgraphs for each mapped element/chunk, all scheduled efficiently by Dask. No manual expansion for every element is needed.
+
+**This approach ensures that VoxLogicA-2 fully leverages Dask's parallelism and lazy evaluation, supporting scalable, efficient, and composable dataset processing workflows.**
+
 ## CLI/Commands (Future)
 - `voxlogica dataset info <uri>`: Show metadata, shape, dtype, hash, etc.
 - `voxlogica dataset map <function> <uri>`: Apply a function to a dataset and output a new dataset.
