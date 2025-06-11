@@ -1,25 +1,25 @@
 from typing import Dict, Callable, Any, Set, List, Tuple
 from collections import defaultdict, deque
-from voxlogica.reducer import WorkPlan, OperationId
+from voxlogica.reducer import WorkPlan, NodeId
 
 
 def print_buffer_assignment(
     workplan: WorkPlan,
-    buffer_assignment: Dict[OperationId, int],
-    type_assignment_func: Callable[[OperationId], Any],
+    buffer_assignment: Dict[NodeId, int],
+    type_assignment_func: Callable[[NodeId], Any],
 ) -> None:
     """
     Print a formatted console output of the buffer assignment.
 
     Args:
         workplan: The WorkPlan containing operations
-        buffer_assignment: Dictionary mapping OperationId to buffer_id
+        buffer_assignment: Dictionary mapping NodeId to buffer_id
         type_assignment_func: Function that returns the type for each operation ID
     """
     print("\n=== Buffer Assignment ===\n")
 
     # Group operations by buffer ID
-    buffer_to_ops: Dict[int, List[OperationId]] = defaultdict(list)
+    buffer_to_ops: Dict[int, List[NodeId]] = defaultdict(list)
     for op_id, buffer_id in buffer_assignment.items():
         buffer_to_ops[buffer_id].append(op_id)
 
@@ -39,7 +39,7 @@ def print_buffer_assignment(
 
 def _build_dependency_graph(
     workplan: WorkPlan,
-) -> Tuple[Dict[OperationId, Set[OperationId]], Dict[OperationId, Set[OperationId]]]:
+) -> Tuple[Dict[NodeId, Set[NodeId]], Dict[NodeId, Set[NodeId]]]:
     """
     Build dependency graph from WorkPlan.
 
@@ -48,8 +48,8 @@ def _build_dependency_graph(
         - dependencies[op] = set of operations that op depends on (parents)
         - dependents[op] = set of operations that depend on op (children)
     """
-    dependencies: Dict[OperationId, Set[OperationId]] = defaultdict(set)
-    dependents: Dict[OperationId, Set[OperationId]] = defaultdict(set)
+    dependencies: Dict[NodeId, Set[NodeId]] = defaultdict(set)
+    dependents: Dict[NodeId, Set[NodeId]] = defaultdict(set)
 
     for operation_id, operation in workplan.operations.items():
         for arg_name, dependency_id in operation.arguments.items():
@@ -61,8 +61,8 @@ def _build_dependency_graph(
 
 
 def _topological_sort(
-    workplan: WorkPlan, dependencies: Dict[OperationId, Set[OperationId]]
-) -> List[OperationId]:
+    workplan: WorkPlan, dependencies: Dict[NodeId, Set[NodeId]]
+) -> List[NodeId]:
     """
     Perform topological sort using Kahn's algorithm.
 
@@ -70,13 +70,13 @@ def _topological_sort(
         List of operation_ids in topological order.
     """
     # Calculate in-degrees
-    in_degree: Dict[OperationId, int] = defaultdict(int)
+    in_degree: Dict[NodeId, int] = defaultdict(int)
     for operation_id in workplan.operations:
         in_degree[operation_id] = len(dependencies.get(operation_id, set()))
 
     # Find nodes with no incoming edges
     queue = deque([op_id for op_id in workplan.operations if in_degree[op_id] == 0])
-    result: List[OperationId] = []
+    result: List[NodeId] = []
 
     while queue:
         current = queue.popleft()
@@ -97,19 +97,19 @@ def _topological_sort(
 
 def _compute_operation_lifetimes(
     workplan: WorkPlan,
-    dependents: Dict[OperationId, Set[OperationId]],
-    topo_order: List[OperationId],
-) -> Dict[OperationId, Tuple[int, int]]:
+    dependents: Dict[NodeId, Set[NodeId]],
+    topo_order: List[NodeId],
+) -> Dict[NodeId, Tuple[int, int]]:
     """
     Compute the lifetime of each operation as (start_time, end_time) where
     start_time = topological position of the operation,
     end_time = maximum position among its direct dependents (or start_time if none).
 
     Returns:
-        Dictionary mapping OperationId to (start_time, end_time) tuple.
+        Dictionary mapping NodeId to (start_time, end_time) tuple.
     """
-    position: Dict[OperationId, int] = {op_id: i for i, op_id in enumerate(topo_order)}
-    lifetimes: Dict[OperationId, Tuple[int, int]] = {}
+    position: Dict[NodeId, int] = {op_id: i for i, op_id in enumerate(topo_order)}
+    lifetimes: Dict[NodeId, Tuple[int, int]] = {}
 
     for op_id in workplan.operations:
         start_time = position[op_id]
@@ -125,9 +125,9 @@ def _compute_operation_lifetimes(
 
 def compute_buffer_allocation(
     workplan: WorkPlan,
-    type_assignment: Callable[[OperationId], Any],
+    type_assignment: Callable[[NodeId], Any],
     type_compatibility: Callable[[Any, Any], bool],
-) -> Dict[OperationId, int]:
+) -> Dict[NodeId, int]:
     """
     Compute buffer allocation for a workplan using static analysis.
 
@@ -146,15 +146,15 @@ def compute_buffer_allocation(
     # Compute lifetimes of operations
     lifetimes = _compute_operation_lifetimes(workplan, dependents, topo_order)
 
-    buffer_allocation: Dict[OperationId, int] = {}
-    buffer_to_operations: Dict[int, Set[OperationId]] = {}
+    buffer_allocation: Dict[NodeId, int] = {}
+    buffer_to_operations: Dict[int, Set[NodeId]] = {}
     next_buffer_id = 0
 
     # Process operations in reverse topological order
     for op_id in reversed(topo_order):
         op_type = type_assignment(op_id)
         # Compute descendants of op_id (all reachable children)
-        visited: Set[OperationId] = set()
+        visited: Set[NodeId] = set()
         queue = deque([op_id])
         visited.add(op_id)
         while queue:
@@ -200,17 +200,17 @@ def compute_buffer_allocation(
 
 
 def allocate_buffers(
-    workplan: WorkPlan, type_assignment: Dict[OperationId, Any]
-) -> Dict[OperationId, int]:
+    workplan: WorkPlan, type_assignment: Dict[NodeId, Any]
+) -> Dict[NodeId, int]:
     """
     Allocate buffers for operations in a WorkPlan with type-equality compatibility.
 
     Args:
         workplan: The WorkPlan containing operations
-        type_assignment: Dictionary mapping OperationId to type
+        type_assignment: Dictionary mapping NodeId to type
 
     Returns:
-        Dictionary mapping OperationId to buffer IDs (integers starting from 0)
+        Dictionary mapping NodeId to buffer IDs (integers starting from 0)
     """
 
     # Define compatibility as equality

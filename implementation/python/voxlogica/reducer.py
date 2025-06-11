@@ -33,54 +33,73 @@ from voxlogica.parser import (
 
 # Type aliases
 type identifier = str
-type OperationId = str
-type Constant = str | bool | int | float
-type Arguments = Dict[str, OperationId]
-Stack = list[Tuple[str, str]]
+type NodeId = str
+type Arguments = Dict[str, NodeId]
+type Stack = list[Tuple[str, str]]
+
+@dataclass
+class ConstantValue:
+    """Constant value"""    
+    value: str | bool | int | float
 
 @dataclass
 class Operation:
     """Operation with operator and arguments"""
-    operator: Constant | str
+    operator: str
     arguments: Arguments
+
+type Node = ConstantValue | Operation
 
 @dataclass
 class Goal:
     """Goal with operation type, operation ID, and name"""
     operation: str  # "print" or "save"
-    id: OperationId
+    id: NodeId
     name: str
 
 @dataclass
 class WorkPlan:
     """A topologically sorted DAG of operations with goals"""
-    operations: Dict[OperationId, Operation] = field(default_factory=dict)
+    nodes: Dict[NodeId, Node] = field(default_factory=dict)
     goals: List[Goal] = field(default_factory=list)
 
-    def add_goal(self, operation: str, operation_id: OperationId, name: str) -> None:
+    def add_goal(self, operation: str, operation_id: NodeId, name: str) -> None:
         """Add a goal to the work plan"""
         self.goals.append(Goal(operation, operation_id, name))
     
-    def _compute_operation_id(self, operator: Constant | str, arguments: Arguments) -> OperationId:
+    def _compute_node_id(self,node: Node) -> NodeId:
         """Compute content-addressed SHA256 ID for an operation"""
-        op_dict = {"operator": operator, "arguments": arguments}
-        canonical_json = canonicaljson.encode_canonical_json(op_dict)
+        import dataclasses
+        # Convert dataclass to dict for JSON serialization
+        if dataclasses.is_dataclass(node):
+            node_dict = dataclasses.asdict(node)
+        else:
+            node_dict = node
+        canonical_json = canonicaljson.encode_canonical_json(node_dict)
         sha256_hash = hashlib.sha256(canonical_json).hexdigest()
         return sha256_hash
     
-    def add_operation(self, operator: Constant | str, arguments: Arguments) -> OperationId:
+    def add_node(self, node: Node) -> NodeId:
         """Add an operation to the work plan if not already present, return operation ID"""
-        operation_id = self._compute_operation_id(operator, arguments)
-        
-        if operation_id not in self.operations:
-            self.operations[operation_id] = Operation(operator, arguments)
-        
+        operation_id = self._compute_node_id(node)
+        if operation_id not in self.nodes:
+            self.nodes[operation_id] = node
         return operation_id
+
+    @property
+    def operations(self) -> Dict[NodeId, Operation]:
+        """Return only Operation nodes (not ConstantValue) for compatibility with execution/converters."""
+        return {k: v for k, v in self.nodes.items() if isinstance(v, Operation)}
+
+    @property
+    def constants(self) -> Dict[NodeId, ConstantValue]:
+        """Return only ConstantValue nodes."""
+        return {k: v for k, v in self.nodes.items() if isinstance(v, ConstantValue)}
 
 @dataclass
 class OperationVal:
     """Operation value"""
-    operation_id: OperationId
+    operation_id: NodeId
 
 @dataclass
 class FunctionVal:
@@ -125,80 +144,84 @@ def reduce_expression(
     work_plan: WorkPlan,
     expr: Expression,
     stack: Optional[Stack] = None,
-) -> OperationId:
+) -> NodeId:
     """Reduce an expression to an operation ID"""
     current_stack: Stack = [] if stack is None else stack
-    
+
     if isinstance(expr, ENumber):
-        op_id = work_plan.add_operation(expr.value, {})
+        node = ConstantValue(expr.value)
+        op_id = work_plan.add_node(node)
         return op_id
-    
+
     elif isinstance(expr, EBool):
-        op_id = work_plan.add_operation(expr.value, {})
+        node = ConstantValue(expr.value)
+        op_id = work_plan.add_node(node)
         return op_id
-    
+
     elif isinstance(expr, EString):
-        # Wrap string in quotes so execution engine recognizes as literal
-        op_id = work_plan.add_operation(f'"{expr.value}"', {})
+        node = ConstantValue(expr.value)
+        op_id = work_plan.add_node(node)
         return op_id
-    
+
     elif isinstance(expr, ECall):
         # If it's a variable reference without arguments
         if not expr.arguments:
             val = env.try_find(expr.identifier)
             if val is None:
-                # If not found, create a new operation with the identifier
-                op_id = work_plan.add_operation(expr.identifier, {})
+                # If not found, create a new operation node with the identifier as operator
+                node = Operation(operator=expr.identifier, arguments={})
+                op_id = work_plan.add_node(node)
                 return op_id
-            
+
             if isinstance(val, OperationVal):
                 return val.operation_id
-            
+
             call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
             raise RuntimeError(f"Function '{expr.identifier}' called without arguments\n" + "\n".join(f"{identifier} at {position}" for identifier, position in call_stack))
-        
+
         # It's a function call with arguments
         this_stack: Stack = [(expr.identifier, expr.position)] + current_stack
         args_ops = [
             reduce_expression(env, work_plan, arg, this_stack)
             for arg in expr.arguments
         ]
-        
+
         # Convert list to dict with string numeric keys
         args_dict = {str(i): op_id for i, op_id in enumerate(args_ops)}
-        
+
         # Check if it's a variable with arguments
         val = env.try_find(expr.identifier)
         if val is None:
-            # If not found, create a new operation with the identifier and arguments
-            op_id = work_plan.add_operation(expr.identifier, args_dict)
+            # If not found, create a new operation node with the identifier and arguments
+            node = Operation(operator=expr.identifier, arguments=args_dict)
+            op_id = work_plan.add_node(node)
             return op_id
-        
+
         if isinstance(val, OperationVal):
             call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
             raise RuntimeError(
                 f"'{expr.identifier}' is not a function but was called with arguments\n" + "\n".join(f"{identifier} at {position}" for identifier, position in call_stack),
             )
-        
+
         if isinstance(val, FunctionVal):
             if len(val.parameters) != len(args_dict):
                 call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
                 raise RuntimeError(
                     f"Function '{expr.identifier}' expects {len(val.parameters)} arguments but was called with {len(args_dict)}\n" + "\n".join(f"{identifier} at {position}" for identifier, position in call_stack),
                 )
-            
+
             # Create operation values from argument operation IDs
             arg_vals: Sequence[DVal] = [
                 OperationVal(op_id) for op_id in args_dict.values()
             ]
-            
+
             # Create a new environment with function arguments bound
             func_env = val.environment.bind_list(val.parameters, arg_vals)
-            
+
             # Reduce the function body in the new environment
             func_stack: Stack = [(expr.identifier, expr.position)] + current_stack
             return reduce_expression(func_env, work_plan, val.expression, func_stack)
-    
+
     # This should never happen if the parser is correct
     raise RuntimeError("Internal error in reducer: unknown expression type")
     return ""

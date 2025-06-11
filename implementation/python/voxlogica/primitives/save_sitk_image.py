@@ -14,5 +14,7 @@ def execute(**kwargs):
     # Remove quotes if present
     if filename.startswith('"') and filename.endswith('"'):
         filename = filename[1:-1]
+    if img is None:
+        raise ValueError("save_sitk_image: image cannot be None")
     sitk.WriteImage(img, filename)
     return filename

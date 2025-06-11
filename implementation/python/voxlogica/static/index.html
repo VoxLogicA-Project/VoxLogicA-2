@@ -760,36 +760,43 @@ print "sum" c'
             return;
           }
 
-          // Convert operations to nodes
-          const nodes = graphData.operations.map((op) => ({
-            id: op.id,
-            label: this.formatOperatorLabel(op.operator, op.buffer_id),
-            operator: op.operator,
-            arguments: op.arguments,
-            buffer_id: op.buffer_id,
+          // Convert nodes to D3 nodes
+          const nodes = graphData.nodes.map((node) => ({
+            id: node.id,
+            label: node.type === "constant" 
+              ? `const: ${node.value}` 
+              : this.formatOperatorLabel(node.operator, node.buffer_id),
+            operator: node.type === "constant" ? "constant" : node.operator,
+            arguments: node.arguments || {},
+            buffer_id: node.buffer_id,
+            type: node.type,
+            value: node.value, // for constants
             isGoal:
-              op.operator === "goal" ||
-              (typeof op.operator === "string" &&
-                op.operator.toLowerCase().includes("goal")),
+              node.type === "operation" && (
+                node.operator === "goal" ||
+                (typeof node.operator === "string" &&
+                  node.operator.toLowerCase().includes("goal"))
+              ),
             permanentlyPinned: false,
           }));
 
           // Create links from arguments
           const links = [];
-          graphData.operations.forEach((op) => {
+          graphData.nodes.forEach((node) => {
             if (
-              op.arguments &&
-              typeof op.arguments === "object" &&
-              !Array.isArray(op.arguments)
+              node.type === "operation" &&
+              node.arguments &&
+              typeof node.arguments === "object" &&
+              !Array.isArray(node.arguments)
             ) {
-              Object.values(op.arguments).forEach((argOpId) => {
-                // Check if the referenced operation exists
+              Object.values(node.arguments).forEach((argNodeId) => {
+                // Check if the referenced node exists
                 if (
-                  graphData.operations.some((other) => other.id === argOpId)
+                  graphData.nodes.some((other) => other.id === argNodeId)
                 ) {
                   links.push({
-                    source: argOpId,
-                    target: op.id,
+                    source: argNodeId,
+                    target: node.id,
                   });
                 }
               });
@@ -1019,7 +1026,9 @@ print "sum" c'
             );
 
           // Add main circles
-          node.append("circle").attr("r", 25).attr("fill", "#4f46e5");
+          node.append("circle")
+            .attr("r", 25)
+            .attr("fill", (d) => d.type === "constant" ? "#059669" : "#4f46e5");
 
           // Add outer circles for goal nodes
           node

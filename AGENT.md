@@ -15,7 +15,10 @@ Coding conventions:
 - Use type hints and docstrings for all functions and classes.
 - Use the type keyword for type hints, use "|" instead of Union
 
-# WHAT **NOT** TO DO
+Git diff:
+- git diff uses a pager by default, so use git diff --no-pager to see the output directly in the terminal.
+
+# MANDATORY POLICIES
 
 - Do not run arbitrary credible commands to run tests or execute the tool: use the two main scripts in tests and in the root dir of the repo. They take care of loading the correct venv
 

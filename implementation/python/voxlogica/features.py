@@ -20,6 +20,7 @@ import logging
 from voxlogica.parser import parse_program
 from voxlogica.reducer import reduce_program
 from voxlogica.converters import to_json, to_dot
+from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 
 logger = logging.getLogger("voxlogica.features")
 
@@ -216,12 +217,13 @@ def handle_run(
 
             if filename:  # CLI mode - save to file
                 with open(save_task_graph_as_json, "w") as f:
-                    json.dump(json_content, f, indent=2)
+                    json.dump(json_content, f, indent=2, cls=WorkPlanJSONEncoder)
                 messages.append(
                     f"Task graph saved as JSON to {save_task_graph_as_json}"
                 )
             else:  # API mode - include in response with specified key
-                saved_files[save_task_graph_as_json] = json_content
+                import json as _json
+                saved_files[save_task_graph_as_json] = _json.loads(_json.dumps(json_content, cls=WorkPlanJSONEncoder))
 
         if save_syntax:
             syntax_content = str(syntax)
@@ -238,6 +240,9 @@ def handle_run(
         if saved_files:
             result["saved_files"] = saved_files
 
+        # At the end of handle_run, before returning OperationResult, ensure result is JSON serializable
+        import json as _json
+        result = _json.loads(_json.dumps(result, cls=WorkPlanJSONEncoder))
         return OperationResult[Dict[str, Any]](success=True, data=result)
 
     except Exception as e:

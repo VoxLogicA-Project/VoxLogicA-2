@@ -7,6 +7,7 @@ import logging
 import sys
 from pathlib import Path
 from typing import Any, Optional, TypeVar, Generic
+import traceback
 
 import typer
 import uvicorn
@@ -21,6 +22,7 @@ from watchdog.events import FileSystemEventHandler
 
 from voxlogica.features import FeatureRegistry
 from voxlogica.version import get_version
+from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 
 # Type variables for generic response handling
 T = TypeVar("T")
@@ -132,6 +134,9 @@ def handle_cli_feature(feature_name: str, **kwargs: Any) -> None:
                         if "messages" in data:
                             for message in data["messages"]:
                                 logger.info("  %s", message)
+                        # Print the result as JSON for CLI output if not None
+                        import json as _json
+                        print(_json.dumps(data, indent=2, cls=WorkPlanJSONEncoder))
                     elif feature_name == "version":
                         logger.info(
                             "VoxLogicA version: %s", data.get("version", "unknown")
