@@ -19,12 +19,14 @@ from pydantic import BaseModel
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from .features import FeatureRegistry
-from .error_msg import Logger, VLException
-from .version import get_version
+from voxlogica.features import FeatureRegistry
+from voxlogica.version import get_version
 
 # Type variables for generic response handling
 T = TypeVar("T")
+
+# Module-level logger
+logger = logging.getLogger("voxlogica.main")
 
 
 class ErrorResponse(BaseModel):
@@ -99,7 +101,6 @@ def setup_logging(debug: bool = False) -> None:
 
 def handle_cli_feature(feature_name: str, **kwargs: Any) -> None:
     """Handle a CLI feature execution"""
-    logger = logging.getLogger("voxlogica.cli")
     try:
         # Get the feature handler
         feature = FeatureRegistry.get_feature(feature_name)
@@ -136,11 +137,7 @@ def handle_cli_feature(feature_name: str, **kwargs: Any) -> None:
         else:
             logger.info("Feature executed successfully")
 
-    except VLException as e:
-        logger.error("Error: %s", str(e))
-        sys.exit(1)
     except Exception as e:
-        logger = logging.getLogger("voxlogica.cli")
         logger.exception("Unexpected error")
         sys.exit(1)
 
@@ -184,18 +181,16 @@ def run(
     setup_logging(debug)
 
     # Log version
-    Logger.info(f"VoxLogicA version: {get_version()}")
+    logger.info(f"VoxLogicA version: {get_version()}")
 
     # Read the program from file
     try:
         with open(filename, "r") as f:
             program = f.read()
     except FileNotFoundError:
-        logger = logging.getLogger("voxlogica.cli")
         logger.error("File not found: %s", filename)
         raise typer.Exit(code=1)
     except Exception as e:
-        logger = logging.getLogger("voxlogica.cli")
         logger.error("Error reading file %s: %s", filename, str(e))
         raise typer.Exit(code=1)
 
@@ -223,7 +218,6 @@ def run(
     except typer.Exit:
         raise
     except Exception as e:
-        logger = logging.getLogger("voxlogica.cli")
         logger.exception("An unexpected error occurred")
         raise typer.Exit(code=1) from e
 
@@ -253,7 +247,6 @@ async def get_version_endpoint():
     except HTTPException:
         raise
     except Exception as e:
-        logger = logging.getLogger("voxlogica.main")
         logger.error("Error in version endpoint: %s", str(e), exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -286,10 +279,7 @@ async def run_program_endpoint(request: RunRequest):
         return result
     except HTTPException:
         raise
-    except VLException as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger = logging.getLogger("voxlogica.main")
         logger.error("Error in run endpoint: %s", str(e), exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -366,6 +356,7 @@ class ReloadEventHandler(FileSystemEventHandler):
         for ws in clients_to_remove:
             live_reload_clients.discard(ws)
 
+import json
 
 @api_app.websocket("/livereload")
 async def websocket_endpoint(websocket: WebSocket):
@@ -377,8 +368,6 @@ async def websocket_endpoint(websocket: WebSocket):
             message = await websocket.receive_text()
             # Handle console messages from browser
             try:
-                import json
-
                 data = json.loads(message)
                 if isinstance(data, dict) and "type" in data and "message" in data:
                     msg_type = data["type"]
@@ -442,11 +431,11 @@ def serve(
     """Start the VoxLogicA API server"""
     setup_logging(debug)
 
-    Logger.info(
+    logger.info(
         f"Starting VoxLogicA API server version {get_version()} on {host}:{port}"
     )
-    Logger.info(f"Interactive graph visualizer at http://{host}:{port}/")
-    Logger.info(f"API documentation available at http://{host}:{port}/docs")
+    logger.info(f"Interactive graph visualizer at http://{host}:{port}/")
+    logger.info(f"API documentation available at http://{host}:{port}/docs")
 
     # File watcher will be started automatically via FastAPI startup event
     uvicorn.run(api_app, host=host, port=port)

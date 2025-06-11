@@ -14,8 +14,9 @@ from typing import Any, Optional, Dict, Set, Union
 from contextlib import contextmanager
 import hashlib
 import os
+import logging
 
-from .error_msg import Logger
+logger = logging.getLogger("voxlogica.storage")
 
 
 class StorageBackend:
@@ -53,7 +54,7 @@ class StorageBackend:
         # Initialize database schema
         self._init_database()
         
-        Logger.info(f"Storage backend initialized: {self.db_path}")
+        logger.info(f"Storage backend initialized: {self.db_path}")
     
     def _get_connection(self) -> sqlite3.Connection:
         """Get thread-local database connection."""
@@ -120,7 +121,7 @@ class StorageBackend:
             True if stored, False if already exists
         """
         if self.exists(operation_id):
-            Logger.debug(f"Result already exists for operation {operation_id[:8]}...")
+            logger.debug(f"Result already exists for operation {operation_id[:8]}...")
             return False
         
         try:
@@ -138,11 +139,11 @@ class StorageBackend:
                 
                 conn.commit()
             
-            Logger.debug(f"Stored result for operation {operation_id[:8]}... ({size_bytes} bytes)")
+            logger.debug(f"Stored result for operation {operation_id[:8]}... ({size_bytes} bytes)")
             return True
             
         except Exception as e:
-            Logger.error(f"Failed to store result for operation {operation_id[:8]}...: {e}")
+            logger.error(f"Failed to store result for operation {operation_id[:8]}...: {e}")
             raise
     
     def retrieve(self, operation_id: str) -> Optional[Any]:
@@ -167,11 +168,11 @@ class StorageBackend:
                 
                 # Deserialize data
                 data = pickle.loads(row[0])
-                Logger.debug(f"Retrieved result for operation {operation_id[:8]}...")
+                logger.debug(f"Retrieved result for operation {operation_id[:8]}...")
                 return data
                 
         except Exception as e:
-            Logger.error(f"Failed to retrieve result for operation {operation_id[:8]}...: {e}")
+            logger.error(f"Failed to retrieve result for operation {operation_id[:8]}...: {e}")
             raise
     
     def exists(self, operation_id: str) -> bool:
@@ -185,10 +186,10 @@ class StorageBackend:
                 return cursor.fetchone() is not None
                 
         except Exception as e:
-            Logger.error(f"Failed to check existence for operation {operation_id[:8]}...: {e}")
+            logger.error(f"Failed to check existence for operation {operation_id[:8]}...: {e}")
             raise
     
-    def mark_running(self, operation_id: str, worker_id: str = None) -> bool:
+    def mark_running(self, operation_id: str, worker_id: str|None = None) -> bool:
         """
         Mark operation as running to prevent duplicate computation.
         
@@ -210,7 +211,7 @@ class StorageBackend:
                         VALUES (?, 'running', ?)
                     """, (operation_id, worker_id))
                     conn.commit()
-                    Logger.debug(f"Marked operation {operation_id[:8]}... as running")
+                    logger.debug(f"Marked operation {operation_id[:8]}... as running")
                     return True
                     
                 except sqlite3.IntegrityError:
@@ -221,7 +222,7 @@ class StorageBackend:
                     
                     row = cursor.fetchone()
                     if row and row[0] in ('running', 'completed'):
-                        Logger.debug(f"Operation {operation_id[:8]}... already {row[0]}")
+                        logger.debug(f"Operation {operation_id[:8]}... already {row[0]}")
                         return False
                     
                     # Failed state, allow retry
@@ -231,11 +232,11 @@ class StorageBackend:
                         WHERE operation_id = ?
                     """, (worker_id, operation_id))
                     conn.commit()
-                    Logger.debug(f"Marked failed operation {operation_id[:8]}... as running (retry)")
+                    logger.debug(f"Marked failed operation {operation_id[:8]}... as running (retry)")
                     return True
                     
         except Exception as e:
-            Logger.error(f"Failed to mark operation {operation_id[:8]}... as running: {e}")
+            logger.error(f"Failed to mark operation {operation_id[:8]}... as running: {e}")
             raise
     
     def mark_completed(self, operation_id: str) -> None:
@@ -249,10 +250,10 @@ class StorageBackend:
                 """, (operation_id,))
                 conn.commit()
                 
-            Logger.debug(f"Marked operation {operation_id[:8]}... as completed")
+            logger.debug(f"Marked operation {operation_id[:8]}... as completed")
             
         except Exception as e:
-            Logger.error(f"Failed to mark operation {operation_id[:8]}... as completed: {e}")
+            logger.error(f"Failed to mark operation {operation_id[:8]}... as completed: {e}")
             raise
     
     def mark_failed(self, operation_id: str, error_message: str) -> None:
@@ -266,10 +267,10 @@ class StorageBackend:
                 """, (error_message, operation_id))
                 conn.commit()
                 
-            Logger.debug(f"Marked operation {operation_id[:8]}... as failed: {error_message}")
+            logger.debug(f"Marked operation {operation_id[:8]}... as failed: {error_message}")
             
         except Exception as e:
-            Logger.error(f"Failed to mark operation {operation_id[:8]}... as failed: {e}")
+            logger.error(f"Failed to mark operation {operation_id[:8]}... as failed: {e}")
             raise
     
     def get_statistics(self) -> Dict[str, Any]:
@@ -303,7 +304,7 @@ class StorageBackend:
                 }
                 
         except Exception as e:
-            Logger.error(f"Failed to get storage statistics: {e}")
+            logger.error(f"Failed to get storage statistics: {e}")
             raise
     
     def cleanup_failed_executions(self, max_age_hours: int = 24) -> int:
@@ -331,12 +332,12 @@ class StorageBackend:
                 conn.commit()
                 
                 if cleaned_count > 0:
-                    Logger.info(f"Cleaned up {cleaned_count} stale running executions")
+                    logger.info(f"Cleaned up {cleaned_count} stale running executions")
                 
                 return cleaned_count
                 
         except Exception as e:
-            Logger.error(f"Failed to cleanup failed executions: {e}")
+            logger.error(f"Failed to cleanup failed executions: {e}")
             raise
     
     def close(self):

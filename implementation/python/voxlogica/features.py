@@ -15,12 +15,13 @@ from dataclasses import dataclass
 import tempfile
 import os
 import json
+import logging
 
 from voxlogica.parser import parse_program
 from voxlogica.reducer import reduce_program
-from voxlogica.error_msg import Logger, VLException
 from voxlogica.converters import to_json, to_dot
-from voxlogica.error_msg import Logger
+
+logger = logging.getLogger("voxlogica.features")
 
 T = TypeVar("T")
 
@@ -113,9 +114,9 @@ def handle_run(
 
         # Parse and reduce the program
         syntax = parse_program(parse_filename)
-        Logger.info(f"Program parsed")
+        logger.info(f"Program parsed")
         program_obj = reduce_program(syntax)
-        Logger.info(f"Program reduced")
+        logger.info(f"Program reduced")
 
         # Execute the workplan if requested
         execution_result = None
@@ -126,15 +127,15 @@ def handle_run(
                 execution_result = execute_workplan(program_obj)
                 if execution_result.success:
                     if filename:  # CLI mode
-                        Logger.info(f"Execution completed successfully!")
-                        Logger.info(f"  Operations completed: {len(execution_result.completed_operations)}")
-                        Logger.info(f"  Execution time: {execution_result.execution_time:.2f}s")
+                        logger.info(f"Execution completed successfully!")
+                        logger.info(f"  Operations completed: {len(execution_result.completed_operations)}")
+                        logger.info(f"  Execution time: {execution_result.execution_time:.2f}s")
                 else:
                     error_msg = f"Execution failed with {len(execution_result.failed_operations)} errors"
                     if filename:  # CLI mode
-                        Logger.error(error_msg)
+                        logger.error(error_msg)
                         for op_id, error in execution_result.failed_operations.items():
-                            Logger.error(f"  {op_id[:8]}...: {error}")
+                            logger.error(f"  {op_id[:8]}...: {error}")
                     else:
                         return OperationResult[Dict[str, Any]](
                             success=False,
@@ -239,8 +240,6 @@ def handle_run(
 
         return OperationResult[Dict[str, Any]](success=True, data=result)
 
-    except VLException as e:
-        return OperationResult[Dict[str, Any]](success=False, error=str(e))
     except Exception as e:
         return OperationResult[Dict[str, Any]](
             success=False, error=f"Unexpected error: {str(e)}"
@@ -251,7 +250,7 @@ def handle_run(
             try:
                 os.unlink(temp_filename)
             except Exception as e:
-                Logger.warning(
+                logger.warning(
                     f"Failed to clean up temporary file {temp_filename}: {str(e)}"
                 )
 

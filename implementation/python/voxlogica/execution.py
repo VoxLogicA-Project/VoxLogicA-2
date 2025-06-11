@@ -25,8 +25,7 @@ from pathlib import Path
 from voxlogica.reducer import WorkPlan, Operation, OperationId, Goal
 from voxlogica.storage import StorageBackend, get_storage
 
-# Logger setup
-Logger = logging.getLogger("voxlogica.execution")
+logger = logging.getLogger("voxlogica.execution")
 
 @dataclass
 class ExecutionResult:
@@ -82,17 +81,17 @@ class PrimitivesLoader:
             if hasattr(module, 'execute'):
                 primitive_func = module.execute
                 self._cache[operator_name] = primitive_func
-                Logger.debug(f"Loaded primitive '{operator_name}' from {module_path}")
+                logger.debug(f"Loaded primitive '{operator_name}' from {module_path}")
                 return primitive_func
             else:
-                Logger.warning(f"Primitive module {module_path} has no 'execute' function")
+                logger.warning(f"Primitive module {module_path} has no 'execute' function")
                 return None
                 
         except ImportError as e:
-            Logger.debug(f"Could not load primitive '{operator_name}': {e}")
+            logger.debug(f"Could not load primitive '{operator_name}': {e}")
             return None
         except Exception as e:
-            Logger.error(f"Error loading primitive '{operator_name}': {e}")
+            logger.error(f"Error loading primitive '{operator_name}': {e}")
             return None
     
     def _operator_to_module_name(self, operator_name: str) -> str:
@@ -141,7 +140,7 @@ class ExecutionEngine:
         if execution_id is None:
             execution_id = self._generate_execution_id(workplan)
         
-        Logger.info(f"Starting execution {execution_id[:8]}... with {len(workplan.operations)} operations")
+        logger.info(f"Starting execution {execution_id[:8]}... with {len(workplan.operations)} operations")
         
         start_time = time.time()
         
@@ -157,9 +156,9 @@ class ExecutionEngine:
                 completed, failed = session.execute()
                 
                 execution_time = time.time() - start_time
-                Logger.info(f"Execution {execution_id[:8]}... completed in {execution_time:.2f}s")
-                Logger.info(f"  Completed: {len(completed)}/{len(workplan.operations)}")
-                Logger.info(f"  Failed: {len(failed)}")
+                logger.info(f"Execution {execution_id[:8]}... completed in {execution_time:.2f}s")
+                logger.info(f"  Completed: {len(completed)}/{len(workplan.operations)}")
+                logger.info(f"  Failed: {len(failed)}")
                 
                 return ExecutionResult(
                     success=(len(failed) == 0),
@@ -175,7 +174,7 @@ class ExecutionEngine:
                     
         except Exception as e:
             execution_time = time.time() - start_time
-            Logger.error(f"Execution {execution_id[:8]}... failed after {execution_time:.2f}s: {e}")
+            logger.error(f"Execution {execution_id[:8]}... failed after {execution_time:.2f}s: {e}")
             return ExecutionResult(
                 success=False,
                 completed_operations=set(),
@@ -256,10 +255,10 @@ class ExecutionSession:
             goal_computations = [self.delayed_graph[goal_id] for goal_id in computation_goals]
             
             try:
-                Logger.info(f"Executing {len(goal_computations)} computation goals with Dask")
+                logger.info(f"Executing {len(goal_computations)} computation goals with Dask")
                 compute(*goal_computations)
             except Exception as e:
-                Logger.error(f"Dask computation failed: {e}")
+                logger.error(f"Dask computation failed: {e}")
                 with self._status_lock:
                     self.failed["dask_computation"] = str(e)
                     return self.completed.copy(), self.failed.copy()
@@ -291,7 +290,7 @@ class ExecutionSession:
                 with self._status_lock:
                     self.completed.add(goal.id)
             except Exception as e:
-                Logger.error(f"Goal operation {goal.operation} '{goal.name}' failed: {e}")
+                logger.error(f"Goal operation {goal.operation} '{goal.name}' failed: {e}")
                 with self._status_lock:
                     self.failed[goal.id] = str(e)
                     
@@ -323,7 +322,7 @@ class ExecutionSession:
         # Determine format from file extension
         ext = filepath.suffix.lower()
         
-        Logger.info(f"Saving result to {filepath}")
+        logger.info(f"Saving result to {filepath}")
         
         if ext == ".json":
             with open(filepath, 'w') as f:
@@ -390,7 +389,7 @@ class ExecutionSession:
         
         # Check if result already exists in storage
         if self.storage.exists(operation_id):
-            Logger.info(f"Operation {operation_id[:8]}... found in storage, skipping")
+            logger.info(f"Operation {operation_id[:8]}... found in storage, skipping")
             result = self.storage.retrieve(operation_id)
             with self._status_lock:
                 self.completed.add(operation_id)
@@ -399,16 +398,16 @@ class ExecutionSession:
         # Mark as running to prevent concurrent execution
         if not self.storage.mark_running(operation_id):
             # Another worker is computing this, wait for result
-            Logger.info(f"Operation {operation_id[:8]}... being computed by another worker, waiting")
+            logger.info(f"Operation {operation_id[:8]}... being computed by another worker, waiting")
             return self._wait_for_result(operation_id)
         
         try:
-            Logger.info(f"Executing operation {operation_id[:8]}... ({operation.operator})")
+            logger.info(f"Executing operation {operation_id[:8]}... ({operation.operator})")
             
             # Handle constant/literal operations directly
             if self._is_literal_operation(operation):
                 result = operation.operator  # For literals, the operator IS the value
-                Logger.info(f"Operation {operation_id[:8]}... is literal: {result}")
+                logger.info(f"Operation {operation_id[:8]}... is literal: {result}")
             else:
                 # Load primitive for this operation
                 primitive_func = self.primitives.load_primitive(str(operation.operator))
@@ -427,13 +426,13 @@ class ExecutionSession:
             with self._status_lock:
                 self.completed.add(operation_id)
             
-            Logger.info(f"Operation {operation_id[:8]}... completed successfully")
+            logger.info(f"Operation {operation_id[:8]}... completed successfully")
             return result
             
         except Exception as e:
             error_msg = f"Operation {operation_id[:8]}... failed: {e}"
-            Logger.error(error_msg)
-            Logger.debug(traceback.format_exc())
+            logger.error(error_msg)
+            logger.debug(traceback.format_exc())
             
             # Mark as failed in storage
             self.storage.mark_failed(operation_id, str(e))

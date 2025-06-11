@@ -155,8 +155,9 @@ def test_fibonacci_buffer_allocation():
         expected_sum = 5 + 21 + 55
         
         print(f"✅ Fibonacci buffer allocation test passed")
-        print(f"   Operations: {result.data.get('operations', 'unknown')}")
-        print(f"   Goals: {result.data.get('goals', 'unknown')}")
+        if result.data is not None:
+            print(f"   Operations: {result.data.get('operations', 'unknown')}")
+            print(f"   Goals: {result.data.get('goals', 'unknown')}")
         return True
     
     except Exception as e:
