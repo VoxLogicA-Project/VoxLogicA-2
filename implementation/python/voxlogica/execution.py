@@ -140,7 +140,7 @@ class ExecutionEngine:
         """
         if execution_id is None:
             execution_id = self._generate_execution_id(workplan)
-        
+                
         logger.info(f"Starting execution {execution_id[:8]}... with {len(workplan.operations)} operations")
         
         start_time = time.time()

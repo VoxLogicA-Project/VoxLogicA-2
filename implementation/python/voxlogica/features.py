@@ -122,6 +122,7 @@ def handle_run(
         # Execute the workplan if requested
         execution_result = None
         if execute:
+            logger.info("Starting computation...")
             from voxlogica.execution import execute_workplan
             
             try:
@@ -151,6 +152,8 @@ def handle_run(
                         success=False,
                         error=error_msg
                     )
+            finally:
+                logger.info("...done")
 
         # Compute buffer allocation if requested
         buffer_assignment = None
