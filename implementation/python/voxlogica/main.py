@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional, TypeVar, Generic
 import traceback
+import time
 
 import typer
 import uvicorn
@@ -91,10 +92,30 @@ class RunRequest(BaseModel):
 # ----------------- Helper Functions -----------------
 
 
+class ElapsedMsFormatter(logging.Formatter):
+    """Formatter that shows milliseconds since program start, right-aligned for up to 9999 seconds."""
+    def __init__(self, fmt=None, datefmt=None, *args, **kwargs):
+        super().__init__(fmt, datefmt, *args, **kwargs)
+        self.start_time = time.monotonic()
+        self.width = 8  # Enough for '9999000ms'
+
+    def format(self, record):
+        elapsed_ms = int((time.monotonic() - self.start_time) * 1000)
+        # Right-align, pad with spaces, always show 'ms' suffix
+        if elapsed_ms < 10**7:  # up to 9999.999s
+            elapsed = f"[{elapsed_ms:>{self.width}}ms]"
+        else:
+            # If more than 9999.999s, don't pad
+            elapsed = f"[{elapsed_ms}ms]"
+        record.elapsed = elapsed
+        # Use %(elapsed)s in format string
+        return super().format(record)
+
+
 def setup_logging(debug: bool = False) -> None:
     """Set up logging configuration"""
     log_level = logging.DEBUG if debug else logging.INFO
-    formatter = logging.Formatter('[%(asctime)s] %(message)s')
+    formatter = ElapsedMsFormatter('%(elapsed)s %(message)s')
     handler = logging.StreamHandler()
     handler.setFormatter(formatter)
     root = logging.getLogger()
