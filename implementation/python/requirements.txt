@@ -6,3 +6,4 @@ pydantic>=2.0.0
 canonicaljson>=2.0.0
 watchdog
 dask[complete]>=2023.5.0
+numpy>=1.21.0

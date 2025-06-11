@@ -16,10 +16,11 @@ import tempfile
 import os
 import json
 
-from .parser import parse_program
-from .reducer import reduce_program
-from .error_msg import Logger, VLException
-from .converters import to_json, to_dot
+from voxlogica.parser import parse_program
+from voxlogica.reducer import reduce_program
+from voxlogica.error_msg import Logger, VLException
+from voxlogica.converters import to_json, to_dot
+from voxlogica.error_msg import Logger
 
 T = TypeVar("T")
 
@@ -73,7 +74,7 @@ class FeatureRegistry:
 
 def handle_version(**kwargs) -> OperationResult[Dict[str, str]]:
     """Handle version request"""
-    from .version import get_version
+    from voxlogica.version import get_version
 
     return OperationResult[Dict[str, str]](
         success=True, data={"version": get_version()}
@@ -112,26 +113,28 @@ def handle_run(
 
         # Parse and reduce the program
         syntax = parse_program(parse_filename)
+        Logger.info(f"Program parsed")
         program_obj = reduce_program(syntax)
+        Logger.info(f"Program reduced")
 
         # Execute the workplan if requested
         execution_result = None
         if execute:
-            from .execution import execute_workplan
+            from voxlogica.execution import execute_workplan
             
             try:
                 execution_result = execute_workplan(program_obj)
                 if execution_result.success:
                     if filename:  # CLI mode
-                        print(f"Execution completed successfully!")
-                        print(f"  Operations completed: {len(execution_result.completed_operations)}")
-                        print(f"  Execution time: {execution_result.execution_time:.2f}s")
+                        Logger.info(f"Execution completed successfully!")
+                        Logger.info(f"  Operations completed: {len(execution_result.completed_operations)}")
+                        Logger.info(f"  Execution time: {execution_result.execution_time:.2f}s")
                 else:
                     error_msg = f"Execution failed with {len(execution_result.failed_operations)} errors"
                     if filename:  # CLI mode
-                        print(error_msg)
+                        Logger.error(error_msg)
                         for op_id, error in execution_result.failed_operations.items():
-                            print(f"  {op_id[:8]}...: {error}")
+                            Logger.error(f"  {op_id[:8]}...: {error}")
                     else:
                         return OperationResult[Dict[str, Any]](
                             success=False,
@@ -150,7 +153,7 @@ def handle_run(
         # Compute buffer allocation if requested
         buffer_assignment = None
         if compute_memory_assignment:
-            from .buffer_allocation import (
+            from voxlogica.buffer_allocation import (
                 compute_buffer_allocation,
                 print_buffer_assignment,
             )

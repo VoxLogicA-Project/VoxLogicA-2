@@ -121,7 +121,7 @@ def handle_cli_feature(feature_name: str, **kwargs: Any) -> None:
                 if hasattr(result, "data") and result.data:
                     data = result.data
                     if feature_name == "run":
-                        logger.debug("Successfully processed program:")
+                        logger.debug("Program completed successfully")
                         logger.debug("  Operations: %d", data.get("operations", 0))
                         logger.debug("  Goals: %d", data.get("goals", 0))
                         if "task_graph" in data:

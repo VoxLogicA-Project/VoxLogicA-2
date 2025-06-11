@@ -390,7 +390,7 @@ class ExecutionSession:
         
         # Check if result already exists in storage
         if self.storage.exists(operation_id):
-            Logger.debug(f"Operation {operation_id[:8]}... found in storage, skipping")
+            Logger.info(f"Operation {operation_id[:8]}... found in storage, skipping")
             result = self.storage.retrieve(operation_id)
             with self._status_lock:
                 self.completed.add(operation_id)
@@ -399,16 +399,16 @@ class ExecutionSession:
         # Mark as running to prevent concurrent execution
         if not self.storage.mark_running(operation_id):
             # Another worker is computing this, wait for result
-            Logger.debug(f"Operation {operation_id[:8]}... being computed by another worker, waiting")
+            Logger.info(f"Operation {operation_id[:8]}... being computed by another worker, waiting")
             return self._wait_for_result(operation_id)
         
         try:
-            Logger.debug(f"Executing operation {operation_id[:8]}... ({operation.operator})")
+            Logger.info(f"Executing operation {operation_id[:8]}... ({operation.operator})")
             
             # Handle constant/literal operations directly
             if self._is_literal_operation(operation):
                 result = operation.operator  # For literals, the operator IS the value
-                Logger.debug(f"Operation {operation_id[:8]}... is literal: {result}")
+                Logger.info(f"Operation {operation_id[:8]}... is literal: {result}")
             else:
                 # Load primitive for this operation
                 primitive_func = self.primitives.load_primitive(str(operation.operator))
@@ -427,7 +427,7 @@ class ExecutionSession:
             with self._status_lock:
                 self.completed.add(operation_id)
             
-            Logger.debug(f"Operation {operation_id[:8]}... completed successfully")
+            Logger.info(f"Operation {operation_id[:8]}... completed successfully")
             return result
             
         except Exception as e:

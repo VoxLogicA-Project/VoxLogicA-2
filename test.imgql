@@ -2,7 +2,7 @@
 // This creates a simple computation graph with dependencies
 
 let a = 
-      timewaste(20,208)
-    + timewaste(20,203)
+      timewaste(20,20)
+    + timewaste(20,20)
 print "time wasted" a
 
