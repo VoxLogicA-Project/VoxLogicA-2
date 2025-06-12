@@ -8,17 +8,18 @@ tests: all test-related infrastructure
 
 implementation: implementation
 
+## Policies
+
 Unless specifically instructed otherwise, do not create new directories or files outside of the tests, meta or implementation directories. It is forbidden to create new directories or files in the root directory or in places different from the ones above.
 
 Coding conventions:
 - Use Python 3.11+ syntax and features.
 - Use type hints and docstrings for all functions and classes.
 - Use the type keyword for type hints, use "|" instead of Union
+- Use functional programming style as much as possible: prefer pure functions, avoid side effects, use immutable data structures where possible
 
 Git diff:
 - git diff uses a pager by default, so use git diff --no-pager to see the output directly in the terminal.
-
-# MANDATORY POLICIES
 
 - Do not run arbitrary credible commands to run tests or execute the tool: use the two main scripts in tests and in the root dir of the repo. They take care of loading the correct venv
 
@@ -51,3 +52,8 @@ MANDATORY: The AI MUST always verify its answers before responding to any user q
 MANDATORY: The AI must read README.md in the root directory at the start of each new chat. This file describes the tool usage and conventions for running and testing VoxLogicA.
 
 MANDATORY: For all testing and usage, the AI must use the main executable script (./voxlogica) as an end user would, not by invoking Python modules directly (e.g., not with python -m or similar). All CLI and API usage must follow the documented user workflow.
+
+## Misc
+
+When analysing designs, don't estimate days or weeks of work. You're an AI agent and implement stuff in minutes. 
+
