@@ -319,3 +319,28 @@ def reduce_program(program: Program) -> WorkPlan:
         commands = imports + commands
     
     return work_plan
+
+def reduce_program_with_environment(program: Program) -> Tuple[Environment, WorkPlan]:
+    """
+    Reduce program and return both environment and workplan
+    
+    Args:
+        program: Parsed VoxLogicA program
+        
+    Returns:
+        Tuple of (final_environment, workplan)
+    """
+    work_plan = WorkPlan()
+    env = Environment()
+    parsed_imports: Set[str] = set()
+    
+    # Make a copy of the commands list that we can modify
+    commands = list(program.commands)
+    
+    # Process commands until there are none left
+    while commands:
+        command = commands.pop(0)
+        env, imports = reduce_command(env, work_plan, parsed_imports, command)
+        commands = imports + commands
+    
+    return env, work_plan

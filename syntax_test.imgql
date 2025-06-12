@@ -1,0 +1,4 @@
+// Simple syntax test
+let double(x) = multiplication(x, 2)
+let result = double(5)
+print "result" result

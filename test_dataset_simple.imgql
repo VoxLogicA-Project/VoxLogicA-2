@@ -1,0 +1,4 @@
+// Simple dataset test
+import "dataset"
+let files = dataset.readdir("/tmp/test_dataset_simple")
+save "files.json" files

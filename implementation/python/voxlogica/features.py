@@ -117,8 +117,25 @@ def handle_run(
         # Parse and reduce the program
         syntax = parse_program(parse_filename)
         logger.info(f"Program parsed")
-        program_obj = reduce_program(syntax)
-        logger.info(f"Program reduced")
+        
+        # Check if we need dynamic compilation support (dataset operations)
+        if program:
+            program_text = program
+        else:
+            # Read program text from file to check for dataset operations
+            with open(parse_filename, 'r') as f:
+                program_text = f.read()
+        
+        if "dataset." in program_text:
+            # Use environment-aware reduction for dynamic compilation
+            from voxlogica.reducer import reduce_program_with_environment
+            env, program_obj = reduce_program_with_environment(syntax)
+            logger.info(f"Program reduced with environment support")
+        else:
+            # Use standard reduction for regular programs
+            program_obj = reduce_program(syntax)
+            env = None
+            logger.info(f"Program reduced")
 
         # Execute the workplan if requested
         execution_result = None
@@ -127,7 +144,14 @@ def handle_run(
             from voxlogica.execution import execute_workplan
             
             try:
-                execution_result = execute_workplan(program_obj)
+                if env is not None:
+                    # Execute with environment for dynamic compilation support
+                    from voxlogica.execution import ExecutionEngine
+                    engine = ExecutionEngine(environment=env)
+                    execution_result = engine.execute_workplan(program_obj)
+                else:
+                    # Standard execution
+                    execution_result = execute_workplan(program_obj)
                 if execution_result.success:
                     if filename:  # CLI mode
                         logger.info(f"Execution completed successfully!")

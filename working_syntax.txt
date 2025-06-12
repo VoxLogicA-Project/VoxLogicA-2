@@ -1,0 +1,3 @@
+import test
+let a=+(timewaste(20.0,20.0),timewaste(20.0,20.0))
+print "time wasted" a

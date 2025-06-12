@@ -7,7 +7,7 @@ of DAG nodes with content-addressed deduplication and persistent storage.
 """
 
 import logging
-from typing import Dict, Set, Any, Optional, List, Callable, Union, Type
+from typing import Dict, Set, Any, Optional, List, Callable, Union, Type, TYPE_CHECKING
 from collections import defaultdict, deque
 from dataclasses import dataclass
 import dask
@@ -26,6 +26,9 @@ from voxlogica.reducer import WorkPlan, Operation, ConstantValue, Goal, NodeId
 from voxlogica.storage import StorageBackend, get_storage
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 from voxlogica.main import VERBOSE_LEVEL
+
+if TYPE_CHECKING:
+    from voxlogica.reducer import Environment
 
 logger = logging.getLogger("voxlogica.execution")
 
@@ -362,9 +365,11 @@ class ExecutionEngine:
     """
     
     def __init__(self, storage_backend: Optional[StorageBackend] = None, 
-                 primitives_loader: Optional[PrimitivesLoader] = None):
+                 primitives_loader: Optional[PrimitivesLoader] = None,
+                 environment: Optional['Environment'] = None):
         self.storage = storage_backend or get_storage()
         self.primitives = primitives_loader or PrimitivesLoader()
+        self.environment = environment  # Optional: enables dynamic compilation
         
         # Execution state
         self._active_executions: Dict[str, 'ExecutionSession'] = {}
@@ -396,7 +401,7 @@ class ExecutionEngine:
                     logger.debug(f"Imported namespace '{namespace_name}' for execution")
             
             # Create execution session
-            session = ExecutionSession(execution_id, workplan, self.storage, self.primitives)
+            session = ExecutionSession(execution_id, workplan, self.storage, self.primitives, self.environment)
             
             with self._lock:
                 self._active_executions[execution_id] = session
@@ -468,11 +473,13 @@ class ExecutionSession:
     """
     
     def __init__(self, execution_id: str, workplan: WorkPlan, 
-                 storage: StorageBackend, primitives: PrimitivesLoader):
+                 storage: StorageBackend, primitives: PrimitivesLoader,
+                 environment: Optional['Environment'] = None):
         self.execution_id = execution_id
         self.workplan = workplan
         self.storage = storage
         self.primitives = primitives
+        self.environment = environment
         
         # Execution state
         self.completed: Set[NodeId] = set()
@@ -495,37 +502,44 @@ class ExecutionSession:
     def execute(self) -> tuple[Set[NodeId], Dict[NodeId, str]]:
         """Execute the workplan and return completed/failed operation sets"""
         
-        # Store constants in storage first so they can be retrieved by goals
-        self._store_constants()
+        # Set execution context for thread-local access
+        set_execution_context(self)
         
-        # Build dependency graph for topological ordering
-        dependencies = self._build_dependency_graph()
-        
-        # Compile pure operations to Dask delayed graph
-        self._compile_pure_operations_to_dask(dependencies)
-        
-        # Execute the pure computation DAG first
-        computation_goals = [goal.id for goal in self.workplan.goals 
-                           if goal.id in self.pure_operations]
-        
-        if computation_goals:
-            goal_computations = [self.delayed_graph[goal_id] for goal_id in computation_goals]
+        try:
+            # Store constants in storage first so they can be retrieved by goals
+            self._store_constants()
             
-            try:
-                logger.log(VERBOSE_LEVEL,f"Executing {len(goal_computations)} computation goals with Dask")
-                compute(*goal_computations)
-            except Exception as e:
-                logger.error(f"Dask computation failed: {e}")
-                with self._status_lock:
-                    self.failed["dask_computation"] = str(e)
-                    return self.completed.copy(), self.failed.copy()
-        
-        # Execute side-effect goals (print, save, etc.)
-        self._execute_goal_operations()
-        
-        # Return final results
-        with self._status_lock:
-            return self.completed.copy(), self.failed.copy()
+            # Build dependency graph for topological ordering
+            dependencies = self._build_dependency_graph()
+            
+            # Compile pure operations to Dask delayed graph
+            self._compile_pure_operations_to_dask(dependencies)
+            
+            # Execute the pure computation DAG first
+            computation_goals = [goal.id for goal in self.workplan.goals 
+                               if goal.id in self.pure_operations]
+            
+            if computation_goals:
+                goal_computations = [self.delayed_graph[goal_id] for goal_id in computation_goals]
+                
+                try:
+                    logger.log(VERBOSE_LEVEL,f"Executing {len(goal_computations)} computation goals with Dask")
+                    compute(*goal_computations)
+                except Exception as e:
+                    logger.error(f"Dask computation failed: {e}")
+                    with self._status_lock:
+                        self.failed["dask_computation"] = str(e)
+                        return self.completed.copy(), self.failed.copy()
+            
+            # Execute side-effect goals (print, save, etc.)
+            self._execute_goal_operations()
+            
+            # Return final results
+            with self._status_lock:
+                return self.completed.copy(), self.failed.copy()
+        finally:
+            # Clear execution context
+            set_execution_context(None)
     
     def _categorize_operations(self):
         """Categorize nodes into pure operations vs side-effect goals"""
@@ -555,45 +569,54 @@ class ExecutionSession:
                     
     def _execute_pure_operation(self, operation: Operation, operation_id: NodeId, *dependency_results) -> Any:
         """Execute a single pure operation with content-addressed deduplication"""
-        if self.cancelled:
-            raise Exception("Execution cancelled")
-        if self.storage.exists(operation_id):
-            logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... found in storage, skipping")
-            result = self.storage.retrieve(operation_id)
-            with self._status_lock:
-                self.completed.add(operation_id)
-            return result
-        if not self.storage.mark_running(operation_id):
-            logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... being computed by another worker, waiting")
-            return self._wait_for_result(operation_id)
+        # Set execution context for this thread
+        set_execution_context(self)
+        
         try:
-            logger.log(VERBOSE_LEVEL, f"[START] Executing operation {operation_id[:8]}... ({operation.operator})")
-            if self._is_literal_operation(operation):
-                result = operation.operator.value if isinstance(operation.operator, ConstantValue) else operation.operator
-                logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... is literal: {result}")
-            else:
-                primitive_func = self.primitives.load_primitive(str(operation.operator.value) if isinstance(operation.operator, ConstantValue) else str(operation.operator))
-                if primitive_func is None:
-                    raise Exception(f"No primitive implementation for operator: {operation.operator}")
-                resolved_args = self._resolve_arguments(operation, list(dependency_results))
-                logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... resolved args: {list(resolved_args.keys())}")
-                result = primitive_func(**resolved_args)
-            # Unwrap ConstantValue if returned as result
-            if isinstance(result, ConstantValue):
-                result = result.value
-            self.storage.store(operation_id, result)
-            with self._status_lock:
-                self.completed.add(operation_id)
-            logger.log(VERBOSE_LEVEL, f"[DONE] Operation {operation_id[:8]}... completed successfully")
-            return result
-        except Exception as e:
-            error_msg = f"Operation {operation_id[:8]}... failed: {e}"
-            logger.error(error_msg)
-            logger.debug(traceback.format_exc())
-            self.storage.mark_failed(operation_id, str(e))
-            with self._status_lock:
-                self.failed[operation_id] = str(e)
-            raise e
+            if self.cancelled:
+                raise Exception("Execution cancelled")
+            if self.storage.exists(operation_id):
+                logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... found in storage, skipping")
+                result = self.storage.retrieve(operation_id)
+                with self._status_lock:
+                    self.completed.add(operation_id)
+                return result
+            if not self.storage.mark_running(operation_id):
+                logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... being computed by another worker, waiting")
+                return self._wait_for_result(operation_id)
+            try:
+                logger.log(VERBOSE_LEVEL, f"[START] Executing operation {operation_id[:8]}... ({operation.operator})")
+                if self._is_literal_operation(operation):
+                    result = operation.operator.value if isinstance(operation.operator, ConstantValue) else operation.operator
+                    logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... is literal: {result}")
+                else:
+                    primitive_func = self.primitives.load_primitive(str(operation.operator.value) if isinstance(operation.operator, ConstantValue) else str(operation.operator))
+                    if primitive_func is None:
+                        raise Exception(f"No primitive implementation for operator: {operation.operator}")
+                    resolved_args = self._resolve_arguments(operation, list(dependency_results))
+                    logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... resolved args: {list(resolved_args.keys())}")
+                    result = primitive_func(**resolved_args)
+                # Unwrap ConstantValue if returned as result
+                if isinstance(result, ConstantValue):
+                    result = result.value
+                self.storage.store(operation_id, result)
+                with self._status_lock:
+                    self.completed.add(operation_id)
+                logger.log(VERBOSE_LEVEL, f"[DONE] Operation {operation_id[:8]}... completed successfully")
+                return result
+            except Exception as e:
+                error_msg = f"Operation {operation_id[:8]}... failed: {e}"
+                logger.error(error_msg)
+                logger.debug(traceback.format_exc())
+                self.storage.mark_failed(operation_id, str(e))
+                with self._status_lock:
+                    self.failed[operation_id] = str(e)
+                raise e
+        finally:
+            # Note: We don't clear the execution context here because Dask 
+            # may run operations in the same thread, and we want the context
+            # to persist for the duration of the execution session
+            pass
 
     def _execute_goal_with_result(self, goal):
         """Execute a goal operation with the result from storage"""
@@ -885,6 +908,9 @@ def unwrap_node(obj):
 _execution_engine: Optional[ExecutionEngine] = None
 _engine_lock = threading.Lock()
 
+# Thread-local execution context for dynamic compilation
+_execution_context = threading.local()
+
 def get_execution_engine() -> ExecutionEngine:
     """Get the global execution engine instance"""
     global _execution_engine
@@ -900,6 +926,21 @@ def set_execution_engine(engine: ExecutionEngine):
     
     with _engine_lock:
         _execution_engine = engine
+
+def set_execution_context(session: Optional['ExecutionSession']):
+    """Set the current execution context for thread-local access"""
+    _execution_context.session = session
+
+def get_execution_context() -> Optional['ExecutionSession']:
+    """Get the current execution context"""
+    return getattr(_execution_context, 'session', None)
+
+def get_execution_environment():
+    """Get the environment from the current execution context"""
+    session = get_execution_context()
+    if session:
+        return session.environment
+    return None
 
 # Convenience functions
 def execute_workplan(workplan: WorkPlan, execution_id: Optional[str] = None) -> ExecutionResult:
