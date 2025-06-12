@@ -125,6 +125,8 @@ class CustomSerializerRegistry:
             # Import primitive modules and collect serializers
             # For now, specifically handle SimpleITK since it's the main use case
             self._load_simpleitk_serializers()
+            # Also load dataset serializers
+            self._load_dataset_serializers()
         except Exception as e:
             logger.warning(f"Failed to load some serializers: {e}")
     
@@ -141,6 +143,20 @@ class CustomSerializerRegistry:
             logger.debug("SimpleITK primitives not available")
         except Exception as e:
             logger.warning(f"Failed to load SimpleITK serializers: {e}")
+
+    def _load_dataset_serializers(self) -> None:
+        """Load serializers from dataset primitive module"""
+        try:
+            # Check if dataset primitives are available
+            from voxlogica.primitives.dataset import get_serializers
+            serializers = get_serializers()
+            for suffix, type_map in serializers.items():
+                self.register_serializers(suffix, type_map)
+                logger.debug(f"Registered serializers for {suffix} from dataset")
+        except ImportError:
+            logger.debug("Dataset primitives not available")
+        except Exception as e:
+            logger.warning(f"Failed to load dataset serializers: {e}")
 
 @dataclass
 class ExecutionResult:
@@ -630,7 +646,16 @@ class ExecutionSession:
             result = result.value
         # Execute the appropriate goal action
         if goal.operation == 'print':
-            logger.info(f"{goal.name}={result}")
+            # Special handling for Dask bags - compute and display values
+            if hasattr(result, 'compute') and hasattr(result, 'npartitions'):
+                # This is a Dask bag - compute it to get actual values
+                try:
+                    computed_values = result.compute()
+                    logger.info(f"{goal.name}={list(computed_values)}")
+                except Exception as e:
+                    logger.info(f"{goal.name}=<Dask bag computation failed: {e}>")
+            else:
+                logger.info(f"{goal.name}={result}")
         elif goal.operation == 'save':            
             self._save_result_to_file(result, goal.name, goal.id)
         else:

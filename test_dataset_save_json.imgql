@@ -1,0 +1,6 @@
+// Test saving dataset map results to JSON
+import "dataset"
+let files = dataset.readdir("/tmp/test_dataset_simple")
+let double(x) = x * 2.0
+let processed = dataset.map(files, "double")
+save "/tmp/dataset_output.json" processed
