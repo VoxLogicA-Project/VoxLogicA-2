@@ -1,8 +1,0 @@
-import dataset
-let files = dataset.readdir("/tmp/test_dataset_simple")
-let add_ten(x) = x + 10.0
-let result = dataset.map(files, "add_ten")
-let computed_result = result.compute()
-print "computed_result" computed_result
-let computed_result = result.compute()
-print "computed_result" computed_result

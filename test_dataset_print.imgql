@@ -1,4 +1,0 @@
-// Test printing dataset readdir result
-import "dataset"
-let files = dataset.readdir("/tmp/test_dataset_simple")
-print "files" files
