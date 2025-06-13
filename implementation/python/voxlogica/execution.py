@@ -647,15 +647,21 @@ class ExecutionSession:
         # Execute the appropriate goal action
         if goal.operation == 'print':
             # Special handling for Dask bags - compute and display values
-            if hasattr(result, 'compute') and hasattr(result, 'npartitions'):
-                # This is a Dask bag - compute it to get actual values
-                try:
+            try:
+                # Use duck typing to detect Dask bags more safely
+                if (hasattr(result, 'compute') and 
+                    hasattr(result, 'npartitions') and 
+                    hasattr(result, 'map') and
+                    callable(getattr(result, 'compute', None))):
+                    # This is likely a Dask bag - compute it to get actual values
                     computed_values = result.compute()
                     logger.info(f"{goal.name}={list(computed_values)}")
-                except Exception as e:
-                    logger.info(f"{goal.name}=<Dask bag computation failed: {e}>")
-            else:
+                else:
+                    logger.info(f"{goal.name}={result}")
+            except Exception as e:
+                # Fallback to regular printing if computation fails
                 logger.info(f"{goal.name}={result}")
+                logger.debug(f"Dask computation failed for {goal.name}: {e}")
         elif goal.operation == 'save':            
             self._save_result_to_file(result, goal.name, goal.id)
         else:

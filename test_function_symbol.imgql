@@ -1,0 +1,13 @@
+// Test different ways of passing function references to dataset.map
+import "dataset"
+
+let add_ten(x) = x+10
+let files = dataset.readdir("/tmp/test_dataset_simple")
+
+// Test with function symbol (what we want to work)
+let result_symbol = dataset.map(files, add_ten)
+print "result_symbol" result_symbol
+
+// Test with string literal (current working approach)  
+let result_string = dataset.map(files, "add_ten")
+print "result_string" result_string

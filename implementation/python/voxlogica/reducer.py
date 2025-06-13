@@ -179,9 +179,17 @@ def reduce_expression(
 
             if isinstance(val, OperationVal):
                 return val.operation_id
+            
+            if isinstance(val, FunctionVal):
+                # Function symbol used without parentheses - treat as function name string
+                # This enables function symbols to be passed as arguments to other functions
+                # e.g., dataset.map(data, add_ten) where add_ten is a function symbol
+                node = ConstantValue(expr.identifier)
+                op_id = work_plan.add_node(node)
+                return op_id
 
             call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
-            raise RuntimeError(f"Function '{expr.identifier}' called without arguments\n" + "\n".join(f"{identifier} at {position}" for identifier, position in call_stack))
+            raise RuntimeError(f"Unknown value type for '{expr.identifier}'\n" + "\n".join(f"{identifier} at {position}" for identifier, position in call_stack))
 
         # It's a function call with arguments
         this_stack: Stack = [(expr.identifier, expr.position)] + current_stack

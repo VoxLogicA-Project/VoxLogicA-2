@@ -1,6 +1,0 @@
-// Test dataset.map with proper syntax  
-import "dataset"
-let files = dataset.readdir("/tmp/test_dataset_simple")
-let add_ten(x) = x + 10.0
-let result = dataset.map(files, "add_ten")
-print "result" result

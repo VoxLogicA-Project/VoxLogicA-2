@@ -1,4 +1,0 @@
-// Test saving dataset without map operation
-import "dataset"
-let files = dataset.readdir("/tmp/test_dataset_simple")
-save "/tmp/dataset_simple_output.json" files

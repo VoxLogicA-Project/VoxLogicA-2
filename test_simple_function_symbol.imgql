@@ -1,0 +1,5 @@
+// Simplified test to see what happens with function symbols
+let add_ten(x) = x+10
+
+// Test just the function symbol itself
+print "function_symbol" add_ten
