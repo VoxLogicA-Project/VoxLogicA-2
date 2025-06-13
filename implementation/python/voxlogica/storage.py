@@ -340,12 +340,31 @@ class StorageBackend:
             logger.error(f"Failed to cleanup failed executions: {e}")
             raise
     
+    def get_execution_status(self, operation_id: str) -> Optional[str]:
+        """
+        Get execution status for operation ID.
+        
+        Returns:
+            Status string ('running', 'completed', 'failed') or None if not found
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute("""
+                    SELECT status FROM execution_state WHERE operation_id = ?
+                """, (operation_id,))
+                
+                row = cursor.fetchone()
+                return row[0] if row else None
+                
+        except Exception as e:
+            logger.error(f"Failed to get execution status for operation {operation_id[:8]}...: {e}")
+            raise
+    
     def close(self):
         """Close database connections."""
         if hasattr(self._local, 'connection'):
             self._local.connection.close()
             del self._local.connection
-
 
 # Global storage instance
 _storage_instance: Optional[StorageBackend] = None

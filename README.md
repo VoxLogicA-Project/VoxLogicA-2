@@ -2,12 +2,24 @@
 
 ⚠️ **Pre-Alpha Software**: This software is in pre-alpha stage and we constantly make breaking changes as there are no users yet.
 
+VoxLogicA is a next-generation spatial model checker and computational imaging platform that combines:
+
+- **Functional programming language** with mathematical notation
+- **Content-addressed execution** for automatic memoization and reproducibility  
+- **Dynamic compilation** enabling interactive dataset processing
+- **Medical imaging primitives** with SimpleITK integration
+- **Distributed computing** via Dask for large-scale data analysis
+
 This is the source code of the new iteration of the spatial model checker VoxLogicA. The current implementation includes:
 
 - VoxLogicA program parsing and analysis
 - Task graph generation and optimization
 - Multiple export formats (JSON, DOT)
 - Unified CLI and REST API interfaces
+- **Dataset API** with dynamic compilation support for interactive data processing
+- **Medical imaging integration** with SimpleITK primitives
+- **Function symbols as first-class citizens** in functional operations
+- **Content-addressed execution** with automatic memoization and caching
 
 ## Quick Start
 
@@ -31,6 +43,54 @@ There's a convenience script in the root directory to run VoxLogicA:
 ```
 
 This script automatically activates the virtual environment and runs the Python implementation.
+
+## Language Features
+
+### Dataset Operations
+
+VoxLogicA supports interactive dataset processing with dynamic compilation:
+
+```imgql
+// Load directory contents as a dataset
+let files = dataset.readdir("/path/to/data")
+
+// Define custom processing function
+let add_ten(x) = x + 10
+
+// Apply function to each element (function symbols as first-class citizens)
+let result = dataset.map(files, add_ten)
+
+// Print results
+print "processed" result
+
+// Save results in various formats
+save "output.json" result  // JSON with automatic Dask bag serialization
+```
+
+### Medical Imaging
+
+Built-in SimpleITK integration for medical image analysis:
+
+```imgql
+import "simpleitk"
+
+// Load medical image
+let img = ReadImage("scan.nii.gz")
+
+// Apply threshold (unqualified names supported)
+let thresholded = BinaryThreshold(img, 150, 99999, 1, 0)
+
+// Compute statistics
+let stats = simpleitk.MinimumMaximum(thresholded)
+print "max_value" index(stats, 1)
+
+// Save in medical imaging formats
+save "output.png" thresholded
+```
+
+### Content-Addressed Execution
+
+All computations are automatically memoized using content-addressed storage, enabling efficient incremental processing and reproducible results.
 
 ## CLI Reference
 
@@ -88,7 +148,22 @@ Options:
 
 ---
 
-For detailed documentation, see:
+## Documentation
 
-- Implementation documentation: `implementation/python/README.md`
-- API usage guide: `doc/user/api-usage.md`
+For detailed information, see:
+
+- **Implementation guide**: `implementation/python/README.md`
+- **API usage guide**: `doc/user/api-usage.md`
+- **Development documentation**: `META/GUIDE.md`
+- **Recent changes**: `META/CHANGES/`
+- **Closed issues and features**: `META/ISSUES/CLOSED/`
+
+### Key Recent Features
+
+- ✅ **Dataset API implementation** - Interactive data processing with dynamic compilation
+- ✅ **Function symbol support** - First-class function citizens in `dataset.map`
+- ✅ **JSON serialization for Dask bags** - Seamless data export capabilities
+- ✅ **SimpleITK namespace simplification** - Unqualified medical imaging function names
+- ✅ **Unified execution architecture** - Single consistent execution path with dynamic capabilities
+
+For architectural details and future roadmap, see `META/ISSUES/OPEN/demand-driven-cba-execution-unified/`.
