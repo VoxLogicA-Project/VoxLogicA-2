@@ -66,25 +66,41 @@ VoxLogicA aims to provide a high-level, declarative language for manipulating an
 
 ---
 
-## Execution Strategy: Sequential and Alternative Execution Models
+## Execution Strategy: Distributed Execution with Dask
 
-### Primary Implementation: Sequential Execution
-In the current implementation, each workflow (i.e., a single DAG representing a computation or analysis pipeline) is executed sequentially. This means that all operations within a workflow are executed in dependency order on a single process/thread, without parallelization at the level of individual operations.
+### Primary Implementation: Dask-Based Distributed Execution
+The current implementation uses **Dask delayed graphs** for distributed execution of VoxLogicA workplans. Each workflow (DAG) is compiled into a Dask delayed computation graph that enables:
 
-For scalability, parallelization is introduced at the dataset level: when multiple independent workflows (e.g., the same pipeline applied to different images or dataset elements) need to be executed, Dask or a similar parallel scheduler is used to distribute these workflows across available compute resources. This approach avoids the complexity of fine-grained parallelism within a single workflow and leverages parallelism across the dataset dimension, which is often the most effective and scalable strategy for large-scale data processing.
+- **Parallel execution**: Operations are executed in parallel when dependencies allow, leveraging available compute resources.
+- **Distributed scheduling**: Dask can distribute computation across multiple workers or machines.
+- **Lazy evaluation**: Operations are not executed until results are actually needed.
+- **Automatic dependency resolution**: Dask handles the complex scheduling of operations based on their dependencies.
 
-- **Sequential execution:** Each workflow/DAG is executed in order, respecting dependencies, on a single worker.
-- **Dataset-level parallelism:** Multiple workflows (e.g., per-dataset element) are scheduled in parallel using Dask, with each workflow running independently.
+The execution engine separates operations into two categories:
+- **Pure operations**: Mathematical and data processing operations that can be parallelized and cached
+- **Side-effect operations**: I/O operations like `print`, `save`, etc. that are executed separately after pure computations
 
-This sequential-per-workflow approach greatly simplifies memory management: since only one workflow is active at a time per worker, buffer allocation and reuse can be managed without concern for concurrent accesses or complex synchronization. This allows for straightforward implementation of static buffer reuse and preallocation strategies, as described in the memory planning documentation.
+This distributed approach provides:
+- **Scalability**: Can leverage multiple cores and distributed computing resources
+- **Memory efficiency**: Only required data is loaded when needed
+- **Fault tolerance**: Dask provides built-in retry and error handling capabilities
+- **Content-addressed caching**: Results are cached using SHA-256 hashes for efficient reuse
 
-### Alternative Execution Models
-VoxLogica-2 is designed to support multiple execution backends as alternatives to sequential execution:
+### Storage-Based Execution Model
+The execution engine integrates with a persistent storage backend that:
 
-- **Dynamic Scheduling with Storage-Based Memory**: Alternative execution engines that avoid buffer allocation in favor of persistent storage of intermediate results, enabling distributed and peer-to-peer execution patterns.
-- **Actual DAG Node Execution**: Alternative backends that implement actual node execution (vs the current structure-only DAG computation) with caching and persistence capabilities.
+- **Content-addressed storage**: All intermediate and final results are stored using content-addressed identifiers (SHA-256 hashes)
+- **Persistent caching**: Results persist across execution sessions, enabling efficient re-runs
+- **Distributed storage**: Storage backend can be distributed across multiple machines
+- **Custom serialization**: Supports custom serializers for different data types and file formats
 
-These alternative execution models can coexist with the sequential execution approach, providing flexibility for different use cases and deployment scenarios.
+### Execution Flow
+1. **Compilation**: VoxLogicA programs are parsed into DAGs and compiled to Dask delayed graphs
+2. **Pure computation**: Mathematical operations are executed in parallel using Dask
+3. **Side-effect execution**: I/O operations are executed after computations complete
+4. **Result storage**: All results are persisted in the content-addressed storage backend
+
+This architecture enables scalable, distributed execution while maintaining reproducibility and efficient caching of intermediate results.
 
 ---
 

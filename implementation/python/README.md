@@ -69,10 +69,20 @@ Once the server is running, you can access the API documentation at `http://loca
 
 ### Running Tests
 
+Use the test infrastructure script from the repository root:
+
 ```bash
-# Run tests
-python -m unittest discover tests
+# Run all tests
+./tests/run-tests.sh
+
+# Run tests with specific language
+./tests/run-tests.sh --language python
+
+# Run tests with debug output
+./tests/run-tests.sh --debug
 ```
+
+The test infrastructure automatically handles virtual environment activation and dependency installation.
 
 ## Features
 

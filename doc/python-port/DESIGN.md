@@ -37,7 +37,7 @@ We have chosen **FastAPI** for the Python API server for the following reasons:
 
 ## Python Version
 
-- The target Python version for this project is **3.13** to leverage the latest language features and type hinting improvements.
+- The target Python version for this project is **3.11+** to leverage modern language features and type hinting improvements while maintaining reasonable compatibility.
 
 ## Parser
 

@@ -1,4 +1,4 @@
-# VoxLogicA 2.0.0-alpha.0.2
+# VoxLogicA 2.0.0a2
 
 ⚠️ **Pre-Alpha Software**: This software is in pre-alpha stage and we constantly make breaking changes as there are no users yet.
 

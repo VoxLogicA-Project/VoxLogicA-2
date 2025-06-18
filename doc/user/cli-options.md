@@ -10,6 +10,14 @@ The Python port provides a CLI using [Typer](https://typer.tiangolo.com/). The m
 
 ### Basic Usage
 
+The CLI is accessed via the convenience script in the repository root:
+
+```sh
+./voxlogica [COMMAND] [OPTIONS]
+```
+
+Or directly through the Python module:
+
 ```sh
 python -m voxlogica.main [COMMAND] [OPTIONS]
 ```
@@ -26,19 +34,25 @@ Run a VoxLogicA session file and process the workflow.
 python -m voxlogica.main run <filename> [OPTIONS]
 ```
 
-| Option                                | Type | Description                                      |
-| ------------------------------------- | ---- | ------------------------------------------------ |
-| `<filename>`                          | str  | VoxLogicA session file (required)                |
-| `--save-task-graph <file>`            | str  | Save the task graph to a file                    |
-| `--save-task-graph-as-dot <file>`     | str  | Save the task graph in .dot format and exit      |
-| `--save-task-graph-as-ast <file>`     | str  | Save the task graph in AST format and exit       |
-| `--save-task-graph-as-program <file>` | str  | Save the task graph in VoxLogicA format and exit |
-| `--save-syntax <file>`                | str  | Save the AST in text format and exit             |
-| `--save-task-graph-as-json <file>`    | str  | Save the task graph as JSON and exit             |
-| `--execute` / `--no-execute`          | flag | Execute the workplan (default: --execute)        |
-| `--debug`                             | flag | Enable debug mode (more verbose logging)         |
+| Option                             | Type | Description                                                 |
+| ---------------------------------- | ---- | ----------------------------------------------------------- |
+| `<filename>`                       | str  | VoxLogicA session file (required)                           |
+| `--save-task-graph <file>`         | str  | Save the task graph to a file                               |
+| `--save-task-graph-as-dot <file>`  | str  | Save the task graph in .dot format and exit                 |
+| `--save-task-graph-as-json <file>` | str  | Save the task graph as JSON and exit                        |
+| `--save-syntax <file>`             | str  | Save the AST in text format and exit                        |
+| `--compute-memory-assignment`      | flag | Compute and display memory buffer assignments               |
+| `--execute` / `--no-execute`       | flag | Execute the workplan (default: --execute)                   |
+| `--debug`                          | flag | Enable debug mode (more verbose logging)                    |
+| `--verbose`                        | flag | Enable verbose logging (between info and debug)             |
 
 **Example:**
+
+```sh
+./voxlogica run example.imgql --save-task-graph graph.txt --debug
+```
+
+Or equivalently:
 
 ```sh
 python -m voxlogica.main run example.imgql --save-task-graph graph.txt --debug
@@ -61,6 +75,12 @@ python -m voxlogica.main serve [OPTIONS]
 | `--debug` | flag | Enable debug mode           |
 
 **Example:**
+
+```sh
+./voxlogica serve --host 0.0.0.0 --port 8080 --debug
+```
+
+Or equivalently:
 
 ```sh
 python -m voxlogica.main serve --host 0.0.0.0 --port 8080 --debug

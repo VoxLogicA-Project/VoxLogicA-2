@@ -10,7 +10,6 @@ import logging
 from typing import Dict, Set, Any, Optional, List, Callable, Union, Type
 from collections import defaultdict, deque
 from dataclasses import dataclass
-import dask
 from dask.delayed import delayed
 from dask.base import compute
 from dask.distributed import as_completed

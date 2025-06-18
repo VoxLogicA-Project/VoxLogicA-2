@@ -52,7 +52,7 @@ curl http://localhost:8000/api/v1/version
 
 ```json
 {
-  "version": "0.2.0-alpha"
+  "version": "2.0.0a2"
 }
 ```
 
