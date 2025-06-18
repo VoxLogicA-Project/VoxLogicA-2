@@ -30,11 +30,21 @@ logger = logging.getLogger("voxlogica.execution")
 
 # Type aliases for custom serializers
 SerializerFunc = Callable[[Any, Path], None]
+"""Type alias for serializer functions that take a result and filepath."""
+
 TypeSerializerMap = Dict[Type, SerializerFunc]
+"""Type alias for mapping Python types to their serializer functions."""
+
 SerializerRegistry = Dict[str, TypeSerializerMap]
+"""Type alias for registry mapping file suffixes to type-serializer mappings."""
 
 class SuffixMatcher:
-    """Handles suffix matching for custom serializers"""
+    """
+    Handles suffix matching for custom serializers.
+    
+    Provides logic to match file paths against available suffix patterns,
+    supporting longest-match-first resolution for overlapping patterns.
+    """
     
     def match_suffix(self, filepath: Path, available_suffixes: Set[str]) -> Optional[str]:
         """
@@ -59,21 +69,44 @@ class SuffixMatcher:
         return None
 
 class CustomSerializerRegistry:
-    """Registry for custom file format serializers"""
+    """
+    Registry for custom file format serializers.
+    
+    Manages a collection of type-specific serializers for different file formats,
+    providing lazy loading from primitive modules and inheritance-based matching.
+    Supports automatic discovery of serializers from the primitives system.
+    """
     
     def __init__(self):
         self._serializers: SerializerRegistry = {}
         self._loaded = False
     
     def register_serializers(self, suffix: str, type_serializers: TypeSerializerMap) -> None:
-        """Register serializers for a file suffix"""
+        """
+        Register serializers for a file suffix.
+        
+        Args:
+            suffix: File suffix pattern (e.g., '.nii.gz', '.png')
+            type_serializers: Mapping from Python types to serializer functions
+        """
         if suffix not in self._serializers:
             self._serializers[suffix] = {}
         
         self._serializers[suffix].update(type_serializers)
     
     def get_serializer(self, suffix: str, obj_type: Type) -> Optional[SerializerFunc]:
-        """Get serializer for suffix and object type"""
+        """
+        Get serializer for suffix and object type.
+        
+        Uses exact type matching first, then inheritance-based matching.
+        
+        Args:
+            suffix: File suffix to match
+            obj_type: Python type of object to serialize
+            
+        Returns:
+            Matching serializer function or None
+        """
         if suffix not in self._serializers:
             return None
             
@@ -102,12 +135,22 @@ class CustomSerializerRegistry:
         return None
     
     def get_available_suffixes(self) -> Set[str]:
-        """Get all registered suffixes"""
+        """
+        Get all registered suffixes.
+        
+        Returns:
+            Set of all file suffix patterns that have registered serializers
+        """
         self._ensure_loaded()
         return set(self._serializers.keys())
     
     def _ensure_loaded(self) -> None:
-        """Lazy load serializers from primitive modules"""
+        """
+        Lazy load serializers from primitive modules.
+        
+        Ensures serializers are loaded exactly once, discovering them from
+        all available primitive modules in the system.
+        """
         if self._loaded:
             return
             
@@ -116,7 +159,12 @@ class CustomSerializerRegistry:
         self._loaded = True
     
     def _load_from_primitives(self) -> None:
-        """Load serializers from all loaded primitive modules"""
+        """
+        Load serializers from all loaded primitive modules.
+        
+        Discovers and loads custom serializers from primitive modules,
+        currently focusing on SimpleITK as the primary use case.
+        """
         try:
             # Import primitive modules and collect serializers
             # For now, specifically handle SimpleITK since it's the main use case
@@ -125,7 +173,12 @@ class CustomSerializerRegistry:
             logger.warning(f"Failed to load some serializers: {e}")
     
     def _load_simpleitk_serializers(self) -> None:
-        """Load serializers from SimpleITK primitive module"""
+        """
+        Load serializers from SimpleITK primitive module.
+        
+        Attempts to load custom serializers for medical imaging formats
+        (NIFTI, NRRD, etc.) from the SimpleITK primitives module.
+        """
         try:
             # Check if SimpleITK primitives are available
             from voxlogica.primitives.simpleitk import get_serializers
@@ -140,7 +193,13 @@ class CustomSerializerRegistry:
 
 @dataclass
 class ExecutionResult:
-    """Result of workplan execution"""
+    """
+    Result of workplan execution.
+    
+    Contains comprehensive information about the execution outcome,
+    including success status, completed/failed operations, timing,
+    and total operation count.
+    """
     success: bool
     completed_operations: Set[NodeId]
     failed_operations: Dict[NodeId, str]  # operation_id -> error message
@@ -149,7 +208,13 @@ class ExecutionResult:
 
 @dataclass 
 class ExecutionStatus:
-    """Status of ongoing execution"""
+    """
+    Status of ongoing execution.
+    
+    Provides real-time information about execution progress,
+    including running state, completion/failure counts, and
+    overall progress percentage.
+    """
     running: bool
     completed: Set[NodeId]
     failed: Dict[NodeId, str]
@@ -157,9 +222,23 @@ class ExecutionStatus:
     progress: float  # 0.0 to 1.0
 
 class PrimitivesLoader:
-    """Namespace-aware loader for primitive operations"""
+    """
+    Namespace-aware loader for primitive operations.
+    
+    Manages loading and resolution of primitive operations from multiple namespaces,
+    supporting both static (file-based) and dynamic (programmatically registered)
+    primitives. Provides qualified and unqualified name resolution with proper
+    precedence rules.
+    """
     
     def __init__(self, primitives_dir: Optional[Path] = None):
+        """
+        Initialize primitives loader.
+        
+        Args:
+            primitives_dir: Directory containing primitive modules.
+                          Defaults to 'primitives' directory next to this module.
+        """
         if primitives_dir is None:
             # Default to primitives directory next to this module
             primitives_dir = Path(__file__).parent / "primitives"
@@ -172,14 +251,24 @@ class PrimitivesLoader:
         self._discover_namespaces()
     
     def _ensure_primitives_dir(self):
-        """Ensure primitives directory exists and has __init__.py"""
+        """
+        Ensure primitives directory exists and has __init__.py.
+        
+        Creates the primitives directory and its __init__.py file if they
+        don't exist, making it a proper Python module.
+        """
         self.primitives_dir.mkdir(exist_ok=True)
         init_file = self.primitives_dir / "__init__.py"
         if not init_file.exists():
             init_file.write_text("# VoxLogica-2 Primitives Directory")
     
     def _discover_namespaces(self):
-        """Discover and initialize all namespaces"""
+        """
+        Discover and initialize all namespaces.
+        
+        Automatically discovers all namespace directories and loads them.
+        Always imports the 'default' namespace for backward compatibility.
+        """
         # Always import default namespace for backward compatibility
         self._import_namespace('default')
         
@@ -191,7 +280,15 @@ class PrimitivesLoader:
                     self._load_namespace(namespace_name)
     
     def _load_namespace(self, namespace_name: str):
-        """Load a namespace and its primitives"""
+        """
+        Load a namespace and its primitives.
+        
+        Loads both static primitives (from .py files in the namespace directory)
+        and dynamic primitives (from the namespace module's register_primitives function).
+        
+        Args:
+            namespace_name: Name of the namespace to load
+        """
         if namespace_name in self._namespaces:
             return
         
@@ -239,14 +336,31 @@ class PrimitivesLoader:
             self._namespaces[namespace_name] = {}
     
     def _import_namespace(self, namespace_name: str):
-        """Mark a namespace as imported (available for unqualified lookups)"""
+        """
+        Mark a namespace as imported (available for unqualified lookups).
+        
+        Args:
+            namespace_name: Name of the namespace to import
+        """
         if namespace_name not in self._namespaces:
             self._load_namespace(namespace_name)
         self._imported_namespaces.add(namespace_name)
         logger.debug(f"Imported namespace: {namespace_name}")
     
     def load_primitive(self, operator_name: str) -> Optional[Callable]:
-        """Load a primitive operation by name (qualified or unqualified)"""
+        """
+        Load a primitive operation by name (qualified or unqualified).
+        
+        Supports both qualified names (namespace.primitive) and unqualified names.
+        Unqualified names are resolved using namespace precedence: default first,
+        then imported namespaces in import order.
+        
+        Args:
+            operator_name: Name of the primitive to load
+            
+        Returns:
+            Callable primitive function or None if not found
+        """
         if operator_name in self._cache:
             return self._cache[operator_name]
         
@@ -267,7 +381,16 @@ class PrimitivesLoader:
         return primitive_func
     
     def _load_qualified_primitive(self, namespace_name: str, primitive_name: str) -> Optional[Callable]:
-        """Load a primitive from a specific namespace"""
+        """
+        Load a primitive from a specific namespace.
+        
+        Args:
+            namespace_name: Target namespace name
+            primitive_name: Name of primitive within the namespace
+            
+        Returns:
+            Callable primitive function or None if not found
+        """
         if namespace_name not in self._namespaces:
             self._load_namespace(namespace_name)
         
@@ -278,7 +401,17 @@ class PrimitivesLoader:
         return None
     
     def _load_unqualified_primitive(self, operator_name: str) -> Optional[Callable]:
-        """Load an unqualified primitive following resolution order"""
+        """
+        Load an unqualified primitive following resolution order.
+        
+        Resolution order: default namespace -> imported namespaces in order.
+        
+        Args:
+            operator_name: Unqualified primitive name
+            
+        Returns:
+            Callable primitive function or None if not found
+        """
         # Resolution order: default namespace -> imported namespaces
         search_order = ['default'] + [ns for ns in self._imported_namespaces if ns != 'default']
         
@@ -299,15 +432,33 @@ class PrimitivesLoader:
  
     
     def import_namespace(self, namespace_name: str):
-        """Import a namespace for unqualified access"""
+        """
+        Import a namespace for unqualified access.
+        
+        Args:
+            namespace_name: Name of the namespace to import
+        """
         self._import_namespace(namespace_name)
     
     def list_namespaces(self) -> List[str]:
-        """List all available namespaces"""
+        """
+        List all available namespaces.
+        
+        Returns:
+            List of namespace names that have been discovered or loaded
+        """
         return list(self._namespaces.keys())
     
     def list_primitives(self, namespace_name: Optional[str] = None) -> Dict[str, str]:
-        """List primitives in a namespace or all namespaces"""
+        """
+        List primitives in a namespace or all namespaces.
+        
+        Args:
+            namespace_name: Specific namespace to list, or None for all namespaces
+            
+        Returns:
+            Dictionary mapping primitive names to their descriptions
+        """
         if namespace_name:
             if namespace_name not in self._namespaces:
                 self._load_namespace(namespace_name)
@@ -338,12 +489,23 @@ class PrimitivesLoader:
 
 class ExecutionEngine:
     """
-    Execution engine that compiles VoxLogica workplans to Dask delayed graphs
+    Main execution engine that compiles VoxLogica workplans to Dask delayed graphs
     and manages execution with persistent storage backend.
+    
+    Provides high-level interface for executing workplans, managing multiple
+    concurrent executions, and handling namespace imports. Integrates with
+    the storage backend for content-addressed result caching.
     """
     
     def __init__(self, storage_backend: Optional[StorageBackend] = None, 
                  primitives_loader: Optional[PrimitivesLoader] = None):
+        """
+        Initialize execution engine.
+        
+        Args:
+            storage_backend: Storage backend for results. Uses default if None.
+            primitives_loader: Primitives loader. Creates default if None.
+        """
         self.storage = storage_backend or get_storage()
         self.primitives = primitives_loader or PrimitivesLoader()
         
@@ -415,7 +577,15 @@ class ExecutionEngine:
             )
     
     def get_execution_status(self, execution_id: str) -> Optional[ExecutionStatus]:
-        """Get status of running execution"""
+        """
+        Get status of running execution.
+        
+        Args:
+            execution_id: ID of the execution to check
+            
+        Returns:
+            ExecutionStatus if execution is active, None otherwise
+        """
         with self._lock:
             session = self._active_executions.get(execution_id)
             if session:
@@ -423,7 +593,15 @@ class ExecutionEngine:
             return None
     
     def cancel_execution(self, execution_id: str) -> bool:
-        """Cancel a running execution"""
+        """
+        Cancel a running execution.
+        
+        Args:
+            execution_id: ID of the execution to cancel
+            
+        Returns:
+            True if execution was found and cancelled, False otherwise
+        """
         with self._lock:
             session = self._active_executions.get(execution_id)
             if session:
@@ -432,12 +610,28 @@ class ExecutionEngine:
             return False
     
     def list_active_executions(self) -> List[str]:
-        """List IDs of currently active executions"""
+        """
+        List IDs of currently active executions.
+        
+        Returns:
+            List of execution IDs that are currently running
+        """
         with self._lock:
             return list(self._active_executions.keys())
     
     def _generate_execution_id(self, workplan: WorkPlan) -> str:
-        """Generate execution ID from workplan goals"""
+        """
+        Generate execution ID from workplan goals.
+        
+        Creates a deterministic hash based on the workplan's goals,
+        ensuring consistent IDs for identical workplans.
+        
+        Args:
+            workplan: WorkPlan to generate ID for
+            
+        Returns:
+            SHA256 hash as hexadecimal string
+        """
         import hashlib
         goals_str = ",".join(sorted(f"{goal.operation}:{goal.id}:{goal.name}" for goal in workplan.goals))
         return hashlib.sha256(goals_str.encode()).hexdigest()
@@ -446,10 +640,26 @@ class ExecutionSession:
     """
     Individual execution session that handles the actual compilation
     and execution of a workplan using Dask delayed.
+    
+    Manages the complete lifecycle of a single workplan execution:
+    - Categorizes operations into pure computations vs side-effects
+    - Compiles pure operations to Dask delayed graphs
+    - Handles distributed execution with content-addressed storage
+    - Executes side-effect operations (print, save) after computations
+    - Provides execution status and cancellation support
     """
     
     def __init__(self, execution_id: str, workplan: WorkPlan, 
                  storage: StorageBackend, primitives: PrimitivesLoader):
+        """
+        Initialize execution session.
+        
+        Args:
+            execution_id: Unique identifier for this execution
+            workplan: WorkPlan to execute
+            storage: Storage backend for results
+            primitives: Primitives loader for operations
+        """
         self.execution_id = execution_id
         self.workplan = workplan
         self.storage = storage
@@ -474,7 +684,19 @@ class ExecutionSession:
         self._categorize_operations()
     
     def execute(self) -> tuple[Set[NodeId], Dict[NodeId, str]]:
-        """Execute the workplan and return completed/failed operation sets"""
+        """
+        Execute the workplan and return completed/failed operation sets.
+        
+        Orchestrates the complete execution process:
+        1. Store constants in storage for goal access
+        2. Build dependency graph for topological ordering
+        3. Compile pure operations to Dask delayed graph
+        4. Execute pure computations using Dask
+        5. Execute side-effect goals (print, save)
+        
+        Returns:
+            Tuple of (completed_operations, failed_operations)
+        """
         
         # Store constants in storage first so they can be retrieved by goals
         self._store_constants()
@@ -509,7 +731,13 @@ class ExecutionSession:
             return self.completed.copy(), self.failed.copy()
     
     def _categorize_operations(self):
-        """Categorize nodes into pure operations vs side-effect goals"""
+        """
+        Categorize nodes into pure operations vs side-effect goals.
+        
+        Pure operations are mathematical/data processing operations that can be
+        parallelized and cached. Side-effect operations are I/O operations like
+        print, save that must be executed sequentially after computations.
+        """
         side_effect_operators = {'print', 'save', 'output', 'write', 'display'}
         for node_id, node in self.workplan.nodes.items():
             if isinstance(node, Operation):
@@ -521,7 +749,12 @@ class ExecutionSession:
         # constants are not added to pure_operations or goal_operations
 
     def _execute_goal_operations(self):
-        """Execute side-effect operations (print, save, etc.) as special Dask nodes"""
+        """
+        Execute side-effect operations (print, save, etc.) after computations.
+        
+        Processes all goals sequentially, retrieving computed results from storage
+        and executing the appropriate side-effect action (printing or saving).
+        """
         for goal in self.workplan.goals:
             try:
                 # Execute the goal operation with the computed result
@@ -535,7 +768,23 @@ class ExecutionSession:
                     self.failed[goal.id] = str(e)
                     
     def _execute_pure_operation(self, operation: Operation, operation_id: NodeId, *dependency_results) -> Any:
-        """Execute a single pure operation with content-addressed deduplication"""
+        """
+        Execute a single pure operation with content-addressed deduplication.
+        
+        Implements the core execution logic for pure computational operations:
+        - Checks storage for existing results (deduplication)
+        - Handles distributed execution coordination
+        - Loads and invokes primitive functions
+        - Stores results in content-addressed storage
+        
+        Args:
+            operation: Operation to execute
+            operation_id: Content-addressed ID of the operation
+            *dependency_results: Results from dependency operations
+            
+        Returns:
+            Result of the operation execution
+        """
         if self.cancelled:
             raise Exception("Execution cancelled")
         if self.storage.exists(operation_id):
@@ -577,7 +826,15 @@ class ExecutionSession:
             raise e
 
     def _execute_goal_with_result(self, goal):
-        """Execute a goal operation with the result from storage"""
+        """
+        Execute a goal operation with the result from storage.
+        
+        Retrieves the computed result for a goal and executes the appropriate
+        action (print to console or save to file).
+        
+        Args:
+            goal: Goal object containing operation type and parameters
+        """
         # Get the computed result from storage
         if self.storage.exists(goal.id):
             result = self.storage.retrieve(goal.id)
@@ -595,7 +852,18 @@ class ExecutionSession:
             raise Exception(f"Unknown goal operation: {goal.operation}")
             
     def _save_result_to_file(self, result, filename: str, operation_id: Optional[str] = None):
-        """Save a result to a file with custom serializer support"""
+        """
+        Save a result to a file with custom serializer support.
+        
+        Supports multiple output formats with custom serializers for specialized
+        data types (e.g., medical imaging formats via SimpleITK). Falls back to
+        standard formats (JSON, pickle, text) if no custom serializer is available.
+        
+        Args:
+            result: Result object to save
+            filename: Target filename (extension determines format)
+            operation_id: Optional operation ID for raw data access
+        """
         import json
         import pickle
         import sqlite3
@@ -671,11 +939,21 @@ class ExecutionSession:
             return False
     
     def cancel(self):
-        """Cancel execution"""
+        """
+        Cancel execution.
+        
+        Sets the cancellation flag, which will be checked by running operations
+        to gracefully terminate execution.
+        """
         self.cancelled = True
     
     def get_status(self) -> ExecutionStatus:
-        """Get current execution status"""
+        """
+        Get current execution status.
+        
+        Returns:
+            ExecutionStatus with current progress and state information
+        """
         with self._status_lock:
             total_ops = len(self.workplan.operations)
             completed_count = len(self.completed)
@@ -690,7 +968,15 @@ class ExecutionSession:
             )
     
     def _build_dependency_graph(self) -> Dict[NodeId, Set[NodeId]]:
-        """Build dependency graph (operation -> dependencies) for pure operations only"""
+        """
+        Build dependency graph (operation -> dependencies) for pure operations only.
+        
+        Creates a mapping from each operation to its direct dependencies,
+        excluding constants and side-effect operations.
+        
+        Returns:
+            Dictionary mapping operation IDs to sets of their dependency IDs
+        """
         dependencies: Dict[NodeId, Set[NodeId]] = defaultdict(set)
         for op_id, operation in self.pure_operations.items():
             for arg_name, dep_id in operation.arguments.items():
@@ -699,7 +985,15 @@ class ExecutionSession:
         return dict(dependencies)
     
     def _compile_pure_operations_to_dask(self, dependencies: Dict[NodeId, Set[NodeId]]):
-        """Compile pure operations to Dask delayed graph"""
+        """
+        Compile pure operations to Dask delayed graph.
+        
+        Creates a Dask delayed computation graph from pure operations,
+        ensuring dependencies are properly handled and execution order is maintained.
+        
+        Args:
+            dependencies: Dependency graph from _build_dependency_graph
+        """
         # Compile operations in topological order to ensure dependencies are compiled first
         topo_order = self._topological_sort(dependencies)
         
@@ -726,7 +1020,21 @@ class ExecutionSession:
             )
 
     def _topological_sort(self, dependencies: Dict[NodeId, Set[NodeId]]) -> List[NodeId]:
-        """Topological sort of operations based on dependencies"""
+        """
+        Topological sort of operations based on dependencies.
+        
+        Uses Kahn's algorithm to produce a dependency-respecting execution order.
+        Ensures operations are compiled/executed after their dependencies.
+        
+        Args:
+            dependencies: Dependency graph
+            
+        Returns:
+            List of operation IDs in topological order
+            
+        Raises:
+            ValueError: If a dependency cycle is detected
+        """
         # Kahn's algorithm for topological sorting
         in_degree = {op_id: 0 for op_id in self.pure_operations}
         
@@ -765,12 +1073,32 @@ class ExecutionSession:
         return result
 
     def _is_literal_operation(self, operation: Operation) -> bool:
-        """Check if an operation represents a literal value (constant)"""
+        """
+        Check if an operation represents a literal value (constant).
+        
+        Args:
+            operation: Operation to check
+            
+        Returns:
+            True if operation is a literal constant, False otherwise
+        """
         # Literal operations have no arguments and their operator is a ConstantValue or primitive
         return not operation.arguments and isinstance(operation.operator, ConstantValue)
     
     def _resolve_arguments(self, operation: Operation, dependency_results: List[Any]) -> Dict[str, Any]:
-        """Resolve operation arguments, substituting dependency results from pure operations"""
+        """
+        Resolve operation arguments, substituting dependency results from pure operations.
+        
+        Maps operation argument references to actual values, either from dependency
+        results or from constant values in the workplan nodes.
+        
+        Args:
+            operation: Operation whose arguments to resolve
+            dependency_results: Results from dependency operations
+            
+        Returns:
+            Dictionary mapping argument names to resolved values
+        """
         resolved = {}
         dep_results_map = {}
         
@@ -811,7 +1139,19 @@ class ExecutionSession:
         return resolved
     
     def _map_arguments_to_semantic_names(self, operator: Any, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Map numeric argument keys to semantic names based on operator"""
+        """
+        Map numeric argument keys to semantic names based on operator.
+        
+        Converts positional argument keys ('0', '1', etc.) to meaningful names
+        like 'left'/'right' for binary operators, improving primitive function signatures.
+        
+        Args:
+            operator: Operator to map arguments for
+            args: Arguments with numeric keys
+            
+        Returns:
+            Arguments with semantic keys where applicable
+        """
         operator_str = str(operator).lower()
         
         # Binary operators mapping
@@ -824,7 +1164,22 @@ class ExecutionSession:
         return args
     
     def _wait_for_result(self, operation_id: NodeId, timeout: float = 300.0) -> Any:
-        """Wait for another worker to complete the operation"""
+        """
+        Wait for another worker to complete the operation.
+        
+        Used in distributed scenarios where multiple workers might be computing
+        the same operation simultaneously. Polls storage until result appears.
+        
+        Args:
+            operation_id: ID of operation to wait for
+            timeout: Maximum time to wait in seconds
+            
+        Returns:
+            Result of the operation
+            
+        Raises:
+            Exception: If timeout is reached or execution is cancelled
+        """
         start_time = time.time()
         
         while time.time() - start_time < timeout:
@@ -842,7 +1197,12 @@ class ExecutionSession:
         raise Exception(f"Timeout waiting for operation {operation_id[:8]}... to complete")
 
     def _store_constants(self):
-        """Store all ConstantValue nodes in storage so they can be retrieved by goals"""
+        """
+        Store all ConstantValue nodes in storage so they can be retrieved by goals.
+        
+        Pre-populates storage with constant values to ensure they're available
+        when goals need to access them during execution.
+        """
         for node_id, node in self.workplan.nodes.items():
             if isinstance(node, ConstantValue):
                 # Check if already stored to avoid duplicate work
@@ -852,6 +1212,18 @@ class ExecutionSession:
                     logger.debug(f"Stored constant {node_id[:8]}... = {node.value}")
 
 def unwrap_node(obj):
+    """
+    Recursively unwrap dataclass objects to plain dictionaries.
+    
+    Utility function for converting complex dataclass structures to plain
+    Python data structures for serialization or debugging purposes.
+    
+    Args:
+        obj: Object to unwrap (can be dataclass, dict, list, etc.)
+        
+    Returns:
+        Unwrapped object with dataclasses converted to dictionaries
+    """
     import dataclasses
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         # Recursively unwrap all dataclass fields
@@ -864,10 +1236,21 @@ def unwrap_node(obj):
 
 # Global execution engine instance
 _execution_engine: Optional[ExecutionEngine] = None
+"""Global singleton execution engine instance."""
+
 _engine_lock = threading.Lock()
+"""Lock for thread-safe access to global execution engine."""
 
 def get_execution_engine() -> ExecutionEngine:
-    """Get the global execution engine instance"""
+    """
+    Get the global execution engine instance.
+    
+    Creates a new engine with default configuration if none exists.
+    Thread-safe singleton pattern.
+    
+    Returns:
+        Global ExecutionEngine instance
+    """
     global _execution_engine
     
     with _engine_lock:
@@ -876,7 +1259,15 @@ def get_execution_engine() -> ExecutionEngine:
         return _execution_engine
 
 def set_execution_engine(engine: ExecutionEngine):
-    """Set the global execution engine instance"""
+    """
+    Set the global execution engine instance.
+    
+    Allows replacement of the global engine for testing or configuration.
+    Thread-safe.
+    
+    Args:
+        engine: ExecutionEngine instance to set as global
+    """
     global _execution_engine
     
     with _engine_lock:
@@ -884,13 +1275,44 @@ def set_execution_engine(engine: ExecutionEngine):
 
 # Convenience functions
 def execute_workplan(workplan: WorkPlan, execution_id: Optional[str] = None) -> ExecutionResult:
-    """Execute a workplan using the global execution engine"""
+    """
+    Execute a workplan using the global execution engine.
+    
+    Convenience function that uses the global engine instance.
+    
+    Args:
+        workplan: WorkPlan to execute
+        execution_id: Optional execution ID
+        
+    Returns:
+        ExecutionResult with execution outcome
+    """
     return get_execution_engine().execute_workplan(workplan, execution_id)
 
 def get_execution_status(execution_id: str) -> Optional[ExecutionStatus]:
-    """Get status of a running execution"""
+    """
+    Get status of a running execution.
+    
+    Convenience function that uses the global engine instance.
+    
+    Args:
+        execution_id: ID of execution to check
+        
+    Returns:
+        ExecutionStatus if found, None otherwise
+    """
     return get_execution_engine().get_execution_status(execution_id)
 
 def cancel_execution(execution_id: str) -> bool:
-    """Cancel a running execution"""
+    """
+    Cancel a running execution.
+    
+    Convenience function that uses the global engine instance.
+    
+    Args:
+        execution_id: ID of execution to cancel
+        
+    Returns:
+        True if execution was found and cancelled, False otherwise
+    """
     return get_execution_engine().cancel_execution(execution_id)
