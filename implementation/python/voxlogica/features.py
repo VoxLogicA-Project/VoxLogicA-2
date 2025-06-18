@@ -154,30 +154,7 @@ def handle_run(
                         error=error_msg
                     )
             finally:
-                logger.info("...done")
-
-        # Compute buffer allocation if requested
-        buffer_assignment = None
-        if compute_memory_assignment:
-            from voxlogica.buffer_allocation import (
-                compute_buffer_allocation,
-                print_buffer_assignment,
-            )
-
-            # For testing, assume all nodes have "basic_type" and use equality compatibility
-            def type_assignment(op_id):
-                return "basic_type"
-
-            def type_compatibility(type1, type2):
-                return type1 == type2
-
-            buffer_assignment = compute_buffer_allocation(
-                program_obj, type_assignment, type_compatibility
-            )
-
-            # Print the assignment to console if running from CLI
-            if filename:  # CLI mode
-                print_buffer_assignment(program_obj, buffer_assignment, type_assignment)
+                logger.info("...done")                
 
         # Build the result
         result = {
@@ -204,7 +181,7 @@ def handle_run(
         messages = []
 
         if save_task_graph or save_task_graph_as_dot:
-            dot_content = to_dot(program_obj, buffer_assignment)
+            dot_content = to_dot(program_obj)
             output_file = save_task_graph or save_task_graph_as_dot
 
             if filename:  # CLI mode - save to file
@@ -217,7 +194,7 @@ def handle_run(
                     saved_files[output_file] = dot_content
 
         if save_task_graph_as_json:
-            json_content = to_json(program_obj, buffer_assignment)
+            json_content = to_json(program_obj)
 
             if filename:  # CLI mode - save to file
                 with open(save_task_graph_as_json, "w") as f:
