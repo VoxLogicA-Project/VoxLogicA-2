@@ -293,29 +293,11 @@ class PrimitivesLoader:
                 
                 # Check operator aliases for default namespace
                 if namespace_name == 'default':
-                    aliased_name = self._resolve_operator_alias(operator_name)
-                    if aliased_name and aliased_name in primitives:
-                        return primitives[aliased_name]
+                    if operator_name in primitives:
+                        return primitives[operator_name]
         
         return None
-    
-    def _resolve_operator_alias(self, operator_name: str) -> Optional[str]:
-        """Resolve operator aliases for backward compatibility"""
-        aliases = {
-            '+': 'addition',
-            'add': 'addition',
-            '-': 'subtraction', 
-            'sub': 'subtraction',
-            'subtract': 'subtraction',
-            '*': 'multiplication',
-            'mul': 'multiplication',
-            'multiply': 'multiplication',
-            '/': 'division',
-            'div': 'division',
-            'divide': 'division',
-            'print': 'print_primitive',
-        }
-        return aliases.get(operator_name)
+ 
     
     def import_namespace(self, namespace_name: str):
         """Import a namespace for unqualified access"""
