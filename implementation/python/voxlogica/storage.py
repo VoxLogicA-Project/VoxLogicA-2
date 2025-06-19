@@ -51,6 +51,10 @@ class StorageBackend:
         # Thread-local storage for connections
         self._local = threading.local()
         
+        # Notification system for task completion
+        self._completion_events: Dict[str, threading.Event] = {}
+        self._events_lock = threading.Lock()
+        
         # Initialize database schema
         self._init_database()
         
@@ -140,6 +144,10 @@ class StorageBackend:
                 conn.commit()
             
             logger.debug(f"Stored result for operation {operation_id[:8]}... ({size_bytes} bytes)")
+            
+            # Notify any threads waiting for this operation
+            self._notify_completion(operation_id)
+            
             return True
             
         except Exception as e:
@@ -188,6 +196,60 @@ class StorageBackend:
         except Exception as e:
             logger.error(f"Failed to check existence for operation {operation_id[:8]}...: {e}")
             raise
+
+    def wait_for_completion(self, operation_id: str, timeout: float = 300.0) -> Any:
+        """
+        Wait for operation to complete using event notification.
+        
+        More efficient than polling - uses threading events for immediate
+        notification when results become available.
+        
+        Args:
+            operation_id: Operation ID to wait for
+            timeout: Maximum time to wait in seconds
+            
+        Returns:
+            Result of the operation
+            
+        Raises:
+            TimeoutError: If timeout is reached
+            Exception: If operation failed
+        """
+        # First check if result already exists
+        if self.exists(operation_id):
+            return self.retrieve(operation_id)
+        
+        # Create or get completion event
+        with self._events_lock:
+            if operation_id not in self._completion_events:
+                self._completion_events[operation_id] = threading.Event()
+            event = self._completion_events[operation_id]
+        
+        # Wait for completion
+        if event.wait(timeout):
+            # Event was set - check if we have a result or error
+            if self.exists(operation_id):
+                return self.retrieve(operation_id)
+            else:
+                # Check if operation failed
+                try:
+                    with self._get_connection() as conn:
+                        cursor = conn.execute("""
+                            SELECT status, error_message FROM execution_state 
+                            WHERE operation_id = ?
+                        """, (operation_id,))
+                        row = cursor.fetchone()
+                        if row and row[0] == 'failed':
+                            raise Exception(f"Operation failed: {row[1]}")
+                except sqlite3.Error:
+                    pass  # Ignore DB errors, fall back to generic error
+                
+                raise Exception(f"Operation {operation_id[:8]}... completed but no result found")
+        else:
+            # Timeout occurred
+            with self._events_lock:
+                self._completion_events.pop(operation_id, None)  # Cleanup
+            raise TimeoutError(f"Timeout waiting for operation {operation_id[:8]}... to complete")
     
     def mark_running(self, operation_id: str, worker_id: str|None = None) -> bool:
         """
@@ -269,6 +331,9 @@ class StorageBackend:
                 
             logger.debug(f"Marked operation {operation_id[:8]}... as failed: {error_message}")
             
+            # Notify any threads waiting for this operation
+            self._notify_failure(operation_id)
+            
         except Exception as e:
             logger.error(f"Failed to mark operation {operation_id[:8]}... as failed: {e}")
             raise
@@ -339,6 +404,34 @@ class StorageBackend:
         except Exception as e:
             logger.error(f"Failed to cleanup failed executions: {e}")
             raise
+
+    def _notify_completion(self, operation_id: str):
+        """
+        Notify threads waiting for operation completion.
+        
+        Args:
+            operation_id: Operation that completed
+        """
+        with self._events_lock:
+            if operation_id in self._completion_events:
+                event = self._completion_events[operation_id]
+                event.set()
+                # Note: Don't delete the event here - let the waiter clean it up
+                # This avoids race conditions where the event is deleted before
+                # the waiter can check the result
+
+    def _notify_failure(self, operation_id: str):
+        """
+        Notify threads waiting for operation that it failed.
+        
+        Args:
+            operation_id: Operation that failed
+        """
+        with self._events_lock:
+            if operation_id in self._completion_events:
+                event = self._completion_events[operation_id]
+                event.set()
+                # Note: Don't delete the event here - let the waiter clean it up
     
     def close(self):
         """Close database connections."""

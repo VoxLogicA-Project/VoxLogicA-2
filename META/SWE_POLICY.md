@@ -8,6 +8,7 @@ When developing a new feature in this repository, the following workflow is mand
 2. **Document the Issue in META**
 
    - Create a corresponding directory in META/ISSUES/OPEN/ (for open issues) or META/ISSUES/CLOSED/ (for completed issues) with a meaningful, descriptive name using yyyy-mm-dd-kebab-case (e.g., `2025-18-06-json-export-feature`)
+   - It is mandatory to read the system date using a command and not use random dates instead.
    - Include a README.md file within such directory that describes the issue, its status, and related information.
    - For bugs or specific technical issues, include any reproduction steps or test files in this directory.
 

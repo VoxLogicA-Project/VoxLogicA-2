@@ -11,4 +11,5 @@ let stats = simpleitk.MinimumMaximum(thresholded)
 print "stats" index(stats,1)
 
 // Demonstrate custom serializer formats
-save "output.png" thresholded   // Medical imaging format
+save "output.nii.gz" thresholded   // Medical imaging format
+

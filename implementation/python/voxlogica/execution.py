@@ -509,13 +509,15 @@ class ExecutionEngine:
         self.storage = storage_backend or get_storage()
         self.primitives = primitives_loader or PrimitivesLoader()
         
-        # Execution state
-        self._active_executions: Dict[str, 'ExecutionSession'] = {}
-        self._lock = threading.Lock()
+        # Note: No execution state tracking needed.
+        # Coordination happens through storage backend.
     
     def execute_workplan(self, workplan: WorkPlan, execution_id: Optional[str] = None) -> ExecutionResult:
         """
-        Execute a workplan and return results
+        Execute a workplan and return results.
+        
+        Each execution is independent. Coordination between executions happens
+        automatically through the content-addressed storage backend.
         
         Args:
             workplan: The workplan to execute
@@ -538,32 +540,24 @@ class ExecutionEngine:
                     self.primitives.import_namespace(namespace_name)
                     logger.debug(f"Imported namespace '{namespace_name}' for execution")
             
-            # Create execution session
+            # Create execution session (no tracking needed)
             session = ExecutionSession(execution_id, workplan, self.storage, self.primitives)
             
-            with self._lock:
-                self._active_executions[execution_id] = session
+            # Execute the workplan
+            completed, failed = session.execute()
             
-            try:
-                # Execute the workplan
-                completed, failed = session.execute()
-                
-                execution_time = time.time() - start_time
-                logger.log(VERBOSE_LEVEL,f"Execution {execution_id[:8]}... completed in {execution_time:.2f}s")
-                logger.log(VERBOSE_LEVEL,f"  Completed: {len(completed)}/{len(workplan.operations)}")
-                logger.log(VERBOSE_LEVEL,f"  Failed: {len(failed)}")
-                
-                return ExecutionResult(
-                    success=(len(failed) == 0),
-                    completed_operations=completed,
-                    failed_operations=failed,
-                    execution_time=execution_time,
-                    total_operations=len(workplan.operations)
-                )
-                
-            finally:
-                with self._lock:
-                    self._active_executions.pop(execution_id, None)
+            execution_time = time.time() - start_time
+            logger.log(VERBOSE_LEVEL,f"Execution {execution_id[:8]}... completed in {execution_time:.2f}s")
+            logger.log(VERBOSE_LEVEL,f"  Completed: {len(completed)}/{len(workplan.operations)}")
+            logger.log(VERBOSE_LEVEL,f"  Failed: {len(failed)}")
+            
+            return ExecutionResult(
+                success=(len(failed) == 0),
+                completed_operations=completed,
+                failed_operations=failed,
+                execution_time=execution_time,
+                total_operations=len(workplan.operations)
+            )
                     
         except Exception as e:
             execution_time = time.time() - start_time
@@ -575,49 +569,6 @@ class ExecutionEngine:
                 execution_time=execution_time,
                 total_operations=len(workplan.operations)
             )
-    
-    def get_execution_status(self, execution_id: str) -> Optional[ExecutionStatus]:
-        """
-        Get status of running execution.
-        
-        Args:
-            execution_id: ID of the execution to check
-            
-        Returns:
-            ExecutionStatus if execution is active, None otherwise
-        """
-        with self._lock:
-            session = self._active_executions.get(execution_id)
-            if session:
-                return session.get_status()
-            return None
-    
-    def cancel_execution(self, execution_id: str) -> bool:
-        """
-        Cancel a running execution.
-        
-        Args:
-            execution_id: ID of the execution to cancel
-            
-        Returns:
-            True if execution was found and cancelled, False otherwise
-        """
-        with self._lock:
-            session = self._active_executions.get(execution_id)
-            if session:
-                session.cancel()
-                return True
-            return False
-    
-    def list_active_executions(self) -> List[str]:
-        """
-        List IDs of currently active executions.
-        
-        Returns:
-            List of execution IDs that are currently running
-        """
-        with self._lock:
-            return list(self._active_executions.keys())
     
     def _generate_execution_id(self, workplan: WorkPlan) -> str:
         """
@@ -1167,8 +1118,7 @@ class ExecutionSession:
         """
         Wait for another worker to complete the operation.
         
-        Used in distributed scenarios where multiple workers might be computing
-        the same operation simultaneously. Polls storage until result appears.
+        Uses efficient event-based notification instead of polling.
         
         Args:
             operation_id: ID of operation to wait for
@@ -1178,23 +1128,27 @@ class ExecutionSession:
             Result of the operation
             
         Raises:
-            Exception: If timeout is reached or execution is cancelled
+            Exception: If timeout is reached, execution is cancelled, or operation failed
         """
-        start_time = time.time()
+        if self.cancelled:
+            raise Exception("Execution cancelled")
         
-        while time.time() - start_time < timeout:
-            if self.cancelled:
-                raise Exception("Execution cancelled")
+        try:
+            # Use storage's efficient wait mechanism
+            result = self.storage.wait_for_completion(operation_id, timeout)
             
-            if self.storage.exists(operation_id):
-                result = self.storage.retrieve(operation_id)
-                with self._status_lock:
-                    self.completed.add(operation_id)
-                return result
+            with self._status_lock:
+                self.completed.add(operation_id)
             
-            time.sleep(0.1)  # Poll every 100ms
-        
-        raise Exception(f"Timeout waiting for operation {operation_id[:8]}... to complete")
+            return result
+            
+        except TimeoutError as e:
+            raise Exception(str(e))
+        except Exception as e:
+            # Handle operation failure
+            with self._status_lock:
+                self.failed[operation_id] = str(e)
+            raise e
 
     def _store_constants(self):
         """
@@ -1288,31 +1242,3 @@ def execute_workplan(workplan: WorkPlan, execution_id: Optional[str] = None) -> 
         ExecutionResult with execution outcome
     """
     return get_execution_engine().execute_workplan(workplan, execution_id)
-
-def get_execution_status(execution_id: str) -> Optional[ExecutionStatus]:
-    """
-    Get status of a running execution.
-    
-    Convenience function that uses the global engine instance.
-    
-    Args:
-        execution_id: ID of execution to check
-        
-    Returns:
-        ExecutionStatus if found, None otherwise
-    """
-    return get_execution_engine().get_execution_status(execution_id)
-
-def cancel_execution(execution_id: str) -> bool:
-    """
-    Cancel a running execution.
-    
-    Convenience function that uses the global engine instance.
-    
-    Args:
-        execution_id: ID of execution to cancel
-        
-    Returns:
-        True if execution was found and cancelled, False otherwise
-    """
-    return get_execution_engine().cancel_execution(execution_id)
