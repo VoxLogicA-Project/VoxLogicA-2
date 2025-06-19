@@ -51,9 +51,8 @@ class StorageBackend:
         # Thread-local storage for connections
         self._local = threading.local()
         
-        # Notification system for task completion
+        # Notification system for task completion (lock-free for WIP)
         self._completion_events: Dict[str, threading.Event] = {}
-        self._events_lock = threading.Lock()
         
         # Initialize database schema
         self._init_database()
@@ -219,11 +218,10 @@ class StorageBackend:
         if self.exists(operation_id):
             return self.retrieve(operation_id)
         
-        # Create or get completion event
-        with self._events_lock:
-            if operation_id not in self._completion_events:
-                self._completion_events[operation_id] = threading.Event()
-            event = self._completion_events[operation_id]
+        # Create or get completion event (lock-free for WIP)
+        if operation_id not in self._completion_events:
+            self._completion_events[operation_id] = threading.Event()
+        event = self._completion_events[operation_id]
         
         # Wait for completion
         if event.wait(timeout):
@@ -246,9 +244,8 @@ class StorageBackend:
                 
                 raise Exception(f"Operation {operation_id[:8]}... completed but no result found")
         else:
-            # Timeout occurred
-            with self._events_lock:
-                self._completion_events.pop(operation_id, None)  # Cleanup
+            # Timeout occurred - cleanup event (lock-free)
+            self._completion_events.pop(operation_id, None)
             raise TimeoutError(f"Timeout waiting for operation {operation_id[:8]}... to complete")
     
     def mark_running(self, operation_id: str, worker_id: str|None = None) -> bool:
@@ -412,13 +409,13 @@ class StorageBackend:
         Args:
             operation_id: Operation that completed
         """
-        with self._events_lock:
-            if operation_id in self._completion_events:
-                event = self._completion_events[operation_id]
-                event.set()
-                # Note: Don't delete the event here - let the waiter clean it up
-                # This avoids race conditions where the event is deleted before
-                # the waiter can check the result
+        # Lock-free notification for WIP system
+        if operation_id in self._completion_events:
+            event = self._completion_events[operation_id]
+            event.set()
+            # Note: Don't delete the event here - let the waiter clean it up
+            # This avoids race conditions where the event is deleted before
+            # the waiter can check the result
 
     def _notify_failure(self, operation_id: str):
         """
@@ -427,11 +424,11 @@ class StorageBackend:
         Args:
             operation_id: Operation that failed
         """
-        with self._events_lock:
-            if operation_id in self._completion_events:
-                event = self._completion_events[operation_id]
-                event.set()
-                # Note: Don't delete the event here - let the waiter clean it up
+        # Lock-free notification for WIP system
+        if operation_id in self._completion_events:
+            event = self._completion_events[operation_id]
+            event.set()
+            # Note: Don't delete the event here - let the waiter clean it up
     
     def close(self):
         """Close database connections."""

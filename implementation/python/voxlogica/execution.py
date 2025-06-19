@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from dask.delayed import delayed
 from dask.base import compute
 from dask.distributed import as_completed
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 import traceback
@@ -165,6 +164,7 @@ class CustomSerializerRegistry:
         Discovers and loads custom serializers from primitive modules,
         currently focusing on SimpleITK as the primary use case.
         """
+        # TODO: this should be provided by modules not hardcoded
         try:
             # Import primitive modules and collect serializers
             # For now, specifically handle SimpleITK since it's the main use case
@@ -172,13 +172,13 @@ class CustomSerializerRegistry:
         except Exception as e:
             logger.warning(f"Failed to load some serializers: {e}")
     
-    def _load_simpleitk_serializers(self) -> None:
+    def _load_simpleitk_serializers(self) -> None:        
         """
         Load serializers from SimpleITK primitive module.
         
         Attempts to load custom serializers for medical imaging formats
         (NIFTI, NRRD, etc.) from the SimpleITK primitives module.
-        """
+        """        
         try:
             # Check if SimpleITK primitives are available
             from voxlogica.primitives.simpleitk import get_serializers
@@ -620,7 +620,6 @@ class ExecutionSession:
         self.completed: Set[NodeId] = set()
         self.failed: Dict[NodeId, str] = {}
         self.cancelled = False
-        self._status_lock = threading.Lock()
         
         # Dask delayed graph
         self.delayed_graph: Dict[NodeId, Any] = {}
@@ -670,16 +669,14 @@ class ExecutionSession:
                 compute(*goal_computations)
             except Exception as e:
                 logger.error(f"Dask computation failed: {e}")
-                with self._status_lock:
-                    self.failed["dask_computation"] = str(e)
-                    return self.completed.copy(), self.failed.copy()
+                self.failed["dask_computation"] = str(e)
+                return self.completed.copy(), self.failed.copy()
         
         # Execute side-effect goals (print, save, etc.)
         self._execute_goal_operations()
         
         # Return final results
-        with self._status_lock:
-            return self.completed.copy(), self.failed.copy()
+        return self.completed.copy(), self.failed.copy()
     
     def _categorize_operations(self):
         """
@@ -710,13 +707,10 @@ class ExecutionSession:
             try:
                 # Execute the goal operation with the computed result
                 self._execute_goal_with_result(goal)
-                
-                with self._status_lock:
-                    self.completed.add(goal.id)
+                self.completed.add(goal.id)
             except Exception as e:
                 logger.error(f"Goal operation {goal.operation} '{goal.name}' failed: {e}")
-                with self._status_lock:
-                    self.failed[goal.id] = str(e)
+                self.failed[goal.id] = str(e)
                     
     def _execute_pure_operation(self, operation: Operation, operation_id: NodeId, *dependency_results) -> Any:
         """
@@ -741,8 +735,7 @@ class ExecutionSession:
         if self.storage.exists(operation_id):
             logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... found in storage, skipping")
             result = self.storage.retrieve(operation_id)
-            with self._status_lock:
-                self.completed.add(operation_id)
+            self.completed.add(operation_id)
             return result
         if not self.storage.mark_running(operation_id):
             logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... being computed by another worker, waiting")
@@ -763,8 +756,7 @@ class ExecutionSession:
             if isinstance(result, ConstantValue):
                 result = result.value
             self.storage.store(operation_id, result)
-            with self._status_lock:
-                self.completed.add(operation_id)
+            self.completed.add(operation_id)
             logger.log(VERBOSE_LEVEL, f"[DONE] Operation {operation_id[:8]}... completed successfully")
             return result
         except Exception as e:
@@ -772,8 +764,7 @@ class ExecutionSession:
             logger.error(error_msg)
             logger.debug(traceback.format_exc())
             self.storage.mark_failed(operation_id, str(e))
-            with self._status_lock:
-                self.failed[operation_id] = str(e)
+            self.failed[operation_id] = str(e)
             raise e
 
     def _execute_goal_with_result(self, goal):
@@ -905,18 +896,17 @@ class ExecutionSession:
         Returns:
             ExecutionStatus with current progress and state information
         """
-        with self._status_lock:
-            total_ops = len(self.workplan.operations)
-            completed_count = len(self.completed)
-            progress = completed_count / total_ops if total_ops > 0 else 0.0
-            
-            return ExecutionStatus(
-                running=not self.cancelled,
-                completed=self.completed.copy(),
-                failed=self.failed.copy(),
-                total=total_ops,
-                progress=progress
-            )
+        total_ops = len(self.workplan.operations)
+        completed_count = len(self.completed)
+        progress = completed_count / total_ops if total_ops > 0 else 0.0
+        
+        return ExecutionStatus(
+            running=not self.cancelled,
+            completed=self.completed.copy(),
+            failed=self.failed.copy(),
+            total=total_ops,
+            progress=progress
+        )
     
     def _build_dependency_graph(self) -> Dict[NodeId, Set[NodeId]]:
         """
@@ -1136,18 +1126,14 @@ class ExecutionSession:
         try:
             # Use storage's efficient wait mechanism
             result = self.storage.wait_for_completion(operation_id, timeout)
-            
-            with self._status_lock:
-                self.completed.add(operation_id)
-            
+            self.completed.add(operation_id)
             return result
             
         except TimeoutError as e:
             raise Exception(str(e))
         except Exception as e:
             # Handle operation failure
-            with self._status_lock:
-                self.failed[operation_id] = str(e)
+            self.failed[operation_id] = str(e)
             raise e
 
     def _store_constants(self):
@@ -1192,40 +1178,34 @@ def unwrap_node(obj):
 _execution_engine: Optional[ExecutionEngine] = None
 """Global singleton execution engine instance."""
 
-_engine_lock = threading.Lock()
-"""Lock for thread-safe access to global execution engine."""
-
 def get_execution_engine() -> ExecutionEngine:
     """
     Get the global execution engine instance.
     
     Creates a new engine with default configuration if none exists.
-    Thread-safe singleton pattern.
+    Simple singleton pattern for WIP system.
     
     Returns:
         Global ExecutionEngine instance
     """
     global _execution_engine
     
-    with _engine_lock:
-        if _execution_engine is None:
-            _execution_engine = ExecutionEngine()
-        return _execution_engine
+    if _execution_engine is None:
+        _execution_engine = ExecutionEngine()
+    return _execution_engine
 
 def set_execution_engine(engine: ExecutionEngine):
     """
     Set the global execution engine instance.
     
     Allows replacement of the global engine for testing or configuration.
-    Thread-safe.
+    Simple assignment for WIP system.
     
     Args:
         engine: ExecutionEngine instance to set as global
     """
     global _execution_engine
-    
-    with _engine_lock:
-        _execution_engine = engine
+    _execution_engine = engine
 
 # Convenience functions
 def execute_workplan(workplan: WorkPlan, execution_id: Optional[str] = None) -> ExecutionResult:
