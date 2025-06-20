@@ -24,6 +24,10 @@ TEST_MODULES = [
     "tests.test_dag_dict_args.test_dag_dict_args",
     "tests.features.test_run_feature",
     "tests.features.test_version_feature",
+    "tests.test_auto_cleanup.test_auto_cleanup",
+    "tests.test_crash_behavior.test_crash_behavior",
+    "tests.test_db_storage.test_db_storage", 
+    "tests.test_simpleitk_direct.test_simpleitk_direct",
 ]
 
 

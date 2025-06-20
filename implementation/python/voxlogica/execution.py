@@ -498,16 +498,27 @@ class ExecutionEngine:
     """
     
     def __init__(self, storage_backend: Optional[StorageBackend] = None, 
-                 primitives_loader: Optional[PrimitivesLoader] = None):
+                 primitives_loader: Optional[PrimitivesLoader] = None,
+                 auto_cleanup_stale_operations: bool = True):
         """
         Initialize execution engine.
         
         Args:
             storage_backend: Storage backend for results. Uses default if None.
             primitives_loader: Primitives loader. Creates default if None.
+            auto_cleanup_stale_operations: If True, cleanup stale operations on startup
         """
         self.storage = storage_backend or get_storage()
         self.primitives = primitives_loader or PrimitivesLoader()
+        
+        # Clean up any dangling operations from previous crashes
+        if auto_cleanup_stale_operations:
+            try:
+                cleaned_count = self.storage.cleanup_failed_executions(max_age_hours=1)
+                if cleaned_count > 0:
+                    logger.info(f"Cleaned up {cleaned_count} stale operations from previous sessions")
+            except Exception as e:
+                logger.warning(f"Failed to cleanup stale operations on startup: {e}")
         
         # Note: No execution state tracking needed.
         # Coordination happens through storage backend.

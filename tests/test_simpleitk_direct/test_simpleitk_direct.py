@@ -2,18 +2,27 @@
 """
 Python script that performs the same operations as test_sitk.imgql
 using direct SimpleITK calls.
-
-This script demonstrates:
-1. Loading a medical image (NIfTI format)
-2. Applying binary thresholding
-3. Saving the result in different formats
 """
 
 import SimpleITK as sitk
 import sys
 from pathlib import Path
+import argparse
 
-def main():
+# Standard path setup for VoxLogicA imports
+script_dir = Path(__file__).resolve().parent
+repo_root = script_dir.parent.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+description = """Tests SimpleITK functionality directly using Python calls.
+This test replicates the operations performed in test_sitk.imgql by using
+direct SimpleITK API calls. It demonstrates: 1) Loading a medical image (NIfTI format),
+2) Applying binary thresholding, 3) Saving the result in different formats.
+This serves as a reference implementation and validation that the underlying
+SimpleITK operations work correctly outside of the VoxLogicA framework."""
+
+def run_simpleitk_test():
     """Main function that replicates test_sitk.imgql behavior"""
     
     print("=== SimpleITK Direct Python Test ===", flush=True)
@@ -24,7 +33,7 @@ def main():
     if not Path(input_file).exists():
         print(f"Error: Input file {input_file} not found", flush=True)
         print("Please ensure the test data file exists", flush=True)
-        sys.exit(1)
+        return False
     else:
         print(f"✓ Input file found: {input_file}", flush=True)
     
@@ -97,10 +106,36 @@ def main():
         print(f"  Standard deviation: {stats_filter.GetSigma():.2f}")
         
         print("\n=== Test Completed Successfully ===")
+        return True
         
     except Exception as e:
         print(f"Error during processing: {e}")
-        sys.exit(1)
+        return False
+
+def main():
+    """Main test function."""
+    print(f"\nTest Description: {description}\n")
+    
+    parser = argparse.ArgumentParser(description="Test SimpleITK direct functionality")
+    parser.add_argument(
+        "--language",
+        type=str,
+        default=None,
+        help="Implementation language to test (default: all)",
+    )
+    args = parser.parse_args()
+    
+    try:
+        if run_simpleitk_test():
+            print("\n✓ SimpleITK direct test passed!")
+            return 0
+        else:
+            print("\n✗ SimpleITK direct test failed!")
+            return 1
+            
+    except Exception as e:
+        print(f"\n✗ Test failed with exception: {e}")
+        return 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

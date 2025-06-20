@@ -58,3 +58,63 @@ and remotely.
    - When possible, each issue should be linked to one or more tests in the test infrastructure.
    - The issue is to be closed (with human permission) when the corresponding test(s) pass, providing automated traceability between issues and tests.
    - Not all issues are directly testable, but this linkage is required whenever feasible (e.g., for bug fixes, features, or regressions).
+
+## MANDATORY Test Infrastructure Policies
+
+### Test Organization and Structure
+
+1. **Location Requirements:**
+   - ALL tests MUST be located within the `tests/` directory
+   - NO tests shall be created in the root directory or other locations
+   - Each test MUST be in its own subdirectory following the pattern `test_[feature_name]/`
+
+2. **Directory Structure:**
+   - Each test directory MUST contain an `__init__.py` file
+   - Primary test file MUST be named `test_[feature_name].py` or match the directory name
+   - Test-specific data or utilities should be contained within the test directory
+
+3. **Test File Standards:**
+   - Every test file MUST include a `description` variable explaining the test's purpose
+   - Tests MUST follow the established template pattern (see `tests/README.md`)
+   - Tests MUST handle command-line arguments appropriately (especially `--language`)
+   - Tests MUST provide proper exit codes (0 for success, 1 for failure)
+
+4. **Integration Requirements:**
+   - New tests MUST be added to the `TEST_MODULES` list in `tests/run_tests.py`
+   - Tests MUST be executable both individually and through the test runner
+   - Tests MUST use the established test infrastructure utilities where appropriate
+
+### Issue-Test Linking Requirements
+
+1. **Mandatory Cross-References:**
+   - When a test is created to address an issue, the issue's README.md MUST reference the test
+   - The test's description MUST reference the corresponding issue
+   - Use format: `META/ISSUES/[OPEN|CLOSED]/[issue-directory-name]`
+
+2. **Test Descriptions for Issue-Related Tests:**
+   ```python
+   description = """Test for issue META/ISSUES/OPEN/2025-06-20-feature-name:
+   Brief description of what this test validates in relation to the issue."""
+   ```
+
+3. **Issue Documentation:**
+   - Issues MUST document their associated tests in their README.md
+   - Include test execution instructions and expected outcomes
+   - Link test logs and results when relevant
+
+### Test Infrastructure Maintenance
+
+1. **Documentation Updates:**
+   - The `tests/README.md` MUST be kept current with any infrastructure changes
+   - Test infrastructure utilities MUST be properly documented
+   - Examples and usage patterns MUST be maintained
+
+2. **Consistency Enforcement:**
+   - All existing tests MUST be migrated to follow the established patterns
+   - No legacy test files shall remain outside the proper directory structure
+   - Test naming and organization MUST be consistent across the codebase
+
+3. **Quality Assurance:**
+   - Tests MUST be reviewed for compliance with these policies
+   - The test infrastructure MUST be verified after any structural changes
+   - Test coverage and effectiveness MUST be monitored and maintained
