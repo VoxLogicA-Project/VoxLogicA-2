@@ -532,8 +532,8 @@ class ExecutionEngine:
         
         Args:
             workplan: The workplan to execute
-            execution_id: Optional ID for this execution (defaults to hash of goals)
-            
+            execution_id: Optional ID for this execution (defaults to hash of goals) (currently never set explicitly by callers)
+
         Returns:
             ExecutionResult with success status and operation results
         """
@@ -1227,7 +1227,7 @@ def execute_workplan(workplan: WorkPlan, execution_id: Optional[str] = None) -> 
     
     Args:
         workplan: WorkPlan to execute
-        execution_id: Optional execution ID
+        execution_id: Optional execution ID (currently unused, defaults to None)
         
     Returns:
         ExecutionResult with execution outcome
