@@ -50,4 +50,6 @@ MANDATORY: The AI MUST always verify its answers before responding to any user q
 
 MANDATORY: The AI must read README.md in the root directory at the start of each new chat. This file describes the tool usage and conventions for running and testing VoxLogicA.
 
+MANDATORY: The AI must read STATUS.md in the root directory at the start of each new chat and summarize its contents in the first message. This file contains the current development status, priorities, and next steps for the VoxLogicA-2 project.
+
 MANDATORY: For all testing and usage, the AI must use the main executable script (./voxlogica) as an end user would, not by invoking Python modules directly (e.g., not with python -m or similar). All CLI and API usage must follow the documented user workflow.
