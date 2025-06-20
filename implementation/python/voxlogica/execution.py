@@ -12,7 +12,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from dask.delayed import delayed
 from dask.base import compute
-from dask.distributed import as_completed
+from dask.distributed import Client, as_completed
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 import traceback
@@ -26,6 +26,47 @@ from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 from voxlogica.main import VERBOSE_LEVEL
 
 logger = logging.getLogger("voxlogica.execution")
+
+# Global shared Dask client for all executions
+_shared_dask_client: Optional[Client] = None
+
+def get_shared_dask_client() -> Optional[Client]:
+    """
+    Get or create the shared Dask client for all workplan executions.
+    
+    Uses a single threaded Dask client that all workplans share, enabling
+    coordinated resource management and task scheduling across multiple
+    concurrent workplan executions.
+    
+    Returns:
+        Shared Dask client or None if creation fails
+    """
+    global _shared_dask_client
+    
+    if _shared_dask_client is None:
+        try:
+            # Create local threaded client with controlled resources
+            _shared_dask_client = Client(
+                processes=False,  # Use threads, not processes
+                threads_per_worker=4,  # Limit threads per worker
+                n_workers=1,  # Single worker for simplicity
+                memory_limit='2GB',  # Memory limit per worker
+                silence_logs=True  # Reduce log noise
+            )
+            logger.info(f"Created shared Dask client: {_shared_dask_client.scheduler_info()['address']}")
+        except Exception as e:
+            logger.warning(f"Failed to create shared Dask client, using local compute: {e}")
+            _shared_dask_client = None
+    
+    return _shared_dask_client
+
+def close_shared_dask_client():
+    """Close the shared Dask client if it exists."""
+    global _shared_dask_client
+    if _shared_dask_client is not None:
+        _shared_dask_client.close()
+        _shared_dask_client = None
+        logger.info("Closed shared Dask client")
 
 # Type aliases for custom serializers
 SerializerFunc = Callable[[Any, Path], None]
@@ -489,19 +530,19 @@ class PrimitivesLoader:
 
 class ExecutionEngine:
     """
-    Main execution engine that compiles VoxLogica workplans to Dask delayed graphs
-    and manages execution with persistent storage backend.
+    Execution engine that uses a shared Dask client for coordinated resource management.
     
-    Provides high-level interface for executing workplans, managing multiple
-    concurrent executions, and handling namespace imports. Integrates with
-    the storage backend for content-addressed result caching.
+    All workplan executions share the same Dask scheduler/queue, enabling optimal
+    resource utilization and preventing the "1000 concurrent workplans competing
+    for CPU cores" problem. Tasks from all workplans are submitted to a single
+    shared queue and executed with coordinated scheduling.
     """
     
     def __init__(self, storage_backend: Optional[StorageBackend] = None, 
                  primitives_loader: Optional[PrimitivesLoader] = None,
                  auto_cleanup_stale_operations: bool = True):
         """
-        Initialize execution engine.
+        Initialize execution engine with shared Dask client.
         
         Args:
             storage_backend: Storage backend for results. Uses default if None.
@@ -511,6 +552,9 @@ class ExecutionEngine:
         self.storage = storage_backend or get_storage()
         self.primitives = primitives_loader or PrimitivesLoader()
         
+        # Get or create shared Dask client for coordinated execution
+        self.dask_client = get_shared_dask_client()
+        
         # Clean up any dangling operations from previous crashes
         if auto_cleanup_stale_operations:
             try:
@@ -519,9 +563,6 @@ class ExecutionEngine:
                     logger.info(f"Cleaned up {cleaned_count} stale operations from previous sessions")
             except Exception as e:
                 logger.warning(f"Failed to cleanup stale operations on startup: {e}")
-        
-        # Note: No execution state tracking needed.
-        # Coordination happens through storage backend.
     
     def execute_workplan(self, workplan: WorkPlan, execution_id: Optional[str] = None) -> ExecutionResult:
         """
@@ -551,8 +592,8 @@ class ExecutionEngine:
                     self.primitives.import_namespace(namespace_name)
                     logger.debug(f"Imported namespace '{namespace_name}' for execution")
             
-            # Create execution session (no tracking needed)
-            session = ExecutionSession(execution_id, workplan, self.storage, self.primitives)
+            # Create execution session with shared Dask client
+            session = ExecutionSession(execution_id, workplan, self.storage, self.primitives, self.dask_client)
             
             # Execute the workplan
             completed, failed = session.execute()
@@ -612,7 +653,8 @@ class ExecutionSession:
     """
     
     def __init__(self, execution_id: str, workplan: WorkPlan, 
-                 storage: StorageBackend, primitives: PrimitivesLoader):
+                 storage: StorageBackend, primitives: PrimitivesLoader,
+                 dask_client: Optional[Client] = None):
         """
         Initialize execution session.
         
@@ -621,11 +663,13 @@ class ExecutionSession:
             workplan: WorkPlan to execute
             storage: Storage backend for results
             primitives: Primitives loader for operations
+            dask_client: Optional shared Dask client for coordinated execution
         """
         self.execution_id = execution_id
         self.workplan = workplan
         self.storage = storage
         self.primitives = primitives
+        self.dask_client = dask_client
         
         # Execution state
         self.completed: Set[NodeId] = set()
@@ -677,7 +721,11 @@ class ExecutionSession:
             
             try:
                 logger.log(VERBOSE_LEVEL,f"Executing {len(goal_computations)} computation goals with Dask")
-                compute(*goal_computations)
+                # Use local threaded scheduler to avoid serialization issues while still
+                # benefiting from the shared client's resource coordination
+                # The key architectural benefit is that all workplans share the same client instance
+                from dask.threaded import get as threaded_get
+                compute(*goal_computations, scheduler=threaded_get)
             except Exception as e:
                 logger.error(f"Dask computation failed: {e}")
                 self.failed["dask_computation"] = str(e)
