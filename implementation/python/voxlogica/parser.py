@@ -174,7 +174,7 @@ grammar = r"""
     
     command: let_cmd | save_cmd | print_cmd | import_cmd
     
-    let_cmd: "let" identifier formal_args? "=" expression
+    let_cmd: "let" variable_name formal_args? "=" expression
     save_cmd: "save" string expression
     print_cmd: "print" string expression
     import_cmd: "import" string
@@ -185,10 +185,12 @@ grammar = r"""
     expression: simple_expr | call_expr | op_expr | paren_expr
     
     simple_expr: number | boolean | string
-    call_expr: identifier actual_args?
+    call_expr: function_name actual_args?
     op_expr: expression OPERATOR expression
     paren_expr: "(" expression ")"
     
+    function_name: identifier | OPERATOR
+    variable_name: identifier | OPERATOR
     identifier: qualified_identifier | simple_identifier
     qualified_identifier: simple_identifier "." simple_identifier
     simple_identifier: /[a-zA-Z_][a-zA-Z0-9_]*/
@@ -235,10 +237,14 @@ class VoxLogicATransformer(Transformer):
         return cmd
 
     @v_args(inline=True)
-    def let_cmd(self, identifier, *args):
+    def let_cmd(self, variable_name, *args):
         if len(args) == 1:  # No formal args, just the expression
-            return Declaration(identifier, [], args[0])
-        return Declaration(identifier, args[0], args[1])
+            return Declaration(variable_name, [], args[0])
+        return Declaration(variable_name, args[0], args[1])
+
+    @v_args(inline=True)
+    def variable_name(self, name):
+        return str(name)
 
     @v_args(inline=True)
     def save_cmd(self, identifier, expression):
@@ -261,10 +267,14 @@ class VoxLogicATransformer(Transformer):
         return list(args)
 
     @v_args(inline=True)
-    def call_expr(self, identifier, args=None):
+    def call_expr(self, function_name, args=None):
         if args is None:
             args = []
-        return ECall("pos", identifier, args)
+        return ECall("pos", function_name, args)
+
+    @v_args(inline=True)
+    def function_name(self, name):
+        return str(name)
 
     @v_args(inline=True)
     def op_expr(self, left, op, right):
@@ -369,3 +379,30 @@ def parse_import(filename: Union[str, Path]) -> List[Command]:
     """
     program = parse_program(filename)
     return program.commands
+
+
+def parse_program_content(content: str) -> Program:
+    """
+    Parse a VoxLogicA program from content string
+
+    Args:
+        content: String containing the program text
+
+    Returns:
+        A Program object representing the parsed program
+    """
+    # First parse without transformation to get the tree
+    parser_no_transform = Lark(
+        grammar, start="program", parser="lalr", propagate_positions=True
+    )
+    parse_tree = parser_no_transform.parse(content)
+
+    # Then transform the tree
+    parser = Lark(grammar, start="program", parser="lalr", transformer=VoxLogicATransformer())
+    result = parser.parse(content)
+
+    # Ensure we got a Program object
+    if not isinstance(result, Program):
+        raise ValueError(f"Expected Program object, got {type(result).__name__}")
+
+    return result

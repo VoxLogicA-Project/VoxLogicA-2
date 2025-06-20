@@ -20,9 +20,4 @@ def list_primitives():
         'division': 'Divide the first number by the second',
         'print_primitive': 'Print a message and value',
         'index': 'Return the element at position idx from the tuple_value',
-        '+': 'Add two numbers together (alias for addition)',
-        '-': 'Subtract the second number from the first (alias for subtraction)',
-        '*': 'Multiply two numbers together (alias for multiplication)',
-        '/': 'Divide the first number by the second (alias for division)',
-        'print': 'Print a message and value (alias for print_primitive)',
     }

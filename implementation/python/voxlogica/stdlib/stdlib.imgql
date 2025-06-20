@@ -1,0 +1,14 @@
+// VoxLogicA Standard Library
+// 
+// This file defines common operator aliases and is automatically imported
+// before any user code is processed.
+
+// Import the default namespace to make basic primitives available
+import "default"
+
+// Define operator aliases as functions that call the primitives
+let +(left, right) = addition(left, right)
+let -(left, right) = subtraction(left, right)
+let *(left, right) = multiplication(left, right)
+let /(left, right) = division(left, right)
+let print(message, value) = print_primitive(message, value)

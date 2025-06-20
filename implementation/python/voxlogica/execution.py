@@ -463,11 +463,6 @@ class PrimitivesLoader:
                 # Check direct name match
                 if operator_name in primitives:
                     return primitives[operator_name]
-                
-                # Check operator aliases for default namespace
-                if namespace_name == 'default':
-                    if operator_name in primitives:
-                        return primitives[operator_name]
         
         return None
  

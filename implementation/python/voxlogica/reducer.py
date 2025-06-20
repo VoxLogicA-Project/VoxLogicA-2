@@ -13,6 +13,7 @@ from typing import (
     Tuple
 )
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import hashlib
 import canonicaljson
@@ -32,6 +33,9 @@ from voxlogica.parser import (
     Print,
     Import,
     Program,
+    parse_program,
+    parse_program_content,
+    parse_import,
 )
 
 # Type aliases
@@ -289,8 +293,6 @@ def reduce_command(
             return env, []
         else:
             # This is a file import - use existing logic
-            from .parser import parse_import
-            
             try:
                 import_commands = parse_import(import_path)
                 return env, import_commands
@@ -308,6 +310,26 @@ def reduce_program(program: Program) -> WorkPlan:
     work_plan = WorkPlan()
     env = Environment()
     parsed_imports: Set[str] = set()
+    
+    # Auto-import stdlib before processing user commands
+    stdlib_path = Path(__file__).parent / "stdlib" / "stdlib.imgql"
+    if stdlib_path.exists():
+        try:
+            with open(stdlib_path, 'r', encoding='utf-8') as f:
+                stdlib_content = f.read()
+            
+            # Parse and process stdlib
+            stdlib_program = parse_program_content(stdlib_content)
+            
+            # Process stdlib commands first
+            stdlib_commands = list(stdlib_program.commands)
+            while stdlib_commands:
+                command = stdlib_commands.pop(0)
+                env, imports = reduce_command(env, work_plan, parsed_imports, command)
+                stdlib_commands = imports + stdlib_commands
+                
+        except Exception as e:
+            logging.warning(f"Failed to load stdlib: {e}")
     
     # Make a copy of the commands list that we can modify
     commands = list(program.commands)
