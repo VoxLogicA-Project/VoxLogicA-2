@@ -195,9 +195,10 @@ grammar = r"""
     qualified_identifier: simple_identifier "." simple_identifier
     simple_identifier: /[a-zA-Z_][a-zA-Z0-9_]*/
     
-    // Make the OPERATOR pattern more specific to exclude "//" sequence and "."
+    // Make the OPERATOR pattern more specific to exclude "//" sequence, ".", and uppercase letters
     // Removed "." from operator pattern to avoid conflicts with qualified identifiers
-    OPERATOR: /(?!\/{2})[A-Z#;:_'|!$%&\/^=*\-+<>?@~\\]+/
+    // Removed uppercase letters to avoid conflicts with function/constant names
+    OPERATOR: /(?!\/{2})[#;:_'|!$%&\/^=*\-+<>?@~\\]+/
     number: SIGNED_NUMBER -> float
     boolean: "true" -> true
            | "false" -> false
