@@ -5,7 +5,6 @@ Contains basic arithmetic and logic primitives that are available
 as unqualified operators for backward compatibility.
 """
 
-import os
 import importlib
 from pathlib import Path
 
