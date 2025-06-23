@@ -28,6 +28,7 @@ TEST_MODULES = [
     "tests.test_crash_behavior.test_crash_behavior",
     "tests.test_db_storage.test_db_storage", 
     "tests.test_simpleitk_direct.test_simpleitk_direct",
+    "tests.test_enqueue_primitive.test_enqueue_primitive",
 ]
 
 

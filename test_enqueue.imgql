@@ -1,0 +1,16 @@
+// Test file for the enqueue primitive
+// This demonstrates a primitive enqueueing another primitive
+
+import "test"
+
+// Test 1: Enqueue a fibonacci computation
+let enqueued_fib = enqueue("fibonacci", 10)
+print "enqueue_result" enqueued_fib
+
+// Test 2: Enqueue a timewaste computation  
+let enqueued_timewaste = enqueue("timewaste", 5, 100)
+print "enqueue_timewaste" enqueued_timewaste
+
+// Test 3: Chain enqueue operations
+let nested_enqueue = enqueue("enqueue", "fibonacci", 5)
+print "nested_enqueue" nested_enqueue
