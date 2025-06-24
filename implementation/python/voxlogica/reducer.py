@@ -127,7 +127,7 @@ class WorkPlan:
 
     def _expand_for_loop(self, for_loop_comp: ForLoopCompilation) -> NodeId:
         """Expand a for loop using Dask bags"""
-        logger.info(f"Expanding for loop: {for_loop_comp}")
+        logger.debug(f"Expanding for loop: {for_loop_comp}")
         
         # First, evaluate the iterable expression to get the dataset
         iterable_id = reduce_expression(
@@ -157,7 +157,7 @@ class WorkPlan:
         map_node = Operation(operator="dask_map", arguments=map_args)
         map_id = self.add_node(map_node)
         
-        logger.info(f"Created dask_map operation: {map_id}")
+        logger.debug(f"Created dask_map operation: {map_id}")
         return map_id
 
     @property
@@ -319,7 +319,7 @@ def reduce_expression(
 
 def _expand_for_loop_now(for_loop_comp: ForLoopCompilation, work_plan: 'WorkPlan') -> NodeId:
     """Expand a for loop immediately during expression reduction"""
-    logger.info(f"Expanding for loop: {for_loop_comp}")
+    logger.debug(f"Expanding for loop: {for_loop_comp}")
     
     # First, evaluate the iterable expression to get the dataset
     iterable_id = reduce_expression(
@@ -346,7 +346,7 @@ def _expand_for_loop_now(for_loop_comp: ForLoopCompilation, work_plan: 'WorkPlan
     map_node = Operation(operator="dask_map", arguments=map_args)
     map_id = work_plan.add_node(map_node)
     
-    logger.info(f"Created dask_map operation: {map_id}")
+    logger.debug(f"Created dask_map operation: {map_id}")
     return map_id
 
 

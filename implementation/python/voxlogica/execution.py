@@ -50,15 +50,26 @@ def get_shared_dask_client() -> Optional[Client]:
             config.set({'distributed.diagnostics.enabled': False})
             config.set({'distributed.admin.bokeh': False})
             
-            # Create local threaded client with controlled resources
-            _shared_dask_client = Client(
-                processes=False,  # Use threads, not processes
-                threads_per_worker=4,  # Limit threads per worker
-                n_workers=1,  # Single worker for simplicity
-                memory_limit='2GB',  # Memory limit per worker
-                silence_logs=True,  # Reduce log noise
-                dashboard_address=None  # Disable dashboard to eliminate Bokeh/Tornado messages
-            )
+            # Suppress the jupyter-server-proxy warning specifically
+            import logging
+            proxy_logger = logging.getLogger('distributed.http.proxy')
+            original_level = proxy_logger.level
+            proxy_logger.setLevel(logging.WARNING)  # Suppress INFO messages from proxy logger
+            
+            try:
+                # Create local threaded client with controlled resources
+                _shared_dask_client = Client(
+                    processes=False,  # Use threads, not processes
+                    threads_per_worker=4,  # Limit threads per worker
+                    n_workers=1,  # Single worker for simplicity
+                    memory_limit='2GB',  # Memory limit per worker
+                    silence_logs=True,  # Reduce log noise
+                    dashboard_address=None  # Disable dashboard to eliminate Bokeh/Tornado messages
+                )
+            finally:
+                # Restore original logging level
+                proxy_logger.setLevel(original_level)
+                
             logger.debug(f"Created shared Dask client: {_shared_dask_client.scheduler_info()['address']}")
         except Exception as e:
             logger.warning(f"Failed to create shared Dask client, using local compute: {e}")
