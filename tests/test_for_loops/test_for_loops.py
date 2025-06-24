@@ -14,7 +14,7 @@ root_dir = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(root_dir / "implementation" / "python"))
 
 from voxlogica.parser import parse_program_content
-from voxlogica.reducer import reduce_program
+from voxlogica.reducer import reduce_program, ConstantValue
 
 
 def test_for_loops():
@@ -48,7 +48,13 @@ save "incremented" result'''
     # Find the dask_map operation and check its body
     dask_map_op = next((op for op in ops2.values() if op.operator == "dask_map"), None)
     assert dask_map_op is not None, "Expected dask_map operation"
-    assert dask_map_op.arguments["variable"] == "x", f"Expected variable 'x', got {dask_map_op.arguments['variable']}"
+    
+    # Check that variable argument points to a ConstantValue containing "x"
+    variable_id = dask_map_op.arguments["variable"]
+    assert variable_id in work_plan2.nodes, f"Variable ID {variable_id} not found in nodes"
+    variable_node = work_plan2.nodes[variable_id]
+    assert isinstance(variable_node, ConstantValue), f"Expected ConstantValue for variable, got {type(variable_node)}"
+    assert variable_node.value == "x", f"Expected variable 'x', got {variable_node.value}"
     
     print("  ✓ Nested expressions work")
     

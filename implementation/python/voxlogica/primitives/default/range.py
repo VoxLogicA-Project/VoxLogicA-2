@@ -7,12 +7,13 @@ Implements range operation that returns a Dask bag for lazy for loop support.
 import dask.bag as db
 from typing import Union
 
-def execute(n: Union[int, float]) -> db.Bag:
+def execute(**kwargs) -> db.Bag:
     """
     Execute range operation that returns a Dask bag
     
     Args:
-        n: Upper limit for range (exclusive), must be a non-negative integer
+        **kwargs: Arguments passed as keyword arguments with numeric string keys
+                 Expected: {'0': n} where n is the upper limit for range (exclusive)
         
     Returns:
         Dask bag containing integers from 0 to n-1
@@ -21,6 +22,12 @@ def execute(n: Union[int, float]) -> db.Bag:
         ValueError: If n is negative or not an integer
     """
     try:
+        # Get the argument
+        if '0' not in kwargs:
+            raise ValueError("Range requires one argument: the upper limit n")
+        
+        n = kwargs['0']
+        
         # Convert to int if it's a float representing an integer
         if isinstance(n, float):
             if n.is_integer():

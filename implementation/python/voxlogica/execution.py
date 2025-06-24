@@ -847,7 +847,20 @@ class ExecutionSession:
             result = result.value
         # Execute the appropriate goal action
         if goal.operation == 'print':
-            logger.info(f"{goal.name}={result}")
+            # Use the print primitive to get user-friendly output
+            try:
+                print_primitive = self.primitives.load_primitive('print_primitive')
+                if print_primitive:
+                    # Call print primitive with proper arguments
+                    output = print_primitive(**{'0': goal.name, '1': result})
+                    # The print primitive already prints to console, so we just log for debugging
+                    logger.debug(f"Print output: {output}")
+                else:
+                    # Fallback to direct logging if print primitive not available
+                    logger.info(f"{goal.name}={result}")
+            except Exception as e:
+                logger.warning(f"Print primitive failed, using fallback: {e}")
+                logger.info(f"{goal.name}={result}")
         elif goal.operation == 'save':            
             self._save_result_to_file(result, goal.name, goal.id)
         else:

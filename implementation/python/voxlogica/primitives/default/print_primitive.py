@@ -1,29 +1,49 @@
 """
 Print primitive for VoxLogicA-2
 
-Implements print operation for displaying values.
+Implements print operation for displaying values, including Dask bags.
 Note: This is a simple implementation for testing.
 In a full execution system, print would be handled as a goal.
 """
 
-def execute(message, value):
+import dask.bag as db
+
+def execute(**kwargs):
     """
     Execute print operation
     
     Args:
-        message: Message string to print
-        value: Value to print
+        **kwargs: Arguments passed as keyword arguments with numeric string keys
+                 Expected: {'0': message, '1': value} where message is the label and value is the data to print
         
     Returns:
         The printed message (for chaining)
     """
     try:
+        # Get arguments
+        if '0' not in kwargs:
+            raise ValueError("Print requires two arguments: message and value")
+        if '1' not in kwargs:
+            raise ValueError("Print requires two arguments: message and value")
+        
+        message = kwargs['0']
+        value = kwargs['1']
+        
         # Remove quotes from message if present
         if isinstance(message, str):
             if message.startswith('"') and message.endswith('"'):
                 message = message[1:-1]
         
-        print(f"{message}: {value}")
-        return f"{message}: {value}"
+        # Handle Dask bags by computing their values
+        if isinstance(value, db.Bag):
+            # Compute the Dask bag to get actual values
+            computed_values = value.compute()
+            value_str = str(list(computed_values))
+        else:
+            value_str = str(value)
+        
+        output = f"{message}={value_str}"
+        print(output)
+        return output
     except Exception as e:
         raise ValueError(f"Print failed: {e}") from e

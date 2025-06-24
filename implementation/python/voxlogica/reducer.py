@@ -141,12 +141,17 @@ class WorkPlan:
         # The for loop "for x in iterable do body" becomes "map(lambda x: body, iterable)"
         # This will be represented as a "dask_map" operation
         
-        # For now, create a placeholder operation for the map
-        # In the full implementation, this would create a proper Dask bag operation
+        # Create constant values for the variable name and body expression
+        variable_const = ConstantValue(for_loop_comp.variable)
+        variable_id = self.add_node(variable_const)
+        
+        body_const = ConstantValue(str(for_loop_comp.body_expr))
+        body_id = self.add_node(body_const)
+        
         map_args = {
             "0": iterable_id,  # The iterable (should be a Dask bag)
-            "variable": for_loop_comp.variable,  # The loop variable name
-            "body": str(for_loop_comp.body_expr)  # The body expression (as string for now)
+            "variable": variable_id,  # The loop variable name as constant
+            "body": body_id  # The body expression (as string for now) as constant
         }
         
         map_node = Operation(operator="dask_map", arguments=map_args)
@@ -324,11 +329,18 @@ def _expand_for_loop_now(for_loop_comp: ForLoopCompilation, work_plan: 'WorkPlan
         for_loop_comp.stack
     )
     
+    # Create constant values for the variable name and body expression
+    variable_const = ConstantValue(for_loop_comp.variable)
+    variable_id = work_plan.add_node(variable_const)
+    
+    body_const = ConstantValue(str(for_loop_comp.body_expr.to_syntax()))
+    body_id = work_plan.add_node(body_const)
+    
     # Create a map operation that applies the body to each element
     map_args = {
         "0": iterable_id,  # The iterable (should be a Dask bag)
-        "variable": for_loop_comp.variable,  # The loop variable name
-        "body": str(for_loop_comp.body_expr.to_syntax())  # The body expression (as string for now)
+        "variable": variable_id,  # The loop variable name as constant
+        "body": body_id  # The body expression (as string for now) as constant
     }
     
     map_node = Operation(operator="dask_map", arguments=map_args)

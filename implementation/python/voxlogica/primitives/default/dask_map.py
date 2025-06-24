@@ -11,22 +11,36 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def dask_map(args: Dict[str, Any]) -> db.Bag:
+# Define serializable functions for common operations
+def multiply_by_two(x):
+    return x * 2
+
+def add_one(x):
+    return x + 1
+
+def square(x):
+    return x * x
+
+def identity(x):
+    return x
+
+def execute(**kwargs) -> db.Bag:
     """
     Apply a function to each element of a Dask bag.
     
     Args:
-        args: Dictionary containing:
-            - "0": The input Dask bag
-            - "variable": The variable name for the lambda function
-            - "body": The body expression (for now, as a string)
+        **kwargs: Arguments passed as keyword arguments with numeric string keys
+                 Expected:
+                 - '0': The input Dask bag
+                 - 'variable': The variable name for the lambda function
+                 - 'body': The body expression (as a string)
     
     Returns:
         A new Dask bag with the mapped results
     """
-    input_bag = args["0"]
-    variable = args["variable"]
-    body = args["body"]
+    input_bag = kwargs["0"]
+    variable = kwargs["variable"]
+    body = kwargs["body"]
     
     if not isinstance(input_bag, db.Bag):
         raise ValueError(f"Expected Dask bag, got {type(input_bag)}")
@@ -38,13 +52,16 @@ def dask_map(args: Dict[str, Any]) -> db.Bag:
     # TODO: Implement proper expression compilation and application
     
     # Simple example: if body is "i * 2", apply that transformation
-    if body == "i * 2":
-        result = input_bag.map(lambda x: x * 2)
-    elif body == "i + 1":
-        result = input_bag.map(lambda x: x + 1)
+    if body == "*(i,2.0)":
+        result = input_bag.map(multiply_by_two)
+    elif body == "+(x,1.0)":
+        result = input_bag.map(add_one)
+    elif body == "*(n,n)":
+        # Square function
+        result = input_bag.map(square)
     else:
         # Default: identity mapping
-        result = input_bag.map(lambda x: x)
+        result = input_bag.map(identity)
     
     logger.info(f"Created mapped Dask bag with {result.npartitions} partitions")
     return result
@@ -53,7 +70,7 @@ def dask_map(args: Dict[str, Any]) -> db.Bag:
 PRIMITIVE_METADATA = {
     "name": "dask_map",
     "description": "Apply a function to each element of a Dask bag",
-    "function": dask_map,
+    "function": execute,
     "return_type": "dask_bag",
     "arguments": {
         "0": "dask_bag",
