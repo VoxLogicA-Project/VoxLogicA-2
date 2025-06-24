@@ -33,3 +33,4 @@ implementation/python/venv/
 # Test artifacts
 *.json
 test.bin
+output.nii.gz
