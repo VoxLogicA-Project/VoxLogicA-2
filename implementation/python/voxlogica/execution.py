@@ -45,15 +45,21 @@ def get_shared_dask_client() -> Optional[Client]:
     
     if _shared_dask_client is None:
         try:
+            # Configure Dask to disable diagnostics and dashboard
+            from dask import config
+            config.set({'distributed.diagnostics.enabled': False})
+            config.set({'distributed.admin.bokeh': False})
+            
             # Create local threaded client with controlled resources
             _shared_dask_client = Client(
                 processes=False,  # Use threads, not processes
                 threads_per_worker=4,  # Limit threads per worker
                 n_workers=1,  # Single worker for simplicity
                 memory_limit='2GB',  # Memory limit per worker
-                silence_logs=True  # Reduce log noise
+                silence_logs=True,  # Reduce log noise
+                dashboard_address=None  # Disable dashboard to eliminate Bokeh/Tornado messages
             )
-            logger.info(f"Created shared Dask client: {_shared_dask_client.scheduler_info()['address']}")
+            logger.debug(f"Created shared Dask client: {_shared_dask_client.scheduler_info()['address']}")
         except Exception as e:
             logger.warning(f"Failed to create shared Dask client, using local compute: {e}")
             _shared_dask_client = None
@@ -66,7 +72,7 @@ def close_shared_dask_client():
     if _shared_dask_client is not None:
         _shared_dask_client.close()
         _shared_dask_client = None
-        logger.info("Closed shared Dask client")
+        logger.debug("Closed shared Dask client")
 
 # Type aliases for custom serializers
 SerializerFunc = Callable[[Any, Path], None]

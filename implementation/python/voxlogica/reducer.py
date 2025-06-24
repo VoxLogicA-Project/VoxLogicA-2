@@ -10,7 +10,8 @@ from typing import (
     Set,
     Optional,
     Sequence,
-    Tuple
+    Tuple,
+    Union
 )
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,12 +22,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from voxlogica.lazy import LazyCompilation, ForLoopCompilation
 from voxlogica.parser import (
     Expression,
     ECall,
     ENumber,
     EBool,
     EString,
+    EFor,
     Command,
     Declaration,
     Save,
@@ -66,10 +69,13 @@ class Goal:
 
 @dataclass
 class WorkPlan:
-    """A topologically sorted DAG of operations with goals"""
+    """A purely lazy DAG of operations with goals - compilation happens on-demand"""
     nodes: Dict[NodeId, Node] = field(default_factory=dict)
     goals: List[Goal] = field(default_factory=list)
     _imported_namespaces: Set[str] = field(default_factory=set)
+    lazy_compilations: List[LazyCompilation] = field(default_factory=list)
+    for_loop_compilations: List[ForLoopCompilation] = field(default_factory=list)
+    _expanded: bool = False
 
     def add_goal(self, operation: str, operation_id: NodeId, name: str) -> None:
         """Add a goal to the work plan"""
@@ -94,9 +100,66 @@ class WorkPlan:
             self.nodes[operation_id] = node
         return operation_id
 
+    def add_lazy_compilation(self, lazy_comp: LazyCompilation) -> None:
+        """Add a lazy compilation to be processed on-demand"""
+        self.lazy_compilations.append(lazy_comp)
+
+    def add_for_loop_compilation(self, for_loop_comp: ForLoopCompilation) -> None:
+        """Add a for loop compilation to be processed on-demand"""
+        self.for_loop_compilations.append(for_loop_comp)
+
+    def _expand_and_compile_all(self) -> None:
+        """Expand all lazy compilations - triggered on first access to operations"""
+        if self._expanded:
+            return
+            
+        # Process all lazy compilations
+        for lazy_comp in self.lazy_compilations:
+            # For now, we'll process them immediately
+            # TODO: Implement parameter binding and lazy evaluation
+            pass
+
+        # Process all for loop compilations with Dask bag expansion
+        for for_loop_comp in self.for_loop_compilations:
+            self._expand_for_loop(for_loop_comp)
+            
+        self._expanded = True
+
+    def _expand_for_loop(self, for_loop_comp: ForLoopCompilation) -> NodeId:
+        """Expand a for loop using Dask bags"""
+        logger.info(f"Expanding for loop: {for_loop_comp}")
+        
+        # First, evaluate the iterable expression to get the dataset
+        iterable_id = reduce_expression(
+            for_loop_comp.environment, 
+            self, 
+            for_loop_comp.iterable_expr,
+            for_loop_comp.stack
+        )
+        
+        # Create a map operation that applies the body to each element
+        # The for loop "for x in iterable do body" becomes "map(lambda x: body, iterable)"
+        # This will be represented as a "dask_map" operation
+        
+        # For now, create a placeholder operation for the map
+        # In the full implementation, this would create a proper Dask bag operation
+        map_args = {
+            "0": iterable_id,  # The iterable (should be a Dask bag)
+            "variable": for_loop_comp.variable,  # The loop variable name
+            "body": str(for_loop_comp.body_expr)  # The body expression (as string for now)
+        }
+        
+        map_node = Operation(operator="dask_map", arguments=map_args)
+        map_id = self.add_node(map_node)
+        
+        logger.info(f"Created dask_map operation: {map_id}")
+        return map_id
+
     @property
     def operations(self) -> Dict[NodeId, Operation]:
-        """Return only Operation nodes (not ConstantValue) for compatibility with execution/converters."""
+        """Return only Operation nodes - triggers lazy compilation on first access"""
+        if not self._expanded:
+            self._expand_and_compile_all()
         return {k: v for k, v in self.nodes.items() if isinstance(v, Operation)}
 
     @property
@@ -230,9 +293,49 @@ def reduce_expression(
             func_stack: Stack = [(expr.identifier, expr.position)] + current_stack
             return reduce_expression(func_env, work_plan, val.expression, func_stack)
 
+    elif isinstance(expr, EFor):
+        # Handle for loop expression - add to lazy compilation and return a future result ID
+        for_loop_comp = ForLoopCompilation(
+            variable=expr.variable,
+            iterable_expr=expr.iterable,
+            body_expr=expr.body,
+            environment=env,
+            stack=current_stack
+        )
+        
+        # Immediately expand the for loop to get the map operation
+        map_id = _expand_for_loop_now(for_loop_comp, work_plan)
+        return map_id
+
     # This should never happen if the parser is correct
     raise RuntimeError("Internal error in reducer: unknown expression type")
     return ""
+
+
+def _expand_for_loop_now(for_loop_comp: ForLoopCompilation, work_plan: 'WorkPlan') -> NodeId:
+    """Expand a for loop immediately during expression reduction"""
+    logger.info(f"Expanding for loop: {for_loop_comp}")
+    
+    # First, evaluate the iterable expression to get the dataset
+    iterable_id = reduce_expression(
+        for_loop_comp.environment, 
+        work_plan, 
+        for_loop_comp.iterable_expr,
+        for_loop_comp.stack
+    )
+    
+    # Create a map operation that applies the body to each element
+    map_args = {
+        "0": iterable_id,  # The iterable (should be a Dask bag)
+        "variable": for_loop_comp.variable,  # The loop variable name
+        "body": str(for_loop_comp.body_expr.to_syntax())  # The body expression (as string for now)
+    }
+    
+    map_node = Operation(operator="dask_map", arguments=map_args)
+    map_id = work_plan.add_node(map_node)
+    
+    logger.info(f"Created dask_map operation: {map_id}")
+    return map_id
 
 
 def reduce_command(

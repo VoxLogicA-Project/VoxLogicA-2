@@ -98,6 +98,22 @@ class EString(Expression):
 
 
 @dataclass
+class EFor(Expression):
+    """For loop expression"""
+
+    position: Position
+    variable: str
+    iterable: Expression
+    body: Expression
+
+    def __str__(self) -> str:
+        return f"for {self.variable} in {self.iterable} do {self.body}"
+
+    def to_syntax(self) -> str:
+        return f"for {self.variable} in {self.iterable.to_syntax()} do {self.body.to_syntax()}"
+
+
+@dataclass
 class Command:
     """Base class for commands in the VoxLogicA language"""
 
@@ -182,12 +198,13 @@ grammar = r"""
     formal_args: "(" identifier ("," identifier)* ")"
     actual_args: "(" expression ("," expression)* ")"
     
-    expression: simple_expr | call_expr | op_expr | paren_expr
+    expression: simple_expr | call_expr | op_expr | paren_expr | for_expr
     
     simple_expr: number | boolean | string
     call_expr: function_name actual_args?
     op_expr: expression OPERATOR expression
     paren_expr: "(" expression ")"
+    for_expr: "for" identifier "in" expression "do" expression
     
     function_name: identifier | OPERATOR
     variable_name: identifier | OPERATOR
@@ -284,6 +301,10 @@ class VoxLogicATransformer(Transformer):
     @v_args(inline=True)
     def paren_expr(self, expr):
         return expr
+
+    @v_args(inline=True)
+    def for_expr(self, variable, iterable, body):
+        return EFor("pos", str(variable), iterable, body)
 
     @v_args(inline=True)
     def simple_expr(self, value):

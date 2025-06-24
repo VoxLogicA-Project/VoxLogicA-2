@@ -136,6 +136,64 @@ def setup_logging(debug: bool = False, verbose: bool = False) -> None:
     root.handlers = []  # Remove any existing handlers
     root.addHandler(handler)
     root.setLevel(log_level)
+    
+    # Set Dask-related loggers to DEBUG level to reduce noise
+    # This prevents messages like "lost all workers", "connection to inproc://", "closing scheduler" etc.
+    dask_loggers = [
+        'distributed',
+        'distributed.core',
+        'distributed.scheduler',
+        'distributed.worker',
+        'distributed.client', 
+        'distributed.comm',
+        'distributed.protocol',
+        'distributed.utils',
+        'distributed.nanny',
+        'distributed.process',
+        'distributed.deploy',
+        'distributed.diagnostics',
+        'distributed.dashboard',
+        'distributed.dashboard.core',
+        'distributed.preloading',
+        'dask',
+        'dask.bag',
+        'dask.core',
+        'dask.delayed',
+        'dask.distributed',
+        'bokeh',
+        'bokeh.server',
+        'bokeh.server.server',
+        'tornado',
+        'tornado.access',
+        'tornado.application',
+        'tornado.general',
+        'asyncio',
+        'fsspec',
+        'fsspec.asyn'
+    ]
+    
+    for logger_name in dask_loggers:
+        dask_logger = logging.getLogger(logger_name)
+        dask_logger.setLevel(logging.DEBUG if debug else logging.WARNING)
+    
+    # Also suppress warnings module for Dask-related warnings
+    import warnings
+    if not debug:
+        warnings.filterwarnings("ignore", category=UserWarning, module="distributed")
+        warnings.filterwarnings("ignore", category=UserWarning, module="dask") 
+        warnings.filterwarnings("ignore", category=UserWarning, module="bokeh")
+        warnings.filterwarnings("ignore", message=".*jupyter-server-proxy.*")
+        warnings.filterwarnings("ignore", message=".*diagnostics web server.*")
+        warnings.filterwarnings("ignore", message=".*To route to workers.*")
+        
+        # Try to silence specific Dask diagnostic prints
+        try:
+            import distributed.diagnostics
+            # Monkey patch to disable the message if possible
+            if hasattr(distributed.diagnostics, 'install_jupyter_server_proxy_warning'):
+                distributed.diagnostics.install_jupyter_server_proxy_warning = lambda: None
+        except (ImportError, AttributeError):
+            pass
 
 
 def handle_cli_feature(feature_name: str, **kwargs: Any) -> None:

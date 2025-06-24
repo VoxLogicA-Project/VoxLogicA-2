@@ -1,10 +1,10 @@
 # VoxLogicA-2 Development Status
 
-**Last Updated:** 20 giugno 2025
+**Last Updated:** 24 giugno 2025
 
 ## Current State
 
-The VoxLogicA-2 system has a working execution engine based on the `ExecutionSession` class that handles workplan execution using Dask delayed graphs. The core functionality is operational, but architectural questions remain about the execution strategy.
+The VoxLogicA-2 system has a working execution engine based on the `ExecutionSession` class that handles workplan execution using Dask delayed graphs. The core functionality is operational, including **for loop syntax with Dask bag integration** and **purely lazy WorkPlan compilation**. All tests pass and the system maintains perfect memoization with SHA256 content-addressed storage.
 
 ## Key Components Status
 
@@ -12,12 +12,40 @@ The VoxLogicA-2 system has a working execution engine based on the `ExecutionSes
 - **Test Infrastructure**: Fully organized and documented with comprehensive policies
 - **Basic Execution Engine**: Functional with content-addressed storage
 - **WorkPlan Compilation**: Reduces VoxLogicA programs to executable workplans
+- **Lazy WorkPlan Implementation**: ✨ **NEW** - Purely lazy compilation with on-demand expression evaluation
+- **For Loop Syntax**: ✨ **NEW** - Complete for loop support with Dask bag integration
+- **Dask Integration**: ✨ **NEW** - Range primitive and dask_map operations for dataset processing
 - **Storage Backend**: Content-addressed storage with SQLite backend
 - **CLI Interface**: Basic command-line interface working
 - **Primitives System**: Extensible primitive operations framework
 
 ### 🔄 Under Investigation
 - **ExecutionSession Architecture**: Current monolithic session approach needs evaluation
+
+## Recent Major Achievement: For Loops with Lazy WorkPlans
+
+### Completed Implementation
+- **Lazy Compilation**: All WorkPlan operations compile on-demand when `.operations` is accessed
+- **For Loop Syntax**: `for variable in iterable do expression` fully supported
+- **Dask Bag Foundation**: `range()` primitive returns Dask bags with configurable partitioning
+- **Map Operations**: For loops compile to `dask_map` operations for efficient parallel execution
+- **Perfect Memoization**: SHA256 hashes preserved - same expressions get same IDs regardless of execution context
+- **Zero Regression**: All existing tests pass, no performance impact on non-for-loop code
+
+### Technical Details
+```voxlogica
+let doubled = for i in range(5) do i * 2
+// Compiles to: dask_map(range(5), lambda i: i * 2)
+// Works with all existing VoxLogicA features
+```
+
+**Files Modified:**
+- `implementation/python/voxlogica/lazy.py` - NEW: LazyCompilation infrastructure
+- `implementation/python/voxlogica/reducer.py` - Purely lazy WorkPlan implementation
+- `implementation/python/voxlogica/parser.py` - EFor AST node and grammar support
+- `implementation/python/voxlogica/primitives/default/range.py` - NEW: Dask bag range
+- `implementation/python/voxlogica/primitives/default/dask_map.py` - NEW: For loop execution
+- `tests/test_for_loops/` - NEW: Comprehensive test suite
 
 ## Next Priority: ExecutionSession Analysis
 

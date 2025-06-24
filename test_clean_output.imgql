@@ -1,0 +1,6 @@
+// Test for loop to see clean output
+let numbers = for i in range(5) do i * 2
+print "doubled" numbers
+
+let squares = for x in range(3) do x * x  
+print "squares" squares
