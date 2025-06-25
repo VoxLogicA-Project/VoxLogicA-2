@@ -114,6 +114,22 @@ class EFor(Expression):
 
 
 @dataclass
+class ELet(Expression):
+    """Let expression for local variable binding"""
+
+    position: Position
+    variable: str
+    value: Expression
+    body: Expression
+
+    def __str__(self) -> str:
+        return f"let {self.variable} = {self.value} in {self.body}"
+
+    def to_syntax(self) -> str:
+        return f"let {self.variable} = {self.value.to_syntax()} in {self.body.to_syntax()}"
+
+
+@dataclass
 class Command:
     """Base class for commands in the VoxLogicA language"""
 
@@ -198,13 +214,14 @@ grammar = r"""
     formal_args: "(" identifier ("," identifier)* ")"
     actual_args: "(" expression ("," expression)* ")"
     
-    expression: simple_expr | call_expr | op_expr | paren_expr | for_expr
+    expression: simple_expr | call_expr | op_expr | paren_expr | for_expr | let_expr
     
     simple_expr: number | boolean | string
     call_expr: function_name actual_args?
     op_expr: expression OPERATOR expression
     paren_expr: "(" expression ")"
     for_expr: "for" identifier "in" expression "do" expression
+    let_expr: "let" identifier "=" expression "in" expression
     
     function_name: identifier | OPERATOR
     variable_name: identifier | OPERATOR
@@ -305,6 +322,10 @@ class VoxLogicATransformer(Transformer):
     @v_args(inline=True)
     def for_expr(self, variable, iterable, body):
         return EFor("pos", str(variable), iterable, body)
+
+    @v_args(inline=True)
+    def let_expr(self, variable, value, body):
+        return ELet("pos", str(variable), value, body)
 
     @v_args(inline=True)
     def simple_expr(self, value):

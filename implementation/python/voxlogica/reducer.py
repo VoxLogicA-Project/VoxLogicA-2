@@ -30,6 +30,7 @@ from voxlogica.parser import (
     EBool,
     EString,
     EFor,
+    ELet,
     Command,
     Declaration,
     Save,
@@ -311,6 +312,20 @@ def reduce_expression(
         # Immediately expand the for loop to get the map operation
         map_id = _expand_for_loop_now(for_loop_comp, work_plan)
         return map_id
+
+    elif isinstance(expr, ELet):
+        # Handle let expression: let x = value in body
+        # 1. Reduce the value expression in the current environment
+        value_id = reduce_expression(env, work_plan, expr.value, current_stack)
+        
+        # 2. Create a new environment with the variable bound to the value
+        value_dval = OperationVal(value_id)
+        new_env = env.bind(expr.variable, value_dval)
+        
+        # 3. Reduce the body expression in the new environment
+        body_id = reduce_expression(new_env, work_plan, expr.body, current_stack)
+        
+        return body_id
 
     # This should never happen if the parser is correct
     raise RuntimeError("Internal error in reducer: unknown expression type")
