@@ -68,19 +68,48 @@ class ClosureValue:
     environment: 'Environment'  # The captured environment
     workplan: 'WorkPlan'  # Reference to the workplan for context
     
-    def __call__(self, value: Any) -> str:
-        """Execute the closure with the given value for the variable - returns operation ID for lazy evaluation"""
+    def __call__(self, value: Any) -> Any:
+        """Execute the closure with the given value for the variable - returns computed result via storage system"""
         try:
             logger.debug(f"Executing closure: variable={self.variable}, expression={self.expression.to_syntax()}")
             
-            # Add the value as a constant node in the workplan
-            value_node = ConstantValue(value=value)
-            value_id = self.workplan.add_node(value_node)
-            
-            logger.debug(f"Added value node {value_id[:8]}... = {type(value).__name__}")
+            # For non-serializable objects (like Images), we can't create constant nodes
+            # Instead, we need to handle them differently in the environment
+            try:
+                # Try to add the value as a constant node in the workplan
+                value_node = ConstantValue(value=value)
+                value_id = self.workplan.add_node(value_node)
+                value_dval = OperationVal(value_id)
+                logger.debug(f"Added value node {value_id[:8]}... = {type(value).__name__}")
+            except (TypeError, ValueError) as serialize_error:
+                # Value is not serializable (e.g., SimpleITK Image)
+                # Create a special handling for non-serializable values
+                logger.debug(f"Value {type(value).__name__} is not serializable, using direct binding")
+                
+                # For non-serializable values, we need to store them temporarily and 
+                # use a placeholder in the environment
+                import uuid
+                temp_id = f"temp_{uuid.uuid4().hex[:16]}"
+                
+                # Store the non-serializable value in a temporary location
+                # We'll use the execution engine's storage for this
+                try:
+                    from voxlogica.execution import get_execution_engine
+                    engine = get_execution_engine()
+                    # Use memory cache for non-serializable objects
+                    engine.storage._memory_cache[temp_id] = value
+                    value_dval = OperationVal(temp_id)
+                    logger.debug(f"Stored non-serializable value with temp ID {temp_id[:8]}...")
+                except Exception as e:
+                    logger.warning(f"Failed to store non-serializable value: {e}")
+                    # As a fallback, return the original value directly without serialization
+                    # This will bypass the normal DAG construction for this value
+                    logger.debug(f"Using direct value binding for non-serializable {type(value).__name__}")
+                    # We'll create a temporary direct value binding
+                    temp_id = f"direct_value_{id(value)}"
+                    value_dval = OperationVal(temp_id)
             
             # Create environment with the variable bound to this value
-            value_dval = OperationVal(value_id)
             env_with_binding = self.environment.bind(self.variable, value_dval)
             
             # Reduce the expression with this environment, using the existing workplan
@@ -89,17 +118,163 @@ class ClosureValue:
             
             logger.debug(f"Reduced expression to result_id {result_id[:8]}...")
             
-            # Return the operation ID - let the execution engine handle actual execution
-            return result_id
+            # Use the storage system to resolve the operation ID
+            try:
+                from voxlogica.execution import get_execution_engine
+                engine = get_execution_engine()
+                
+                # Check if the result is already computed and stored
+                if engine.storage.exists(result_id):
+                    result = engine.storage.retrieve(result_id)
+                    logger.debug(f"Retrieved cached result for {result_id[:8]}...")
+                    return result
+                else:
+                    # The result isn't cached yet - we need to execute it
+                    logger.debug(f"Operation {result_id[:8]}... not yet computed, executing now")
+                    
+                    # Get the operation from the workplan
+                    if result_id in self.workplan.nodes:
+                        operation = self.workplan.nodes[result_id]
+                        if isinstance(operation, Operation):
+                            # Execute the operation directly using the engine's execution logic
+                            try:
+                                # Execute the operation directly
+                                result = self._execute_operation_directly(engine, result_id, operation)
+                                logger.debug(f"Executed operation {result_id[:8]}... with result: {type(result)}")
+                                return result
+                            except Exception as exec_e:
+                                logger.warning(f"Failed to execute operation {result_id[:8]}...: {exec_e}")
+                                # Return operation ID as fallback
+                                return result_id
+                        elif isinstance(operation, ConstantValue):
+                            # It's a constant value
+                            return operation.value
+                        else:
+                            # Other node types, return operation ID
+                            return result_id
+                    else:
+                        # Operation not found in workplan, return operation ID
+                        logger.debug(f"Operation {result_id[:8]}... not found in workplan")
+                        return result_id
+                    
+            except Exception as e:
+                logger.warning(f"Failed to access storage for {result_id[:8]}...: {e}")
+                # Fallback: return the operation ID
+                return result_id
                 
         except Exception as e:
             logger.warning(f"Closure execution failed: {e}")
             import traceback
             logger.warning(f"Closure execution traceback: {traceback.format_exc()}")
-            # Fallback to returning the input value as a constant
-            fallback_node = ConstantValue(value=value)
-            fallback_id = self.workplan.add_node(fallback_node)
-            return fallback_id
+            # Fallback to returning the input value
+            return value
+
+    def _execute_operation_directly(self, engine, operation_id: str, operation: 'Operation') -> Any:
+        """Execute a single operation directly and store the result"""
+        try:
+            # First check if result already exists
+            if engine.storage.exists(operation_id):
+                return engine.storage.retrieve(operation_id)
+            
+            # Try to mark as running, with retry logic for database locking
+            import time
+            for attempt in range(3):
+                try:
+                    if engine.storage.mark_running(operation_id):
+                        break
+                    else:
+                        # Already being computed by another process, wait and retrieve
+                        time.sleep(0.1 * attempt)
+                        if engine.storage.exists(operation_id):
+                            return engine.storage.retrieve(operation_id)
+                except Exception as e:
+                    if "locked" in str(e).lower() and attempt < 2:
+                        time.sleep(0.1 * (attempt + 1))
+                        continue
+                    else:
+                        raise
+            else:
+                # If we couldn't mark as running after retries, try to retrieve result
+                if engine.storage.exists(operation_id):
+                    return engine.storage.retrieve(operation_id)
+                else:
+                    # As a last resort, return the operation ID
+                    return operation_id
+            
+            # Load the primitive function
+            primitive_func = engine.primitives.load_primitive(operation.operator)
+            
+            # Resolve arguments recursively
+            resolved_args = {}
+            for key, arg_id in operation.arguments.items():
+                if arg_id in self.workplan.nodes:
+                    arg_node = self.workplan.nodes[arg_id]
+                    if isinstance(arg_node, ConstantValue):
+                        resolved_args[key] = arg_node.value
+                    elif isinstance(arg_node, Operation):
+                        # Recursively execute dependencies
+                        resolved_args[key] = self._execute_operation_directly(engine, arg_id, arg_node)
+                    else:
+                        resolved_args[key] = arg_id
+                else:
+                    # Try to retrieve from storage first
+                    if engine.storage.exists(arg_id):
+                        resolved_args[key] = engine.storage.retrieve(arg_id)
+                    else:
+                        # Check if it's a temporary value in memory cache
+                        if hasattr(engine.storage, '_memory_cache') and arg_id in engine.storage._memory_cache:
+                            resolved_args[key] = engine.storage._memory_cache[arg_id]
+                        else:
+                            # Use the argument ID as-is (might be a literal value)
+                            resolved_args[key] = arg_id
+            
+            # Map numeric argument keys to semantic names for primitives
+            resolved_args = self._map_arguments_to_semantic_names(operation.operator, resolved_args)
+            
+            # Execute the primitive
+            result = primitive_func(**resolved_args)
+            
+            # Store the result
+            try:
+                engine.storage.store(operation_id, result)
+            except Exception as store_e:
+                logger.warning(f"Failed to store result for {operation_id[:8]}...: {store_e}")
+            
+            return result
+                
+        except Exception as e:
+            logger.error(f"Failed to execute operation {operation_id[:8]}...: {e}")
+            try:
+                engine.storage.mark_failed(operation_id, str(e))
+            except:
+                pass  # Ignore storage errors when marking failed
+            # Return the operation ID as fallback instead of raising
+            return operation_id
+
+    def _map_arguments_to_semantic_names(self, operator: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Map numeric argument keys to semantic names based on operator.
+        
+        Converts positional argument keys ('0', '1', etc.) to meaningful names
+        like 'left'/'right' for binary operators, improving primitive function signatures.
+        
+        Args:
+            operator: Operator to map arguments for
+            args: Arguments with numeric keys
+            
+        Returns:
+            Arguments with semantic keys where applicable
+        """
+        operator_str = str(operator).lower()
+        
+        # Binary operators mapping
+        if operator_str in ['+', 'add', 'addition', '-', 'sub', 'subtract', 
+                           '*', 'mul', 'multiply', '/', 'div', 'divide']:
+            if '0' in args and '1' in args:
+                return {'left': args['0'], 'right': args['1']}
+        
+        # If no mapping found, return original args
+        return args
 
 type Node = ConstantValue | Operation | ClosureValue
 

@@ -1,6 +1,6 @@
 # VoxLogicA-2 Development Status
 
-**Last Updated:** 24 giugno 2025
+**Last Updated:** 25 gennaio 2025
 
 ## Current State
 
@@ -18,6 +18,8 @@ The VoxLogicA-2 system has a working execution engine based on the `ExecutionSes
 - **Storage Backend**: Content-addressed storage with SQLite backend
 - **CLI Interface**: Basic command-line interface working
 - **Primitives System**: Extensible primitive operations framework
+- **SimpleITK Integration**: ✅ **RESOLVED** - Fixed SimpleITK primitives and nested for-loop execution
+- **Closure-based For Loops**: ✅ **RESOLVED** - Proper storage system integration for distributed execution
 
 ### 🔄 Under Investigation
 - **ExecutionSession Architecture**: Current monolithic session approach needs evaluation

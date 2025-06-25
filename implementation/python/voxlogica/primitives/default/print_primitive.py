@@ -38,7 +38,26 @@ def execute(**kwargs):
         if isinstance(value, db.Bag):
             # Compute the Dask bag to get actual values
             computed_values = value.compute()
-            value_str = str(list(computed_values))
+            
+            # If the computed values are operation IDs, try to resolve them
+            resolved_values = []
+            for val in computed_values:
+                if isinstance(val, str) and len(val) == 64:  # SHA256 operation ID
+                    try:
+                        from voxlogica.execution import get_execution_engine
+                        engine = get_execution_engine()
+                        if engine.storage.exists(val):
+                            resolved_val = engine.storage.retrieve(val)
+                            resolved_values.append(resolved_val)
+                        else:
+                            # If operation not in storage, keep the operation ID
+                            resolved_values.append(val)
+                    except Exception:
+                        resolved_values.append(val)
+                else:
+                    resolved_values.append(val)
+            
+            value_str = str(resolved_values)
         else:
             value_str = str(value)
         
