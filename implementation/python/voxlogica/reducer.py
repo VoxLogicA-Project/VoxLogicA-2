@@ -68,12 +68,9 @@ class ClosureValue:
     environment: 'Environment'  # The captured environment
     workplan: 'WorkPlan'  # Reference to the workplan for context
     
-    def __call__(self, value: Any) -> Any:
-        """Execute the closure with the given value for the variable"""
+    def __call__(self, value: Any) -> str:
+        """Execute the closure with the given value for the variable - returns operation ID for lazy evaluation"""
         try:
-            # Create a new environment with the variable bound to the value
-            from voxlogica.reducer import OperationVal
-            
             logger.debug(f"Executing closure: variable={self.variable}, expression={self.expression.to_syntax()}")
             
             # Add the value as a constant node in the workplan
@@ -87,93 +84,22 @@ class ClosureValue:
             env_with_binding = self.environment.bind(self.variable, value_dval)
             
             # Reduce the expression with this environment, using the existing workplan
+            # This builds the DAG lazily without executing anything
             result_id = reduce_expression(env_with_binding, self.workplan, self.expression)
             
             logger.debug(f"Reduced expression to result_id {result_id[:8]}...")
             
-            # Execute just this one operation using the current execution infrastructure
-            from voxlogica.execution import ExecutionEngine
-            engine = ExecutionEngine()
-            
-            # Import the simpleitk namespace into the engine's primitives loader
-            engine.primitives.import_namespace('simpleitk')
-            
-            # Create a minimal workplan with just the result operation and its dependencies
-            minimal_workplan = WorkPlan()
-            minimal_workplan._imported_namespaces = self.workplan._imported_namespaces.copy()
-            
-            # Copy all nodes that are needed
-            def copy_dependencies(node_id: NodeId, workplan_from: 'WorkPlan', workplan_to: WorkPlan):
-                if node_id in workplan_to.nodes:
-                    return  # Already copied
-                
-                if node_id not in workplan_from.nodes:
-                    logger.warning(f"Node {node_id[:8]}... not found in source workplan!")
-                    return
-                
-                node = workplan_from.nodes[node_id]
-                workplan_to.nodes[node_id] = node
-                logger.debug(f"Copied node {node_id[:8]}... ({type(node).__name__})")
-                
-                # If it's an operation, copy its dependencies recursively
-                if isinstance(node, Operation):
-                    for arg_id in node.arguments.values():
-                        copy_dependencies(arg_id, workplan_from, workplan_to)
-            
-            copy_dependencies(result_id, self.workplan, minimal_workplan)
-            
-            logger.debug(f"Minimal workplan has {len(minimal_workplan.nodes)} nodes")
-            
-            # Instead of using the full execution engine, directly compute the result
-            # by getting the operation and executing it manually
-            result_node = minimal_workplan.nodes[result_id]
-            
-            if isinstance(result_node, ConstantValue):
-                result = result_node.value
-                logger.debug(f"Result is constant: {result}")
-            elif isinstance(result_node, Operation):
-                # Execute this operation directly
-                primitive_func = engine.primitives.load_primitive(str(result_node.operator))
-                if primitive_func is None:
-                    logger.warning(f"No primitive for operator: {result_node.operator}")
-                    return value
-                
-                # Resolve arguments manually
-                resolved_args = {}
-                for arg_name, arg_id in result_node.arguments.items():
-                    arg_node = minimal_workplan.nodes[arg_id]
-                    if isinstance(arg_node, ConstantValue):
-                        resolved_args[arg_name] = arg_node.value
-                    else:
-                        logger.warning(f"Unresolved dependency: {arg_id}")
-                        return value
-                
-                # Map numeric argument keys to semantic names
-                operator_str = str(result_node.operator).lower()
-                if operator_str in ['+', 'add', 'addition', '-', 'sub', 'subtract', 
-                                   '*', 'mul', 'multiply', '/', 'div', 'divide']:
-                    if '0' in resolved_args and '1' in resolved_args:
-                        resolved_args = {'left': resolved_args['0'], 'right': resolved_args['1']}
-                
-                logger.debug(f"Executing {result_node.operator} with args: {resolved_args}")
-                try:
-                    result = primitive_func(**resolved_args)
-                    logger.debug(f"Operation result: {result}")
-                except Exception as e:
-                    logger.warning(f"Operation failed: {e}")
-                    return value
-            else:
-                logger.warning(f"Unknown result node type: {type(result_node)}")
-                return value
-            
-            return result
+            # Return the operation ID - let the execution engine handle actual execution
+            return result_id
                 
         except Exception as e:
             logger.warning(f"Closure execution failed: {e}")
             import traceback
             logger.warning(f"Closure execution traceback: {traceback.format_exc()}")
-            # Fallback to returning the input value
-            return value
+            # Fallback to returning the input value as a constant
+            fallback_node = ConstantValue(value=value)
+            fallback_id = self.workplan.add_node(fallback_node)
+            return fallback_id
 
 type Node = ConstantValue | Operation | ClosureValue
 

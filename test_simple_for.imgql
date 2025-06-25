@@ -1,0 +1,6 @@
+// Simple test to debug for loops without SimpleITK
+let simple_dataset = 
+    for i in range(0,5) do 
+        i + 10
+
+print "simple_result" simple_dataset

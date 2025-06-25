@@ -434,14 +434,7 @@ def parse_program_content(content: str) -> Program:
     Returns:
         A Program object representing the parsed program
     """
-    # First parse without transformation to get the tree
-    parser_no_transform = Lark(
-        grammar, start="program", parser="lalr", propagate_positions=True
-    )
-    parse_tree = parser_no_transform.parse(content)
-
-    # Then transform the tree
-    parser = Lark(grammar, start="program", parser="lalr", transformer=VoxLogicATransformer())
+    # Use the global parser which already has the transformer
     result = parser.parse(content)
 
     # Ensure we got a Program object

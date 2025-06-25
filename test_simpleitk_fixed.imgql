@@ -1,0 +1,19 @@
+import "simpleitk"
+
+let img = ReadImage("tests/chris_t1.nii.gz")
+
+// Create a dataset using BinaryThreshold which returns actual processed images
+let dataset = 
+    for i in range(0,10) do 
+        BinaryThreshold(img,100+i,99999,1,0)
+
+// Apply Gaussian smoothing to each thresholded image (using functional interface)
+let dataset2 =
+    for img in dataset do
+        DiscreteGaussian(img,1.0)
+    
+print "result" dataset2
+
+// Test statistics extraction
+let stats = MinimumMaximum(img)
+print "image_stats" stats

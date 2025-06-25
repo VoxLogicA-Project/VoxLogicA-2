@@ -63,7 +63,7 @@ def _wrap_sitk_function(func: Callable, func_name: str) -> Callable:
     return execute
 
 def register_primitives():
-    """Register all SimpleITK functions directly without any mapping"""
+    """Register SimpleITK functions, preferring functional interfaces over filter classes"""
     global _dynamic_primitives_cache, _primitives_list_cache
     
     if _dynamic_primitives_cache:
@@ -77,6 +77,21 @@ def register_primitives():
             if not name.startswith('_'):  # Skip private attributes
                 attr = getattr(sitk, name)
                 if callable(attr):
+                    # Skip filter class constructors that end with "Filter" or "ImageFilter"
+                    # These create filter objects, not functional processing
+                    if name.endswith('Filter') or name.endswith('ImageFilter'):
+                        # Check if there's a functional version (e.g., DiscreteGaussian for DiscreteGaussianImageFilter)
+                        functional_name = name.replace('ImageFilter', '').replace('Filter', '')
+                        if hasattr(sitk, functional_name) and functional_name != name:
+                            # Use the functional version instead
+                            logger.log(VERBOSE_LEVEL, f"Skipping filter class {name}, preferring functional {functional_name}")
+                            continue
+                    
+                    # Skip obvious class constructors (type objects)
+                    if isinstance(attr, type):
+                        logger.log(VERBOSE_LEVEL, f"Skipping class constructor: {name}")
+                        continue
+                    
                     # Wrap the function
                     wrapped_func = _wrap_sitk_function(attr, name)
                     sitk_functions[name] = wrapped_func
