@@ -1,15 +1,13 @@
-// Test file demonstrating SimpleITK integration and custom serializers
 import "simpleitk"
 
-// Try using unqualified names (without simpleitk. prefix)
 let img = ReadImage("tests/chris_t1.nii.gz")
 
-// Apply threshold using unqualified name
-let thresholded = BinaryThreshold(img,150,99999,1,0)
+let dataset = 
+    for i in range(0,10) do 
+        BinaryThreshold(img,100+i,99999,1,0)
 
-let stats = simpleitk.MinimumMaximum(thresholded)
-print "stats" index(stats,1)
-
-// Demonstrate custom serializer formats
-save "output.nii.gz" thresholded   // Medical imaging format
-
+let dataset2 =
+    for img in dataset do
+        MinimumMaximumImageFilter(img)
+    
+print "result" range(0,10)
