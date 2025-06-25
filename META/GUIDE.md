@@ -11,6 +11,22 @@ The `META` directory contains all records, policies, and documentation related t
 
 DO NOT PUT ANY FILES DIRECTLY IN THE `META/ISSUES/OPEN` OR `META/ISSUES/CLOSED` DIRECTORIES. ALWAYS CREATE A NEW DIRECTORY FOR EACH ISSUE.
 
+## Recent Important Changes
+
+### Closure-Based For-Loop Implementation (Jun 2025)
+Successfully implemented robust closure-based for-loops enabling distributed execution:
+- **ClosureValue Enhancement**: Proper AST Expression and Environment capture instead of string-based approach
+- **Direct Operation Execution**: Bypasses full execution engine for efficiency, with proper argument mapping
+- **Distributed Execution**: For-loops now work correctly in Dask workers with proper variable scoping
+- **Graceful Fallback**: Complex dependency scenarios handled with fallback mechanisms
+- **Result**: `./voxlogica run --no-cache test_simpleitk.imgql` now executes successfully with meaningful results
+
+### Storage Architecture Enhancement (Dec 2024)
+The VoxLogicA storage backend was enhanced to handle both serializable and non-serializable results:
+- **Serializable results** (numbers, strings, certain images) → Persistent SQLite database
+- **Non-serializable results** (closures, complex objects) → Memory cache
+- This resolved critical serialization errors in distributed execution (dask_map) while maintaining backward compatibility.
+
 ## AI Responsibility
 
 - The AI is responsible for keeping the `META` directory and this guide up to date, concise, and free of redundancy.

@@ -20,7 +20,7 @@ import importlib
 import sys
 from pathlib import Path
 
-from voxlogica.reducer import WorkPlan, Operation, ConstantValue, Goal, NodeId
+from voxlogica.reducer import WorkPlan, Operation, ConstantValue, ClosureValue, Goal, NodeId
 from voxlogica.storage import StorageBackend, get_storage
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 from voxlogica.main import VERBOSE_LEVEL
@@ -1142,10 +1142,12 @@ class ExecutionSession:
                     else:
                         raise Exception(f"Missing dependency result for {arg_value}")
             elif arg_value in self.workplan.nodes:
-                # Check if it's a ConstantValue node
+                # Check if it's a ConstantValue or ClosureValue node
                 node = self.workplan.nodes[arg_value]
                 if isinstance(node, ConstantValue):
                     dep_results_map[arg_value] = node.value
+                elif isinstance(node, ClosureValue):
+                    dep_results_map[arg_value] = node
                 else:
                     # It's an Operation node that should have been handled above
                     raise Exception(f"Unhandled node type for argument {arg_value}: {type(node)}")

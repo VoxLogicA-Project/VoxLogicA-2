@@ -364,6 +364,40 @@ For advanced use cases, you can extend the operator system:
 3. **Parallel operators**: For operations that can benefit from parallelism
 4. **Stateful operators**: For operations that need to maintain state (advanced)
 
+## Closure-Based For-Loop Integration
+
+### Understanding Closure Execution
+
+VoxLogicA for-loops execute using a closure-based system that captures:
+- The loop variable name
+- The loop body expression (AST)
+- The lexical environment
+- The workplan context
+
+When implementing primitives that may be used within for-loops, be aware that they will be executed in a closure context with proper variable scoping.
+
+### Argument Resolution in Closures
+
+For-loop closures automatically handle:
+1. **Variable binding**: Loop variables are properly bound to current iteration values
+2. **Environment capture**: Outer scope variables are accessible within loop bodies
+3. **Argument mapping**: Numeric keys ('0', '1') are mapped to semantic names where appropriate
+
+Example for-loop usage:
+```voxlogica
+let results = for i in range(0,10) do +(i, 1)
+let processed = for img in images do BinaryThreshold(img, 100, 255, 1, 0)
+```
+
+### Distributed Execution Considerations
+
+Primitives used in for-loops should:
+- Be stateless and side-effect free where possible
+- Handle serialization of arguments correctly
+- Not depend on global state that may not be available in distributed workers
+
+The closure system ensures proper execution in Dask distributed environments while maintaining correct variable scoping and environment management.
+
 ## Conclusion
 
 Implementing new operators in VoxLogicA-2 is straightforward:

@@ -51,6 +51,10 @@ class StorageBackend:
         # Thread-local storage for connections
         self._local = threading.local()
         
+        # Memory cache for non-serializable results
+        self._memory_cache: Dict[str, Any] = {}
+        self._memory_cache_lock = threading.Lock()
+        
         # Notification system for task completion (lock-free for WIP)
         self._completion_events: Dict[str, threading.Event] = {}
         
@@ -115,6 +119,10 @@ class StorageBackend:
         """
         Store computation result with content-addressed key.
         
+        Attempts to serialize the result with pickle for persistent storage.
+        If serialization fails (e.g., for closures or non-serializable objects),
+        stores the result in memory cache instead.
+        
         Args:
             operation_id: SHA256 operation ID
             data: Result data to store
@@ -126,23 +134,32 @@ class StorageBackend:
         if self.exists(operation_id):
             logger.debug(f"Result already exists for operation {operation_id[:8]}...")
             return False
-        
+
         try:
-            # Serialize data
-            serialized_data = pickle.dumps(data)
-            data_type = type(data).__name__
-            size_bytes = len(serialized_data)
-            metadata_json = json.dumps(metadata) if metadata else None
-            
-            with self._get_connection() as conn:
-                conn.execute("""
-                    INSERT INTO results (operation_id, data, data_type, size_bytes, metadata)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (operation_id, serialized_data, data_type, size_bytes, metadata_json))
+            # First attempt to serialize the data with pickle
+            try:
+                serialized_data = pickle.dumps(data)
+                data_type = type(data).__name__
+                size_bytes = len(serialized_data)
+                metadata_json = json.dumps(metadata) if metadata else None
                 
-                conn.commit()
-            
-            logger.debug(f"Stored result for operation {operation_id[:8]}... ({size_bytes} bytes)")
+                # Store in persistent database
+                with self._get_connection() as conn:
+                    conn.execute("""
+                        INSERT INTO results (operation_id, data, data_type, size_bytes, metadata)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (operation_id, serialized_data, data_type, size_bytes, metadata_json))
+                    
+                    conn.commit()
+                
+                logger.debug(f"Stored serializable result for operation {operation_id[:8]}... ({size_bytes} bytes)")
+                
+            except (pickle.PicklingError, TypeError, AttributeError) as e:
+                # Serialization failed - store in memory cache instead
+                with self._memory_cache_lock:
+                    self._memory_cache[operation_id] = data
+                
+                logger.debug(f"Stored non-serializable result for operation {operation_id[:8]}... in memory cache: {type(data).__name__}")
             
             # Notify any threads waiting for this operation
             self._notify_completion(operation_id)
@@ -157,6 +174,8 @@ class StorageBackend:
         """
         Retrieve computation result by operation ID.
         
+        Checks persistent storage first, then memory cache for non-serializable results.
+        
         Args:
             operation_id: SHA256 operation ID
             
@@ -164,33 +183,52 @@ class StorageBackend:
             Stored data or None if not found
         """
         try:
+            # First check persistent storage
             with self._get_connection() as conn:
                 cursor = conn.execute("""
                     SELECT data FROM results WHERE operation_id = ?
                 """, (operation_id,))
                 
                 row = cursor.fetchone()
-                if row is None:
-                    return None
-                
-                # Deserialize data
-                data = pickle.loads(row[0])
-                logger.debug(f"Retrieved result for operation {operation_id[:8]}...")
-                return data
+                if row is not None:
+                    # Deserialize data from persistent storage
+                    data = pickle.loads(row[0])
+                    logger.debug(f"Retrieved serializable result for operation {operation_id[:8]}...")
+                    return data
+            
+            # Check memory cache for non-serializable results
+            with self._memory_cache_lock:
+                if operation_id in self._memory_cache:
+                    data = self._memory_cache[operation_id]
+                    logger.debug(f"Retrieved non-serializable result for operation {operation_id[:8]}... from memory cache")
+                    return data
+            
+            # Not found in either location
+            return None
                 
         except Exception as e:
             logger.error(f"Failed to retrieve result for operation {operation_id[:8]}...: {e}")
             raise
     
     def exists(self, operation_id: str) -> bool:
-        """Check if result exists for operation ID."""
+        """
+        Check if result exists for operation ID.
+        
+        Checks both persistent storage and memory cache.
+        """
         try:
+            # Check persistent storage first
             with self._get_connection() as conn:
                 cursor = conn.execute("""
                     SELECT 1 FROM results WHERE operation_id = ? LIMIT 1
                 """, (operation_id,))
                 
-                return cursor.fetchone() is not None
+                if cursor.fetchone() is not None:
+                    return True
+            
+            # Check memory cache for non-serializable results
+            with self._memory_cache_lock:
+                return operation_id in self._memory_cache
                 
         except Exception as e:
             logger.error(f"Failed to check existence for operation {operation_id[:8]}...: {e}")
@@ -357,10 +395,15 @@ class StorageBackend:
                 """)
                 execution_stats = dict(cursor.fetchall())
                 
+                # Memory cache statistics
+                with self._memory_cache_lock:
+                    memory_cache_count = len(self._memory_cache)
+                
                 return {
                     "total_results": results_stats[0] or 0,
                     "total_size_bytes": results_stats[1] or 0,
                     "avg_size_bytes": results_stats[2] or 0,
+                    "memory_cache_count": memory_cache_count,
                     "execution_states": execution_stats,
                     "database_path": str(self.db_path)
                 }
@@ -460,6 +503,10 @@ class NoCacheStorageBackend(StorageBackend):
         
         # Thread-local storage for connections
         self._local = threading.local()
+        
+        # Memory cache for non-serializable results (same as parent)
+        self._memory_cache: Dict[str, Any] = {}
+        self._memory_cache_lock = threading.Lock()
         
         # Notification system for task completion (lock-free for WIP)
         self._completion_events: Dict[str, threading.Event] = {}

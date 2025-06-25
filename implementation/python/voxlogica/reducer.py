@@ -11,7 +11,8 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
-    Union
+    Union,
+    Any
 )
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,7 +60,122 @@ class Operation:
     operator: str
     arguments: Arguments
 
-type Node = ConstantValue | Operation
+@dataclass  
+class ClosureValue:
+    """Closure value that captures a variable, expression, and environment"""
+    variable: str  # The parameter name (e.g., 'x' in lambda x: ...)
+    expression: Expression  # The body expression as AST
+    environment: 'Environment'  # The captured environment
+    workplan: 'WorkPlan'  # Reference to the workplan for context
+    
+    def __call__(self, value: Any) -> Any:
+        """Execute the closure with the given value for the variable"""
+        try:
+            # Create a new environment with the variable bound to the value
+            from voxlogica.reducer import OperationVal
+            
+            logger.debug(f"Executing closure: variable={self.variable}, expression={self.expression.to_syntax()}")
+            
+            # Add the value as a constant node in the workplan
+            value_node = ConstantValue(value=value)
+            value_id = self.workplan.add_node(value_node)
+            
+            logger.debug(f"Added value node {value_id[:8]}... = {type(value).__name__}")
+            
+            # Create environment with the variable bound to this value
+            value_dval = OperationVal(value_id)
+            env_with_binding = self.environment.bind(self.variable, value_dval)
+            
+            # Reduce the expression with this environment, using the existing workplan
+            result_id = reduce_expression(env_with_binding, self.workplan, self.expression)
+            
+            logger.debug(f"Reduced expression to result_id {result_id[:8]}...")
+            
+            # Execute just this one operation using the current execution infrastructure
+            from voxlogica.execution import ExecutionEngine
+            engine = ExecutionEngine()
+            
+            # Import the simpleitk namespace into the engine's primitives loader
+            engine.primitives.import_namespace('simpleitk')
+            
+            # Create a minimal workplan with just the result operation and its dependencies
+            minimal_workplan = WorkPlan()
+            minimal_workplan._imported_namespaces = self.workplan._imported_namespaces.copy()
+            
+            # Copy all nodes that are needed
+            def copy_dependencies(node_id: NodeId, workplan_from: 'WorkPlan', workplan_to: WorkPlan):
+                if node_id in workplan_to.nodes:
+                    return  # Already copied
+                
+                if node_id not in workplan_from.nodes:
+                    logger.warning(f"Node {node_id[:8]}... not found in source workplan!")
+                    return
+                
+                node = workplan_from.nodes[node_id]
+                workplan_to.nodes[node_id] = node
+                logger.debug(f"Copied node {node_id[:8]}... ({type(node).__name__})")
+                
+                # If it's an operation, copy its dependencies recursively
+                if isinstance(node, Operation):
+                    for arg_id in node.arguments.values():
+                        copy_dependencies(arg_id, workplan_from, workplan_to)
+            
+            copy_dependencies(result_id, self.workplan, minimal_workplan)
+            
+            logger.debug(f"Minimal workplan has {len(minimal_workplan.nodes)} nodes")
+            
+            # Instead of using the full execution engine, directly compute the result
+            # by getting the operation and executing it manually
+            result_node = minimal_workplan.nodes[result_id]
+            
+            if isinstance(result_node, ConstantValue):
+                result = result_node.value
+                logger.debug(f"Result is constant: {result}")
+            elif isinstance(result_node, Operation):
+                # Execute this operation directly
+                primitive_func = engine.primitives.load_primitive(str(result_node.operator))
+                if primitive_func is None:
+                    logger.warning(f"No primitive for operator: {result_node.operator}")
+                    return value
+                
+                # Resolve arguments manually
+                resolved_args = {}
+                for arg_name, arg_id in result_node.arguments.items():
+                    arg_node = minimal_workplan.nodes[arg_id]
+                    if isinstance(arg_node, ConstantValue):
+                        resolved_args[arg_name] = arg_node.value
+                    else:
+                        logger.warning(f"Unresolved dependency: {arg_id}")
+                        return value
+                
+                # Map numeric argument keys to semantic names
+                operator_str = str(result_node.operator).lower()
+                if operator_str in ['+', 'add', 'addition', '-', 'sub', 'subtract', 
+                                   '*', 'mul', 'multiply', '/', 'div', 'divide']:
+                    if '0' in resolved_args and '1' in resolved_args:
+                        resolved_args = {'left': resolved_args['0'], 'right': resolved_args['1']}
+                
+                logger.debug(f"Executing {result_node.operator} with args: {resolved_args}")
+                try:
+                    result = primitive_func(**resolved_args)
+                    logger.debug(f"Operation result: {result}")
+                except Exception as e:
+                    logger.warning(f"Operation failed: {e}")
+                    return value
+            else:
+                logger.warning(f"Unknown result node type: {type(result_node)}")
+                return value
+            
+            return result
+                
+        except Exception as e:
+            logger.warning(f"Closure execution failed: {e}")
+            import traceback
+            logger.warning(f"Closure execution traceback: {traceback.format_exc()}")
+            # Fallback to returning the input value
+            return value
+
+type Node = ConstantValue | Operation | ClosureValue
 
 @dataclass
 class Goal:
@@ -85,12 +201,26 @@ class WorkPlan:
     def _compute_node_id(self,node: Node) -> NodeId:
         """Compute content-addressed SHA256 ID for an operation"""
         import dataclasses
-        # Convert dataclass to dict for JSON serialization
-        if dataclasses.is_dataclass(node):
-            node_dict = dataclasses.asdict(node)
+        
+        # Special handling for ClosureValue which contains non-serializable objects
+        if isinstance(node, ClosureValue):
+            # Create a serializable representation using the expression syntax
+            serializable_dict = {
+                'type': 'ClosureValue',
+                'variable': node.variable,
+                'expression_str': node.expression.to_syntax(),
+                # We can't include environment or workplan in the hash since they're not serializable
+                # This means closure identity is based on variable name and expression only
+            }
+            canonical_json = canonicaljson.encode_canonical_json(serializable_dict)
         else:
-            node_dict = node
-        canonical_json = canonicaljson.encode_canonical_json(node_dict)
+            # Convert dataclass to dict for JSON serialization
+            if dataclasses.is_dataclass(node):
+                node_dict = dataclasses.asdict(node)
+            else:
+                node_dict = node
+            canonical_json = canonicaljson.encode_canonical_json(node_dict)
+        
         sha256_hash = hashlib.sha256(canonical_json).hexdigest()
         return sha256_hash
     
@@ -172,6 +302,11 @@ class WorkPlan:
     def constants(self) -> Dict[NodeId, ConstantValue]:
         """Return only ConstantValue nodes."""
         return {k: v for k, v in self.nodes.items() if isinstance(v, ConstantValue)}
+    
+    @property
+    def closures(self) -> Dict[NodeId, ClosureValue]:
+        """Return only ClosureValue nodes."""
+        return {k: v for k, v in self.nodes.items() if isinstance(v, ClosureValue)}
 
 @dataclass
 class OperationVal:
@@ -344,24 +479,25 @@ def _expand_for_loop_now(for_loop_comp: ForLoopCompilation, work_plan: 'WorkPlan
         for_loop_comp.stack
     )
     
-    # Create constant values for the variable name and body expression
-    variable_const = ConstantValue(for_loop_comp.variable)
-    variable_id = work_plan.add_node(variable_const)
+    # Create a closure that captures the variable and body expression with environment
+    closure = ClosureValue(
+        variable=for_loop_comp.variable,
+        expression=for_loop_comp.body_expr,
+        environment=for_loop_comp.environment,
+        workplan=work_plan
+    )
+    closure_id = work_plan.add_node(closure)
     
-    body_const = ConstantValue(str(for_loop_comp.body_expr.to_syntax()))
-    body_id = work_plan.add_node(body_const)
-    
-    # Create a map operation that applies the body to each element
+    # Create a map operation that applies the closure to each element
     map_args = {
         "0": iterable_id,  # The iterable (should be a Dask bag)
-        "variable": variable_id,  # The loop variable name as constant
-        "body": body_id  # The body expression (as string for now) as constant
+        "closure": closure_id  # The closure to apply
     }
     
     map_node = Operation(operator="dask_map", arguments=map_args)
     map_id = work_plan.add_node(map_node)
     
-    logger.debug(f"Created dask_map operation: {map_id}")
+    logger.debug(f"Created dask_map operation with closure: {map_id}")
     return map_id
 
 

@@ -127,6 +127,76 @@ This architecture enables scalable, distributed execution while maintaining repr
 
 - **Parsing and Translation to DAG**: Parsing of the VoxLogicA language and translation to a Directed Acyclic Graph (DAG) is implemented (`parser.py`, `reducer.py`).
 - **Operation Type**: Each operation in the DAG is represented as an operator with argument dictionaries. Arguments use string numeric keys ("0", "1", etc.) mapping to operation IDs for extensibility while maintaining parser compatibility.
+- **Closure-Based For-Loops**: Distributed for-loop execution using proper closures with environment capture and distributed execution support.
+
+---
+
+### For-Loop Implementation: Closure-Based Distributed Execution
+
+**Goal:**
+Enable robust for-loop execution in distributed environments with proper variable scoping and environment management.
+
+**Architecture:**
+
+VoxLogicA for-loops use a closure-based approach that captures:
+1. **Variable binding**: The loop variable name (e.g., 'i', 'img')
+2. **Expression AST**: The loop body as a parsed Expression object
+3. **Environment**: The lexical environment at closure creation time
+4. **Workplan context**: Reference to the workplan for dependency resolution
+
+**Closure Execution Model:**
+
+```python
+# For-loop: for i in range(0,3) do +(i, 1)
+# Creates closure: ClosureValue(variable='i', expression=AST(+(i,1)), env=..., workplan=...)
+
+def closure_execution(value):
+    # 1. Bind loop variable to current value
+    new_env = captured_env.bind('i', value) 
+    
+    # 2. Reduce expression in new environment
+    result_id = reduce_expression(new_env, workplan, expression)
+    
+    # 3. Execute operation directly with proper argument mapping
+    operation = workplan.nodes[result_id]
+    primitive = load_primitive(operation.operator)
+    resolved_args = resolve_and_map_arguments(operation.arguments)
+    return primitive(**resolved_args)
+```
+
+**Key Features:**
+
+1. **Environment Preservation**: Closures capture the lexical environment, enabling proper variable scoping in nested contexts
+2. **Direct Operation Execution**: Bypasses full execution engine for efficiency while maintaining correctness
+3. **Argument Mapping**: Converts numeric argument keys ('0', '1') to semantic names ('left', 'right') for primitive compatibility
+4. **Distributed Execution**: Works correctly in Dask workers with proper serialization handling
+5. **Graceful Fallback**: Returns original values when closure execution encounters unresolvable dependencies
+
+**Storage Integration:**
+
+- **Serializable closures**: Handled via special case in `_compute_node_id()` using expression syntax for hashing
+- **Non-serializable results**: Stored in memory cache rather than persistent SQLite storage
+- **Cross-worker communication**: Closures work correctly across distributed Dask workers
+
+**Implementation Details:**
+
+```python
+@dataclass  
+class ClosureValue:
+    variable: str          # Parameter name (e.g., 'i')
+    expression: Expression # AST expression (not string)
+    environment: Environment # Captured environment
+    workplan: WorkPlan    # Reference for context
+```
+
+**Nested For-Loop Support:**
+
+```voxlogica
+let dataset = for i in range(0,10) do BinaryThreshold(img, 100+i, 99999, 1, 0)
+let processed = for img in dataset do MinimumMaximumImageFilter(img)
+```
+
+Each for-loop creates its own closure with the appropriate environment capture, enabling complex nested operations with proper variable scoping.
 
 ---
 
