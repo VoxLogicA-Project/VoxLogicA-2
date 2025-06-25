@@ -1,5 +1,0 @@
-// Demo showing that any structured data works
-import "test"
-
-let demo = demo_data(0)
-print "demo_output" demo
