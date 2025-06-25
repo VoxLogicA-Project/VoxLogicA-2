@@ -437,6 +437,71 @@ class StorageBackend:
             del self._local.connection
 
 
+class NoCacheStorageBackend(StorageBackend):
+    """
+    Storage backend that uses in-memory SQLite for temporary storage.
+    
+    This backend provides all the functionality of StorageBackend but 
+    uses an in-memory SQLite database that doesn't persist to disk.
+    Results are available during execution but are lost when the 
+    backend is destroyed, ensuring no caching between runs.
+    """
+    
+    def __init__(self, db_path: Optional[Union[str, Path]] = None):
+        """Initialize no-cache storage backend with in-memory SQLite."""
+        # Use a shared in-memory database with a unique name
+        # This allows multiple connections to access the same in-memory database
+        import uuid
+        db_name = f"no_cache_{uuid.uuid4().hex}"
+        db_path = f"file:{db_name}?mode=memory&cache=shared"
+        
+        # Initialize with shared in-memory database
+        self.db_path = db_path
+        
+        # Thread-local storage for connections
+        self._local = threading.local()
+        
+        # Notification system for task completion (lock-free for WIP)
+        self._completion_events: Dict[str, threading.Event] = {}
+        
+        # Initialize database schema (same as parent but in memory)
+        self._init_database()
+        
+        logger.debug(f"No-cache storage backend initialized with shared in-memory SQLite - results will not persist to disk")
+    
+    def wait_for_completion(self, operation_id: str, timeout: float = 300.0) -> Any:
+        """Wait for operation completion (works normally with in-memory storage)."""
+        return super().wait_for_completion(operation_id, timeout)
+    
+    def mark_running(self, operation_id: str, worker_id: str|None = None) -> bool:
+        """Mark operation as running (works normally with in-memory storage)."""
+        return super().mark_running(operation_id, worker_id)
+    
+    def mark_completed(self, operation_id: str) -> None:
+        """Mark operation as completed (works normally with in-memory storage)."""
+        super().mark_completed(operation_id)
+    
+    def mark_failed(self, operation_id: str, error_message: str) -> None:
+        """Mark operation as failed (works normally with in-memory storage)."""
+        super().mark_failed(operation_id, error_message)
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get storage statistics (from in-memory database)."""
+        stats = super().get_statistics()
+        stats["type"] = "no-cache (in-memory)"
+        stats["description"] = "No-cache storage backend using in-memory SQLite - results will not persist to disk"
+        return stats
+    
+    def cleanup_failed_executions(self, max_age_hours: float = 24.0) -> int:
+        """Cleanup failed executions (works normally with in-memory storage)."""
+        return super().cleanup_failed_executions(int(max_age_hours))
+    
+    def close(self):
+        """Close storage backend (in-memory database will be automatically destroyed)."""
+        super().close()
+        logger.debug("No-cache: in-memory database closed and destroyed")
+
+
 # Global storage instance
 _storage_instance: Optional[StorageBackend] = None
 

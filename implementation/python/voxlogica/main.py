@@ -275,6 +275,11 @@ def run(
         "--execute/--no-execute",
         help="Execute the workplan (default: --execute)",
     ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Force recomputation without reading or writing cache",
+    ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging (between info and debug)"),
 ) -> None:
@@ -301,6 +306,7 @@ def run(
         "filename": filename,
         "debug": debug,
         "verbose": verbose,
+        "no_cache": no_cache,
     }
 
     try:

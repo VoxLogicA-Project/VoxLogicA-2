@@ -62,6 +62,7 @@ Options:
 - `--save-syntax <file>`: Save the AST in text format and exit
 - `--compute-memory-assignment`: Compute and display memory buffer assignments
 - `--execute` / `--no-execute`: Execute the workplan (default: --execute)
+- `--no-cache`: Force recomputation without reading or writing cache
 - `--debug`: Enable debug mode
 - `--help`: Show help for this command and exit
 

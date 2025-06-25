@@ -94,6 +94,7 @@ def handle_run(
     execute: bool = True,
     debug: bool = False,
     verbose: bool = False,
+    no_cache: bool = False,
     **kwargs,
 ) -> OperationResult[Dict[str, Any]]:
     """Handle the unified run command with all options"""
@@ -124,10 +125,26 @@ def handle_run(
         execution_result = None
         if execute:
             logger.info("Starting computation...")
-            from voxlogica.execution import execute_workplan
+            from voxlogica.execution import execute_workplan, ExecutionEngine, set_execution_engine, get_execution_engine
             
             try:
-                execution_result = execute_workplan(program_obj)
+                # Create a custom execution engine if no-cache is requested
+                if no_cache:
+                    from voxlogica.storage import NoCacheStorageBackend
+                    logger.info("No-cache mode enabled - all results will be recomputed")
+                    no_cache_storage = NoCacheStorageBackend()
+                    custom_engine = ExecutionEngine(storage_backend=no_cache_storage)
+                    # Temporarily set the global engine to our no-cache version
+                    original_engine = get_execution_engine()
+                    try:
+                        set_execution_engine(custom_engine)
+                        execution_result = execute_workplan(program_obj)
+                    finally:
+                        # Restore the original engine
+                        set_execution_engine(original_engine)
+                else:
+                    execution_result = execute_workplan(program_obj)
+                
                 if execution_result.success:
                     if filename:  # CLI mode
                         logger.info(f"Execution completed successfully!")
