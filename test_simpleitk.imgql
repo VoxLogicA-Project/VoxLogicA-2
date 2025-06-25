@@ -10,4 +10,4 @@ let dataset2 =
     for img in dataset do
         MinimumMaximumImageFilter(img)
     
-print "result" range(0,10)
+print "result" dataset2
