@@ -1,3 +1,0 @@
-// Simple test for let expressions
-let result = let x = 5 in x + 2
-print "simple_let" result
