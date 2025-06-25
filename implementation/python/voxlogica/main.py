@@ -137,7 +137,7 @@ def setup_logging(debug: bool = False, verbose: bool = False) -> None:
     root.addHandler(handler)
     root.setLevel(log_level)
     
-    # Set Dask-related loggers to DEBUG level to reduce noise
+    # Set Dask-related loggers to WARNING level to reduce noise
     # This prevents messages like "lost all workers", "connection to inproc://", "closing scheduler" etc.
     dask_loggers = [
         'distributed',
@@ -155,6 +155,14 @@ def setup_logging(debug: bool = False, verbose: bool = False) -> None:
         'distributed.dashboard',
         'distributed.dashboard.core',
         'distributed.preloading',
+        'distributed.batched',
+        'distributed.comm.core',
+        'distributed.comm.inproc',
+        'distributed.deploy.local',
+        'distributed.deploy.spec',
+        'distributed.worker_memory',
+        'distributed.stealing',
+        'distributed.shuffle',
         'dask',
         'dask.bag',
         'dask.core',
@@ -175,6 +183,11 @@ def setup_logging(debug: bool = False, verbose: bool = False) -> None:
     for logger_name in dask_loggers:
         dask_logger = logging.getLogger(logger_name)
         dask_logger.setLevel(logging.DEBUG if debug else logging.WARNING)
+    
+    # Specifically suppress scheduler messages about worker removal  
+    if not debug:
+        scheduler_logger = logging.getLogger('distributed.scheduler')
+        scheduler_logger.setLevel(logging.CRITICAL)  # Only show critical errors
     
     # Also suppress warnings module for Dask-related warnings
     import warnings
