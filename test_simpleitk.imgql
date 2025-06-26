@@ -1,13 +1,7 @@
 import "simpleitk"
 
 let img = ReadImage("tests/chris_t1.nii.gz")
-
-// Test basic functionality first
-let stats = MinimumMaximum(img)
-print "img_stats" stats
-
-// Test simple processing with point-wise multiplication
-let data = for i in range(1,5) do Multiply(BinaryThreshold(img,100+i,99999,1,0), img)
+let data = for i in range(1,500) do Multiply(BinaryThreshold(img,100,101,1,0), img)
 let data2 = for j in data do MinimumMaximum(j)
 
 print "data2" data2
