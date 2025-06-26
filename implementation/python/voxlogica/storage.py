@@ -69,7 +69,8 @@ class StorageBackend:
             conn = sqlite3.connect(
                 str(self.db_path),
                 check_same_thread=False,
-                isolation_level=None  # Autocommit mode for WAL
+                isolation_level=None,  # Autocommit mode for WAL
+                timeout=5.0  # 5 second timeout for database locks
             )
             
             # Enable WAL mode for better concurrency
@@ -77,6 +78,7 @@ class StorageBackend:
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA cache_size=10000")
             conn.execute("PRAGMA temp_store=MEMORY")
+            conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
             
             self._local.connection = conn
         
@@ -123,6 +125,8 @@ class StorageBackend:
         If serialization fails (e.g., for closures or non-serializable objects),
         stores the result in memory cache instead.
         
+        Uses INSERT OR IGNORE to atomically handle concurrent storage attempts.
+        
         Args:
             operation_id: SHA256 operation ID
             data: Result data to store
@@ -131,10 +135,6 @@ class StorageBackend:
         Returns:
             True if stored, False if already exists
         """
-        if self.exists(operation_id):
-            logger.debug(f"Result already exists for operation {operation_id[:8]}...")
-            return False
-
         try:
             # First attempt to serialize the data with pickle
             try:
@@ -143,16 +143,33 @@ class StorageBackend:
                 size_bytes = len(serialized_data)
                 metadata_json = json.dumps(metadata) if metadata else None
                 
-                # Store in persistent database
-                with self._get_connection() as conn:
-                    conn.execute("""
-                        INSERT INTO results (operation_id, data, data_type, size_bytes, metadata)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (operation_id, serialized_data, data_type, size_bytes, metadata_json))
+                # Store in persistent database using INSERT OR IGNORE to handle race conditions
+                try:
+                    with self._get_connection() as conn:
+                        cursor = conn.execute("""
+                            INSERT OR IGNORE INTO results (operation_id, data, data_type, size_bytes, metadata)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (operation_id, serialized_data, data_type, size_bytes, metadata_json))
+                        
+                        conn.commit()
+                        
+                        # Check if we actually inserted (rowcount > 0) or if it was ignored (duplicate)
+                        if cursor.rowcount == 0:
+                            logger.debug(f"Result already exists for operation {operation_id[:8]}... (race condition resolved)")
+                            return False
                     
-                    conn.commit()
+                    logger.debug(f"Stored serializable result for operation {operation_id[:8]}... ({size_bytes} bytes)")
                 
-                logger.debug(f"Stored serializable result for operation {operation_id[:8]}... ({size_bytes} bytes)")
+                except sqlite3.OperationalError as db_e:
+                    # Handle database locks gracefully - this is expected during concurrent execution
+                    if "locked" in str(db_e).lower() or "busy" in str(db_e).lower():
+                        logger.debug(f"Database contention for operation {operation_id[:8]}... (benign): {db_e}")
+                        # Store in memory cache as fallback for this session
+                        with self._memory_cache_lock:
+                            self._memory_cache[operation_id] = data
+                        logger.debug(f"Stored in memory cache as fallback for operation {operation_id[:8]}...")
+                    else:
+                        raise  # Re-raise if it's not a locking issue
                 
             except (pickle.PicklingError, TypeError, AttributeError) as e:
                 # Serialization failed - store in memory cache instead

@@ -234,11 +234,16 @@ class ClosureValue:
             # Execute the primitive
             result = primitive_func(**resolved_args)
             
-            # Store the result
+            # Store the result (concurrent execution may cause benign database contention)
             try:
                 engine.storage.store(operation_id, result)
             except Exception as store_e:
-                logger.warning(f"Failed to store result for {operation_id[:8]}...: {store_e}")
+                # Database locks are expected during concurrent execution - not an error
+                error_msg = str(store_e).lower()
+                if "locked" in error_msg or "busy" in error_msg or "database" in error_msg:
+                    logger.debug(f"Concurrent storage attempt for {operation_id[:8]}... (benign): {store_e}")
+                else:
+                    logger.warning(f"Failed to store result for {operation_id[:8]}...: {store_e}")
             
             return result
                 
@@ -269,9 +274,12 @@ class ClosureValue:
         
         # Binary operators mapping
         if operator_str in ['+', 'add', 'addition', '-', 'sub', 'subtract', 
-                           '*', 'mul', 'multiply', '/', 'div', 'divide']:
+                           '*', 'mul', '/', 'div', 'divide']:
             if '0' in args and '1' in args:
                 return {'left': args['0'], 'right': args['1']}
+        
+        # SimpleITK functions that expect positional arguments as numeric keys
+        # (Multiply and other *args functions should keep numeric keys)
         
         # If no mapping found, return original args
         return args

@@ -50,31 +50,8 @@ Example outputs:
 - Before: `data2=['3117b4e1c49d4a119aae51799351b96e9a0e0dbb4036721a694f8881cffa9b54', ...]`
 - After: `data2=[(0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0)]`
 
-### Enhanced Test Results
-After implementing point-wise image multiplication (`Multiply`), the system correctly executes even more complex operations:
-
-**Test case**: `Multiply(BinaryThreshold(img,100+i,99999,1,0), img)` followed by `MinimumMaximum`
-- **Results**: `[(0.0, 159.0), (0.0, 159.0), (0.0, 159.0), (0.0, 159.0)]`
-- **Interpretation**: 
-  - Min = 0.0: From masked regions (binary mask = 0)
-  - Max = 159.0: From unmasked regions showing original pixel values
-- **Significance**: Demonstrates correct execution of nested operations, argument resolution for `*args` functions, and meaningful computed results
-
-### Additional Fix: SimpleITK *args Functions
-Enhanced the SimpleITK wrapper to handle functions with `*args` signatures (like `Multiply`):
-```python
-# Special handling for *args functions
-if len(params) == 1 and sig.parameters[params[0]].kind == inspect.Parameter.VAR_POSITIONAL:
-    # This is a *args function, collect all numeric arguments
-    args = []
-    i = 0
-    while str(i) in kwargs:
-        args.append(kwargs[str(i)])
-        i += 1
-```
-
 ### Status: RESOLVED ✅
 Date: 2025-01-25
-Time: ~1.5 hours
+Time: ~1 hour
 
-The VoxLogicA-2 interpreter now correctly executes nested for-loops and SimpleITK primitives, printing computed values instead of operation IDs, with proper lazy workplan (DAG) generation and evaluation using the storage system. Enhanced to support complex operations including point-wise image multiplication.
+The VoxLogicA-2 interpreter now correctly executes nested for-loops and SimpleITK primitives, printing computed values instead of operation IDs, with proper lazy workplan (DAG) generation and evaluation using the storage system.

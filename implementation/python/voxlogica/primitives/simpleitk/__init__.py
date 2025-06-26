@@ -26,29 +26,40 @@ def _wrap_sitk_function(func: Callable, func_name: str) -> Callable:
         try:
             sig = inspect.signature(func)
             params = list(sig.parameters.keys())
-            args = []
-            for i, param_name in enumerate(params):
-                key = str(i)
-                if key in kwargs:
-                    arg = kwargs[key]
-                    param = sig.parameters[param_name]
-                    # Type adaptation: cast float->int if param expects int, and int->float if param expects float
-                    # Fallback for known functions/params if annotation is missing
-                    if param.annotation in [int] and isinstance(arg, float) and arg.is_integer():
-                        arg = int(arg)
-                    elif param.annotation in [float] and isinstance(arg, int):
-                        arg = float(arg)
-                    # Special case for BinaryThreshold: last two args must be int (insideValue, outsideValue)
-                    if func_name == "BinaryThreshold" and i in (3, 4):
-                        if isinstance(arg, float) and arg.is_integer():
+            
+            # Special handling for *args functions
+            if len(params) == 1 and sig.parameters[params[0]].kind == inspect.Parameter.VAR_POSITIONAL:
+                # This is a *args function, collect all numeric arguments
+                args = []
+                i = 0
+                while str(i) in kwargs:
+                    args.append(kwargs[str(i)])
+                    i += 1
+            else:
+                # Normal function with named parameters
+                args = []
+                for i, param_name in enumerate(params):
+                    key = str(i)
+                    if key in kwargs:
+                        arg = kwargs[key]
+                        param = sig.parameters[param_name]
+                        # Type adaptation: cast float->int if param expects int, and int->float if param expects float
+                        # Fallback for known functions/params if annotation is missing
+                        if param.annotation in [int] and isinstance(arg, float) and arg.is_integer():
                             arg = int(arg)
-                    args.append(arg)
-                else:
-                    param = sig.parameters[param_name]
-                    if param.default != inspect.Parameter.empty:
-                        break  # Use default values for remaining parameters
+                        elif param.annotation in [float] and isinstance(arg, int):
+                            arg = float(arg)
+                        # Special case for BinaryThreshold: last two args must be int (insideValue, outsideValue)
+                        if func_name == "BinaryThreshold" and i in (3, 4):
+                            if isinstance(arg, float) and arg.is_integer():
+                                arg = int(arg)
+                        args.append(arg)
                     else:
-                        raise ValueError(f"{func_name}: missing required argument {i} ({param_name})")
+                        param = sig.parameters[param_name]
+                        if param.default != inspect.Parameter.empty:
+                            break  # Use default values for remaining parameters
+                        else:
+                            raise ValueError(f"{func_name}: missing required argument {i} ({param_name})")
             # Call the original function
             result = func(*args)
             return result
