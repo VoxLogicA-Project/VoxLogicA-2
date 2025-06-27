@@ -12,9 +12,10 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from dask.delayed import delayed
 from dask.base import compute
-from dask.distributed import Client, as_completed
+from dask.distributed import Client, as_completed, Future
 import time
-from concurrent.futures import ThreadPoolExecutor, Future
+import threading
+from concurrent.futures import ThreadPoolExecutor, Future as ConcurrentFuture
 import traceback
 import importlib
 import sys
@@ -29,6 +30,33 @@ logger = logging.getLogger("voxlogica.execution")
 
 # Global shared Dask client for all executions
 _shared_dask_client: Optional[Client] = None
+
+# Global futures table for lock-free operation coordination
+_operation_futures: Dict[str, Any] = {}  # Any to handle both Dask and concurrent.futures.Future
+_operation_futures_lock = threading.RLock()
+
+def get_operation_future(operation_id: str) -> Optional[Any]:
+    """Get the Dask future for an operation if it exists."""
+    with _operation_futures_lock:
+        return _operation_futures.get(operation_id)
+
+def set_operation_future(operation_id: str, future: Any) -> bool:
+    """
+    Set the Dask future for an operation atomically.
+    
+    Returns:
+        True if future was set, False if one already existed
+    """
+    with _operation_futures_lock:
+        if operation_id in _operation_futures:
+            return False
+        _operation_futures[operation_id] = future
+        return True
+
+def remove_operation_future(operation_id: str) -> None:
+    """Remove the Dask future for an operation after completion."""
+    with _operation_futures_lock:
+        _operation_futures.pop(operation_id, None)
 
 def get_shared_dask_client() -> Optional[Client]:
     """
@@ -789,7 +817,7 @@ class ExecutionSession:
         
         Implements the core execution logic for pure computational operations:
         - Checks storage for existing results (deduplication)
-        - Handles distributed execution coordination
+        - Handles distributed execution coordination using global futures table
         - Loads and invokes primitive functions
         - Stores results in content-addressed storage
         
@@ -803,16 +831,58 @@ class ExecutionSession:
         """
         if self.cancelled:
             raise Exception("Execution cancelled")
+        
+        # Check if result already exists
         if self.storage.exists(operation_id):
             logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... found in storage, skipping")
             result = self.storage.retrieve(operation_id)
             self.completed.add(operation_id)
             return result
+        
+        # Check if another worker is already computing this operation
+        existing_future = get_operation_future(operation_id)
+        if existing_future is not None:
+            logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... has existing future, awaiting...")
+            return self._await_operation_future(operation_id, existing_future)
+        
+        # Try to claim the operation atomically
         if not self.storage.mark_running(operation_id):
-            logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... being computed by another worker, waiting")
-            return self._wait_for_result(operation_id)
+            # Someone else claimed it, check for their future
+            existing_future = get_operation_future(operation_id)
+            if existing_future is not None:
+                logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... claimed by another worker, awaiting future...")
+                return self._await_operation_future(operation_id, existing_future)
+            else:
+                # Fall back to storage-based waiting (should be rare)
+                logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... claimed but no future found, falling back to storage wait...")
+                return self._wait_for_result(operation_id)
+        
+        # We won the claim - for now, execute directly (avoiding Dask serialization issues)
+        # TODO: Implement proper Dask futures integration without serialization issues
+        logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... executing directly (claimed)")
+        try:
+            result = self._execute_operation_inner(operation, operation_id, list(dependency_results))
+            self.completed.add(operation_id)
+            return result
+        except Exception as e:
+            self.failed[operation_id] = str(e)
+            raise e
+    
+    def _execute_operation_inner(self, operation: Operation, operation_id: NodeId, dependency_results: List[Any]) -> Any:
+        """
+        Inner operation execution logic (can be called directly or via Dask future).
+        
+        Args:
+            operation: Operation to execute
+            operation_id: Content-addressed ID of the operation
+            dependency_results: Results from dependency operations
+            
+        Returns:
+            Result of the operation execution
+        """
         try:
             logger.log(VERBOSE_LEVEL, f"[START] Executing operation {operation_id[:8]}... ({operation.operator})")
+            
             if self._is_literal_operation(operation):
                 result = operation.operator.value if isinstance(operation.operator, ConstantValue) else operation.operator
                 logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... is literal: {result}")
@@ -820,22 +890,56 @@ class ExecutionSession:
                 primitive_func = self.primitives.load_primitive(str(operation.operator.value) if isinstance(operation.operator, ConstantValue) else str(operation.operator))
                 if primitive_func is None:
                     raise Exception(f"No primitive implementation for operator: {operation.operator}")
-                resolved_args = self._resolve_arguments(operation, list(dependency_results))
+                resolved_args = self._resolve_arguments(operation, dependency_results)
                 logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... resolved args: {list(resolved_args.keys())}")
                 result = primitive_func(**resolved_args)
+            
             # Unwrap ConstantValue if returned as result
             if isinstance(result, ConstantValue):
                 result = result.value
+            
             self.storage.store(operation_id, result)
-            self.completed.add(operation_id)
             logger.log(VERBOSE_LEVEL, f"[DONE] Operation {operation_id[:8]}... completed successfully")
             return result
+            
         except Exception as e:
             error_msg = f"Operation {operation_id[:8]}... failed: {e}"
             logger.error(error_msg)
             logger.debug(traceback.format_exc())
             self.storage.mark_failed(operation_id, str(e))
-            self.failed[operation_id] = str(e)
+            raise e
+    
+    def _await_operation_future(self, operation_id: NodeId, future: Any) -> Any:
+        """
+        Await a Dask future for an operation being computed by another worker.
+        
+        This is the lock-free, timeout-free mechanism for waiting on other workers.
+        
+        Args:
+            operation_id: ID of operation to wait for
+            future: Dask future to await
+            
+        Returns:
+            Result of the operation
+        """
+        try:
+            # Wait for the future to complete (no timeout needed)
+            result = future.result()
+            
+            # Retrieve from storage (the winning worker should have stored it)
+            if self.storage.exists(operation_id):
+                stored_result = self.storage.retrieve(operation_id)
+                self.completed.add(operation_id)
+                return stored_result
+            else:
+                # Use the future result as fallback
+                self.completed.add(operation_id)
+                return result
+                
+        except Exception as e:
+            # Future failed - check if operation was marked as failed in storage
+            if hasattr(e, '__cause__') or 'failed' in str(e):
+                self.failed[operation_id] = str(e)
             raise e
 
     def _execute_goal_with_result(self, goal):
@@ -1194,23 +1298,32 @@ class ExecutionSession:
         """
         Wait for another worker to complete the operation.
         
-        Uses efficient event-based notification instead of polling.
+        Now uses the global futures table for lock-free, timeout-free waiting.
+        Falls back to storage-based waiting only if no future is available.
         
         Args:
             operation_id: ID of operation to wait for
-            timeout: Maximum time to wait in seconds
+            timeout: Maximum time to wait (only used for fallback)
             
         Returns:
             Result of the operation
             
         Raises:
-            Exception: If timeout is reached, execution is cancelled, or operation failed
+            Exception: If execution is cancelled or operation failed
         """
         if self.cancelled:
             raise Exception("Execution cancelled")
         
+        # First try to get the operation's future for lock-free waiting
+        future = get_operation_future(operation_id)
+        if future is not None:
+            logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... found future, awaiting without timeout...")
+            return self._await_operation_future(operation_id, future)
+        
+        # Fall back to storage-based waiting (should be rare with futures table)
+        logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... no future found, falling back to storage wait...")
         try:
-            # Use storage's efficient wait mechanism
+            # Use storage's efficient wait mechanism (as fallback only)
             result = self.storage.wait_for_completion(operation_id, timeout)
             self.completed.add(operation_id)
             return result

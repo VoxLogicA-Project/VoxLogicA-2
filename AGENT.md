@@ -30,6 +30,14 @@ Git diff:
 
 - Do not report issues at random: create a folder in the OPEN directory, add a README and all useful material, link issues to tests and tests to issues
 
+# CODING POLICIES
+
+- Do not use timeouts unless absolutely justified and unavoidable. Prefer deterministic completion detection over timeout-based mechanisms.
+
+- Do not use locks unless absolutely justified and unavoidable. Prefer lock-free atomic operations and race-condition-aware algorithms.
+
+- Always prefer event-driven or future-based waiting over polling or timeout-based waiting.
+
 # WHAT TO DO INSTEAD
 
 All files in META are important. GUIDE.md is the main guide.
