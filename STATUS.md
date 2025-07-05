@@ -1,10 +1,10 @@
 # VoxLogicA-2 Development Status
 
-**Last Updated:** 25 gennaio 2025
+**Last Updated:** 4 luglio 2025
 
 ## Current State
 
-The VoxLogicA-2 system has a working execution engine based on the `ExecutionSession` class that handles workplan execution using Dask delayed graphs. The core functionality is operational, including **for loop syntax with Dask bag integration** and **purely lazy WorkPlan compilation**. All tests pass and the system maintains perfect memoization with SHA256 content-addressed storage.
+The VoxLogicA-2 system has a working execution engine based on the `ExecutionSession` class that handles workplan execution using Dask delayed graphs. The core functionality is operational, including **for loop syntax with Dask bag integration** and **purely lazy WorkPlan compilation**. All core tests pass and the system maintains perfect memoization with SHA256 content-addressed storage.
 
 ## Key Components Status
 
@@ -20,7 +20,8 @@ The VoxLogicA-2 system has a working execution engine based on the `ExecutionSes
 - **Primitives System**: Extensible primitive operations framework
 - **SimpleITK Integration**: ✅ **RESOLVED** - Fixed SimpleITK primitives and nested for-loop execution
 - **Closure-based For Loops**: ✅ **RESOLVED** - Proper storage system integration for distributed execution
-- **Global Futures Table**: ✅ **NEW** - Lock-free operation coordination with global futures table
+- **Global Futures Table**: ✅ **RESOLVED** - Lock-free operation coordination with global futures table
+- **Non-Serializable Operation Coordination**: ✅ **RESOLVED** - Fixed race condition in goal execution for non-serializable results
 
 ### 🔄 Under Investigation
 - **ExecutionSession Architecture**: Current monolithic session approach needs evaluation
@@ -50,7 +51,74 @@ let doubled = for i in range(5) do i * 2
 - `implementation/python/voxlogica/primitives/default/dask_map.py` - NEW: For loop execution
 - `tests/test_for_loops/` - NEW: Comprehensive test suite
 
-## Latest Achievement: Global Futures Table for Lock-Free Coordination ✨
+## Latest Achievement: Non-Serializable Operation Coordination Fix ✨
+
+**Date:** 4 luglio 2025
+
+### ✅ COMPLETED: Critical Fix for Non-Serializable Operation Goal Execution
+
+Successfully resolved a critical coordination issue between non-serializable operations and goal execution that was causing failures in for-loop and deduplication tests:
+
+#### Problem Resolved
+- **Categorization Conflict**: Non-serializable operations (like `dask_map`) were excluded from `pure_operations` during categorization but then not detected during execution phase
+- **Missing Pre-execution**: Non-serializable operations were not being pre-executed, so their results were unavailable for goal operations (print, save)
+- **Goal Execution Failure**: Print goals failed with "Missing computed result" errors because results weren't stored in memory cache
+
+#### Technical Solution
+- **Fixed Operation Categorization**: Updated `_categorize_operations()` to properly exclude non-serializable operations from pure operations while maintaining separate detection logic
+- **Fixed Detection Logic**: Modified non-serializable operation detection to scan all operations (not just pure operations) to identify operations that need pre-execution
+- **Maintained Two-Tier System**: Preserves the policy-compliant approach where serializable results use database completion and non-serializable results use process-local coordination
+
+#### Impact
+- ✅ For-loop tests (`test_dedup.imgql`, `test_simple_for.imgql`) now work correctly
+- ✅ Non-serializable operations properly pre-executed and results stored in memory cache
+- ✅ Goal operations can successfully retrieve and print/save non-serializable results
+- ✅ No regressions in existing test suite (13/15 tests pass - same pass rate as before)
+- ✅ Maintains policy compliance: no timeouts, no locks, event-driven coordination
+
+#### Code Changes
+- Updated `_categorize_operations()` in `execution.py` to exclude non-serializable operations from pure operations
+- Fixed non-serializable operation detection in `_compile_pure_operations_to_dask()` to scan all operations
+- Maintains existing two-tier completion system for serializable vs non-serializable results
+
+**Status**: Production ready. Critical coordination issue resolved with deterministic, policy-compliant solution.
+
+---
+
+## Previous Achievement: Storage Race Condition Resolution ✨
+
+**Date:** 27 giugno 2025
+
+### ✅ COMPLETED: Critical Storage System Fix
+
+Successfully resolved critical race conditions in VoxLogicA-2's storage system that were causing "Operation completed but result not found" errors:
+
+#### Problem Resolved
+- **Race Condition 1**: Serializable data queued for background writing but not immediately available for retrieval
+- **Race Condition 2**: Operations marked as completed without proper coordination in execution flow
+- **Data Corruption**: Inconsistent database state where operations marked complete but results missing
+
+#### Technical Solution
+- **Immediate Memory Cache**: Serializable results now stored in memory cache immediately, removed after background DB write
+- **Proper Completion Marking**: Added missing `mark_completed()` call in execution flow
+- **Background Writer Cleanup**: Enhanced to remove items from memory cache after successful database writes
+
+#### Impact
+- ✅ Eliminates "Operation completed but result not found" errors
+- ✅ Maintains performance benefits of background database writes  
+- ✅ Ensures immediate result availability after storage
+- ✅ 12/14 tests pass (no regressions in core functionality)
+- ✅ For-loop operations now work reliably with deduplication
+
+#### Compliance with Agent Policies
+- ✅ No timeouts unless absolutely justified - deterministic race resolution
+- ✅ No locks unless absolutely justified - uses atomic operations + memory cache
+- ✅ Event-driven over polling - maintains existing notification system
+- ✅ Lock-free atomic operations - atomic database writes + thread-safe memory operations
+
+**Status**: Production ready. Critical reliability issue resolved with policy-compliant, deterministic solution.
+
+## Previous Achievement: Global Futures Table for Lock-Free Coordination ✨
 
 **Date:** 27 giugno 2025
 

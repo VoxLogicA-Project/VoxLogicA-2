@@ -157,7 +157,7 @@ class StorageBackend:
             
             conn.commit()
     
-    def store(self, operation_id: str, data: Any, metadata: Optional[Dict] = None) -> bool:
+    def store(self, operation_id: str, data: Any, metadata: Optional[Dict] = None, ensure_persisted: bool = False) -> bool:
         """
         Store computation result with content-addressed key.
         
@@ -168,15 +168,18 @@ class StorageBackend:
             operation_id: SHA256 operation ID
             data: Result data to store
             metadata: Optional metadata dict
+            ensure_persisted: If True, wait for result to be persisted to database before returning
             
         Returns:
-            True if stored/queued, False if already exists
+            True if stored/queued successfully, False if already exists
         """
         try:
             # Check if result already exists (fast check before expensive serialization)
             if self.exists(operation_id):
                 logger.debug(f"Result already exists for operation {operation_id[:8]}... (early detection)")
                 return False
+            
+            logger.debug(f"STORING result for operation {operation_id[:8]}... - type: {type(data).__name__}, ensure_persisted: {ensure_persisted}")
             
             # Attempt to serialize the data with pickle
             try:
@@ -185,22 +188,74 @@ class StorageBackend:
                 size_bytes = len(serialized_data)
                 metadata_json = json.dumps(metadata) if metadata else None
                 
-                # Queue for background writing (non-blocking)
-                write_request = (operation_id, serialized_data, data_type, size_bytes, metadata_json)
-                self._result_write_queue.put(write_request)
+                # Store in memory cache immediately to avoid race condition
+                # where operation is marked complete before background write finishes
+                self._memory_cache[operation_id] = data
                 
-                logger.debug(f"Queued serializable result for operation {operation_id[:8]}... ({size_bytes} bytes)")
+                # If persistence is required, store synchronously to database
+                if ensure_persisted:
+                    # Store directly in database (synchronous)
+                    conn = self._get_connection()
+                    with self._connection_lock:
+                        try:
+                            cursor = conn.execute("""
+                                INSERT OR IGNORE INTO results (operation_id, data, data_type, size_bytes, metadata)
+                                VALUES (?, ?, ?, ?, ?)
+                            """, (operation_id, serialized_data, data_type, size_bytes, metadata_json))
+                            conn.commit()
+                            
+                            if cursor.rowcount > 0:
+                                logger.debug(f"Stored result synchronously for operation {operation_id[:8]}... ({size_bytes} bytes)")
+                            else:
+                                logger.debug(f"Result already exists for operation {operation_id[:8]}...")
+                                
+                        except sqlite3.Error as e:
+                            logger.error(f"Failed to store synchronously for operation {operation_id[:8]}...: {e}")
+                            # Keep in memory cache on database error
+                else:
+                    # Queue for background writing (non-blocking)
+                    write_request = (operation_id, serialized_data, data_type, size_bytes, metadata_json)
+                    self._result_write_queue.put(write_request)
+                    logger.debug(f"Queued result for background storage for operation {operation_id[:8]}... ({size_bytes} bytes)")
+                
+                logger.debug(f"Stored serializable result for operation {operation_id[:8]}... ({size_bytes} bytes)")
                 
             except (pickle.PicklingError, TypeError, AttributeError):
                 # Serialization failed - store in memory cache instead
                 self._memory_cache[operation_id] = data
                 logger.debug(f"Stored non-serializable result for operation {operation_id[:8]}... in memory cache: {type(data).__name__}")
+                
+                # For non-serializable results, we can't guarantee persistence across processes
+                if ensure_persisted:
+                    logger.warning(f"Cannot ensure persistence for non-serializable result {operation_id[:8]}... - stored in memory cache only")
             
             return True
             
         except Exception as e:
             logger.error(f"Failed to store result for operation {operation_id[:8]}...: {e}")
             raise
+    
+    def is_persistable(self, operation_id: str) -> bool:
+        """
+        Check if a result is persistable (stored in database) rather than just in memory cache.
+        
+        Args:
+            operation_id: SHA256 operation ID
+            
+        Returns:
+            True if result is in persistent storage, False if only in memory cache
+        """
+        try:
+            # Check persistent storage
+            conn = self._get_connection()
+            with self._connection_lock:
+                cursor = conn.execute("""
+                    SELECT 1 FROM results WHERE operation_id = ? LIMIT 1
+                """, (operation_id,))
+                return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Failed to check persistence for operation {operation_id[:8]}...: {e}")
+            return False
     
     def retrieve(self, operation_id: str) -> Optional[Any]:
         """
@@ -215,7 +270,13 @@ class StorageBackend:
             Stored data or None if not found
         """
         try:
-            # First check persistent storage
+            # First check memory cache (faster and handles race condition with background writer)
+            if operation_id in self._memory_cache:
+                data = self._memory_cache[operation_id]
+                logger.debug(f"Retrieved result for operation {operation_id[:8]}... from memory cache")
+                return data
+            
+            # Then check persistent storage
             conn = self._get_connection()
             with self._connection_lock:
                 cursor = conn.execute("""
@@ -226,14 +287,8 @@ class StorageBackend:
                 if row is not None:
                     # Deserialize data from persistent storage
                     data = pickle.loads(row[0])
-                    logger.debug(f"Retrieved serializable result for operation {operation_id[:8]}...")
+                    logger.debug(f"Retrieved serializable result for operation {operation_id[:8]}... from persistent storage")
                     return data
-            
-            # Check memory cache for non-serializable results
-            if operation_id in self._memory_cache:
-                data = self._memory_cache[operation_id]
-                logger.debug(f"Retrieved non-serializable result for operation {operation_id[:8]}... from memory cache")
-                return data
             
             # Not found in either location
             return None
@@ -249,43 +304,66 @@ class StorageBackend:
         Checks both persistent storage and memory cache.
         """
         try:
-            # Check persistent storage first
+            # First check memory cache (faster and handles race condition with background writer)
+            if operation_id in self._memory_cache:
+                return True
+            
+            # Then check persistent storage
             conn = self._get_connection()
             with self._connection_lock:
                 cursor = conn.execute("""
                     SELECT 1 FROM results WHERE operation_id = ? LIMIT 1
                 """, (operation_id,))
                 
-                if cursor.fetchone() is not None:
-                    return True
-            
-            # Check memory cache for non-serializable results
-            return operation_id in self._memory_cache
+                return cursor.fetchone() is not None
                 
         except Exception as e:
             logger.error(f"Failed to check existence for operation {operation_id[:8]}...: {e}")
             raise
 
-    def wait_for_completion(self, operation_id: str, timeout: float = 300.0) -> Any:
+    def wait_for_completion(self, operation_id: str, timeout: float = 300.0, allow_non_persistable: bool = False) -> Any:
         """
         Wait for operation to complete using event-driven notifications.
         
         Uses SQLite update hooks for real-time completion detection instead of polling.
+        For non-persistable results, only waits if they exist in memory cache.
         
         Args:
             operation_id: Operation ID to wait for
-            timeout: Maximum time to wait in seconds
+            timeout: Maximum time to wait in seconds (ignored for non-persistable operations)
+            allow_non_persistable: If False, raises exception for non-persistable operations
             
         Returns:
             Result of the operation
             
         Raises:
-            TimeoutError: If timeout is reached
-            Exception: If operation failed
+            TimeoutError: If timeout is reached (only for persistable operations)
+            Exception: If operation failed or non-persistable operation requested without flag
         """
         # Check if result already exists
         if self.exists(operation_id):
             return self.retrieve(operation_id)
+        
+        # For non-persistable operations, we should not wait using database completion
+        # because they are never marked as completed in the database. 
+        # They should only be coordinated via process-local futures.
+        if not allow_non_persistable:
+            # Check if this might be a non-persistable operation by looking for memory cache entry
+            if operation_id in self._memory_cache:
+                # Result exists in memory cache - return it
+                return self._memory_cache[operation_id]
+            
+            # Check if operation is running but not persistable
+            conn = self._get_connection()
+            with self._connection_lock:
+                cursor = conn.execute("""
+                    SELECT status FROM execution_state WHERE operation_id = ?
+                """, (operation_id,))
+                row = cursor.fetchone()
+                if row and row[0] == 'running':
+                    # Operation is running but we shouldn't wait for database completion
+                    # if it might be non-persistable. The caller should use futures instead.
+                    raise Exception(f"Operation {operation_id[:8]}... is running but may produce non-persistable result. Use process-local coordination instead of database waiting.")
         
         # Check if operation failed
         conn = self._get_connection()
@@ -327,7 +405,18 @@ class StorageBackend:
                 if result is not None:
                     return result
                 else:
-                    raise Exception(f"Operation completed but result not found for {operation_id[:8]}...")
+                    # Operation marked as completed but result not found - this suggests a race condition
+                    # or the result was only stored in memory cache of a different process
+                    logger.warning(f"Operation {operation_id[:8]}... marked as completed but result not found - cleaning up stale state")
+                    
+                    # Clean up the stale completion state so the operation can be re-executed
+                    with self._connection_lock:
+                        conn.execute("""
+                            DELETE FROM execution_state WHERE operation_id = ?
+                        """, (operation_id,))
+                        conn.commit()
+                    
+                    raise Exception(f"Operation {operation_id[:8]}... had stale completion state - cleaned up for retry")
             else:
                 # Timeout occurred
                 raise TimeoutError(f"Timeout waiting for operation {operation_id[:8]}... to complete")
@@ -646,12 +735,31 @@ class StorageBackend:
                         conn.commit()
                         
                         if cursor.rowcount > 0:
-                            logger.debug(f"Background writer stored result for operation {operation_id[:8]}... ({size_bytes} bytes)")
+                            # Successfully wrote to database - verify it's readable before removing from cache
+                            verify_cursor = conn.execute("""
+                                SELECT 1 FROM results WHERE operation_id = ? LIMIT 1
+                            """, (operation_id,))
+                            if verify_cursor.fetchone() is not None:
+                                # Confirmed readable - safe to remove from memory cache
+                                self._memory_cache.pop(operation_id, None)
+                                logger.debug(f"Background writer stored result for operation {operation_id[:8]}... ({size_bytes} bytes, verified and removed from memory cache)")
+                            else:
+                                logger.warning(f"Background writer: write succeeded but result not readable for {operation_id[:8]}... - keeping in memory cache")
                         else:
-                            logger.debug(f"Background writer: result already exists for operation {operation_id[:8]}...")
+                            # Result already exists in database - verify it's readable before removing from cache
+                            verify_cursor = conn.execute("""
+                                SELECT 1 FROM results WHERE operation_id = ? LIMIT 1
+                            """, (operation_id,))
+                            if verify_cursor.fetchone() is not None:
+                                # Confirmed readable - safe to remove from memory cache
+                                self._memory_cache.pop(operation_id, None)
+                                logger.debug(f"Background writer: result already exists for operation {operation_id[:8]}... (verified and removed from memory cache)")
+                            else:
+                                logger.warning(f"Background writer: result should exist but not readable for {operation_id[:8]}... - keeping in memory cache")
                             
                     except sqlite3.Error as e:
                         logger.error(f"Background writer failed to store operation {operation_id[:8]}...: {e}")
+                        # Keep result in memory cache on database write failure
                 
                 self._result_write_queue.task_done()
                 
@@ -771,9 +879,9 @@ class NoCacheStorageBackend(StorageBackend):
         
         logger.debug(f"No-cache storage backend initialized with shared in-memory SQLite - results will not persist to disk")
     
-    def wait_for_completion(self, operation_id: str, timeout: float = 300.0) -> Any:
+    def wait_for_completion(self, operation_id: str, timeout: float = 300.0, allow_non_persistable: bool = False) -> Any:
         """Wait for operation completion (works normally with in-memory storage)."""
-        return super().wait_for_completion(operation_id, timeout)
+        return super().wait_for_completion(operation_id, timeout, allow_non_persistable)
     
     def mark_running(self, operation_id: str, worker_id: str|None = None) -> bool:
         """Mark operation as running (works normally with in-memory storage)."""
