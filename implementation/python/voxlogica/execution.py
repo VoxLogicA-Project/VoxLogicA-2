@@ -784,8 +784,14 @@ class ExecutionSession:
         Pure operations are mathematical/data processing operations that can be
         parallelized and cached. Side-effect operations are I/O operations like
         print, save that must be executed sequentially after computations.
+        
+        With threaded execution, most operations can be treated as pure operations
+        since they share memory, but some still need special handling due to
+        storage/serialization constraints.
         """
         side_effect_operators = {'print', 'save', 'output', 'write', 'display'}
+        # Operations that still need special handling even in threaded mode
+        special_handling_operators = {'dask_map'}
         
         for node_id, node in self.workplan.nodes.items():
             if isinstance(node, Operation):
@@ -794,10 +800,12 @@ class ExecutionSession:
                 
                 if op_str_lower in side_effect_operators:
                     self.goal_operations[node_id] = node
+                elif op_str_lower in special_handling_operators:
+                    # These operations still need special handling
+                    pass
                 else:
-                    # All non-side-effect operations are pure operations
-                    # Since we use threaded execution, all operations (including
-                    # previously "non-serializable" ones) can share memory
+                    # All other operations (including map, filter, reduce, parallelize)
+                    # can be treated as pure operations in threaded mode
                     self.pure_operations[node_id] = node
         # constants are not added to pure_operations or goal_operations
 
@@ -1157,14 +1165,33 @@ class ExecutionSession:
         Creates a Dask delayed computation graph from pure operations,
         ensuring dependencies are properly handled and execution order is maintained.
         
-        Since we use threaded execution, all operations (including those that produce
-        non-serializable results) can share memory and be executed through Dask.
+        Since we use threaded execution, most operations can share memory and be 
+        executed through Dask, but some operations still need special handling.
         
         Args:
             dependencies: Dependency graph from _build_dependency_graph
         """
-        # Compile operations in topological order to ensure dependencies are compiled first
+        # Identify operations that still need special handling
+        special_handling_ops = {'dask_map'}
+        special_handling_operations = {}
+        
+        # Find operations that need special handling
+        for op_id, operation in self.workplan.operations.items():
+            op_str = str(operation.operator)
+            if op_str.lower() in special_handling_ops:
+                special_handling_operations[op_id] = operation
+                logger.log(VERBOSE_LEVEL, f"Operation {op_id[:8]}... ({op_str}) needs special handling")
+        
+        # Execute special operations directly before Dask computation
+        if special_handling_operations:
+            logger.log(VERBOSE_LEVEL, f"Pre-executing {len(special_handling_operations)} special operations")
+            self._execute_special_operations(special_handling_operations)
+        
+        # Compile pure operations in topological order to ensure dependencies are compiled first
         topo_order = self._topological_sort(dependencies)
+        
+        logger.log(VERBOSE_LEVEL, f"Compiling {len(self.pure_operations)} pure operations to Dask delayed graph")
+        logger.log(VERBOSE_LEVEL, f"Pure operations: {[op_id[:8] + '...' for op_id in self.pure_operations.keys()]}")
         
         for op_id in topo_order:
             if op_id not in self.pure_operations:
@@ -1187,6 +1214,7 @@ class ExecutionSession:
             self.delayed_graph[op_id] = delayed(self._execute_pure_operation)(
                 operation, op_id, *dep_delayed
             )
+            logger.log(VERBOSE_LEVEL, f"Added operation {op_id[:8]}... ({operation.operator}) to delayed graph")
 
     def _topological_sort(self, dependencies: Dict[NodeId, Set[NodeId]]) -> List[NodeId]:
         """
@@ -1241,6 +1269,54 @@ class ExecutionSession:
         
         return result
 
+    def _execute_special_operations(self, special_operations: Dict[NodeId, Operation]):
+        """
+        Execute operations that need special handling even in threaded mode.
+        
+        These operations may have constraints that prevent them from being
+        handled through the normal Dask delayed graph.
+        
+        Args:
+            special_operations: Operations that need special handling
+        """
+        for op_id, operation in special_operations.items():
+            # Skip if already computed
+            if self.storage.exists(op_id):
+                logger.log(VERBOSE_LEVEL, f"Special operation {op_id[:8]}... already exists, skipping")
+                self.completed.add(op_id)
+                continue
+            
+            # Resolve dependencies
+            dependency_results = []
+            for arg_name in sorted(operation.arguments.keys()):
+                dep_id = operation.arguments[arg_name]
+                
+                # Get dependency result - try storage first
+                if self.storage.exists(dep_id):
+                    dependency_results.append(self.storage.retrieve(dep_id))
+                elif dep_id in self.workplan.nodes:
+                    # Handle constants and other node types
+                    dep_node = self.workplan.nodes[dep_id]
+                    if isinstance(dep_node, ConstantValue):
+                        dependency_results.append(dep_node.value)
+                    elif isinstance(dep_node, ClosureValue):
+                        dependency_results.append(dep_node)
+                    else:
+                        raise Exception(f"Dependency {dep_id[:8]}... not found for special operation {op_id[:8]}...")
+                else:
+                    raise Exception(f"Dependency {dep_id[:8]}... not found for special operation {op_id[:8]}...")
+            
+            # Execute the operation directly
+            logger.log(VERBOSE_LEVEL, f"Executing special operation {op_id[:8]}... directly")
+            try:
+                result = self._execute_operation_inner(operation, op_id, dependency_results)
+                self.completed.add(op_id)
+                logger.log(VERBOSE_LEVEL, f"Special operation {op_id[:8]}... completed successfully")
+            except Exception as e:
+                self.failed[op_id] = str(e)
+                logger.error(f"Special operation {op_id[:8]}... failed: {e}")
+                raise e
+    
     def _is_literal_operation(self, operation: Operation) -> bool:
         """
         Check if an operation represents a literal value (constant).
