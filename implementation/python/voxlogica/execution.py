@@ -784,10 +784,8 @@ class ExecutionSession:
         Pure operations are mathematical/data processing operations that can be
         parallelized and cached. Side-effect operations are I/O operations like
         print, save that must be executed sequentially after computations.
-        Non-serializable operations are handled separately and not included in pure operations.
         """
         side_effect_operators = {'print', 'save', 'output', 'write', 'display'}
-        non_serializable_operators = {'dask_map', 'map', 'filter', 'reduce', 'parallelize'}
         
         for node_id, node in self.workplan.nodes.items():
             if isinstance(node, Operation):
@@ -796,11 +794,10 @@ class ExecutionSession:
                 
                 if op_str_lower in side_effect_operators:
                     self.goal_operations[node_id] = node
-                elif op_str_lower in non_serializable_operators:
-                    # Non-serializable operations are not pure operations for Dask compilation
-                    # They are handled separately in pre-execution phase
-                    pass
                 else:
+                    # All non-side-effect operations are pure operations
+                    # Since we use threaded execution, all operations (including
+                    # previously "non-serializable" ones) can share memory
                     self.pure_operations[node_id] = node
         # constants are not added to pure_operations or goal_operations
 
@@ -1138,7 +1135,7 @@ class ExecutionSession:
     
     def _build_dependency_graph(self) -> Dict[NodeId, Set[NodeId]]:
         """
-        Build dependency graph (operation -> dependencies) for pure operations only.
+        Build dependency graph (operation -> dependencies) for pure operations.
         
         Creates a mapping from each operation to its direct dependencies,
         excluding constants and side-effect operations.
@@ -1153,30 +1150,6 @@ class ExecutionSession:
                     dependencies[op_id].add(dep_id)
         return dict(dependencies)
     
-    def _build_non_serializable_dependency_graph(self, non_serializable_operations: Dict[NodeId, Operation]) -> Dict[NodeId, Set[NodeId]]:
-        """
-        Build dependency graph for non-serializable operations.
-        
-        Creates a mapping from each non-serializable operation to its dependencies,
-        including dependencies on other non-serializable operations and any workplan nodes.
-        
-        Args:
-            non_serializable_operations: Dictionary of non-serializable operations
-            
-        Returns:
-            Dictionary mapping operation IDs to sets of their dependency IDs
-        """
-        dependencies: Dict[NodeId, Set[NodeId]] = defaultdict(set)
-        for op_id, operation in non_serializable_operations.items():
-            for arg_name, dep_id in operation.arguments.items():
-                # Include dependencies on other non-serializable operations
-                # and any operation that exists in the workplan
-                if dep_id in non_serializable_operations or dep_id in self.workplan.nodes:
-                    # Only add as dependency if it's another operation (not a constant)
-                    if dep_id in non_serializable_operations or (dep_id in self.workplan.nodes and isinstance(self.workplan.nodes[dep_id], Operation)):
-                        dependencies[op_id].add(dep_id)
-        return dict(dependencies)
-    
     def _compile_pure_operations_to_dask(self, dependencies: Dict[NodeId, Set[NodeId]]):
         """
         Compile pure operations to Dask delayed graph.
@@ -1184,38 +1157,20 @@ class ExecutionSession:
         Creates a Dask delayed computation graph from pure operations,
         ensuring dependencies are properly handled and execution order is maintained.
         
-        Operations that may produce non-serializable results are executed directly
-        instead of being added to the Dask graph to avoid cross-process coordination issues.
+        Since we use threaded execution, all operations (including those that produce
+        non-serializable results) can share memory and be executed through Dask.
         
         Args:
             dependencies: Dependency graph from _build_dependency_graph
         """
-        # Identify operations that may produce non-serializable results
-        non_serializable_ops = {'dask_map', 'map', 'filter', 'reduce', 'parallelize'}
-        
-        # Separate operations into serializable and non-serializable categories
-        # Look at all operations, not just pure_operations, since non-serializable operations
-        # are excluded from pure_operations by categorization
-        serializable_operations = {}
-        non_serializable_operations = {}
-        
-        for op_id, operation in self.workplan.operations.items():
-            op_str = str(operation.operator)
-            if op_str.lower() in non_serializable_ops:
-                non_serializable_operations[op_id] = operation
-                logger.log(VERBOSE_LEVEL, f"Operation {op_id[:8]}... ({op_str}) marked as non-serializable - will execute directly")
-            elif op_id in self.pure_operations:
-                # Only include in serializable operations if it's also a pure operation
-                serializable_operations[op_id] = operation
-        
-        # Compile serializable operations in topological order to ensure dependencies are compiled first
+        # Compile operations in topological order to ensure dependencies are compiled first
         topo_order = self._topological_sort(dependencies)
         
         for op_id in topo_order:
-            if op_id not in serializable_operations:
+            if op_id not in self.pure_operations:
                 continue
                 
-            operation = serializable_operations[op_id]
+            operation = self.pure_operations[op_id]
             
             # Build dependency list in argument order (not dependency set order!)
             dep_delayed = []
@@ -1232,14 +1187,6 @@ class ExecutionSession:
             self.delayed_graph[op_id] = delayed(self._execute_pure_operation)(
                 operation, op_id, *dep_delayed
             )
-        
-        # Execute non-serializable operations directly before Dask computation
-        # This ensures they're available for any serializable operations that depend on them
-        if non_serializable_operations:
-            logger.log(VERBOSE_LEVEL, f"Pre-executing {len(non_serializable_operations)} non-serializable operations")
-            # Build dependency graph for non-serializable operations
-            ns_dependencies = self._build_non_serializable_dependency_graph(non_serializable_operations)
-            self._execute_non_serializable_operations(non_serializable_operations, ns_dependencies)
 
     def _topological_sort(self, dependencies: Dict[NodeId, Set[NodeId]]) -> List[NodeId]:
         """
@@ -1425,32 +1372,10 @@ class ExecutionSession:
                 self.completed.add(operation_id)
                 return result
         
-        # Check if this operation produces non-serializable results
-        # by looking at the operator type
-        operation = None
-        for node_id, node in self.workplan.nodes.items():
-            if node_id == operation_id and isinstance(node, Operation):
-                operation = node
-                break
-        
-        non_serializable_ops = {'dask_map', 'map', 'filter', 'reduce', 'parallelize'}
-        might_be_non_serializable = False
-        
-        if operation is not None:
-            op_str = str(operation.operator)
-            might_be_non_serializable = op_str.lower() in non_serializable_ops
-        
-        if might_be_non_serializable:
-            # For operations that might produce non-serializable results,
-            # we cannot wait using database completion as they're never marked as completed there.
-            # Instead, we must re-execute the operation in this process.
-            logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... may produce non-serializable result - cannot wait across processes")
-            raise Exception(f"Operation {operation_id[:8]}... produces non-serializable results and is not available in this process. Non-serializable operations must be computed within the same process.")
-        
-        # For serializable results, use storage-based waiting
-        logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... no future found, using storage wait for serializable result...")
+        # For threaded execution, use storage-based waiting
+        logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... no future found, using storage wait...")
         try:
-            # Use storage's efficient wait mechanism (for serializable results only)
+            # Use storage's efficient wait mechanism
             result = self.storage.wait_for_completion(operation_id, timeout, allow_non_persistable=False)
             self.completed.add(operation_id)
             return result
@@ -1462,116 +1387,6 @@ class ExecutionSession:
             self.failed[operation_id] = str(e)
             raise e
 
-    def _execute_non_serializable_operations(self, non_serializable_operations: Dict[NodeId, Operation], dependencies: Dict[NodeId, Set[NodeId]]):
-        """
-        Execute non-serializable operations directly in topological order.
-        
-        These operations produce results that cannot be shared across processes,
-        so they must be executed in the same process that needs them.
-        
-        Args:
-            non_serializable_operations: Operations that produce non-serializable results
-            dependencies: Dependency graph
-        """
-        # Get topological order for non-serializable operations
-        ns_topo_order = self._topological_sort_subset(dependencies, set(non_serializable_operations.keys()))
-        
-        for op_id in ns_topo_order:
-            if op_id not in non_serializable_operations:
-                continue
-            
-            # Skip if already computed
-            if self.storage.exists(op_id):
-                logger.log(VERBOSE_LEVEL, f"Non-serializable operation {op_id[:8]}... already exists, skipping")
-                self.completed.add(op_id)
-                continue
-            
-            operation = non_serializable_operations[op_id]
-            
-            # Resolve dependencies
-            dependency_results = []
-            for arg_name in sorted(operation.arguments.keys()):
-                dep_id = operation.arguments[arg_name]
-                
-                # Get dependency result - try storage first, then compute if needed
-                if self.storage.exists(dep_id):
-                    dependency_results.append(self.storage.retrieve(dep_id))
-                elif dep_id in self.workplan.nodes:
-                    # Dependency exists in workplan - check if it's a constant or needs computation
-                    dep_node = self.workplan.nodes[dep_id]
-                    if isinstance(dep_node, ConstantValue):
-                        dependency_results.append(dep_node.value)
-                    elif isinstance(dep_node, ClosureValue):
-                        # Closures are stored directly as their object
-                        dependency_results.append(dep_node)
-                    elif isinstance(dep_node, Operation):
-                        # Need to compute this dependency first
-                        # If it's also a non-serializable operation, execute directly without cross-process coordination
-                        logger.log(VERBOSE_LEVEL, f"Computing dependency {dep_id[:8]}... for non-serializable operation {op_id[:8]}...")
-                        if dep_id in non_serializable_operations:
-                            # Execute non-serializable dependency directly without coordination
-                            dep_result = self._execute_operation_inner(dep_node, dep_id, [])
-                        else:
-                            # Use normal execution for serializable dependencies
-                            dep_result = self._execute_pure_operation(dep_node, dep_id)
-                        dependency_results.append(dep_result)
-                    else:
-                        raise Exception(f"Unsupported dependency node type: {type(dep_node)} for {dep_id[:8]}...")
-                else:
-                    raise Exception(f"Dependency {dep_id[:8]}... not found in workplan for non-serializable operation {op_id[:8]}...")
-            
-            # Execute the operation directly
-            logger.log(VERBOSE_LEVEL, f"Executing non-serializable operation {op_id[:8]}... directly")
-            try:
-                result = self._execute_operation_inner(operation, op_id, dependency_results)
-                self.completed.add(op_id)
-                logger.log(VERBOSE_LEVEL, f"Non-serializable operation {op_id[:8]}... completed successfully")
-            except Exception as e:
-                self.failed[op_id] = str(e)
-                logger.error(f"Non-serializable operation {op_id[:8]}... failed: {e}")
-                raise e
-
-    def _topological_sort_subset(self, dependencies: Dict[NodeId, Set[NodeId]], subset: Set[NodeId]) -> List[NodeId]:
-        """
-        Topological sort of a subset of operations based on dependencies.
-        
-        Args:
-            dependencies: Full dependency graph
-            subset: Set of operation IDs to sort
-            
-        Returns:
-            List of operation IDs in topological order
-            
-        Raises:
-            ValueError: If a dependency cycle is detected
-        """
-        # Create subgraph with only subset operations
-        subset_deps = {}
-        for op_id in subset:
-            subset_deps[op_id] = dependencies.get(op_id, set()).intersection(subset)
-        
-        # Kahn's algorithm for topological sorting
-        in_degree = {op_id: len(subset_deps[op_id]) for op_id in subset}
-        queue = deque([op_id for op_id in subset if in_degree[op_id] == 0])
-        result = []
-        
-        while queue:
-            current = queue.popleft()
-            result.append(current)
-            
-            # Update in-degrees for nodes that depend on current
-            for op_id in subset:
-                if current in subset_deps[op_id]:
-                    in_degree[op_id] -= 1
-                    if in_degree[op_id] == 0:
-                        queue.append(op_id)
-        
-        if len(result) != len(subset):
-            remaining = subset - set(result)
-            raise ValueError(f"Dependency cycle detected in subset: {remaining}")
-        
-        return result
-        
 
     def _store_constants(self):
         """
