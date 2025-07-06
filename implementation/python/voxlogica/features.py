@@ -95,6 +95,7 @@ def handle_run(
     debug: bool = False,
     verbose: bool = False,
     no_cache: bool = False,
+    dask_dashboard: bool = False,
     **kwargs,
 ) -> OperationResult[Dict[str, Any]]:
     """Handle the unified run command with all options"""
@@ -138,12 +139,12 @@ def handle_run(
                     original_engine = get_execution_engine()
                     try:
                         set_execution_engine(custom_engine)
-                        execution_result = execute_workplan(program_obj)
+                        execution_result = execute_workplan(program_obj, dask_dashboard=dask_dashboard)
                     finally:
                         # Restore the original engine
                         set_execution_engine(original_engine)
                 else:
-                    execution_result = execute_workplan(program_obj)
+                    execution_result = execute_workplan(program_obj, dask_dashboard=dask_dashboard)
                 
                 if execution_result.success:
                     if filename:  # CLI mode

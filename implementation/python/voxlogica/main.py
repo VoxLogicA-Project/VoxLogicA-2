@@ -295,6 +295,7 @@ def run(
     ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging (between info and debug)"),
+    dask_dashboard: bool = typer.Option(False, "--dask-dashboard", help="Enable Dask web dashboard for real-time task execution debugging"),
 ) -> None:
     """Run a VoxLogicA program"""
     setup_logging(debug, verbose)
@@ -320,6 +321,7 @@ def run(
         "debug": debug,
         "verbose": verbose,
         "no_cache": no_cache,
+        "dask_dashboard": dask_dashboard,
     }
 
     try:

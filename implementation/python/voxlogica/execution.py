@@ -58,13 +58,16 @@ def remove_operation_future(operation_id: str) -> None:
     with _operation_futures_lock:
         _operation_futures.pop(operation_id, None)
 
-def get_shared_dask_client() -> Optional[Client]:
+def get_shared_dask_client(enable_dashboard: bool = False) -> Optional[Client]:
     """
     Get or create the shared Dask client for all workplan executions.
     
     Uses a single threaded Dask client that all workplans share, enabling
     coordinated resource management and task scheduling across multiple
     concurrent workplan executions.
+    
+    Args:
+        enable_dashboard: Whether to enable the Dask web dashboard for debugging
     
     Returns:
         Shared Dask client or None if creation fails
@@ -73,10 +76,11 @@ def get_shared_dask_client() -> Optional[Client]:
     
     if _shared_dask_client is None:
         try:
-            # Configure Dask to disable diagnostics and dashboard
+            # Configure Dask to disable diagnostics and dashboard by default
             from dask import config
-            config.set({'distributed.diagnostics.enabled': False})
-            config.set({'distributed.admin.bokeh': False})
+            if not enable_dashboard:
+                config.set({'distributed.diagnostics.enabled': False})
+                config.set({'distributed.admin.bokeh': False})
             
             # Suppress the jupyter-server-proxy warning specifically
             import logging
@@ -86,14 +90,19 @@ def get_shared_dask_client() -> Optional[Client]:
             
             try:
                 # Create local threaded client with controlled resources
+                dashboard_address = ":8787" if enable_dashboard else None
                 _shared_dask_client = Client(
                     processes=False,  # Use threads, not processes
                     threads_per_worker=4,  # Limit threads per worker
                     n_workers=1,  # Single worker for simplicity
                     memory_limit='2GB',  # Memory limit per worker
                     silence_logs=True,  # Reduce log noise
-                    dashboard_address=None  # Disable dashboard to eliminate Bokeh/Tornado messages
+                    dashboard_address=dashboard_address  # Enable dashboard if requested
                 )
+                
+                if enable_dashboard:
+                    logger.info(f"Dask dashboard enabled at: http://localhost:8787")
+                    
             finally:
                 # Restore original logging level
                 proxy_logger.setLevel(original_level)
@@ -604,7 +613,7 @@ class ExecutionEngine:
             except Exception as e:
                 logger.warning(f"Failed to cleanup stale operations on startup: {e}")
     
-    def execute_workplan(self, workplan: WorkPlan, execution_id: Optional[str] = None) -> ExecutionResult:
+    def execute_workplan(self, workplan: WorkPlan, execution_id: Optional[str] = None, dask_dashboard: bool = False) -> ExecutionResult:
         """
         Execute a workplan and return results.
         
@@ -614,6 +623,7 @@ class ExecutionEngine:
         Args:
             workplan: The workplan to execute
             execution_id: Optional ID for this execution (defaults to hash of goals) (currently never set explicitly by callers)
+            dask_dashboard: Whether to enable the Dask web dashboard for real-time debugging
 
         Returns:
             ExecutionResult with success status and operation results
@@ -633,6 +643,16 @@ class ExecutionEngine:
                     logger.debug(f"Imported namespace '{namespace_name}' for execution")
             
             # Create execution session with shared Dask client
+            # Recreate client if dashboard setting changed
+            if dask_dashboard:
+                # Close existing client if it exists
+                close_shared_dask_client()
+                # Create new client with dashboard enabled
+                self.dask_client = get_shared_dask_client(enable_dashboard=True)
+            else:
+                # Use existing client or create new one without dashboard
+                self.dask_client = get_shared_dask_client(enable_dashboard=False)
+            
             session = ExecutionSession(execution_id, workplan, self.storage, self.primitives, self.dask_client)
             
             # Execute the workplan
@@ -785,12 +805,11 @@ class ExecutionSession:
         parallelized and cached. Side-effect operations are I/O operations like
         print, save that must be executed sequentially after computations.
         
-        With threaded execution, most operations can be treated as pure operations
-        since they share memory, but some still need special handling due to
-        storage/serialization constraints.
+        dask_map operations need special handling because they contain closures
+        that reference other operations which must be resolved from storage.
         """
         side_effect_operators = {'print', 'save', 'output', 'write', 'display'}
-        # Operations that still need special handling even in threaded mode
+        # dask_map still needs special handling due to closure dependencies
         special_handling_operators = {'dask_map'}
         
         for node_id, node in self.workplan.nodes.items():
@@ -801,11 +820,10 @@ class ExecutionSession:
                 if op_str_lower in side_effect_operators:
                     self.goal_operations[node_id] = node
                 elif op_str_lower in special_handling_operators:
-                    # These operations still need special handling
+                    # These operations need special handling due to closure dependencies
                     pass
                 else:
-                    # All other operations (including map, filter, reduce, parallelize)
-                    # can be treated as pure operations in threaded mode
+                    # All other operations can be treated as pure operations
                     self.pure_operations[node_id] = node
         # constants are not added to pure_operations or goal_operations
 
@@ -1165,33 +1183,32 @@ class ExecutionSession:
         Creates a Dask delayed computation graph from pure operations,
         ensuring dependencies are properly handled and execution order is maintained.
         
-        Since we use threaded execution, most operations can share memory and be 
-        executed through Dask, but some operations still need special handling.
+        dask_map operations need special handling because they contain closures
+        that reference other operations which must be resolved from storage.
         
         Args:
             dependencies: Dependency graph from _build_dependency_graph
         """
-        # Identify operations that still need special handling
-        special_handling_ops = {'dask_map'}
-        special_handling_operations = {}
+        # Handle dask_map operations separately due to closure dependencies
+        dask_map_operations = {}
         
-        # Find operations that need special handling
+        # Find dask_map operations
         for op_id, operation in self.workplan.operations.items():
-            op_str = str(operation.operator)
-            if op_str.lower() in special_handling_ops:
-                special_handling_operations[op_id] = operation
-                logger.log(VERBOSE_LEVEL, f"Operation {op_id[:8]}... ({op_str}) needs special handling")
+            if isinstance(operation, Operation):
+                op_str = str(operation.operator.value) if isinstance(operation.operator, ConstantValue) else str(operation.operator)
+                if op_str.lower() == 'dask_map':
+                    dask_map_operations[op_id] = operation
+                    logger.log(VERBOSE_LEVEL, f"Found dask_map operation {op_id[:8]}...")
         
-        # Execute special operations directly before Dask computation
-        if special_handling_operations:
-            logger.log(VERBOSE_LEVEL, f"Pre-executing {len(special_handling_operations)} special operations")
-            self._execute_special_operations(special_handling_operations)
+        # Execute dask_map operations in dependency order
+        if dask_map_operations:
+            logger.log(VERBOSE_LEVEL, f"Pre-executing {len(dask_map_operations)} dask_map operations")
+            self._execute_dask_map_operations(dask_map_operations)
         
-        # Compile pure operations in topological order to ensure dependencies are compiled first
+        # Compile remaining pure operations in topological order
         topo_order = self._topological_sort(dependencies)
         
         logger.log(VERBOSE_LEVEL, f"Compiling {len(self.pure_operations)} pure operations to Dask delayed graph")
-        logger.log(VERBOSE_LEVEL, f"Pure operations: {[op_id[:8] + '...' for op_id in self.pure_operations.keys()]}")
         
         for op_id in topo_order:
             if op_id not in self.pure_operations:
@@ -1199,22 +1216,20 @@ class ExecutionSession:
                 
             operation = self.pure_operations[op_id]
             
-            # Build dependency list in argument order (not dependency set order!)
+            # Build dependency list in argument order
             dep_delayed = []
-            for arg_name in sorted(operation.arguments.keys()):  # Sort to ensure consistent order: '0', '1', '2', etc.
+            for arg_name in sorted(operation.arguments.keys()):
                 dep_id = operation.arguments[arg_name]
                 if dep_id in dependencies.get(op_id, set()) and dep_id in self.delayed_graph:
                     dep_delayed.append(self.delayed_graph[dep_id])
                 elif dep_id in self.delayed_graph:
-                    # This dependency might not be in the dependencies dict if it's a constant
                     dep_delayed.append(self.delayed_graph[dep_id])
             
-            # Pass dependency results as individual arguments, not a list
-            # This allows Dask to properly resolve dependencies
+            # Create delayed operation
             self.delayed_graph[op_id] = delayed(self._execute_pure_operation)(
                 operation, op_id, *dep_delayed
             )
-            logger.log(VERBOSE_LEVEL, f"Added operation {op_id[:8]}... ({operation.operator}) to delayed graph")
+            logger.log(VERBOSE_LEVEL, f"Added operation {op_id[:8]}... to delayed graph")
 
     def _topological_sort(self, dependencies: Dict[NodeId, Set[NodeId]]) -> List[NodeId]:
         """
@@ -1269,29 +1284,45 @@ class ExecutionSession:
         
         return result
 
-    def _execute_special_operations(self, special_operations: Dict[NodeId, Operation]):
+    def _execute_dask_map_operations(self, dask_map_operations: Dict[NodeId, Operation]):
         """
-        Execute operations that need special handling even in threaded mode.
+        Execute dask_map operations in dependency order.
         
-        These operations may have constraints that prevent them from being
-        handled through the normal Dask delayed graph.
+        dask_map operations need special handling because they contain closures
+        that reference other operations which must be resolved from storage.
         
         Args:
-            special_operations: Operations that need special handling
+            dask_map_operations: Dictionary of dask_map operations to execute
         """
-        for op_id, operation in special_operations.items():
+        # Build dependency graph for dask_map operations
+        dependencies = {}
+        for op_id, operation in dask_map_operations.items():
+            dependencies[op_id] = set()
+            for arg_name, dep_id in operation.arguments.items():
+                if dep_id in self.workplan.nodes:
+                    dependencies[op_id].add(dep_id)
+        
+        # Execute in topological order to ensure dependencies are available
+        topo_order = self._topological_sort_subset(dependencies, set(dask_map_operations.keys()))
+        
+        for op_id in topo_order:
+            if op_id not in dask_map_operations:
+                continue
+                
             # Skip if already computed
             if self.storage.exists(op_id):
-                logger.log(VERBOSE_LEVEL, f"Special operation {op_id[:8]}... already exists, skipping")
+                logger.log(VERBOSE_LEVEL, f"dask_map operation {op_id[:8]}... already exists, skipping")
                 self.completed.add(op_id)
                 continue
+            
+            operation = dask_map_operations[op_id]
             
             # Resolve dependencies
             dependency_results = []
             for arg_name in sorted(operation.arguments.keys()):
                 dep_id = operation.arguments[arg_name]
                 
-                # Get dependency result - try storage first
+                # Get dependency result from storage
                 if self.storage.exists(dep_id):
                     dependency_results.append(self.storage.retrieve(dep_id))
                 elif dep_id in self.workplan.nodes:
@@ -1302,21 +1333,62 @@ class ExecutionSession:
                     elif isinstance(dep_node, ClosureValue):
                         dependency_results.append(dep_node)
                     else:
-                        raise Exception(f"Dependency {dep_id[:8]}... not found for special operation {op_id[:8]}...")
+                        raise Exception(f"Dependency {dep_id[:8]}... not found for dask_map operation {op_id[:8]}...")
                 else:
-                    raise Exception(f"Dependency {dep_id[:8]}... not found for special operation {op_id[:8]}...")
+                    raise Exception(f"Dependency {dep_id[:8]}... not found for dask_map operation {op_id[:8]}...")
             
-            # Execute the operation directly
-            logger.log(VERBOSE_LEVEL, f"Executing special operation {op_id[:8]}... directly")
+            # Execute the dask_map operation
+            logger.log(VERBOSE_LEVEL, f"Executing dask_map operation {op_id[:8]}...")
             try:
                 result = self._execute_operation_inner(operation, op_id, dependency_results)
                 self.completed.add(op_id)
-                logger.log(VERBOSE_LEVEL, f"Special operation {op_id[:8]}... completed successfully")
+                logger.log(VERBOSE_LEVEL, f"dask_map operation {op_id[:8]}... completed successfully")
             except Exception as e:
                 self.failed[op_id] = str(e)
-                logger.error(f"Special operation {op_id[:8]}... failed: {e}")
+                logger.error(f"dask_map operation {op_id[:8]}... failed: {e}")
                 raise e
-    
+
+    def _topological_sort_subset(self, dependencies: Dict[NodeId, Set[NodeId]], subset: Set[NodeId]) -> List[NodeId]:
+        """
+        Topological sort of a subset of operations based on dependencies.
+        
+        Args:
+            dependencies: Full dependency graph
+            subset: Set of operation IDs to sort
+            
+        Returns:
+            List of operation IDs in topological order
+            
+        Raises:
+            ValueError: If a dependency cycle is detected
+        """
+        # Create subgraph with only subset operations
+        subset_deps = {}
+        for op_id in subset:
+            subset_deps[op_id] = dependencies.get(op_id, set()).intersection(subset)
+        
+        # Kahn's algorithm for topological sorting
+        in_degree = {op_id: len(subset_deps[op_id]) for op_id in subset}
+        queue = deque([op_id for op_id in subset if in_degree[op_id] == 0])
+        result = []
+        
+        while queue:
+            current = queue.popleft()
+            result.append(current)
+            
+            # Update in-degrees for nodes that depend on current
+            for op_id in subset:
+                if current in subset_deps[op_id]:
+                    in_degree[op_id] -= 1
+                    if in_degree[op_id] == 0:
+                        queue.append(op_id)
+        
+        if len(result) != len(subset):
+            remaining = subset - set(result)
+            raise ValueError(f"Dependency cycle detected in subset: {remaining}")
+        
+        return result
+        
     def _is_literal_operation(self, operation: Operation) -> bool:
         """
         Check if an operation represents a literal value (constant).
@@ -1536,7 +1608,7 @@ def set_execution_engine(engine: ExecutionEngine):
     _execution_engine = engine
 
 # Convenience functions
-def execute_workplan(workplan: WorkPlan, execution_id: Optional[str] = None) -> ExecutionResult:
+def execute_workplan(workplan: WorkPlan, execution_id: Optional[str] = None, dask_dashboard: bool = False) -> ExecutionResult:
     """
     Execute a workplan using the global execution engine.
     
@@ -1545,8 +1617,9 @@ def execute_workplan(workplan: WorkPlan, execution_id: Optional[str] = None) -> 
     Args:
         workplan: WorkPlan to execute
         execution_id: Optional execution ID (currently unused, defaults to None)
+        dask_dashboard: Whether to enable the Dask web dashboard for real-time debugging
         
     Returns:
         ExecutionResult with execution outcome
     """
-    return get_execution_engine().execute_workplan(workplan, execution_id)
+    return get_execution_engine().execute_workplan(workplan, execution_id, dask_dashboard)

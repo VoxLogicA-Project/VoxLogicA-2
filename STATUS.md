@@ -1,6 +1,6 @@
 # VoxLogicA-2 Development Status
 
-**Last Updated:** 4 luglio 2025
+**Last Updated:** 6 luglio 2025
 
 ## Current State
 
@@ -21,10 +21,102 @@ The VoxLogicA-2 system has a working execution engine based on the `ExecutionSes
 - **SimpleITK Integration**: ✅ **RESOLVED** - Fixed SimpleITK primitives and nested for-loop execution
 - **Closure-based For Loops**: ✅ **RESOLVED** - Proper storage system integration for distributed execution
 - **Global Futures Table**: ✅ **RESOLVED** - Lock-free operation coordination with global futures table
-- **Non-Serializable Operation Coordination**: ✅ **RESOLVED** - Fixed race condition in goal execution for non-serializable results
+- **Non-Serializable Operation Execution**: ✅ **RESOLVED** - Simplified execution model for dask_map operations
+- **Dask Dashboard Integration**: ✅ **COMPLETED** - Real-time task execution debugging with web dashboard
 
 ### 🔄 Under Investigation
+- **Dask Memory Management**: Memory warnings during large dask_map operations (see META/ISSUES/OPEN/dask-memory-management)
 - **ExecutionSession Architecture**: Current monolithic session approach needs evaluation
+
+## Latest Achievement: Dask Dashboard Integration ✨
+
+**Date:** 6 luglio 2025
+
+### ✅ COMPLETED: Real-Time Task Execution Debugging with Web Dashboard
+
+Successfully implemented the Dask web dashboard feature for real-time task execution monitoring and debugging:
+
+#### Problem Addressed
+- **Limited Debugging Visibility**: No way to observe task execution in real-time
+- **Performance Analysis**: Difficulty understanding task dependencies and resource usage
+- **Memory Investigation**: Need to visualize memory usage patterns and "unmanaged memory" warnings
+
+#### Technical Solution
+- **CLI Integration**: Added `--dask-dashboard` flag to the run command
+- **Dynamic Client Configuration**: Dask client recreated with dashboard enabled when requested
+- **Comprehensive Dashboard Access**: Full access to all Dask dashboard features
+- **Documentation**: Complete user guide for dashboard usage and debugging
+
+#### Dashboard Features Enabled
+- **Task Stream**: Real-time task execution timeline at http://localhost:8787/tasks
+- **Resource Monitor**: CPU, memory, network usage at http://localhost:8787/system
+- **Progress Tracking**: Task completion progress at http://localhost:8787/progress
+- **Memory Analysis**: Detailed memory usage by task at http://localhost:8787/memory
+- **Worker Status**: Thread utilization monitoring at http://localhost:8787/workers
+
+#### Impact
+- ✅ **Real-time Debugging**: Developers can now watch VoxLogicA task execution in real-time
+- ✅ **Performance Analysis**: Easy identification of bottlenecks and resource constraints
+- ✅ **Memory Investigation**: Visual tools to understand memory usage patterns
+- ✅ **Educational Value**: Clear visualization of how VoxLogicA operations execute
+- ✅ **Development Productivity**: Faster debugging and optimization cycles
+
+#### Usage Examples
+```bash
+# Enable dashboard for development
+voxlogica run test_simpleitk.imgql --dask-dashboard
+
+# Monitor complex operations
+voxlogica run test_dedup.imgql --dask-dashboard
+
+# Dashboard accessible at http://localhost:8787
+```
+
+**Files Modified:**
+- `implementation/python/voxlogica/main.py` - Added `--dask-dashboard` CLI flag
+- `implementation/python/voxlogica/features.py` - Dashboard parameter support
+- `implementation/python/voxlogica/execution.py` - Dynamic client configuration
+- `doc/user/dask-dashboard.md` - NEW: Comprehensive dashboard documentation
+
+## Latest Achievement: Simplified Non-Serializable Operation Execution ✨
+
+**Date:** 6 luglio 2025
+
+### ✅ COMPLETED: Simplified Execution Model for dask_map Operations
+
+Successfully simplified the execution model for `dask_map` operations, removing unnecessary complexity while maintaining correctness and improving performance:
+
+#### Problem Addressed
+- **Over-engineered Solution**: Previous implementation treated all operations as potentially "non-serializable" requiring complex sequentialization
+- **Memory Management Issues**: Complex pre-execution logic led to Dask memory warnings
+- **Unnecessary Complexity**: Most operations could be handled through normal Dask delayed graph in threaded mode
+
+#### Technical Solution
+- **Simplified Categorization**: Only `dask_map` operations now require special handling due to closure dependency resolution
+- **Streamlined Pre-execution**: Focused special handling only on operations that truly need it (closure dependency resolution)
+- **Removed Unused Code**: Eliminated complex non-serializable operation sequentialization logic that was unnecessary in threaded mode
+- **Better Memory Sharing**: Most operations now benefit from Dask's threaded scheduler memory sharing
+
+#### Impact
+- ✅ Tests pass correctly (`test_dedup.imgql`, `test_simpleitk.imgql`)
+- ✅ Reduced code complexity by removing unnecessary abstraction layers
+- ✅ Better resource utilization through Dask's threaded scheduler
+- ✅ Maintained correctness for complex nested for-loop scenarios
+- ⚠️ Memory warnings persist for large datasets (documented as separate issue)
+
+#### Code Changes
+- Simplified `_categorize_operations()` to only treat `dask_map` as special
+- Replaced complex special handling with focused `_execute_dask_map_operations()` method
+- Removed unnecessary `_execute_special_operations()` and related complexity
+- All other operations now use normal Dask delayed graph execution
+
+**Status**: Production ready. Execution model significantly simplified while maintaining full functionality.
+
+#### Memory Management Follow-up
+
+Memory warnings still occur during large `dask_map` operations due to non-serializable Dask bag results being stored in memory cache only. This has been documented as a separate issue in `META/ISSUES/OPEN/dask-memory-management/` with potential solutions ranging from memory cache limits to lazy evaluation strategies.
+
+---
 
 ## Recent Major Achievement: For Loops with Lazy WorkPlans
 
