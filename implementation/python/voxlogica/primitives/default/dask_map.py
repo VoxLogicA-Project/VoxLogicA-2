@@ -15,6 +15,9 @@ def execute(**kwargs) -> db.Bag:
     """
     Apply a closure to each element of a Dask bag.
     
+    This implementation simply maps the closure over the bag, trusting that the closure
+    will handle caching and deduplication correctly through the execution engine.
+    
     Args:
         **kwargs: Arguments passed as keyword arguments with numeric string keys
                  Expected:
@@ -32,39 +35,10 @@ def execute(**kwargs) -> db.Bag:
     
     logger.info(f"Applying dask_map with closure for variable '{closure.variable}'")
     
-    # Create a closure wrapper that uses the storage system to resolve operation IDs
-    def storage_resolving_closure(value):
-        # Execute the closure to get an operation ID
-        op_id = closure(value)
-        
-        # If it's not an operation ID (i.e., a direct value), return it
-        if not isinstance(op_id, str) or len(op_id) != 64:  # SHA256 is 64 chars
-            return op_id
-            
-        # It's an operation ID - check storage system
-        try:
-            from voxlogica.execution import get_execution_engine
-            engine = get_execution_engine()
-            
-            # Check if result is available in storage
-            if engine.storage.exists(op_id):
-                result = engine.storage.retrieve(op_id)
-                logger.debug(f"Retrieved result for {op_id[:8]}... from storage")
-                return result
-            else:
-                # Operation not yet computed - we should execute it
-                logger.debug(f"Operation {op_id[:8]}... not in storage, need to compute")
-                
-                # For now, return the operation ID and let the system handle it
-                # In a fully lazy system, this would trigger computation
-                return op_id
-                
-        except Exception as e:
-            logger.warning(f"Failed to resolve operation {op_id[:8]}...: {e}")
-            return op_id
-    
-    # Apply the storage-resolving closure to the Dask bag
-    result = input_bag.map(storage_resolving_closure)
+    # Simply map the closure over the bag - no optimization tricks
+    # The closure will handle all caching and deduplication internally
+    # through the execution engine's cache/futures mechanism
+    result = input_bag.map(closure)
     
     logger.info(f"Created mapped Dask bag with {result.npartitions} partitions")
     return result

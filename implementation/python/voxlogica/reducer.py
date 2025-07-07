@@ -67,54 +67,148 @@ class ClosureValue:
     expression: Expression  # The body expression as AST
     environment: 'Environment'  # The captured environment
     workplan: 'WorkPlan'  # Reference to the workplan for context
+    _expression_cache: Dict[str, str] = field(default_factory=dict, init=False)  # Cache for expression reductions
+    
+    def _create_cache_key(self, env: 'Environment') -> str:
+        """Create a cache key based on the relevant environment variables.
+        
+        Only includes variables that might affect the expression result,
+        excluding the loop variable binding itself.
+        """
+        import hashlib
+        
+        # Get all variable names referenced in the expression
+        referenced_vars = self._get_referenced_variables(self.expression)
+        
+        # Create a minimal environment representation with only referenced variables
+        # (excluding the loop variable which changes each iteration)
+        relevant_env = {}
+        for var in referenced_vars:
+            if var != self.variable and var in env.bindings:
+                # Create a serializable representation of the binding
+                binding = env.bindings[var]
+                if hasattr(binding, 'operation_id'):
+                    relevant_env[var] = binding.operation_id
+                else:
+                    relevant_env[var] = str(binding)
+        
+        # Combine expression syntax with relevant environment
+        cache_data = {
+            'expression': self.expression.to_syntax(),
+            'environment': relevant_env
+        }
+        
+        import canonicaljson
+        canonical_json = canonicaljson.encode_canonical_json(cache_data)
+        return hashlib.sha256(canonical_json).hexdigest()[:16]  # Use shorter hash for cache key
+    
+    def _get_referenced_variables(self, expr: Expression) -> Set[str]:
+        """Get all variable names referenced in an expression."""
+        from voxlogica.parser import ECall, ENumber, EBool, EString, EFor, ELet
+        
+        referenced = set()
+        
+        if isinstance(expr, ECall):
+            # For function calls, the identifier might be a variable reference (e.g., 'img')
+            # Simple heuristic: if it's a single identifier with no arguments, it's likely a variable
+            if not expr.arguments:
+                referenced.add(expr.identifier)
+            
+            # Recursively check arguments
+            for arg in expr.arguments:
+                referenced.update(self._get_referenced_variables(arg))
+                
+        elif isinstance(expr, EFor):
+            # For for-loops, check the iterable and body, but exclude the loop variable
+            referenced.update(self._get_referenced_variables(expr.iterable))
+            # Don't include the for-loop variable itself in the referenced variables
+            body_vars = self._get_referenced_variables(expr.body)
+            # Remove the loop variable from body references
+            body_vars.discard(expr.variable)
+            referenced.update(body_vars)
+            
+        elif isinstance(expr, ELet):
+            # For let expressions, check the value and body
+            referenced.update(self._get_referenced_variables(expr.value))
+            # Check body but exclude the let variable
+            body_vars = self._get_referenced_variables(expr.body)
+            body_vars.discard(expr.variable)
+            referenced.update(body_vars)
+            
+        elif isinstance(expr, (ENumber, EBool, EString)):
+            # Literals don't reference variables
+            pass
+        
+        return referenced
     
     def __call__(self, value: Any) -> Any:
         """Execute the closure with the given value for the variable - returns computed result via storage system"""
         try:
             logger.debug(f"Executing closure: variable={self.variable}, expression={self.expression.to_syntax()}")
             
-            # For non-serializable objects (like Images), we can't create constant nodes
-            # Instead, we need to handle them differently in the environment
-            try:
-                # Try to add the value as a constant node in the workplan
-                value_node = ConstantValue(value=value)
-                value_id = self.workplan.add_node(value_node)
-                value_dval = OperationVal(value_id)
-                logger.debug(f"Added value node {value_id[:8]}... = {type(value).__name__}")
-            except (TypeError, ValueError) as serialize_error:
-                # Value is not serializable (e.g., SimpleITK Image)
-                # Create a special handling for non-serializable values
-                logger.debug(f"Value {type(value).__name__} is not serializable, using direct binding")
-                
-                # For non-serializable values, we need to store them temporarily and 
-                # use a placeholder in the environment
-                import uuid
-                temp_id = f"temp_{uuid.uuid4().hex[:16]}"
-                
-                # Store the non-serializable value in a temporary location
-                # We'll use the execution engine's storage for this
+            # Check if the expression actually references the loop variable
+            referenced_vars = self._get_referenced_variables(self.expression)
+            variable_is_referenced = self.variable in referenced_vars
+            
+            # Only create a binding for the loop variable if it's actually referenced
+            if variable_is_referenced:
+                # For non-serializable objects (like Images), we can't create constant nodes
+                # Instead, we need to handle them differently in the environment
                 try:
-                    from voxlogica.execution import get_execution_engine
-                    engine = get_execution_engine()
-                    # Use memory cache for non-serializable objects
-                    engine.storage._memory_cache[temp_id] = value
-                    value_dval = OperationVal(temp_id)
-                    logger.debug(f"Stored non-serializable value with temp ID {temp_id[:8]}...")
-                except Exception as e:
-                    logger.warning(f"Failed to store non-serializable value: {e}")
-                    # As a fallback, return the original value directly without serialization
-                    # This will bypass the normal DAG construction for this value
-                    logger.debug(f"Using direct value binding for non-serializable {type(value).__name__}")
-                    # We'll create a temporary direct value binding
-                    temp_id = f"direct_value_{id(value)}"
-                    value_dval = OperationVal(temp_id)
+                    # Try to add the value as a constant node in the workplan
+                    value_node = ConstantValue(value=value)
+                    value_id = self.workplan.add_node(value_node)
+                    value_dval = OperationVal(value_id)
+                    logger.debug(f"Added value node {value_id[:8]}... = {type(value).__name__}")
+                except (TypeError, ValueError) as serialize_error:
+                    # Value is not serializable (e.g., SimpleITK Image)
+                    # Create a special handling for non-serializable values
+                    logger.debug(f"Value {type(value).__name__} is not serializable, using direct binding")
+                    
+                    # For non-serializable values, we need to store them temporarily and 
+                    # use a placeholder in the environment
+                    import uuid
+                    temp_id = f"temp_{uuid.uuid4().hex[:16]}"
+                    
+                    # Store the non-serializable value in a temporary location
+                    # We'll use the execution engine's storage for this
+                    try:
+                        from voxlogica.execution import get_execution_engine
+                        engine = get_execution_engine()
+                        # Use memory cache for non-serializable objects
+                        engine.storage._memory_cache[temp_id] = value
+                        value_dval = OperationVal(temp_id)
+                        logger.debug(f"Stored non-serializable value with temp ID {temp_id[:8]}...")
+                    except Exception as e:
+                        logger.warning(f"Failed to store non-serializable value: {e}")
+                        # As a fallback, return the original value directly without serialization
+                        # This will bypass the normal DAG construction for this value
+                        logger.debug(f"Using direct value binding for non-serializable {type(value).__name__}")
+                        # We'll create a temporary direct value binding
+                        temp_id = f"direct_value_{id(value)}"
+                        value_dval = OperationVal(temp_id)
+                
+                # Create environment with the variable bound to this value
+                env_with_binding = self.environment.bind(self.variable, value_dval)
+            else:
+                # Loop variable is not referenced, so don't create a binding for it
+                # This optimizes loop-invariant expressions by avoiding unnecessary work
+                logger.debug(f"Loop variable '{self.variable}' not referenced in expression, optimizing cache key")
+                env_with_binding = self.environment
             
-            # Create environment with the variable bound to this value
-            env_with_binding = self.environment.bind(self.variable, value_dval)
-            
-            # Reduce the expression with this environment, using the existing workplan
-            # This builds the DAG lazily without executing anything
-            result_id = reduce_expression(env_with_binding, self.workplan, self.expression)
+            # Check expression cache before reducing
+            cache_key = self._create_cache_key(env_with_binding)
+            if cache_key in self._expression_cache:
+                result_id = self._expression_cache[cache_key]
+                logger.debug(f"Retrieved expression result from cache: {result_id[:8]}...")
+            else:
+                # Reduce the expression with this environment, using the existing workplan
+                # This builds the DAG lazily without executing anything
+                result_id = reduce_expression(env_with_binding, self.workplan, self.expression)
+                
+                # Cache the result for future iterations
+                self._expression_cache[cache_key] = result_id
+                logger.debug(f"Cached expression result: {result_id[:8]}...")
             
             logger.debug(f"Reduced expression to result_id {result_id[:8]}...")
             
