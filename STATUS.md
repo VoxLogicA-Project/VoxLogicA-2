@@ -41,8 +41,30 @@ The unified execution model for for-loops is now **fully implemented and tested*
 - **ExecutionSession Architecture**: Current monolithic session approach needs evaluation (see detailed analysis section below)
 
 ### 🔄 Current Development
-- **For-Loop Temporary Storage Issue**: ❌ **IN PROGRESS** - Fixing argument resolution for temporary storage IDs in for-loop execution
+- **For-Loop Temporary Storage Issue**: ❌ **IN PROGRESS** - Fixed SimpleITK argument mapping, now addressing temporary storage ID resolution for non-serializable values in for-loops
 - **ExecutionSession Architecture Analysis**: Evaluating the current monolithic session approach for potential improvements
+
+#### Current Issue: For-Loop Temporary Storage Resolution  
+**Date:** January 8, 2025
+
+**Progress Made**: 
+- ✅ **Fixed SimpleITK Argument Mapping**: SimpleITK functions now work correctly outside for-loops
+- ✅ **Cache Management**: Clearing cached results resolved the initial SimpleITK errors
+- ❌ **Temporary Storage Issue**: For-loops with non-serializable values (SimpleITK Images) fail with "Unexpected direct value for argument '0': temp_*" errors
+
+**Current Status**: SimpleITK `Multiply` operations work perfectly in isolation:
+```voxlogica
+let result = Multiply(BinaryThreshold(img,100,101,1,0), img)  // ✅ Works
+```
+
+But fail in for-loops due to temporary storage ID resolution:
+```voxlogica
+let data = for i in range(1,4) do Multiply(BinaryThreshold(img,100,101,1,0), img)  // ❌ Fails
+```
+
+**Root Cause**: The for-loop execution uses temporary storage IDs (`temp_*`) for non-serializable values (SimpleITK Images), but the unified execution model cannot resolve these temporary IDs during argument resolution.
+
+**Next Steps**: Need to fix temporary storage ID resolution in the argument resolution system to properly handle non-serializable values in for-loop contexts.
 
 ### ✅ Recently Completed
 - **SimpleITK Argument Mapping Fix**: ✅ **COMPLETED** - Fixed argument mapping conflict between built-in and SimpleITK primitives

@@ -130,6 +130,17 @@ def execute(**kwargs) -> List[Any]:
         # Create an execution session for the temporary workplan
         import uuid
         temp_execution_id = f"for_loop_{uuid.uuid4().hex[:8]}"
+        
+        # Debug: Check what's in the temporary workplan
+        logger.debug(f"Temporary workplan has {len(temp_workplan.nodes)} nodes")
+        for result_id in operation_ids:
+            if result_id in temp_workplan.nodes:
+                node = temp_workplan.nodes[result_id]
+                if hasattr(node, 'arguments'):
+                    logger.debug(f"Operation {result_id[:8]}... arguments: {node.arguments}")
+                else:
+                    logger.debug(f"Node {result_id[:8]}... type: {type(node).__name__}")
+        
         session = ExecutionSession(temp_execution_id, temp_workplan, engine.storage, engine.primitives)
         
         try:

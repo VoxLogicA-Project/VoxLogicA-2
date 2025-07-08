@@ -1358,6 +1358,14 @@ class ExecutionSession:
                         raise Exception(f"Missing dependency result for {arg_value}")
                 else:
                     raise Exception(f"Unhandled node type for argument {arg_value}: {type(node)}")
+            elif isinstance(arg_value, str) and arg_value.startswith("temp_"):
+                # Handle temporary storage IDs (used for non-serializable values in for-loops)
+                if self.storage.exists(arg_value):
+                    dep_results_map[arg_value] = self.storage.retrieve(arg_value)
+                else:
+                    raise Exception(f"Missing temporary storage result for {arg_value}")
+            else:
+                raise Exception(f"Unknown argument reference: {arg_value}")
         
         # Resolve all arguments
         for arg_name, arg_value in operation.arguments.items():
