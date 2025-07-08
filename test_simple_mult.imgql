@@ -1,0 +1,6 @@
+import "default"
+
+let x = 2
+let result = x * x
+
+print "result" result

@@ -804,13 +804,8 @@ class ExecutionSession:
         Pure operations are mathematical/data processing operations that can be
         parallelized and cached. Side-effect operations are I/O operations like
         print, save that must be executed sequentially after computations.
-        
-        dask_map operations need special handling because they contain closures
-        that reference other operations which must be resolved from storage.
         """
         side_effect_operators = {'print', 'save', 'output', 'write', 'display'}
-        # dask_map still needs special handling due to closure dependencies
-        special_handling_operators = {'dask_map'}
         
         for node_id, node in self.workplan.nodes.items():
             if isinstance(node, Operation):
@@ -819,11 +814,8 @@ class ExecutionSession:
                 
                 if op_str_lower in side_effect_operators:
                     self.goal_operations[node_id] = node
-                elif op_str_lower in special_handling_operators:
-                    # These operations need special handling due to closure dependencies
-                    pass
                 else:
-                    # All other operations can be treated as pure operations
+                    # All operations can be treated as pure operations
                     self.pure_operations[node_id] = node
         # constants are not added to pure_operations or goal_operations
 
@@ -938,7 +930,8 @@ class ExecutionSession:
                 result = operation.operator.value if isinstance(operation.operator, ConstantValue) else operation.operator
                 logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... is literal: {result}")
             else:
-                primitive_func = self.primitives.load_primitive(str(operation.operator.value) if isinstance(operation.operator, ConstantValue) else str(operation.operator))
+                operator_name = str(operation.operator.value) if isinstance(operation.operator, ConstantValue) else str(operation.operator)
+                primitive_func = self.primitives.load_primitive(operator_name)
                 if primitive_func is None:
                     raise Exception(f"No primitive implementation for operator: {operation.operator}")
                 resolved_args = self._resolve_arguments(operation, dependency_results)
@@ -1183,29 +1176,10 @@ class ExecutionSession:
         Creates a Dask delayed computation graph from pure operations,
         ensuring dependencies are properly handled and execution order is maintained.
         
-        dask_map operations need special handling because they contain closures
-        that reference other operations which must be resolved from storage.
-        
         Args:
             dependencies: Dependency graph from _build_dependency_graph
         """
-        # Handle dask_map operations separately due to closure dependencies
-        dask_map_operations = {}
-        
-        # Find dask_map operations
-        for op_id, operation in self.workplan.operations.items():
-            if isinstance(operation, Operation):
-                op_str = str(operation.operator.value) if isinstance(operation.operator, ConstantValue) else str(operation.operator)
-                if op_str.lower() == 'dask_map':
-                    dask_map_operations[op_id] = operation
-                    logger.log(VERBOSE_LEVEL, f"Found dask_map operation {op_id[:8]}...")
-        
-        # Execute dask_map operations in dependency order
-        if dask_map_operations:
-            logger.log(VERBOSE_LEVEL, f"Pre-executing {len(dask_map_operations)} dask_map operations")
-            self._execute_dask_map_operations(dask_map_operations)
-        
-        # Compile remaining pure operations in topological order
+        # Compile all pure operations in topological order
         topo_order = self._topological_sort(dependencies)
         
         logger.log(VERBOSE_LEVEL, f"Compiling {len(self.pure_operations)} pure operations to Dask delayed graph")
@@ -1283,70 +1257,6 @@ class ExecutionSession:
             raise ValueError("Cycle detected in dependencies")
         
         return result
-
-    def _execute_dask_map_operations(self, dask_map_operations: Dict[NodeId, Operation]):
-        """
-        Execute dask_map operations in dependency order.
-        
-        dask_map operations need special handling because they contain closures
-        that reference other operations which must be resolved from storage.
-        
-        Args:
-            dask_map_operations: Dictionary of dask_map operations to execute
-        """
-        # Build dependency graph for dask_map operations
-        dependencies = {}
-        for op_id, operation in dask_map_operations.items():
-            dependencies[op_id] = set()
-            for arg_name, dep_id in operation.arguments.items():
-                if dep_id in self.workplan.nodes:
-                    dependencies[op_id].add(dep_id)
-        
-        # Execute in topological order to ensure dependencies are available
-        topo_order = self._topological_sort_subset(dependencies, set(dask_map_operations.keys()))
-        
-        for op_id in topo_order:
-            if op_id not in dask_map_operations:
-                continue
-                
-            # Skip if already computed
-            if self.storage.exists(op_id):
-                logger.log(VERBOSE_LEVEL, f"dask_map operation {op_id[:8]}... already exists, skipping")
-                self.completed.add(op_id)
-                continue
-            
-            operation = dask_map_operations[op_id]
-            
-            # Resolve dependencies
-            dependency_results = []
-            for arg_name in sorted(operation.arguments.keys()):
-                dep_id = operation.arguments[arg_name]
-                
-                # Get dependency result from storage
-                if self.storage.exists(dep_id):
-                    dependency_results.append(self.storage.retrieve(dep_id))
-                elif dep_id in self.workplan.nodes:
-                    # Handle constants and other node types
-                    dep_node = self.workplan.nodes[dep_id]
-                    if isinstance(dep_node, ConstantValue):
-                        dependency_results.append(dep_node.value)
-                    elif isinstance(dep_node, ClosureValue):
-                        dependency_results.append(dep_node)
-                    else:
-                        raise Exception(f"Dependency {dep_id[:8]}... not found for dask_map operation {op_id[:8]}...")
-                else:
-                    raise Exception(f"Dependency {dep_id[:8]}... not found for dask_map operation {op_id[:8]}...")
-            
-            # Execute the dask_map operation
-            logger.log(VERBOSE_LEVEL, f"Executing dask_map operation {op_id[:8]}...")
-            try:
-                result = self._execute_operation_inner(operation, op_id, dependency_results)
-                self.completed.add(op_id)
-                logger.log(VERBOSE_LEVEL, f"dask_map operation {op_id[:8]}... completed successfully")
-            except Exception as e:
-                self.failed[op_id] = str(e)
-                logger.error(f"dask_map operation {op_id[:8]}... failed: {e}")
-                raise e
 
     def _topological_sort_subset(self, dependencies: Dict[NodeId, Set[NodeId]], subset: Set[NodeId]) -> List[NodeId]:
         """
@@ -1469,6 +1379,8 @@ class ExecutionSession:
         Converts positional argument keys ('0', '1', etc.) to meaningful names
         like 'left'/'right' for binary operators, improving primitive function signatures.
         
+        Note: SimpleITK functions are excluded from mapping as they expect numeric argument keys.
+        
         Args:
             operator: Operator to map arguments for
             args: Arguments with numeric keys
@@ -1478,14 +1390,37 @@ class ExecutionSession:
         """
         operator_str = str(operator).lower()
         
-        # Binary operators mapping
-        if operator_str in ['+', 'add', 'addition', '-', 'sub', 'subtract', 
-                           '*', 'mul', 'multiply', '/', 'div', 'divide']:
+        # Check if this is a SimpleITK function - if so, don't map arguments
+        # SimpleITK functions need numeric keys ('0', '1') for their *args handling
+        if self._is_simpleitk_function(operator_str):
+            return args
+        
+        # Binary operators mapping (only for built-in VoxLogicA primitives)
+        if operator_str in ['+', 'add', 'addition', '-', 'sub', 'subtract', 'subtraction',
+                           '*', 'mul', 'multiply', 'multiplication', '/', 'div', 'divide', 'division']:
             if '0' in args and '1' in args:
                 return {'left': args['0'], 'right': args['1']}
         
         # If no mapping found, return original args
         return args
+    
+    def _is_simpleitk_function(self, operator_str: str) -> bool:
+        """Check if an operator is a SimpleITK function."""
+        try:
+            # Import SimpleITK primitives and check if operator is registered
+            from voxlogica.primitives.simpleitk import register_primitives
+            simpleitk_primitives = register_primitives()
+            
+            # Check both exact name and capitalized versions
+            return (operator_str in simpleitk_primitives or 
+                    operator_str.capitalize() in simpleitk_primitives or
+                    operator_str.upper() in simpleitk_primitives)
+        except ImportError:
+            # SimpleITK not available
+            return False
+        except Exception:
+            # Any other error, assume not SimpleITK
+            return False
     
     def _wait_for_result(self, operation_id: NodeId, timeout: float = 300.0) -> Any:
         """
@@ -1550,6 +1485,48 @@ class ExecutionSession:
                     # Store the constant value
                     self.storage.store(node_id, node.value)
                     logger.debug(f"Stored constant {node_id[:8]}... = {node.value}")
+
+    def _execute_missing_dependency(self, dep_id: NodeId, dep_node: Operation):
+        """
+        Execute a missing dependency for a dask_map operation.
+        
+        This method recursively executes dependencies that are not in storage
+        but are needed by dask_map operations.
+        
+        Args:
+            dep_id: The ID of the missing dependency operation
+            dep_node: The operation node that needs to be executed
+        """
+        # Skip if already executed
+        if self.storage.exists(dep_id):
+            return
+        
+        # First, execute any dependencies of this operation
+        dependency_results = []
+        for arg_name in sorted(dep_node.arguments.keys()):
+            arg_dep_id = dep_node.arguments[arg_name]
+            
+            if self.storage.exists(arg_dep_id):
+                dependency_results.append(self.storage.retrieve(arg_dep_id))
+            elif arg_dep_id in self.workplan.nodes:
+                arg_dep_node = self.workplan.nodes[arg_dep_id]
+                if isinstance(arg_dep_node, ConstantValue):
+                    dependency_results.append(arg_dep_node.value)
+                elif isinstance(arg_dep_node, ClosureValue):
+                    dependency_results.append(arg_dep_node)
+                elif isinstance(arg_dep_node, Operation):
+                    # Recursively execute this dependency
+                    self._execute_missing_dependency(arg_dep_id, arg_dep_node)
+                    dependency_results.append(self.storage.retrieve(arg_dep_id))
+                else:
+                    raise Exception(f"Unsupported dependency type for {arg_dep_id[:8]}...")
+            else:
+                raise Exception(f"Dependency {arg_dep_id[:8]}... not found")
+        
+        # Execute the operation
+        result = self._execute_operation_inner(dep_node, dep_id, dependency_results)
+        self.completed.add(dep_id)
+        logger.log(VERBOSE_LEVEL, f"Executed missing dependency {dep_id[:8]}... successfully")
 
 def unwrap_node(obj):
     """

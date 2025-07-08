@@ -72,19 +72,19 @@ class ClosureValue:
     def _create_cache_key(self, env: 'Environment') -> str:
         """Create a cache key based on the relevant environment variables.
         
-        Only includes variables that might affect the expression result,
-        excluding the loop variable binding itself.
+        Includes ALL variables that might affect the expression result,
+        including the loop variable to ensure unique operations per iteration.
         """
         import hashlib
         
         # Get all variable names referenced in the expression
         referenced_vars = self._get_referenced_variables(self.expression)
         
-        # Create a minimal environment representation with only referenced variables
-        # (excluding the loop variable which changes each iteration)
+        # Create a minimal environment representation with ALL referenced variables
+        # INCLUDING the loop variable for unique operation IDs per iteration
         relevant_env = {}
         for var in referenced_vars:
-            if var != self.variable and var in env.bindings:
+            if var in env.bindings:
                 # Create a serializable representation of the binding
                 binding = env.bindings[var]
                 if hasattr(binding, 'operation_id'):
@@ -357,6 +357,8 @@ class ClosureValue:
         Converts positional argument keys ('0', '1', etc.) to meaningful names
         like 'left'/'right' for binary operators, improving primitive function signatures.
         
+        Note: SimpleITK functions are excluded from mapping as they expect numeric argument keys.
+        
         Args:
             operator: Operator to map arguments for
             args: Arguments with numeric keys
@@ -366,17 +368,37 @@ class ClosureValue:
         """
         operator_str = str(operator).lower()
         
-        # Binary operators mapping
-        if operator_str in ['+', 'add', 'addition', '-', 'sub', 'subtract', 
-                           '*', 'mul', '/', 'div', 'divide']:
+        # Check if this is a SimpleITK function - if so, don't map arguments
+        # SimpleITK functions need numeric keys ('0', '1') for their *args handling
+        if self._is_simpleitk_function(operator_str):
+            return args
+        
+        # Binary operators mapping (only for built-in VoxLogicA primitives)
+        if operator_str in ['+', 'add', 'addition', '-', 'sub', 'subtract', 'subtraction',
+                           '*', 'mul', 'multiply', 'multiplication', '/', 'div', 'divide', 'division']:
             if '0' in args and '1' in args:
                 return {'left': args['0'], 'right': args['1']}
         
-        # SimpleITK functions that expect positional arguments as numeric keys
-        # (Multiply and other *args functions should keep numeric keys)
-        
         # If no mapping found, return original args
         return args
+    
+    def _is_simpleitk_function(self, operator_str: str) -> bool:
+        """Check if an operator is a SimpleITK function."""
+        try:
+            # Import SimpleITK primitives and check if operator is registered
+            from voxlogica.primitives.simpleitk import register_primitives
+            simpleitk_primitives = register_primitives()
+            
+            # Check both exact name and capitalized versions
+            return (operator_str in simpleitk_primitives or 
+                    operator_str.capitalize() in simpleitk_primitives or
+                    operator_str.upper() in simpleitk_primitives)
+        except ImportError:
+            # SimpleITK not available
+            return False
+        except Exception:
+            # Any other error, assume not SimpleITK
+            return False
 
 type Node = ConstantValue | Operation | ClosureValue
 
@@ -691,17 +713,17 @@ def _expand_for_loop_now(for_loop_comp: ForLoopCompilation, work_plan: 'WorkPlan
     )
     closure_id = work_plan.add_node(closure)
     
-    # Create a map operation that applies the closure to each element
-    map_args = {
-        "0": iterable_id,  # The iterable (should be a Dask bag)
+    # Create a for_loop operation instead of dask_map for unified execution
+    loop_args = {
+        "0": iterable_id,  # The iterable (e.g., range result)
         "closure": closure_id  # The closure to apply
     }
     
-    map_node = Operation(operator="dask_map", arguments=map_args)
-    map_id = work_plan.add_node(map_node)
+    loop_node = Operation(operator="for_loop", arguments=loop_args)
+    loop_id = work_plan.add_node(loop_node)
     
-    logger.debug(f"Created dask_map operation with closure: {map_id}")
-    return map_id
+    logger.debug(f"Created for_loop operation with closure: {loop_id}")
+    return loop_id
 
 
 def reduce_command(

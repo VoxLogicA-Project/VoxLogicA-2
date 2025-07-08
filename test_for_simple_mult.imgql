@@ -1,0 +1,5 @@
+import "default"
+
+let squares = for i in range(1,3) do i * i
+
+print "squares" squares

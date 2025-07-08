@@ -1,0 +1,6 @@
+import "simpleitk"
+
+let img = ReadImage("tests/chris_t1.nii.gz")
+let simple_multiply = Multiply(img, 2.0)
+
+print "simple_multiply" simple_multiply

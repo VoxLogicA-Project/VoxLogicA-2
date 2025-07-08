@@ -65,7 +65,14 @@ def _wrap_sitk_function(func: Callable, func_name: str) -> Callable:
             return result
             
         except Exception as e:
-            raise ValueError(f"{func_name} failed: {e}") from e
+            # Enhanced error message for debugging
+            error_msg = f"{func_name} failed: {e}"
+            if func_name == "Multiply":
+                error_msg += f" [Debug: received {len(kwargs)} kwargs: {list(kwargs.keys())}"
+                if hasattr(e, '__class__'):
+                    error_msg += f", error type: {e.__class__.__name__}"
+                error_msg += "]"
+            raise ValueError(error_msg) from e
     
     # Copy docstring and other attributes
     execute.__doc__ = func.__doc__ or f"SimpleITK {func_name} function"
