@@ -45,7 +45,7 @@ def execute(**kwargs) -> List[Any]:
         logger.info(f"Converting Dask bag to list for for-loop iteration")
         try:
             iterable_list = iterable.compute()
-            logger.info(f"Successfully converted Dask bag to list with {len(iterable_list)} elements")
+            logger.debug(f"Successfully converted Dask bag to list with {len(iterable_list)} elements")
         except Exception as e:
             logger.error(f"Failed to compute Dask bag: {e}")
             raise
@@ -54,7 +54,7 @@ def execute(**kwargs) -> List[Any]:
         logger.info(f"Converting Dask bag (isinstance) to list for for-loop iteration")
         try:
             iterable_list = iterable.compute()
-            logger.info(f"Successfully converted Dask bag to list with {len(iterable_list)} elements")
+            logger.debug(f"Successfully converted Dask bag to list with {len(iterable_list)} elements")
         except Exception as e:
             logger.error(f"Failed to compute Dask bag: {e}")
             raise
@@ -142,13 +142,13 @@ def execute(**kwargs) -> List[Any]:
         
         # Check if this operation ID was seen in previous iterations
         if operation_ids[-1] in operation_ids[:-1]:  # Check all previous iterations
-            logger.info(f"✅ DEDUPLICATION SUCCESS: Iteration {i} reused existing operation {operation_ids[-1][:8]}...")
+            logger.debug(f"✅ DEDUPLICATION SUCCESS: Iteration {i} reused existing operation {operation_ids[-1][:8]}...")
         else:
-            logger.info(f"❌ DEDUPLICATION MISS: Iteration {i} created new operation {operation_ids[-1][:8]}...")
+            logger.debug(f"❌ DEDUPLICATION MISS: Iteration {i} created new operation {operation_ids[-1][:8]}...")
         if result_id in operation_ids[:-1]:
-            logger.info(f"✅ DEDUPLICATION SUCCESS: Iteration {i} reused existing operation {result_id[:8]}...")
+            logger.debug(f"✅ DEDUPLICATION SUCCESS: Iteration {i} reused existing operation {result_id[:8]}...")
         else:
-            logger.info(f"❌ DEDUPLICATION MISS: Iteration {i} created new operation {result_id[:8]}...")
+            logger.debug(f"❌ DEDUPLICATION MISS: Iteration {i} created new operation {result_id[:8]}...")
         
         logger.debug(f"Created operation {result_id[:8]}... for iteration {i}")
     
@@ -169,7 +169,7 @@ def execute(**kwargs) -> List[Any]:
     
     # Execute the temporary workplan if there are any operations to compute
     if temp_workplan.goals:
-        logger.info(f"Executing {len(temp_workplan.goals)} operations through unified execution model")
+        logger.debug(f"Executing {len(temp_workplan.goals)} operations through unified execution model")
         
         # Create an execution session for the temporary workplan
         import uuid
