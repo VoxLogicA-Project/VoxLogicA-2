@@ -81,30 +81,74 @@ def execute(**kwargs) -> List[Any]:
     
     # Phase 1: Create all operations and add them to the workplan
     for i, value in enumerate(iterable_list):
-        logger.debug(f"For-loop iteration {i}: creating operation for value {value}")
+        logger.debug(f"For-loop iteration {i}: processing value {value}")
         
-        # Create a unique environment for this iteration
+        # Use the closure's logic to get the operation ID with proper deduplication
+        # This replicates the logic from ClosureValue.__call__ but only gets the operation ID
         try:
-            # Try to add the value as a constant node in the workplan
+            # Check if the loop variable is actually referenced in the expression
+            referenced_vars = closure._get_referenced_variables(closure.expression)
+            variable_is_referenced = closure.variable in referenced_vars
+            
+            if variable_is_referenced:
+                # Create a binding for the loop variable (similar to ClosureValue.__call__)
+                try:
+                    # Try to add the value as a constant node in the workplan
+                    value_node = ConstantValue(value=value)
+                    value_id = closure.workplan.add_node(value_node)
+                    value_dval = OperationVal(value_id)
+                    logger.debug(f"Added constant node for iteration value: {value}")
+                except (TypeError, ValueError):
+                    # Value is not serializable - use temporary storage
+                    import uuid
+                    temp_id = f"temp_{uuid.uuid4().hex[:16]}"
+                    engine.storage._memory_cache[temp_id] = value
+                    value_dval = OperationVal(temp_id)
+                    logger.debug(f"Used temporary storage for non-serializable value")
+                
+                # Create environment with the variable bound to this value
+                env_with_binding = closure.environment.bind(closure.variable, value_dval)
+            else:
+                # Loop variable is not referenced, so don't create a binding for it
+                # This optimizes loop-invariant expressions
+                logger.debug(f"Loop variable '{closure.variable}' not referenced, using optimization")
+                env_with_binding = closure.environment
+            
+            # Check expression cache before reducing (using the closure's cache)
+            cache_key = closure._create_cache_key(env_with_binding)
+            if cache_key in closure._expression_cache:
+                result_id = closure._expression_cache[cache_key]
+                logger.debug(f"Retrieved operation ID from cache: {result_id[:8]}...")
+            else:
+                # Reduce the expression with this environment, using the existing workplan
+                # This builds the DAG lazily without executing anything
+                result_id = reduce_expression(env_with_binding, closure.workplan, closure.expression)
+                
+                # Cache the result for future iterations
+                closure._expression_cache[cache_key] = result_id
+                logger.debug(f"Reduced expression to new operation ID: {result_id[:8]}...")
+            
+            operation_ids.append(result_id)
+            
+        except Exception as e:
+            logger.error(f"Error in iteration {i}: {e}")
+            # Fallback to old approach
             value_node = ConstantValue(value=value)
             value_id = closure.workplan.add_node(value_node)
             value_dval = OperationVal(value_id)
-            logger.debug(f"Added constant node for iteration value: {value}")
-        except (TypeError, ValueError):
-            # Value is not serializable - use temporary storage
-            import uuid
-            temp_id = f"temp_{uuid.uuid4().hex[:16]}"
-            engine.storage._memory_cache[temp_id] = value
-            value_dval = OperationVal(temp_id)
-            logger.debug(f"Used temporary storage for non-serializable value")
+            env_with_binding = closure.environment.bind(closure.variable, value_dval)
+            result_id = reduce_expression(env_with_binding, closure.workplan, closure.expression)
+            operation_ids.append(result_id)
         
-        # Bind the loop variable to this specific iteration value
-        env_with_binding = closure.environment.bind(closure.variable, value_dval)
-        
-        # Reduce the expression to get the operation ID
-        # This creates the operation in the workplan but doesn't execute it yet
-        result_id = reduce_expression(env_with_binding, closure.workplan, closure.expression)
-        operation_ids.append(result_id)
+        # Check if this operation ID was seen in previous iterations
+        if operation_ids[-1] in operation_ids[:-1]:  # Check all previous iterations
+            logger.info(f"✅ DEDUPLICATION SUCCESS: Iteration {i} reused existing operation {operation_ids[-1][:8]}...")
+        else:
+            logger.info(f"❌ DEDUPLICATION MISS: Iteration {i} created new operation {operation_ids[-1][:8]}...")
+        if result_id in operation_ids[:-1]:
+            logger.info(f"✅ DEDUPLICATION SUCCESS: Iteration {i} reused existing operation {result_id[:8]}...")
+        else:
+            logger.info(f"❌ DEDUPLICATION MISS: Iteration {i} created new operation {result_id[:8]}...")
         
         logger.debug(f"Created operation {result_id[:8]}... for iteration {i}")
     
@@ -136,10 +180,12 @@ def execute(**kwargs) -> List[Any]:
         for result_id in operation_ids:
             if result_id in temp_workplan.nodes:
                 node = temp_workplan.nodes[result_id]
-                if hasattr(node, 'arguments'):
-                    logger.debug(f"Operation {result_id[:8]}... arguments: {node.arguments}")
+                from voxlogica.reducer import Operation
+                if isinstance(node, Operation):
+                    logger.debug(f"Operation {result_id[:8]}... operator: {node.operator}, arguments: {node.arguments}")
                 else:
                     logger.debug(f"Node {result_id[:8]}... type: {type(node).__name__}")
+        
         
         session = ExecutionSession(temp_execution_id, temp_workplan, engine.storage, engine.primitives)
         

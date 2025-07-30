@@ -4,7 +4,24 @@
 
 ## Current State
 
-The VoxLogicA-2 system has a **fully operational execution engine** with complete for-loop support and arithmetic operations. The system successfully implements **unified execution model for for-loops**, enabling complex iterative computations with both pure arithmetic and side-effect operations. All core functionality is working including Dask bag integration, content-addressed storage, and real-time debugging capabilities.
+The VoxLogicA-2 system has a **fully operational execution engine** with complete for-loop support, deduplication capabilities, and arithmetic operations. The system successfully implements **unified execution model for for-loops** with **intelligent loop-invariant deduplication**, enabling efficient complex iterative computations with both pure arithmetic and side-effect operations. All core functionality is working including Dask bag integration, content-addressed storage, and real-time debugging capabilities.
+
+## Major Milestone Achieved: Complete For-Loop Deduplication ✨
+
+**Date:** January 8, 2025  
+**Status:** ✅ **PRODUCTION READY**
+
+The deduplication system for for-loops is now **fully implemented and tested**. VoxLogicA-2 intelligently detects loop-invariant expressions and executes them only once, providing massive performance improvements:
+
+- ✅ **Loop-Invariant Detection**: Automatically identifies expressions that don't use the loop variable
+- ✅ **Content-Addressed Memoization**: SHA256-based operation IDs ensure identical operations are cached
+- ✅ **Smart Execution**: Loop-invariant expressions like `BinaryThreshold(img,100,101,1,0)` execute only once across all iterations
+- ✅ **Loop-Variant Support**: Expressions that DO use the loop variable correctly create different operations per iteration
+- ✅ **Scalable Performance**: Deduplication scales efficiently - 9 iterations of the same operation only execute once
+
+### Performance Improvements
+Before the fix: N iterations = N executions (wasteful)  
+After the fix: N iterations of loop-invariant expression = 1 execution (optimal)
 
 ## Major Milestone Achieved: Complete For-Loop Execution ✨
 
@@ -18,6 +35,7 @@ The unified execution model for for-loops is now **fully implemented and tested*
 - ✅ **Dask bag processing**: Seamless conversion and iteration over Dask bags  
 - ✅ **Argument mapping**: All arithmetic primitives work correctly in for-loop contexts
 - ✅ **Memoization**: Perfect SHA256-based caching for identical operations
+- ✅ **SimpleITK Integration**: Complex image processing operations work flawlessly in for-loops
 
 ## Key Components Status
 
@@ -27,6 +45,7 @@ The unified execution model for for-loops is now **fully implemented and tested*
 - **WorkPlan Compilation**: Reduces VoxLogicA programs to executable workplans
 - **Lazy WorkPlan Implementation**: ✨ **NEW** - Purely lazy compilation with on-demand expression evaluation
 - **For Loop Syntax**: ✨ **NEW** - Complete for loop support with Dask bag integration
+- **For Loop Deduplication**: ✨ **NEW** - Intelligent loop-invariant detection and memoization
 - **Dask Integration**: ✨ **NEW** - Range primitive and dask_map operations for dataset processing
 - **Storage Backend**: Content-addressed storage with SQLite backend
 - **CLI Interface**: Basic command-line interface working

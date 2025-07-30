@@ -1,6 +1,0 @@
-import "test"
-
-
-let data = for i in range(0,10) do impure(i+1)
-
-print "data" data

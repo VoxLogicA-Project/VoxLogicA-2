@@ -1,7 +1,0 @@
-import "simpleitk"
-
-let img = ReadImage("tests/chris_t1.nii.gz")
-let data = for i in range(1,500) do Multiply(BinaryThreshold(img,100,101,1,0), img)
-let data2 = for j in data do MinimumMaximum(j)
-
-print "data2" data2

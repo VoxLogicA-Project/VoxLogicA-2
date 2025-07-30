@@ -1,0 +1,7 @@
+import "simpleitk"
+
+let img = ReadImage("tests/chris_t1.nii.gz")
+
+// Test with loop-variant expression that uses the loop variable
+let data = for i in range(100,103) do BinaryThreshold(img,i,200,1,0)
+print "data" data

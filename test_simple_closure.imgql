@@ -1,2 +1,0 @@
-let simple_for = for i in range(0,3) do +(i, 1)
-print "simple" simple_for

@@ -1,7 +1,0 @@
-import "simpleitk"
-
-let img = ReadImage("tests/chris_t1.nii.gz")
-let threshold = BinaryThreshold(img,100,101,1,0)
-let result = Multiply(threshold, img)
-
-print "result" result
