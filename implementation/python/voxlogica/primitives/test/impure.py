@@ -25,4 +25,4 @@ def execute(**kwargs):
     logger = logging.getLogger("voxlogica.primitives.test.impure")
     logger.info(f"IMPURE CALLED WITH: {input_value}")
     print(f"IMPURE DEBUG: file={__file__} version=return3 input={input_value}")
-    return 3
+    return input_value
