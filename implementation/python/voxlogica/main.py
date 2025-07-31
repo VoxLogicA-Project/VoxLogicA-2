@@ -4,6 +4,8 @@ VoxLogicA Main module - Python implementation
 
 import asyncio
 import logging
+import dask
+from distributed import Client
 import sys
 from pathlib import Path
 from typing import Any, Optional, TypeVar, Generic
@@ -136,6 +138,9 @@ def setup_logging(debug: bool = False, verbose: bool = False) -> None:
     root.handlers = []  # Remove any existing handlers
     root.addHandler(handler)
     root.setLevel(log_level)
+    
+    # Ensure Dask forwards worker stdout/stderr to the main process
+    dask.config.set({'distributed.worker.redirect_stdouts': True})
     
     # Set Dask-related loggers to WARNING level to reduce noise
     # This prevents messages like "lost all workers", "connection to inproc://", "closing scheduler" etc.

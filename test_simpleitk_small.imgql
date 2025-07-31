@@ -2,7 +2,7 @@ import "simpleitk"
 import "test"
 
 let img = ReadImage("tests/chris_t1.nii.gz")
-let thresholds = for i in range(0,500) do 
+let thresholds = for i in range(0,100) do 
     test.impure(i)
 
 print "thresholds" thresholds

@@ -20,5 +20,9 @@ def execute(**kwargs):
         raise ValueError("impure primitive expects exactly one argument")
     
     input_value = kwargs['0']
-    print(f"IMPURE CALLED WITH: {input_value}")
-    return input_value
+    import logging
+    import os
+    logger = logging.getLogger("voxlogica.primitives.test.impure")
+    logger.info(f"IMPURE CALLED WITH: {input_value}")
+    print(f"IMPURE DEBUG: file={__file__} version=return3 input={input_value}")
+    return 3
