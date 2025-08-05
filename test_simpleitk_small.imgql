@@ -2,8 +2,8 @@ import "simpleitk"
 import "test"
 
 let img = ReadImage("tests/chris_t1.nii.gz")
-let thresholds = for i in range(0,10) do 
-    MinimumMaximum(BinaryThreshold(img, i+10000, 255, 1, 0))
+let thresholds = for i in range(775,780) do 
+    impure(MinimumMaximum(BinaryThreshold(img, 0, i+3, 1, 0)))
     
 
 print "thresholds" thresholds

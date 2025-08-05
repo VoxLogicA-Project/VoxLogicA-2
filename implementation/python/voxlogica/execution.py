@@ -753,8 +753,9 @@ class ExecutionSession:
         Orchestrates the complete execution process:
         1. Store constants in storage for goal access
         2. Build dependency graph for topological ordering
-        3. Compile all operations to unified Dask delayed graph
-        4. Execute all operations (including print, save) using Dask with deterministic caching
+        3. Compile all operations to unified Dask delayed graph  
+        4. Execute all computations (let bindings) using Dask with deterministic caching
+        5. Execute goal commands (print, save) separately to ensure side effects always run
         
         Returns:
             Tuple of (completed_operations, failed_operations)
@@ -769,21 +770,24 @@ class ExecutionSession:
         # Compile all operations to unified Dask delayed graph
         self._compile_operations_to_dask(dependencies)
         
-        # Execute all goal operations (both computational and I/O) using unified Dask execution
-        goal_operations = [self.delayed_graph[goal.id] for goal in self.workplan.goals 
-                          if goal.id in self.delayed_graph]
+        # Execute all computations referenced by goals (let bindings)
+        computation_operations = [self.delayed_graph[goal.id] for goal in self.workplan.goals 
+                                if goal.id in self.delayed_graph]
         
-        if goal_operations:
+        if computation_operations:
             try:
-                logger.log(VERBOSE_LEVEL,f"Executing {len(goal_operations)} goal operations with unified Dask")
+                logger.log(VERBOSE_LEVEL,f"Executing {len(computation_operations)} computation operations with Dask")
                 # Use local threaded scheduler to avoid serialization issues while still
                 # benefiting from the shared client's resource coordination
                 from dask.threaded import get as threaded_get
-                compute(*goal_operations, scheduler=threaded_get)
+                compute(*computation_operations, scheduler=threaded_get)
             except Exception as e:
                 logger.error(f"Dask computation failed: {e}")
                 self.failed["dask_computation"] = str(e)
                 return self.completed.copy(), self.failed.copy()
+        
+        # Execute goal commands (observations/side effects) separately - these always run
+        self._execute_goal_commands()
         
         # Return final results
         return self.completed.copy(), self.failed.copy()
@@ -799,6 +803,70 @@ class ExecutionSession:
             if isinstance(node, Operation):
                 self.operations[node_id] = node
         # constants are not added to operations
+
+    def _execute_goal_commands(self):
+        """
+        Execute goal commands (print, save) separately from computations.
+        
+        Goal commands are observations/side effects that should always execute,
+        even if their referenced computation results are cached. This respects
+        the semantic distinction between let bindings (cacheable computations)
+        and goal commands (observations that must always run).
+        """
+        for goal in self.workplan.goals:
+            try:
+                # Get the computed result from storage
+                if self.storage.exists(goal.id):
+                    result = self.storage.retrieve(goal.id)
+                else:
+                    raise Exception(f"Missing computed result for goal '{goal.name}' (operation {goal.id})")
+                
+                # Unwrap ConstantValue if present
+                if isinstance(result, ConstantValue):
+                    result = result.value
+                
+                # Execute the goal command - these always run regardless of caching
+                self._execute_goal_command(goal, result)
+                
+                logger.log(VERBOSE_LEVEL, f"Goal command '{goal.operation}' for '{goal.name}' executed successfully")
+                
+            except Exception as e:
+                logger.error(f"Goal command '{goal.operation}' for '{goal.name}' failed: {e}")
+                self.failed[f"goal_{goal.operation}_{goal.name}"] = str(e)
+
+    def _execute_goal_command(self, goal: Goal, result: Any):
+        """
+        Execute a single goal command with its computed result.
+        
+        Args:
+            goal: Goal object containing operation type and parameters
+            result: The computed result to use for the goal command
+        """
+        if goal.operation == 'print':
+            # Use the print primitive to execute the side effect
+            try:
+                print_primitive = self.primitives.load_primitive('print_primitive')
+                if print_primitive:
+                    # Call print primitive with proper arguments - this will print to console
+                    output = print_primitive(**{'0': goal.name, '1': result})
+                    logger.debug(f"Print primitive output: {output}")
+                else:
+                    # Fallback to direct printing if print primitive not available
+                    output = f"{goal.name}={result}"
+                    print(output)
+                    logger.debug(f"Fallback print output: {output}")
+            except Exception as e:
+                logger.warning(f"Print primitive failed, using fallback: {e}")
+                output = f"{goal.name}={result}"
+                print(output)
+                logger.debug(f"Fallback print output: {output}")
+                
+        elif goal.operation == 'save':
+            # Execute save operation
+            self._save_result_to_file(result, goal.name, goal.id)
+            
+        else:
+            raise Exception(f"Unknown goal operation: {goal.operation}")
 
     def _execute_operation(self, operation: Operation, operation_id: NodeId, *dependency_results) -> Any:
         """
