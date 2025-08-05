@@ -705,10 +705,9 @@ class ExecutionSession:
     and execution of a workplan using Dask delayed.
     
     Manages the complete lifecycle of a single workplan execution:
-    - Categorizes operations into pure computations vs side-effects
-    - Compiles pure operations to Dask delayed graphs
+    - Compiles all operations to unified Dask delayed graph
     - Handles distributed execution with content-addressed storage
-    - Executes side-effect operations (print, save) after computations
+    - All operations (including print, save) are treated uniformly with deterministic caching
     - Provides execution status and cancellation support
     """
     
@@ -743,10 +742,9 @@ class ExecutionSession:
         self._serializer_registry = CustomSerializerRegistry()
         self._suffix_matcher = SuffixMatcher()
         
-        # Separate pure operations from side-effect goals
-        self.pure_operations: Dict[NodeId, Operation] = {}
-        self.goal_operations: Dict[NodeId, Operation] = {}
-        self._categorize_operations()
+        # All operations are treated uniformly
+        self.operations: Dict[NodeId, Operation] = {}
+        self._collect_operations()
     
     def execute(self) -> tuple[Set[NodeId], Dict[NodeId, str]]:
         """
@@ -755,9 +753,8 @@ class ExecutionSession:
         Orchestrates the complete execution process:
         1. Store constants in storage for goal access
         2. Build dependency graph for topological ordering
-        3. Compile pure operations to Dask delayed graph
-        4. Execute pure computations using Dask
-        5. Execute side-effect goals (print, save)
+        3. Compile all operations to unified Dask delayed graph
+        4. Execute all operations (including print, save) using Dask with deterministic caching
         
         Returns:
             Tuple of (completed_operations, failed_operations)
@@ -769,81 +766,50 @@ class ExecutionSession:
         # Build dependency graph for topological ordering
         dependencies = self._build_dependency_graph()
         
-        # Compile pure operations to Dask delayed graph
-        self._compile_pure_operations_to_dask(dependencies)
+        # Compile all operations to unified Dask delayed graph
+        self._compile_operations_to_dask(dependencies)
         
-        # Execute the pure computation DAG first
-        computation_goals = [goal.id for goal in self.workplan.goals 
-                           if goal.id in self.pure_operations]
+        # Execute all goal operations (both computational and I/O) using unified Dask execution
+        goal_operations = [self.delayed_graph[goal.id] for goal in self.workplan.goals 
+                          if goal.id in self.delayed_graph]
         
-        if computation_goals:
-            goal_computations = [self.delayed_graph[goal_id] for goal_id in computation_goals]
-            
+        if goal_operations:
             try:
-                logger.log(VERBOSE_LEVEL,f"Executing {len(goal_computations)} computation goals with Dask")
+                logger.log(VERBOSE_LEVEL,f"Executing {len(goal_operations)} goal operations with unified Dask")
                 # Use local threaded scheduler to avoid serialization issues while still
                 # benefiting from the shared client's resource coordination
-                # The key architectural benefit is that all workplans share the same client instance
                 from dask.threaded import get as threaded_get
-                compute(*goal_computations, scheduler=threaded_get)
+                compute(*goal_operations, scheduler=threaded_get)
             except Exception as e:
                 logger.error(f"Dask computation failed: {e}")
                 self.failed["dask_computation"] = str(e)
                 return self.completed.copy(), self.failed.copy()
         
-        # Execute side-effect goals (print, save, etc.)
-        self._execute_goal_operations()
-        
         # Return final results
         return self.completed.copy(), self.failed.copy()
     
-    def _categorize_operations(self):
+    def _collect_operations(self):
         """
-        Categorize nodes into pure operations vs side-effect goals.
+        Collect all operations from the workplan.
         
-        Pure operations are mathematical/data processing operations that can be
-        parallelized and cached. Side-effect operations are I/O operations like
-        print, save that must be executed sequentially after computations.
+        All operations are treated uniformly - no categorization into pure vs side-effect.
+        Even operations like print and save are deterministic and can be cached.
         """
-        side_effect_operators = {'print', 'save', 'output', 'write', 'display'}
-        
         for node_id, node in self.workplan.nodes.items():
             if isinstance(node, Operation):
-                op_str = str(node.operator.value) if isinstance(node.operator, ConstantValue) else str(node.operator)
-                op_str_lower = op_str.lower()
-                
-                if op_str_lower in side_effect_operators:
-                    self.goal_operations[node_id] = node
-                else:
-                    # All operations can be treated as pure operations
-                    self.pure_operations[node_id] = node
-        # constants are not added to pure_operations or goal_operations
+                self.operations[node_id] = node
+        # constants are not added to operations
 
-    def _execute_goal_operations(self):
+    def _execute_operation(self, operation: Operation, operation_id: NodeId, *dependency_results) -> Any:
         """
-        Execute side-effect operations (print, save, etc.) after computations.
+        Execute a single operation with content-addressed deduplication.
         
-        Processes all goals sequentially, retrieving computed results from storage
-        and executing the appropriate side-effect action (printing or saving).
-        """
-        for goal in self.workplan.goals:
-            try:
-                # Execute the goal operation with the computed result
-                self._execute_goal_with_result(goal)
-                self.completed.add(goal.id)
-            except Exception as e:
-                logger.error(f"Goal operation {goal.operation} '{goal.name}' failed: {e}")
-                self.failed[goal.id] = str(e)
-                    
-    def _execute_pure_operation(self, operation: Operation, operation_id: NodeId, *dependency_results) -> Any:
-        """
-        Execute a single pure operation with content-addressed deduplication.
-        
-        Implements the core execution logic for pure computational operations:
+        Implements the unified execution logic for all operations (including print, save):
         - Checks storage for existing results (deduplication)
         - Handles distributed execution coordination using global futures table
         - Loads and invokes primitive functions
         - Stores results in content-addressed storage
+        - All operations are treated deterministically and can be cached
         
         Args:
             operation: Operation to execute
@@ -856,7 +822,7 @@ class ExecutionSession:
         if self.cancelled:
             raise Exception("Execution cancelled")
         
-        # Check if result already exists
+        # Check if result already exists (deterministic caching for all operations)
         if self.storage.exists(operation_id):
             logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... found in storage, skipping")
             result = self.storage.retrieve(operation_id)
@@ -1154,41 +1120,42 @@ class ExecutionSession:
     
     def _build_dependency_graph(self) -> Dict[NodeId, Set[NodeId]]:
         """
-        Build dependency graph (operation -> dependencies) for pure operations.
+        Build dependency graph (operation -> dependencies) for all operations.
         
         Creates a mapping from each operation to its direct dependencies,
-        excluding constants and side-effect operations.
+        excluding constants.
         
         Returns:
             Dictionary mapping operation IDs to sets of their dependency IDs
         """
         dependencies: Dict[NodeId, Set[NodeId]] = defaultdict(set)
-        for op_id, operation in self.pure_operations.items():
+        for op_id, operation in self.operations.items():
             for arg_name, dep_id in operation.arguments.items():
-                if dep_id in self.pure_operations:
+                if dep_id in self.operations:
                     dependencies[op_id].add(dep_id)
         return dict(dependencies)
     
-    def _compile_pure_operations_to_dask(self, dependencies: Dict[NodeId, Set[NodeId]]):
+    def _compile_operations_to_dask(self, dependencies: Dict[NodeId, Set[NodeId]]):
         """
-        Compile pure operations to Dask delayed graph.
+        Compile all operations to unified Dask delayed graph.
         
-        Creates a Dask delayed computation graph from pure operations,
+        Creates a Dask delayed computation graph from all operations,
         ensuring dependencies are properly handled and execution order is maintained.
+        All operations (including print, save) are treated uniformly with deterministic caching.
         
         Args:
             dependencies: Dependency graph from _build_dependency_graph
         """
-        # Compile all pure operations in topological order
+        # Compile all operations in topological order
         topo_order = self._topological_sort(dependencies)
         
-        logger.log(VERBOSE_LEVEL, f"Compiling {len(self.pure_operations)} pure operations to Dask delayed graph")
+        logger.log(VERBOSE_LEVEL, f"Compiling {len(self.operations)} operations to unified Dask delayed graph")
         
         for op_id in topo_order:
-            if op_id not in self.pure_operations:
+            if op_id not in self.operations:
                 continue
                 
-            operation = self.pure_operations[op_id]
+            operation = self.operations[op_id]
             
             # Build dependency list in argument order
             dep_delayed = []
@@ -1199,8 +1166,8 @@ class ExecutionSession:
                 elif dep_id in self.delayed_graph:
                     dep_delayed.append(self.delayed_graph[dep_id])
             
-            # Create delayed operation
-            self.delayed_graph[op_id] = delayed(self._execute_pure_operation)(
+            # Create delayed operation - all operations use the same execution path
+            self.delayed_graph[op_id] = delayed(self._execute_operation)(
                 operation, op_id, *dep_delayed
             )
             logger.log(VERBOSE_LEVEL, f"Added operation {op_id[:8]}... to delayed graph")
@@ -1222,7 +1189,7 @@ class ExecutionSession:
             ValueError: If a dependency cycle is detected
         """
         # Kahn's algorithm for topological sorting
-        in_degree = {op_id: 0 for op_id in self.pure_operations}
+        in_degree = {op_id: 0 for op_id in self.operations}
         
         # Calculate in-degrees (how many dependencies each operation has)
         for op_id, deps in dependencies.items():
@@ -1244,12 +1211,12 @@ class ExecutionSession:
                     if in_degree[op_id] == 0:
                         queue.append(op_id)
         
-        if len(result) != len(self.pure_operations):
+        if len(result) != len(self.operations):
             # Debug information
             logger.error("Topological sort failed:")
-            logger.error(f"Pure operations: {len(self.pure_operations)}")
+            logger.error(f"Operations: {len(self.operations)}")
             logger.error(f"Sorted result: {len(result)}")
-            remaining = set(self.pure_operations.keys()) - set(result)
+            remaining = set(self.operations.keys()) - set(result)
             logger.error(f"Remaining operations: {[op_id[:8] + '...' for op_id in remaining]}")
             for op_id in remaining:
                 if op_id in dependencies:
@@ -1332,8 +1299,8 @@ class ExecutionSession:
         # Map dependency IDs to their results
         dep_idx = 0
         for arg_name, arg_value in operation.arguments.items():
-            if arg_value in self.pure_operations:
-                # This is a dependency reference to a pure operation
+            if arg_value in self.operations:
+                # This is a dependency reference to an operation
                 if dep_idx < len(dependency_results):
                     dep_results_map[arg_value] = dependency_results[dep_idx]
                     dep_idx += 1
