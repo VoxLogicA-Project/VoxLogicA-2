@@ -1,0 +1,195 @@
+// nnUNet Synthetic Dataset Training and Validation Test
+// 
+// This VoxLogicA program loads synthetic images with squares of varying intensity,
+// trains an nnUNet model on the first 10 images, validates on the remaining 10,
+// and measures pixel accuracy between predictions and ground truth.
+
+// Import necessary functions
+import "arrays"
+
+// Configuration - paths to synthetic dataset
+let dataset_dir = "/tmp/nnunet_synthetic_dataset"
+let images_dir = dataset_dir + "/images"
+let labels_dir = dataset_dir + "/labels"
+let work_dir = "/tmp/nnunet_synthetic_workspace"
+let predictions_dir = "/tmp/nnunet_synthetic_predictions"
+
+// Load training images (first 10 cases: case_000 to case_009)
+let training_images = for i in range(0, 10) do
+    let case_id = "case_00" + i  // Simplified - assumes i < 10
+    let image_path = images_dir + "/" + case_id + "_0000.nii.gz"
+    simpleitk.ReadImage(image_path)
+
+print "loaded_training_images" "Training images loaded"
+
+// Load training labels (first 10 cases)
+let training_labels = for i in range(0, 10) do
+    let case_id = "case_00" + i  // Simplified - assumes i < 10
+    let label_path = labels_dir + "/" + case_id + ".nii.gz"
+    simpleitk.ReadImage(label_path)
+
+print "loaded_training_labels" "Training labels loaded"
+
+// Load validation images (last 10 cases: case_010 to case_019)
+let validation_images = for i in range(10, 20) do
+    let case_id = "case_0" + i  // Will create case_010, case_011, etc.
+    let image_path = images_dir + "/" + case_id + "_0000.nii.gz"
+    simpleitk.ReadImage(image_path)
+
+print "loaded_validation_images" "Validation images loaded"
+
+// Load validation labels (last 10 cases)
+let validation_labels = for i in range(10, 20) do
+    let case_id = "case_0" + i  // Will create case_010, case_011, etc.
+    let label_path = labels_dir + "/" + case_id + ".nii.gz"
+    simpleitk.ReadImage(label_path)
+
+print "loaded_validation_labels" "Validation labels loaded"
+
+// Create training data bags (format: case_id, modality, array)
+let training_images_bag = for i in range(0, 10) do 
+    let image = training_images[i]
+    (i, "T1", simpleitk.GetArrayFromImage(image))
+
+print "created_training_bag" "Training images bag created"
+
+// Create training labels bag (format: case_id, array)
+let training_labels_bag = for i in range(0, 10) do
+    let label = training_labels[i]
+    (i, simpleitk.GetArrayFromImage(label))
+
+print "created_labels_bag" "Training labels bag created"
+
+// Define modalities (single modality for this synthetic test)
+let modalities = ["T1"]
+
+// Train nnUNet model
+print "starting_training" "Starting nnUNet training..."
+
+let training_result = nnunet.train(
+    training_images_bag,
+    training_labels_bag,
+    modalities,
+    work_dir,
+    1,
+    "SyntheticSquares",
+    "3d_fullres",
+    3
+)
+
+print "training_completed" training_result["status"]
+print "model_path" training_result["model_path"]
+
+// Create validation data bag for prediction
+let validation_images_bag = for i in range(0, 10) do
+    let image = validation_images[i]
+    (i, "T1", simpleitk.GetArrayFromImage(image))
+
+print "created_validation_bag" "Validation images bag created"
+
+// Run prediction on validation set
+print "starting_prediction" "Starting prediction on validation set..."
+
+let prediction_result = nnunet.predict(
+    validation_images_bag,
+    training_result["model_path"],
+    predictions_dir,
+    "3d_fullres",
+    [0, 1, 2],
+    false
+)
+
+print "prediction_completed" prediction_result["status"]
+print "predictions_path" prediction_result["output_path"]
+
+// Load predicted results and compare with ground truth
+let total_accuracy = 0.0
+let total_pixels = 0
+let total_correct = 0
+
+let accuracy_results = for i in range(0, 10) do
+    let case_id = "case_0" + (i + 10)  // Will create case_010, case_011, etc.
+    
+    // Load predicted result
+    let pred_path = predictions_dir + "/" + case_id + ".nii.gz"
+    let predicted = simpleitk.ReadImage(pred_path)
+    
+    // Load ground truth
+    let gt_image = validation_labels[i]
+    
+    // Calculate pixel accuracy
+    let accuracy_metrics = arrays.pixel_accuracy(predicted, gt_image)
+    
+    print ("case_accuracy_" + case_id) accuracy_metrics["accuracy"]
+    
+    accuracy_metrics
+
+print "individual_accuracies" "Individual case accuracies calculated"
+
+// Calculate overall statistics
+let overall_stats = for i in range(0, 10) do
+    let metrics = accuracy_results[i]
+    (metrics["correct_pixels"], metrics["total_pixels"])
+
+let total_correct_pixels = for i in range(0, 10) do
+    let stats = overall_stats[i]
+    stats[0]
+
+let total_all_pixels = for i in range(0, 10) do
+    let stats = overall_stats[i]
+    stats[1]
+
+// Sum up the results (would need array sum function, using manual calculation)
+let sum_correct = 
+    total_correct_pixels[0] + total_correct_pixels[1] + total_correct_pixels[2] + 
+    total_correct_pixels[3] + total_correct_pixels[4] + total_correct_pixels[5] + 
+    total_correct_pixels[6] + total_correct_pixels[7] + total_correct_pixels[8] + 
+    total_correct_pixels[9]
+
+let sum_total = 
+    total_all_pixels[0] + total_all_pixels[1] + total_all_pixels[2] + 
+    total_all_pixels[3] + total_all_pixels[4] + total_all_pixels[5] + 
+    total_all_pixels[6] + total_all_pixels[7] + total_all_pixels[8] + 
+    total_all_pixels[9]
+
+let overall_accuracy = sum_correct / sum_total
+
+print "overall_pixel_accuracy" overall_accuracy
+print "total_correct_pixels" sum_correct
+print "total_pixels" sum_total
+
+// Calculate and display additional metrics for first validation case as example
+let example_case = validation_labels[0]
+let example_pred_path = predictions_dir + "/case_010.nii.gz"
+let example_predicted = simpleitk.ReadImage(example_pred_path)
+
+// Confusion matrix for first case
+let confusion_metrics = arrays.confusion_matrix(example_predicted, example_case)
+print "example_confusion_matrix" confusion_metrics["confusion_matrix"]
+print "example_precision" confusion_metrics["mean_precision"]
+print "example_recall" confusion_metrics["mean_recall"]
+print "example_f1_score" confusion_metrics["mean_f1_score"]
+
+// Dice score for foreground objects (label > 0)
+let dice_metrics = arrays.dice_score(example_predicted, example_case, 1)
+print "example_dice_score" dice_metrics["dice_score"]
+
+// Jaccard index for foreground objects
+let jaccard_metrics = arrays.jaccard_index(example_predicted, example_case, 1)
+print "example_jaccard_index" jaccard_metrics["jaccard_index"]
+
+// Save final results summary
+save "nnunet_synthetic_test_results.txt" 
+    ("nnUNet Synthetic Dataset Test Results\n" +
+     "=====================================\n" +
+     "Overall Pixel Accuracy: " + overall_accuracy + "\n" +
+     "Total Correct Pixels: " + sum_correct + "\n" +
+     "Total Pixels: " + sum_total + "\n" +
+     "Training Cases: 10 (case_000 to case_009)\n" +
+     "Validation Cases: 10 (case_010 to case_019)\n" +
+     "Model Path: " + training_result["model_path"] + "\n" +
+     "Predictions Path: " + prediction_result["output_path"] + "\n" +
+     "Example Case Dice Score: " + dice_metrics["dice_score"] + "\n" +
+     "Example Case Jaccard Index: " + jaccard_metrics["jaccard_index"])
+
+print "test_completed" "nnUNet synthetic dataset test completed successfully"

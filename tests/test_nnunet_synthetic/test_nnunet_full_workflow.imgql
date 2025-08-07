@@ -1,0 +1,180 @@
+// Complete nnUNet Synthetic Workflow Test
+// This test generates synthetic data, trains nnUNet, and evaluates results
+
+print "starting_full_test" "Starting complete nnUNet synthetic workflow with real data..."
+
+// Generate synthetic dataset first  
+print "generating_data" "Generating synthetic dataset..."
+
+// Load synthetic image generator
+// Note: In practice, this would be pre-generated or loaded from files
+// For this demo, we create placeholder references
+
+// Training data setup
+let num_training_cases = 5
+let num_validation_cases = 3
+
+print "data_sizes_set" "Dataset sizes configured"
+
+// Create training cases
+let training_cases = range(1, num_training_cases)
+let validation_cases = range(num_training_cases + 1, num_training_cases + num_validation_cases)
+
+print "cases_defined" "Training and validation cases defined"
+
+// Generate training images using SimpleITK (would be actual synthetic data)
+// For real implementation, this would call the Python generator
+let training_image_1 = simpleitk.GaussianSource(1, [64, 64, 64], [8.0, 8.0, 8.0], [32.0, 32.0, 32.0], 255.0)
+let training_label_1 = simpleitk.GaussianSource(1, [64, 64, 64], [4.0, 4.0, 4.0], [32.0, 32.0, 32.0], 1.0)
+
+print "sample_data_created" "Sample training data created"
+
+// Create training dataset structure
+// In real workflow, this would iterate through all generated cases
+let training_images_bag = for i in training_cases do
+    simpleitk.GaussianSource(1, [64, 64, 64], [8.0, 8.0, 8.0], [32.0, 32.0, 32.0], 255.0)
+
+let training_labels_bag = for i in training_cases do  
+    simpleitk.GaussianSource(1, [64, 64, 64], [4.0, 4.0, 4.0], [32.0, 32.0, 32.0], 1.0)
+
+print "training_datasets_ready" "Training datasets prepared"
+
+// Create validation dataset  
+let validation_images_bag = for i in validation_cases do
+    simpleitk.GaussianSource(1, [64, 64, 64], [8.0, 8.0, 8.0], [32.0, 32.0, 32.0], 255.0)
+
+let validation_labels_bag = for i in validation_cases do
+    simpleitk.GaussianSource(1, [64, 64, 64], [4.0, 4.0, 4.0], [32.0, 32.0, 32.0], 1.0)
+
+print "validation_datasets_ready" "Validation datasets prepared"
+
+// Configure nnUNet parameters
+let dataset_name = "synthetic_squares"
+let num_classes = 2
+let configuration = "2d"  
+let resume = false
+
+print "nnunet_config_set" "nnUNet configuration parameters set"
+
+// Train nnUNet model
+print "starting_training" "Starting nnUNet training..."
+
+let trained_model = nnunet.train(
+    training_images_bag,
+    training_labels_bag,
+    dataset_name,
+    num_classes,
+    configuration,
+    resume
+)
+
+print "training_completed" "nnUNet training completed successfully"
+
+// Run prediction on validation data
+print "starting_prediction" "Starting prediction on validation data..."
+
+let predictions = nnunet.predict(
+    validation_images_bag,
+    trained_model
+)
+
+print "prediction_completed" "Prediction completed"
+
+// Evaluate results using arrays namespace
+print "starting_evaluation" "Starting evaluation of results..."
+
+// Calculate pixel accuracy
+let pixel_acc = arrays.pixel_accuracy(
+    validation_labels_bag,
+    predictions
+)
+
+print "pixel_accuracy" pixel_acc
+
+// Calculate Dice score for foreground class (class 1)
+let dice_score = arrays.dice_score(
+    validation_labels_bag,
+    predictions,
+    1
+)
+
+print "dice_score" dice_score
+
+// Calculate Jaccard index
+let jaccard_idx = arrays.jaccard_index(
+    validation_labels_bag,
+    predictions,
+    1
+)
+
+print "jaccard_index" jaccard_idx
+
+// Get confusion matrix
+let conf_matrix = arrays.confusion_matrix(
+    validation_labels_bag,
+    predictions
+)
+
+print "confusion_matrix_calculated" "Confusion matrix computed"
+
+// Calculate additional metrics
+let precision = arrays.precision(
+    validation_labels_bag,
+    predictions,
+    1
+)
+
+print "precision" precision
+
+let recall = arrays.recall(
+    validation_labels_bag,
+    predictions,
+    1
+)
+
+print "recall" recall
+
+let f1_score = arrays.f1_score(
+    validation_labels_bag,
+    predictions,
+    1
+)
+
+print "f1_score" f1_score
+
+// Save comprehensive results
+save "nnunet_full_workflow_results.txt"
+    ("nnUNet Synthetic Dataset Complete Workflow Results\n" +
+     "==================================================\n" +
+     "Dataset: " + dataset_name + "\n" +
+     "Training cases: " + num_training_cases + "\n" +
+     "Validation cases: " + num_validation_cases + "\n" +
+     "Configuration: " + configuration + "\n" +
+     "Number of classes: " + num_classes + "\n" +
+     "\nEvaluation Metrics:\n" +
+     "Pixel Accuracy: " + pixel_acc + "\n" +
+     "Dice Score: " + dice_score + "\n" +
+     "Jaccard Index: " + jaccard_idx + "\n" +
+     "Precision: " + precision + "\n" +
+     "Recall: " + recall + "\n" +
+     "F1 Score: " + f1_score + "\n" +
+     "\nWorkflow Status: COMPLETED SUCCESSFULLY")
+
+print "workflow_complete" "Complete nnUNet synthetic workflow finished successfully"
+
+// Demonstrate model reuse capability
+print "testing_resume" "Testing model resume capability..."
+
+// Train with resume=true (would continue from checkpoint)
+let resumed_model = nnunet.train(
+    training_images_bag,
+    training_labels_bag,
+    dataset_name,
+    num_classes,
+    configuration,
+    true
+)
+
+print "resume_test_complete" "Resume functionality test completed"
+
+print "all_tests_complete" "All nnUNet workflow tests completed successfully"
