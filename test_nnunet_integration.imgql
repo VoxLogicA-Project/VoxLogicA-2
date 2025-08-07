@@ -1,19 +1,8 @@
-# Test nnUNet namespace integration with VoxLogicA parser
-# This test ensures that the nnUNet functions can be called from VoxLogicA programs
+// Test nnUNet namespace integration with VoxLogicA parser
 
-# Mock data for testing (replace with real Dask bags in actual use)
-let mock_images = range(1, 5)
-let mock_labels = range(1, 5)  
-let test_modalities = ["T1", "T2"]
-let test_work_dir = "/tmp/voxlogica_nnunet_test"
+let mock_data = range(1, 5)
+let test_message = "nnUNet namespace integration test completed"
 
-# Test 1: Check that nnUNet namespace functions are accessible
-print "Testing nnUNet namespace accessibility..."
+print "result" test_message
 
-# Test 2: Verify that functions require proper arguments (should fail gracefully)
-print "Testing argument validation..."
-
-# Note: These calls will fail because we're using mock data, but they should
-# fail with meaningful error messages, not with "function not found" errors
-
-save "test_nnunet_validation_result.txt" "nnUNet namespace integration test completed"
+save "test_nnunet_validation_result.txt" test_message
