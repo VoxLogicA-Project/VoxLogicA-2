@@ -2,121 +2,54 @@
 nnU-Net v2 Dask Integration Wrapper
 ==================================
 
-COMPREHENSIVE GUIDE FOR AI SYSTEMS WITHOUT INTERNET ACCESS
+Wrapper Python per nnU-Net v2 con supporto Dask, conforme alla documentazione ufficiale.
 
-This module provides a complete Python wrapper for nnU-Net v2 (no-new-UNet version 2), 
-a state-of-the-art automated deep learning framework for biomedical image segmentation.
-The wrapper specifically integrates with Dask distributed computing to handle large-scale
-medical imaging datasets that exceed memory limitations.
+**Requisiti ambiente:**
+- Python >= 3.9
+- PyTorch installato manualmente (https://pytorch.org/get-started/locally/)
+- nnunetv2 (`pip install nnunetv2`)
+- dask[complete], numpy, nibabel
 
-WHAT IS nnU-Net v2:
-------------------
-nnU-Net v2 is a self-configuring deep learning framework that automatically:
-- Determines optimal U-Net architecture for your data
-- Selects preprocessing parameters (resampling, normalization, etc.)
-- Chooses data augmentation strategies
-- Performs cross-validation training
-- Handles multi-modal input (multiple imaging sequences per patient)
-- Supports 2D, 3D low-resolution, and 3D full-resolution configurations
+**requirements.txt consigliato:**
+    dask[complete]>=2023.5.0
+    numpy>=1.21.0
+    nibabel>=3.2.0
+    pathlib
+    nnunetv2
 
-KEY nnU-Net CONCEPTS:
---------------------
-1. **Dataset Structure**: nnU-Net requires a specific folder structure:
-   - nnUNet_raw/DatasetXXX_Name/imagesTr/  (training images)
-   - nnUNet_raw/DatasetXXX_Name/labelsTr/  (training labels/masks)
-   - nnUNet_raw/DatasetXXX_Name/imagesTs/  (test images, optional)
-   - nnUNet_raw/DatasetXXX_Name/dataset.json (metadata)
+**ATTENZIONE:** torch/torchvision/torchaudio NON vanno messi in requirements.txt, vanno installati manualmente per la propria GPU/CPU/MPS!
 
-2. **File Naming**: Images must follow pattern: CaseName_XXXX.nii.gz
-   where XXXX is 4-digit modality index (0000, 0001, 0002...)
-   Labels: CaseName.nii.gz
+**Dataset format:**
+- Struttura: nnUNet_raw/DatasetXXX_Name/{imagesTr,labelsTr,imagesTs,dataset.json}
+- Nomi immagini: {CASE_NAME}_{MODALITY_IDX:04d}.nii.gz (o altro formato supportato)
+- Nomi label: {CASE_NAME}.nii.gz
+- dataset.json conforme a https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/dataset_format.md
 
-3. **dataset.json**: Critical metadata file containing:
-   - Channel names (modality mappings)
-   - Label definitions (what each integer value represents)
-   - Training/test case lists
-   - Dataset description
+**Formati file:**
+- Supportati: .nii.gz, .nrrd, .mha, .tif, .png, ... (vedi doc nnU-Net v2)
+- Il wrapper di default usa .nii.gz ma può essere esteso facilmente
 
-4. **Multi-modal Support**: Each case can have multiple imaging modalities
-   (e.g., T1, T2, FLAIR MRI sequences). Each modality is a separate file.
+**Multi-modalità:**
+- Ogni caso può avere più modalità (es: T1, T2, FLAIR), ogni modalità è un file separato
+- Tutte le modalità e label di un caso devono avere la stessa geometria
 
-5. **Cross-validation**: nnU-Net automatically splits data into K folds,
-   trains K models, and uses ensemble for final predictions.
+**Multi-GPU:**
+- nnU-Net v2 NON supporta multi-GPU in un singolo processo: lanciare più processi, uno per GPU, ognuno su un fold diverso
 
-DASK INTEGRATION RATIONALE:
---------------------------
-Medical imaging datasets are typically:
-- Very large (100GB-1TB+ total size)
-- Cannot fit in RAM simultaneously
-- Require distributed processing across multiple machines
-- Need lazy loading and computation
+**Controlli automatici:**
+- Il wrapper verifica la presenza di torch e nnunetv2 e la versione di Python
+- Warning se mancano dipendenze critiche
 
-This wrapper bridges Dask's distributed computing with nnU-Net's requirements by:
-- Converting Dask bags to nnU-Net's expected file structure
-- Managing the complex directory hierarchy automatically
-- Providing resume capabilities for long-running training
-- Enabling distributed prediction back to Dask bags
+**Workflow:**
+1. Conversione Dask bag → struttura file nnU-Net
+2. Preprocessing e planning (nnUNetv2_plan_and_preprocess)
+3. Training (nnUNetv2_train, un fold per GPU/processo)
+4. Prediction (nnUNetv2_predict)
 
-EXPECTED DATA FORMATS:
----------------------
-INPUT DASK BAGS FORMAT:
-- images_bag: Contains tuples (case_id: str, modality: str, image_array: np.ndarray)
-  Example: ("patient_001", "T1", numpy_3d_array), ("patient_001", "T2", numpy_3d_array)
-  
-- labels_bag: Contains tuples (case_id: str, label_array: np.ndarray)  
-  Example: ("patient_001", segmentation_mask_3d_array)
-  
-- Image arrays expected as 3D numpy arrays (H, W, D) for 3D, (H, W) for 2D
-- Label arrays as integer masks where 0=background, 1,2,3...=different structures
-
-TRAINING WORKFLOW:
------------------
-1. **Data Conversion**: Dask bags → nnU-Net file structure
-2. **Preprocessing**: nnU-Net analyzes data, determines optimal preprocessing
-3. **Planning**: Creates training plans (architecture, hyperparameters)
-4. **Cross-validation Training**: Trains multiple folds in parallel/sequence
-5. **Model Storage**: Saves trained models for each fold
-
-PREDICTION WORKFLOW:
--------------------
-1. **Input Processing**: Convert input data to nnU-Net format
-2. **Model Loading**: Load trained ensemble of models
-3. **Inference**: Apply models to new data
-4. **Post-processing**: Convert predictions back to original space
-5. **Output**: Can output to files OR directly to Dask bags (new feature)
-
-RESUME CAPABILITIES:
--------------------
-nnU-Net v2 has built-in checkpointing. This wrapper adds:
-- Automatic detection of interrupted training
-- Seamless resume from last checkpoint
-- Status monitoring and reporting
-- Error recovery with partial training completion
-
-TECHNICAL IMPLEMENTATION DETAILS:
---------------------------------
-- Uses subprocess calls to nnU-Net CLI tools (nnUNetv2_train, nnUNetv2_predict, etc.)
-- Manages environment variables (nnUNet_raw, nnUNet_preprocessed, nnUNet_results)
-- Converts between numpy arrays and NIfTI files using nibabel
-- Provides comprehensive logging and error handling
-- Supports both file-based and memory-based prediction workflows
-
-SYSTEM REQUIREMENTS:
--------------------
-- Python 3.8+
-- nnunetv2 package installed
-- CUDA-capable GPU (recommended)
-- Sufficient disk space for dataset storage and intermediate files
-- dask, numpy, nibabel, pathlib dependencies
-
-MEMORY CONSIDERATIONS:
----------------------
-- Training: nnU-Net handles memory management internally
-- Data conversion: Processes one case at a time to avoid memory overflow
-- Prediction: Can process batches or individual cases based on memory constraints
-
-This wrapper makes nnU-Net accessible to Dask-based data science workflows while
-maintaining all of nnU-Net's automated optimization capabilities.
+**Per dettagli e troubleshooting:**
+- https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/installation_instructions.md
+- https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/dataset_format.md
+- https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/how_to_use_nnunet.md
 """
 
 import os
@@ -137,27 +70,46 @@ class nnUNetDaskWrapper:
     """
     Wrapper per nnU-Net v2 che gestisce training e prediction da Dask bags.
     """
-    
-    def __init__(self, work_dir: str, dataset_id: int = 001, dataset_name: str = "CustomDataset"):
+    def __init__(self, work_dir: str, dataset_id: int = 1, dataset_name: str = "CustomDataset", file_ending: str = ".nii.gz", overwrite_image_reader_writer: str = None):
         """
         Inizializza il wrapper.
         
         Args:
             work_dir: Directory di lavoro dove salvare tutto
-            dataset_id: ID numerico del dataset (default: 001)
+            dataset_id: ID numerico del dataset (default: 1)
             dataset_name: Nome del dataset (default: "CustomDataset")
+            file_ending: Estensione file immagini/label (default: .nii.gz)
+            overwrite_image_reader_writer: Forza un reader/writer specifico (es. "NibabelIO", "SimpleITKIO")
         """
         self.work_dir = Path(work_dir)
         self.dataset_id = dataset_id
         self.dataset_name = dataset_name
         self.dataset_full_name = f"Dataset{dataset_id:03d}_{dataset_name}"
-        
+        self.file_ending = file_ending
+        self.overwrite_image_reader_writer = overwrite_image_reader_writer
         # Setup directories
         self.setup_directories()
-        
         # Setup logging
         self.setup_logging()
-        
+        # Controlli ambiente
+        self._check_environment()
+
+    def _check_environment(self):
+        import sys
+        # Python version
+        if sys.version_info < (3, 9):
+            raise RuntimeError("nnUNetDaskWrapper richiede Python >= 3.9")
+        # torch
+        try:
+            import torch
+        except ImportError:
+            self.logger.warning("ATTENZIONE: torch non trovato! Installa PyTorch manualmente per la tua GPU/CPU/MPS.")
+        # nnunetv2
+        try:
+            import nnunetv2
+        except ImportError:
+            self.logger.warning("ATTENZIONE: nnunetv2 non trovato! Installa con 'pip install nnunetv2'.")
+
     def setup_directories(self):
         """Imposta le directory necessarie per nnU-Net."""
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -282,23 +234,25 @@ class nnUNetDaskWrapper:
         return dataset_info
         
     def _save_nifti(self, array: np.ndarray, filepath: Path):
-        """Salva un array numpy come file NIfTI."""
-        # Crea un'immagine NIfTI con affine identity
-        affine = np.eye(4)
-        nii_img = nib.Nifti1Image(array, affine)
-        nib.save(nii_img, str(filepath))
-        
+        """Salva un array numpy come file (default: NIfTI, ma estendibile)."""
+        # Per ora solo .nii.gz, .nrrd, .mha (via nibabel)
+        if str(filepath).endswith(('.nii.gz', '.nii', '.nrrd', '.mha')):
+            affine = np.eye(4)
+            nii_img = nib.Nifti1Image(array, affine)
+            nib.save(nii_img, str(filepath))
+        else:
+            self.logger.warning(f"Formato file non supportato dal wrapper: {filepath.suffix}. Estendi _save_nifti per supporto.")
+            raise NotImplementedError(f"Formato file non supportato: {filepath.suffix}")
+
     def _create_dataset_json(self, training_list: List[Dict], test_list: List[str], modalities: List[str]) -> Dict[str, Any]:
-        """Crea il file dataset.json richiesto da nnU-Net."""
-        # Determina automaticamente le labels dalle immagini salvate
+        """Crea il file dataset.json richiesto da nnU-Net v2 (vedi doc ufficiale)."""
         labels = self._extract_labels()
-        
         dataset_json = {
             "channel_names": {str(i): mod for i, mod in enumerate(modalities)},
             "labels": labels,
             "numTraining": len(training_list),
             "numTest": len(test_list),
-            "file_ending": ".nii.gz",
+            "file_ending": self.file_ending,
             "dataset_name": self.dataset_name,
             "reference": "Generated by nnUNetDaskWrapper",
             "licence": "Custom",
@@ -307,12 +261,11 @@ class nnUNetDaskWrapper:
             "training": training_list,
             "test": test_list
         }
-        
-        # Salva dataset.json
+        if self.overwrite_image_reader_writer:
+            dataset_json["overwrite_image_reader_writer"] = self.overwrite_image_reader_writer
         json_path = self.dataset_dir / "dataset.json"
         with open(json_path, 'w') as f:
             json.dump(dataset_json, f, indent=2)
-            
         return dataset_json
         
     def _extract_labels(self) -> Dict[str, int]:

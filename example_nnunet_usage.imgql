@@ -1,0 +1,36 @@
+# Example: nnUNet Training and Prediction with VoxLogicA-2
+# 
+# This example demonstrates how to use the nnUNet namespace 
+# for training and prediction in VoxLogicA
+
+# Example 1: Basic training workflow
+# Prepare the data (assuming you have Dask bags with your data)
+let training_images = range(1, 10)  # Placeholder - replace with actual Dask bag
+let training_labels = range(1, 10)  # Placeholder - replace with actual Dask bag
+let modalities = ["T1", "T2", "FLAIR"]
+let work_directory = "/tmp/nnunet_voxlogica"
+
+# Train the model with resume support
+let training_result = nnunet.train(training_images, training_labels, modalities, work_directory, 1, "MyDataset", "3d_fullres", 5)
+
+# Get the trained model path
+let model_path = training_result["model_path"]
+
+print "Training completed! Model saved at: " model_path
+
+# Example 2: Prediction using the trained model
+let test_images = range(1, 5)  # Placeholder - replace with actual test Dask bag
+let output_directory = "/tmp/nnunet_predictions"
+
+# Run prediction
+let prediction_result = nnunet.predict(test_images, model_path, output_directory)
+
+print "Prediction completed! Results saved at: " prediction_result["output_path"]
+
+# Example 3: Training with minimal arguments (using defaults)
+let simple_training = nnunet.train(training_images, training_labels, modalities, work_directory)
+print "Simple training result: " simple_training
+
+# Example 4: Prediction with probability maps
+let prediction_with_probs = nnunet.predict(test_images, model_path, output_directory, "3d_fullres", [0, 1, 2], true)
+print "Prediction with probabilities: " prediction_with_probs
