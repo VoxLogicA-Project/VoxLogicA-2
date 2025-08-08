@@ -1,0 +1,17 @@
+// Simple nnUNet Prediction Test
+print "test_prediction_start" "Testing nnUNet prediction functionality..."
+
+// Set up paths
+let validation_dir = "/tmp/nnunet_synthetic_data/validation_images"
+let predictions_dir = "/tmp/nnunet_synthetic_data/predictions"
+let model_path = "/tmp/nnunet_synthetic_workspace/nnUNet_results/Dataset1_synthetic_squares_20cases"
+
+print "test_prediction_paths" "Prediction paths configured"
+
+// Test nnUNet prediction call
+let prediction_results = nnunet.predict(validation_dir, model_path, predictions_dir)
+
+print "test_prediction_completed" "Prediction call completed"
+print "test_prediction_results" prediction_results
+
+print "test_prediction_success" "nnUNet prediction test successful"
