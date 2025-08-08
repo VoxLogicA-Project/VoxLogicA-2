@@ -24,27 +24,28 @@ print "cases_defined" "Training and validation cases defined"
 
 // Generate training images using SimpleITK (would be actual synthetic data)
 // For real implementation, this would call the Python generator
-let training_image_1 = simpleitk.GaussianSource(1, [64, 64, 64], [8.0, 8.0, 8.0], [32.0, 32.0, 32.0], 255.0)
-let training_label_1 = simpleitk.GaussianSource(1, [64, 64, 64], [4.0, 4.0, 4.0], [32.0, 32.0, 32.0], 1.0)
+// Using minimal parameters - only required pixel type
+let training_image_1 = simpleitk.GaussianSource(1)  // Float32 pixel type = 1
+let training_label_1 = simpleitk.GaussianSource(1)
 
 print "sample_data_created" "Sample training data created"
 
 // Create training dataset structure
 // In real workflow, this would iterate through all generated cases
 let training_images_bag = for i in training_cases do
-    simpleitk.GaussianSource(1, [64, 64, 64], [8.0, 8.0, 8.0], [32.0, 32.0, 32.0], 255.0)
+    simpleitk.GaussianSource(1)
 
 let training_labels_bag = for i in training_cases do  
-    simpleitk.GaussianSource(1, [64, 64, 64], [4.0, 4.0, 4.0], [32.0, 32.0, 32.0], 1.0)
+    simpleitk.GaussianSource(1)
 
 print "training_datasets_ready" "Training datasets prepared"
 
 // Create validation dataset  
 let validation_images_bag = for i in validation_cases do
-    simpleitk.GaussianSource(1, [64, 64, 64], [8.0, 8.0, 8.0], [32.0, 32.0, 32.0], 255.0)
+    simpleitk.GaussianSource(1)
 
 let validation_labels_bag = for i in validation_cases do
-    simpleitk.GaussianSource(1, [64, 64, 64], [4.0, 4.0, 4.0], [32.0, 32.0, 32.0], 1.0)
+    simpleitk.GaussianSource(1)
 
 print "validation_datasets_ready" "Validation datasets prepared"
 

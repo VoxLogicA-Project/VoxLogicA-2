@@ -8,10 +8,37 @@ statistical metrics on image data.
 
 import numpy as np
 import SimpleITK as sitk
-from typing import Dict, Tuple, Union
+from typing import Dict, Tuple, Union, List
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def vector_uint32(values: List[int]) -> List[int]:
+    """
+    Create a VectorUInt32 for SimpleITK functions.
+    
+    Args:
+        values: List of unsigned integers
+        
+    Returns:
+        List of integers (compatible with SimpleITK VectorUInt32)
+    """
+    return [int(v) for v in values]
+
+
+def vector_double(values: List[float]) -> List[float]:
+    """
+    Create a VectorDouble for SimpleITK functions.
+    
+    Args:
+        values: List of double precision floats
+        
+    Returns:
+        List of floats (compatible with SimpleITK VectorDouble)
+    """
+    return [float(v) for v in values]
+
 
 def register_primitives():
     """Register array operation primitives dynamically"""
@@ -20,6 +47,8 @@ def register_primitives():
         'confusion_matrix': confusion_matrix,
         'dice_score': dice_score,
         'jaccard_index': jaccard_index,
+        'vector_uint32': vector_uint32,
+        'vector_double': vector_double,
         'count_pixels': count_pixels,
         'threshold_equal': threshold_equal,
         'array_stats': array_stats,
