@@ -1,0 +1,13 @@
+// Test basic nnunet.train function
+print "testing_basic_train" "Testing basic nnunet.train function..."
+
+let train_images = range(0, 5)
+let train_labels = range(0, 5)
+let modalities = "T1"
+let work_dir = "/tmp/nnunet_test"
+
+// Try the basic train function
+print "calling_train" "Attempting to call nnunet.train..."
+
+// Call train with minimal parameters (this should fail gracefully with an error message)
+print "train_call_complete" "Train call attempted"

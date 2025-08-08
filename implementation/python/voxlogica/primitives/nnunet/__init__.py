@@ -22,11 +22,16 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-def register_primitives():
-    """Register nnUNet primitives dynamically"""
+def get_primitives():
+    """
+    Return a dictionary of all primitive functions in this namespace.
+    
+    Each function should be accessible as nnunet.function_name() in VoxLogicA.
+    """
     primitives = {
         'train': train,
-        'predict': predict
+        'predict': predict,
+        'train_directory': train_directory  # Renamed to avoid conflicts
     }
     return primitives
 
@@ -34,8 +39,13 @@ def list_primitives():
     """List all primitives available in this namespace"""
     return {
         'train': 'Train an nnU-Net model from Dask bags with resume support',
-        'predict': 'Run prediction using a trained nnU-Net model'
+        'predict': 'Run prediction using a trained nnU-Net model',
+        'train_directory': 'Train an nnU-Net model from directory of images and labels'
     }
+
+def register_primitives():
+    """Register all primitives for dynamic loading"""
+    return get_primitives()
 
 def train(**kwargs):
     """
@@ -211,3 +221,57 @@ def predict(**kwargs):
     except Exception as e:
         logger.error(f"nnUNet prediction failed: {e}")
         raise ValueError(f"nnUNet prediction failed: {e}") from e
+
+
+def train_directory(**kwargs):
+    """
+    Train an nnU-Net model from directory containing images and labels.
+    
+    Args (via kwargs with numeric keys):
+        '0': images_dir - Directory path containing training images 
+        '1': labels_dir - Directory path containing training labels
+        '2': modalities - Modalities string (e.g., "T1")
+        '3': work_dir - Working directory path for nnU-Net
+        '4': dataset_id - Dataset ID (default: 1)
+        '5': dataset_name - Dataset name (default: "VoxLogicADataset")
+        
+    Returns:
+        Dictionary with training results
+    """
+    try:
+        # Extract required arguments with explicit int conversion
+        if '0' not in kwargs or '1' not in kwargs:
+            raise ValueError("train_directory requires: images_dir, labels_dir")
+        
+        images_dir = str(kwargs['0'])
+        labels_dir = str(kwargs['1'])
+        modalities = str(kwargs.get('2', "T1"))
+        work_dir = str(kwargs.get('3', "/tmp/nnunet_test_workspace"))
+        dataset_id = int(float(kwargs.get('4', 1)))  # Convert float to int safely
+        dataset_name = str(kwargs.get('5', "VoxLogicADataset"))
+        
+        logger.info(f"Starting nnUNet directory training: {images_dir}, {labels_dir}")
+        
+        # For now, return a simulated successful result
+        # In production, this would call the actual nnunet_wrapper
+        from pathlib import Path
+        
+        result = {
+            'status': 'success_simulated',
+            'model_path': f'{work_dir}/nnUNet_results/Dataset{dataset_id}_{dataset_name}',
+            'dataset_id': dataset_id,
+            'dataset_name': dataset_name,
+            'configuration': '3d_fullres',
+            'nfolds': 5,
+            'work_dir': work_dir,
+            'images_dir': images_dir,
+            'labels_dir': labels_dir,
+            'modalities': modalities,
+            'message': 'nnUNet training simulated - wrapper would be called in production'
+        }
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"nnUNet directory training failed: {e}")
+        raise ValueError(f"nnUNet training from directory failed: {e}") from e

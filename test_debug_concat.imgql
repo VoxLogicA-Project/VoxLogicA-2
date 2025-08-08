@@ -1,0 +1,21 @@
+// Debug the types created by string concatenation
+print "debug_concatenation" "Debugging string concatenation types..."
+
+let data_dir = "/tmp/nnunet_synthetic_data"
+print "data_dir_set" data_dir
+
+let images_dir = data_dir + "/images"
+print "images_dir_result" images_dir
+
+let labels_dir = data_dir + "/labels"  
+print "labels_dir_result" labels_dir
+
+// Try to see what happens when we call the function
+// Let's add some debug prints to show what's happening
+
+print "about_to_call" "About to call nnunet.train_directory..."
+
+// This should fail and show us what's wrong
+let result = nnunet.train_directory(images_dir, labels_dir, "T1", "/tmp/test", 1, "test")
+
+print "call_completed" "Call completed"

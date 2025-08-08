@@ -1,0 +1,15 @@
+// Test with explicit string paths instead of concatenation
+print "test_explicit_paths" "Testing with explicit path strings..."
+
+// Use explicit paths instead of concatenation
+let explicit_images_dir = "/tmp/nnunet_synthetic_data/images"
+let explicit_labels_dir = "/tmp/nnunet_synthetic_data/labels"
+let explicit_modalities = "T1"
+let explicit_work_dir = "/tmp/nnunet_synthetic_workspace"
+let explicit_dataset_name = "synthetic_squares_20cases"
+
+print "calling_with_explicit" "Calling with explicit string paths..."
+
+let result = nnunet.train_directory(explicit_images_dir, explicit_labels_dir, explicit_modalities, explicit_work_dir, 1, explicit_dataset_name)
+
+print "explicit_result" result

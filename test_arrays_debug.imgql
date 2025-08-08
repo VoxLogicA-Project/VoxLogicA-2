@@ -1,0 +1,10 @@
+// Test arrays namespace
+print "testing_arrays" "Testing arrays namespace..."
+
+let test_image = simpleitk.ReadImage("/tmp/nnunet_synthetic_data/images/case_000_0000.nii.gz")
+let test_label = simpleitk.ReadImage("/tmp/nnunet_synthetic_data/labels/case_000.nii.gz")
+
+let accuracy = arrays.pixel_accuracy(test_label, test_image)
+print "pixel_accuracy" accuracy
+
+print "arrays_test_completed" "Arrays namespace test completed"

@@ -1,0 +1,15 @@
+// Test minimal nnunet.train_directory call
+print "testing_minimal_call" "Testing minimal train_directory call..."
+
+let images_dir = "/tmp/nnunet_synthetic_data/images"
+let labels_dir = "/tmp/nnunet_synthetic_data/labels" 
+let modalities = "T1"
+let work_dir = "/tmp/nnunet_test_workspace"
+
+print "calling_minimal" "Making minimal call to nnunet.train_directory..."
+
+// Call with only required parameters
+let result = nnunet.train_directory(images_dir, labels_dir, modalities, work_dir)
+
+print "minimal_result" result
+print "minimal_completed" "Minimal call completed"

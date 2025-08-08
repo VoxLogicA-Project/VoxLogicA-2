@@ -82,9 +82,9 @@ class nnUNetDaskWrapper:
             overwrite_image_reader_writer: Forza un reader/writer specifico (es. "NibabelIO", "SimpleITKIO")
         """
         self.work_dir = Path(work_dir)
-        self.dataset_id = dataset_id
+        self.dataset_id = int(dataset_id)  # Convert to int to handle VoxLogicA floats
         self.dataset_name = dataset_name
-        self.dataset_full_name = f"Dataset{dataset_id:03d}_{dataset_name}"
+        self.dataset_full_name = f"Dataset{int(dataset_id):03d}_{dataset_name}"
         self.file_ending = file_ending
         self.overwrite_image_reader_writer = overwrite_image_reader_writer
         # Setup directories
@@ -187,13 +187,13 @@ class nnUNetDaskWrapper:
         # Salva immagini di training e labels
         training_list = []
         for case_id in sorted(training_cases):
-            case_name = f"{self.dataset_name}_{case_id:03d}"
+            case_name = f"{self.dataset_name}_{int(case_id):03d}"
             
             # Salva ogni modalità
             for mod_idx, modality in enumerate(modalities):
                 if modality in images_by_case[case_id]:
                     img_array = images_by_case[case_id][modality]
-                    img_filename = f"{case_name}_{mod_idx:04d}.nii.gz"
+                    img_filename = f"{case_name}_{int(mod_idx):04d}.nii.gz"
                     self._save_nifti(img_array, self.images_tr / img_filename)
                 else:
                     self.logger.warning(f"Modalità {modality} mancante per caso {case_id}")
@@ -217,12 +217,12 @@ class nnUNetDaskWrapper:
                 test_images_by_case[case_id][modality] = img_array
                 
             for case_id in sorted(test_images_by_case.keys()):
-                case_name = f"{self.dataset_name}_{case_id:03d}"
+                case_name = f"{self.dataset_name}_{int(case_id):03d}"
                 
                 for mod_idx, modality in enumerate(modalities):
                     if modality in test_images_by_case[case_id]:
                         img_array = test_images_by_case[case_id][modality]
-                        img_filename = f"{case_name}_{mod_idx:04d}.nii.gz"
+                        img_filename = f"{case_name}_{int(mod_idx):04d}.nii.gz"
                         self._save_nifti(img_array, self.images_ts / img_filename)
                         
                 test_list.append(case_name)
@@ -529,12 +529,12 @@ class nnUNetDaskWrapper:
             
         # Salva file per ogni caso
         for case_id in sorted(images_by_case.keys()):
-            case_name = f"{self.dataset_name}_{case_id:03d}"
+            case_name = f"{self.dataset_name}_{int(case_id):03d}"
             
             for mod_idx, modality in enumerate(modalities):
                 if modality in images_by_case[case_id]:
                     img_array = images_by_case[case_id][modality]
-                    img_filename = f"{case_name}_{mod_idx:04d}.nii.gz"
+                    img_filename = f"{case_name}_{int(mod_idx):04d}.nii.gz"
                     self._save_nifti(img_array, pred_input_dir / img_filename)
                     
         return str(pred_input_dir)
