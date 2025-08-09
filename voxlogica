@@ -6,8 +6,17 @@
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Ensure the virtual environment exists
+if [ ! -d "$SCRIPT_DIR/.venv" ]; then
+	echo "Virtualenv not found, running bootstrap..."
+	python3 "$SCRIPT_DIR/bootstrap.py"
+fi
+
 # Activate the virtual environment
 source "$SCRIPT_DIR/.venv/bin/activate"
 
-# Run voxlogica with all passed arguments
-exec voxlogica "$@" 
+# Set implementation/python as PYTHONPATH so the voxlogica package is always found
+export PYTHONPATH="$SCRIPT_DIR/implementation/python"
+
+# Run the Python VoxLogicA main module with all passed arguments
+exec "$SCRIPT_DIR/.venv/bin/python" -m voxlogica.main "$@"
