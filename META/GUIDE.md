@@ -13,6 +13,14 @@ DO NOT PUT ANY FILES DIRECTLY IN THE `META/ISSUES/OPEN` OR `META/ISSUES/CLOSED` 
 
 ## Recent Important Changes
 
+### nnUNet CUDA Environment Fix (Aug 2025)
+Fixed critical CUDA environment handling bug in nnUNet primitives:
+- **Issue**: `RuntimeError: No CUDA GPUs are available` despite GPU availability
+- **Root Cause**: Global environment modification of `CUDA_VISIBLE_DEVICES` affecting subsequent calls
+- **Solution**: Local environment copy management for subprocess calls, proper isolation
+- **Result**: nnUNet training now works correctly with both GPU and CPU modes
+- **Files**: `/workspaces/VoxLogicA-2/implementation/python/voxlogica/primitives/nnunet/__init__.py`
+
 ### Closure-Based For-Loop Implementation (Jun 2025)
 Successfully implemented robust closure-based for-loops enabling distributed execution:
 - **ClosureValue Enhancement**: Proper AST Expression and Environment capture instead of string-based approach
