@@ -1,8 +1,0 @@
-// Test nnUNet namespace integration with VoxLogicA parser
-
-let mock_data = range(1, 5)
-let test_message = "nnUNet namespace integration test completed"
-
-print "result" test_message
-
-save "test_nnunet_validation_result.txt" test_message

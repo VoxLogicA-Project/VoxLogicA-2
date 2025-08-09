@@ -1,8 +1,0 @@
-// Test nnunet namespace registration
-print "testing_nnunet" "Testing nnunet namespace..."
-
-// First, let's see if we can call any nnunet function
-print "nnunet_namespace_test" "Attempting to use nnunet namespace"
-
-// Minimal test with default parameters to see if namespace loads
-print "nnunet_test_completed" "nnUNet namespace test attempted"
