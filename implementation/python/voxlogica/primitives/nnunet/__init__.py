@@ -17,6 +17,10 @@ import dask.bag as db  # type: ignore
 
 logger = logging.getLogger(__name__)
 
+# REMOVEME: debug instrumentation to trace formatting error before primitive entry
+if logger.isEnabledFor(logging.DEBUG):
+    logger.debug("REMOVEME nnunet primitive imported from %s", __file__)
+
 
 def env_check(**_kwargs):
     out: Dict[str, Any] = {
@@ -93,7 +97,13 @@ def predict(**kwargs):
             if k not in kwargs:
                 raise ValueError('predict requires keys 0..2 (input_images, model_path, output_dir)')
         input_images = Path(str(kwargs['0']))
-        model_path = Path(str(kwargs['1']))
+        raw_model_arg = kwargs['1']
+        # Allow passing the full training result dictionary directly
+        if isinstance(raw_model_arg, dict) and 'model_path' in raw_model_arg:
+            model_path = Path(str(raw_model_arg.get('model_path')))
+            logger.debug('nnUNet predict: extracted model_path %s from training result dict', model_path)
+        else:
+            model_path = Path(str(raw_model_arg))
         output_dir = Path(str(kwargs['2']))
         configuration = str(kwargs.get('3', '3d_fullres'))
         folds = kwargs.get('4')
@@ -130,6 +140,11 @@ def predict(**kwargs):
 def train_directory(**kwargs):
     try:
         logger.info("[train_directory] ENTRY marker - function invoked")
+        if logger.isEnabledFor(logging.DEBUG):  # REMOVEME instrumentation
+            try:
+                logger.debug("REMOVEME train_directory raw kwargs snapshot: %s", {k: (type(v).__name__, (repr(v)[:120])) for k, v in kwargs.items()})
+            except Exception as _dbg_e:  # noqa: BLE001
+                logger.debug("REMOVEME failed to log kwargs: %s", _dbg_e)
         for k in ('0', '1', '2', '3'):
             if k not in kwargs:
                 raise ValueError('train_directory requires keys 0..3 (images_dir, labels_dir, modalities, work_dir)')
@@ -138,6 +153,8 @@ def train_directory(**kwargs):
         modalities_arg = kwargs['2']
         work_dir = Path(str(kwargs['3']))
         raw_dataset_id = kwargs.get('4', 1)
+        if logger.isEnabledFor(logging.DEBUG):  # REMOVEME instrumentation
+            logger.debug("REMOVEME raw_dataset_id type=%s value=%r", type(raw_dataset_id).__name__, raw_dataset_id)
         try:
             dataset_id = int(float(raw_dataset_id))
         except Exception as e:  # noqa: BLE001
@@ -165,7 +182,44 @@ def train_directory(**kwargs):
             int(dataset_id)
         except Exception as _e:  # noqa: BLE001
             raise ValueError(f'dataset_id not convertible to int: {dataset_id!r} ({type(dataset_id).__name__})')
-        padded_id = str(int(dataset_id)).zfill(3)
+        try:
+            padded_id = str(int(dataset_id)).zfill(3)
+        except Exception as _e:  # noqa: BLE001
+            raise ValueError(f'Failed to pad dataset_id {dataset_id!r}: {_e}')
+
+        # Detect conflicting dataset names for the same dataset id (common when reusing id=1 repeatedly)
+        conflict_dirs = sorted({p.name for p in (work_dir / 'nnUNet_raw').glob(f'Dataset{padded_id}_*') if p.is_dir()})
+        if len(conflict_dirs) > 1 and f'Dataset{padded_id}_{dataset_name}' not in conflict_dirs:
+            auto_resolve = os.environ.get('VOXLOGICA_NNUNET_AUTO_DATASET_ID_RESOLUTION', '0') == '1'
+            if auto_resolve:
+                # Find next free id
+                existing_ids = set()
+                for p in (work_dir / 'nnUNet_raw').glob('Dataset*_*/'):
+                    m = re.match(r'Dataset(\d{3})_', p.name)
+                    if m:
+                        existing_ids.add(int(m.group(1)))
+                new_id = int(dataset_id)
+                for candidate in range(1, 1000):
+                    if candidate not in existing_ids:
+                        new_id = candidate
+                        break
+                if new_id != dataset_id:
+                    logger.info('[train_directory] Detected dataset id conflict for %s; auto-selecting free id %d', padded_id, new_id)
+                    dataset_id = new_id
+                    padded_id = str(int(dataset_id)).zfill(3)
+                else:
+                    logger.warning('[train_directory] Conflict auto-resolution enabled but no free id found; proceeding with original id %s (may fail)', padded_id)
+            else:
+                raise ValueError(
+                    (
+                        'Multiple dataset names already exist for dataset id '
+                        f'{dataset_id} (found: {conflict_dirs}). Either:\n'
+                        f' - remove conflicting directories under {work_dir}/nnUNet_raw/nnUNet_preprocessed/nnUNet_results\n'
+                        ' - choose a different dataset id\n'
+                        ' - or set VOXLOGICA_NNUNET_AUTO_DATASET_ID_RESOLUTION=1 to auto-pick a free id.'
+                    )
+                )
+
         padded_name = f'Dataset{padded_id}_{dataset_name}'
         unpadded_name = f'Dataset{dataset_id}_{dataset_name}'
         dataset_dir = nnunet_raw / padded_name
@@ -230,13 +284,23 @@ def train_directory(**kwargs):
         for lbl in label_files:
             case_name = lbl.name.split('.')[0]
             for mod_idx, _m in enumerate(modalities):
-                matches = list(images_dir.glob(f'{case_name}_{mod_idx:04d}*'))
+                try:
+                    midx = int(mod_idx)
+                except Exception:
+                    logger.error(f"Non-integer modality index encountered: {mod_idx!r} (type={type(mod_idx).__name__}); coercing via int(float(.)) if possible")
+                    try:
+                        midx = int(float(mod_idx))  # type: ignore[arg-type]
+                    except Exception as ce:  # noqa: BLE001
+                        raise ValueError(f'Cannot coerce modality index {mod_idx!r} to int: {ce}')
+                midx_str = str(midx).split('.')[0]  # strip any decimal part defensively
+                midx_padded = midx_str.zfill(4)
+                matches = list(images_dir.glob(f'{case_name}_{midx_padded}*'))
                 if not matches:
-                    logger.warning(f'Missing modality {mod_idx:04d} for {case_name}')
+                    logger.warning(f'Missing modality {midx_padded} for {case_name}')
                     continue
                 img_src = matches[0]
                 suffix = ''.join(img_src.suffixes) or '.nii.gz'
-                _link(img_src, imagesTr / f'{case_name}_{mod_idx:04d}{suffix}')
+                _link(img_src, imagesTr / f'{case_name}_{midx_padded}{suffix}')
             _link(lbl, labelsTr / ''.join([case_name] + list(lbl.suffixes)))
         dataset_json = {
             'channel_names': {str(i): m for i, m in enumerate(modalities)},
@@ -289,6 +353,9 @@ def train_directory(**kwargs):
         # Expanded diagnostics to locate mysterious format error seen in engine execution
         import traceback, inspect
         tb = traceback.format_exc()
+        if isinstance(e, ValueError) and 'Unknown format code' in str(e):
+            # Provide additional context for debugging formatting issues
+            logger.error('[train_directory] Detected formatting ValueError: %s', e)
         try:
             src = inspect.getsource(train_directory)
         except Exception:  # noqa: BLE001

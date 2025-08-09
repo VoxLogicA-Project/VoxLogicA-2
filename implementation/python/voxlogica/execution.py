@@ -969,6 +969,12 @@ class ExecutionSession:
                 if primitive_func is None:
                     raise Exception(f"No primitive implementation for operator: {operation.operator}")
                 resolved_args = self._resolve_arguments(operation, dependency_results)
+                if logger.isEnabledFor(logging.DEBUG):  # REMOVEME instrumentation
+                    try:
+                        preview = {k: (type(v).__name__, repr(v)[:60]) for k, v in resolved_args.items()}
+                        logger.debug("REMOVEME about to invoke primitive %s with args preview=%s", operator_name, preview)
+                    except Exception as _dbg:  # noqa: BLE001
+                        logger.debug("REMOVEME failed to preview args for %s: %s", operator_name, _dbg)
                 logger.log(VERBOSE_LEVEL, f"Operation {operation_id[:8]}... resolved args: {list(resolved_args.keys())}")
                 result = primitive_func(**resolved_args)
             
@@ -993,7 +999,11 @@ class ExecutionSession:
             return result
             
         except Exception as e:
-            error_msg = f"Operation {operation_id[:8]}... failed: {e}"
+            try:  # REMOVEME instrumentation
+                op_preview = str(operation.operator)
+                error_msg = f"Operation {operation_id[:8]}... ({op_preview}) failed: {e}"
+            except Exception:  # noqa: BLE001
+                error_msg = f"Operation {operation_id[:8]}... failed: {e}"
             logger.error(error_msg)
             logger.debug(traceback.format_exc())
             self.storage.mark_failed(operation_id, str(e))
@@ -1412,7 +1422,24 @@ class ExecutionSession:
         
         # Map numeric string keys to semantic argument names for known operators
         resolved = self._map_arguments_to_semantic_names(operation.operator, resolved)
-        
+        # REMOVEME instrumentation start
+        try:
+            op_name_lower = str(operation.operator).lower()
+            if 'nnunet' in op_name_lower and 'train_directory' in op_name_lower:
+                if '4' in resolved:
+                    v = resolved.get('4')
+                    if v is not None:
+                        try:
+                            coerced = int(float(v))
+                            if coerced != v:  # type: ignore
+                                logging.getLogger(__name__).debug("REMOVEME coerced dataset_id %r -> %r (type %s)", v, coerced, type(v).__name__)
+                            resolved['4'] = coerced
+                        except Exception as _ce:  # noqa: BLE001
+                            logging.getLogger(__name__).debug("REMOVEME failed to coerce dataset_id %r: %s", v, _ce)
+                logging.getLogger(__name__).debug("REMOVEME resolve_arguments nnunet.train_directory keys=%s", sorted(resolved.keys()))
+        except Exception as _outer_dbg:  # noqa: BLE001
+            logging.getLogger(__name__).debug("REMOVEME resolve_arguments instrumentation failed: %s", _outer_dbg)
+        # REMOVEME instrumentation end
         return resolved
     
     def _map_arguments_to_semantic_names(self, operator: Any, args: Dict[str, Any]) -> Dict[str, Any]:
