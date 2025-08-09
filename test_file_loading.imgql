@@ -1,0 +1,18 @@
+// Test semplificato per verificare il caricamento dei file
+print "test_start" "Testing file loading..."
+
+let data_dir = "/tmp/nnunet_synthetic_data"
+let images_dir = data_dir + "/images"
+let labels_dir = data_dir + "/labels"
+
+// Test caricamento sequenziale
+let img_000 = simpleitk.ReadImage(images_dir + "/case_000_0000.nii.gz")
+print "loaded_000" "Loaded case_000"
+
+let img_010 = simpleitk.ReadImage(images_dir + "/case_010_0000.nii.gz")
+print "loaded_010" "Loaded case_010"
+
+let img_019 = simpleitk.ReadImage(images_dir + "/case_019_0000.nii.gz")
+print "loaded_019" "Loaded case_019"
+
+print "test_complete" "All files loaded successfully"

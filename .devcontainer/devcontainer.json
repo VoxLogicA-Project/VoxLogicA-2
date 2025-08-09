@@ -21,6 +21,8 @@
   ],
   "runArgs": [
     "--gpus=all",
+    "--device",
+    "nvidia.com/gpu=all",
     "-w",
     "${env:HOME}",
     "--userns=keep-id",
