@@ -1,0 +1,84 @@
+// nnUNet test with persistent data directory
+print "starting_workflow_persistent" "Starting nnUNet workflow with persistent data..."
+
+// Use persistent data directory instead of /tmp
+let data_dir = "/workspaces/VoxLogicA-2/synthetic_data"
+let images_dir = data_dir + "/images"
+let labels_dir = data_dir + "/labels"
+
+print "data_paths_set" "Using persistent synthetic dataset"
+
+// Load training images (first 5 cases)
+let train_img_000 = simpleitk.ReadImage(images_dir + "/case_000_0000.nii.gz")
+let train_lbl_000 = simpleitk.ReadImage(labels_dir + "/case_000.nii.gz")
+
+let train_img_001 = simpleitk.ReadImage(images_dir + "/case_001_0000.nii.gz")
+let train_lbl_001 = simpleitk.ReadImage(labels_dir + "/case_001.nii.gz")
+
+let train_img_002 = simpleitk.ReadImage(images_dir + "/case_002_0000.nii.gz")
+let train_lbl_002 = simpleitk.ReadImage(labels_dir + "/case_002.nii.gz")
+
+let train_img_003 = simpleitk.ReadImage(images_dir + "/case_003_0000.nii.gz")
+let train_lbl_003 = simpleitk.ReadImage(labels_dir + "/case_003.nii.gz")
+
+let train_img_004 = simpleitk.ReadImage(images_dir + "/case_004_0000.nii.gz")
+let train_lbl_004 = simpleitk.ReadImage(labels_dir + "/case_004.nii.gz")
+
+print "training_images_loaded" "Training images loaded (5 cases: 000-004)"
+
+// Load validation images (cases 010-014)
+let val_img_010 = simpleitk.ReadImage(images_dir + "/case_010_0000.nii.gz")
+let val_lbl_010 = simpleitk.ReadImage(labels_dir + "/case_010.nii.gz")
+
+let val_img_011 = simpleitk.ReadImage(images_dir + "/case_011_0000.nii.gz")
+let val_lbl_011 = simpleitk.ReadImage(labels_dir + "/case_011.nii.gz")
+
+let val_img_012 = simpleitk.ReadImage(images_dir + "/case_012_0000.nii.gz")
+let val_lbl_012 = simpleitk.ReadImage(labels_dir + "/case_012.nii.gz")
+
+let val_img_013 = simpleitk.ReadImage(images_dir + "/case_013_0000.nii.gz")
+let val_lbl_013 = simpleitk.ReadImage(labels_dir + "/case_013.nii.gz")
+
+let val_img_014 = simpleitk.ReadImage(images_dir + "/case_014_0000.nii.gz")
+let val_lbl_014 = simpleitk.ReadImage(labels_dir + "/case_014.nii.gz")
+
+print "validation_images_loaded" "Validation images loaded (5 cases: 010-014)"
+
+// Create data bags
+let training_images_bag = range(0, 5)   // 5 training images
+let training_labels_bag = range(0, 5)   // 5 training labels
+let validation_images_bag = range(10, 15) // 5 validation images  
+let validation_labels_bag = range(10, 15) // 5 validation labels
+
+print "data_bags_created" "Training and validation bags created for 10 total images"
+
+// nnUNet configuration
+let dataset_name = "synthetic_squares_10cases"
+let modalities = "T1"
+let work_dir = "/workspaces/VoxLogicA-2/nnunet_workspace"
+let num_classes = 2
+
+print "nnunet_config_complete" "nnUNet configuration set for 10-case synthetic dataset"
+
+print "starting_nnunet_training" "Starting nnUNet training with persistent data..."
+
+// Use train_directory with persistent data
+let model = nnunet.train_directory(
+    images_dir,
+    labels_dir,
+    dataset_name,
+    modalities,
+    work_dir,
+    num_classes
+)
+
+print "training_complete" "nnUNet training completed successfully!"
+
+print "starting_prediction" "Testing prediction on validation data..."
+
+let prediction_010 = nnunet.predict(model, val_img_010)
+let prediction_012 = nnunet.predict(model, val_img_012)
+
+print "prediction_complete" "Predictions completed successfully!"
+
+print "workflow_complete" "nnUNet workflow with persistent data completed successfully!"

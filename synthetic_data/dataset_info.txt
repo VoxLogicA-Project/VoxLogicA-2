@@ -1,0 +1,13 @@
+Synthetic Dataset Information
+============================
+
+Number of images: 20
+Image size: (64, 64, 32)
+Intensity range: (0, 255)
+Intensity threshold: 127
+Squares per image: 2-6
+Square size range: 8-16
+Random seed: 42
+
+Images directory: /workspaces/VoxLogicA-2/synthetic_data/images
+Labels directory: /workspaces/VoxLogicA-2/synthetic_data/labels

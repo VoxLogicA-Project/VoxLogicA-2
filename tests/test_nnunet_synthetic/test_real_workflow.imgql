@@ -3,8 +3,8 @@
 
 print "starting_complete_workflow" "Starting nnUNet workflow with complete synthetic dataset..."
 
-// Use the synthetic data we generated (20 images total)
-let data_dir = "/tmp/nnunet_synthetic_data"
+// Use the persistent synthetic data directory (20 images total)
+let data_dir = "/workspaces/VoxLogicA-2/synthetic_data"
 let images_dir = data_dir + "/images"
 let labels_dir = data_dir + "/labels"
 
