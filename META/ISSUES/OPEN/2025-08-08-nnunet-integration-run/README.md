@@ -25,6 +25,11 @@ Next Steps:
 3. Run imgql workflow tests referencing train_directory and predict
 4. Capture logs and artifacts under /tmp/nnunet_synthetic_* and work_dir
 
+Dependency Update (2025-08-09):
+- Added nnunetv2>=2.4.0 to implementation/python/requirements.txt
+- Added conditional torch (python_version < 3.13) to avoid install failures on unsupported interpreter
+- Created META/nnunetv2-dependency-notes.md with environment guidance
+
 Blockers/Risks:
 - nnUNetv2 and PyTorch may not be installed in the project venv
 - Training time can be long; consider small nfolds or 2d configuration

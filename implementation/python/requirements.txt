@@ -8,3 +8,7 @@ watchdog
 dask[complete]>=2023.5.0
 numpy>=1.21.0
 SimpleITK>=2.0.0
+nnunetv2>=2.4.0
+# Conditional torch dependency: nnUNetv2 requires torch, but torch wheels may not yet support Python 3.13.
+# The marker avoids installation attempts on unsupported versions; recreate the venv with Python 3.11/3.12 for full nnUNet usage.
+torch>=2.2.0; python_version < "3.13"
