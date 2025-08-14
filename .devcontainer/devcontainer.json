@@ -17,12 +17,28 @@
       "type": "bind",
       "source": "/biggie",
       "target": "/biggie"
+    },
+    {
+      "type": "bind",
+      "source": "/usr/bin/nvidia-smi",
+      "target": "/usr/bin/nvidia-smi"
+    },
+    {
+      "type": "bind",
+      "source": "/usr/lib/x86_64-linux-gnu",
+      "target": "/usr/lib/x86_64-linux-gnu"
     }
   ],
   "runArgs": [
-    "--gpus=all",
-    "--device",
-    "nvidia.com/gpu=all",
+    "--device=/dev/dri",
+    "--device=/dev/nvidia0",
+    "--device=/dev/nvidiactl",
+    "--device=/dev/nvidia-uvm",
+    "--device=/dev/nvidia-modeset",
+    "--env",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "--env",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
     "-w",
     "${env:HOME}",
     "--userns=keep-id",
