@@ -3,6 +3,7 @@ VoxLogicA Main module - Python implementation
 """
 
 import asyncio
+import contextlib
 import logging
 import dask
 from distributed import Client
@@ -54,11 +55,23 @@ app = typer.Typer(
     add_completion=False,
 )
 
+# FastAPI lifecycle events using lifespan
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage the application lifespan"""
+    # Startup: Initialize file watcher when the server starts
+    start_file_watcher()
+    yield
+    # Shutdown: Clean up file watcher when the server shuts down  
+    stop_file_watcher()
+
+
 # Create FastAPI app for API server
 api_app = FastAPI(
     title="VoxLogicA API",
     description="API for VoxLogicA program analysis",
     version=get_version(),
+    lifespan=lifespan,
 )
 
 # Add CORS middleware
@@ -476,16 +489,14 @@ async def root():
 api_app.include_router(api_router)
 
 
-# FastAPI lifecycle events
-@api_app.on_event("startup")
-async def startup_event():
-    """Initialize file watcher when the server starts"""
+# FastAPI lifecycle events using lifespan
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage the application lifespan"""
+    # Startup: Initialize file watcher when the server starts
     start_file_watcher()
-
-
-@api_app.on_event("shutdown")
-async def shutdown_event():
-    """Clean up file watcher when the server shuts down"""
+    yield
+    # Shutdown: Clean up file watcher when the server shuts down  
     stop_file_watcher()
 
 
