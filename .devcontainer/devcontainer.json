@@ -45,7 +45,8 @@
           "bash": {
             "path": "/bin/bash"
           }
-        }
+        },
+        "python.defaultInterpreterPath": "/usr/bin/python3.13"
       },
       "extensions": [
         "ms-python.python",
