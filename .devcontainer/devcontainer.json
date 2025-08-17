@@ -2,6 +2,11 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
+  "containerEnv": {
+    "SHELL": "/bin/bash",
+    "NVIDIA_VISIBLE_DEVICES": "all",
+    "NVIDIA_DRIVER_CAPABILITIES": "all"
+  },
   "mounts": [
     {
       "type": "bind",
@@ -17,16 +22,6 @@
       "type": "bind",
       "source": "/biggie",
       "target": "/biggie"
-    },
-    {
-      "type": "bind",
-      "source": "/usr/bin/nvidia-smi",
-      "target": "/usr/bin/nvidia-smi"
-    },
-    {
-      "type": "bind",
-      "source": "/usr/lib/x86_64-linux-gnu",
-      "target": "/usr/lib/x86_64-linux-gnu"
     }
   ],
   "runArgs": [
@@ -35,10 +30,8 @@
     "--device=/dev/nvidiactl",
     "--device=/dev/nvidia-uvm",
     "--device=/dev/nvidia-modeset",
-    "--env",
-    "NVIDIA_VISIBLE_DEVICES=all",
-    "--env",
-    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "--hooks-dir=/usr/share/containers/oci/hooks.d/",
+    "--hooks-dir=/etc/containers/oci/hooks.d/",
     "-w",
     "${env:HOME}",
     "--userns=keep-id",
@@ -46,6 +39,14 @@
   ],
   "customizations": {
     "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "terminal.integrated.profiles.linux": {
+          "bash": {
+            "path": "/bin/bash"
+          }
+        }
+      },
       "extensions": [
         "ms-python.python",
         "Tyriar.luna-paint",
