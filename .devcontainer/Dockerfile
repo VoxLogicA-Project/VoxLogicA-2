@@ -36,7 +36,11 @@ RUN set -eux; \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.13 10; \
     update-alternatives --set python3 /usr/bin/python3.13; \
     ln -sf /usr/local/bin/pip3.13 /usr/local/bin/pip3 || true; \
-    ln -sf /usr/local/bin/pip3.13 /usr/bin/pip3 || true
+    ln -sf /usr/local/bin/pip3.13 /usr/bin/pip3 || true; \
+    ln -sf /usr/bin/python3.13 /usr/local/bin/python3
+
+# Ensure /usr/local/bin takes precedence so python3 resolves to 3.13 symlink
+ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Install NVIDIA utilities to provide nvidia-smi if available in the host via container hooks
 # Try to install nvidia-utils, falling back gracefully if not available (keeps build green on non-NVIDIA hosts)
