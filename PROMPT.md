@@ -1,1 +1,0 @@
-Please repair the voxlogica script, it should run the bootsrap which in turn should create the venv according to the requirements in implementation/python; I want you to work and iterate until voxlogica run test_simple.imgql succeeds

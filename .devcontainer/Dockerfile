@@ -26,6 +26,11 @@ RUN apt-get -y install --no-install-recommends \
     ca-certificates curl gnupg python3 python3-pip python3-venv bash \
     && rm -rf /var/lib/apt/lists/*
 
+# Build toolchain for Triton / PyTorch Inductor
+RUN apt-get update && apt-get -y install --no-install-recommends \
+    build-essential ninja-build clang pkg-config patchelf \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Python 3.13 and set it as default python3
 RUN set -eux; \
     add-apt-repository -y ppa:deadsnakes/ppa; \
@@ -58,4 +63,8 @@ RUN set -eux; \
 
 # Ensure bash is the default shell in the container
 SHELL ["/bin/bash", "-lc"]
+
+# Make compilers discoverable by default
+ENV CC=/usr/bin/gcc \
+    CXX=/usr/bin/g++
 
