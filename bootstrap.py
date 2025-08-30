@@ -14,25 +14,53 @@ def venv_exists():
 
 def create_venv():
     print(f"Creating virtual environment in {VENV_DIR}...")
-    subprocess.check_call([sys.executable, "-m", "venv", VENV_DIR])
+    try:
+        subprocess.check_call([sys.executable, "-m", "venv", VENV_DIR])
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to create virtual environment: {e}")
+        print("\nTo fix this on Debian/Ubuntu systems, install python3-venv:")
+        print(
+            f"  sudo apt install python{sys.version_info.major}.{sys.version_info.minor}-venv"
+        )
+        print("\nOr install the python3-venv package:")
+        print("  sudo apt install python3-venv")
+        print("\nThen run this script again.")
+        return False
 
 
 def install_requirements():
-    pip_path = os.path.join(VENV_DIR, "bin", "pip")
     if not os.path.isfile(REQUIREMENTS):
         print(f"{REQUIREMENTS} not found, skipping install.")
         return
+
+    venv_python = os.path.join(VENV_DIR, "bin", "python")
+
+    # Check if we already have lark installed as an indicator that deps are installed
+    try:
+        result = subprocess.run(
+            [venv_python, "-c", "import lark"], capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            print("Dependencies already installed, skipping reinstall.")
+            return
+    except FileNotFoundError:
+        pass
+
     print(f"Installing dependencies from {REQUIREMENTS}...")
-    subprocess.check_call([pip_path, "install", "-r", REQUIREMENTS])
+    subprocess.check_call([venv_python, "-m", "pip", "install", "-r", REQUIREMENTS])
 
 
 def main():
     if venv_exists():
         print(f"Virtual environment already exists in {VENV_DIR}.")
-    else:
-        create_venv()
         install_requirements()
-        print("Setup complete.")
+    else:
+        if create_venv():
+            install_requirements()
+            print("Setup complete.")
+        else:
+            sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,0 @@
-// Test nnUNet environment after CUDA fix
-print "testing_nnunet_env" "Testing nnUNet environment..."
-
-let env_result = nnunet.env_check("dummy")
-print "torch_available" env_result
-print "environment_ready" env_result
-
-print "test_complete" "Environment test completed"

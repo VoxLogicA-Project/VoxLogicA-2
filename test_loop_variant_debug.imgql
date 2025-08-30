@@ -1,6 +1,0 @@
-import "simpleitk"
-
-let img = ReadImage("tests/chris_t1.nii.gz")
-let data_variant = for i in range(1,5) do BinaryThreshold(img,100+i,101,1,0)
-
-print "data_variant" data_variant

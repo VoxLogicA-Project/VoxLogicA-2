@@ -6,17 +6,32 @@
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Ensure the virtual environment exists
-if [ ! -d "$SCRIPT_DIR/.venv" ]; then
-	echo "Virtualenv not found, running bootstrap..."
-	python3 "$SCRIPT_DIR/bootstrap.py"
-fi
+# Virtual environment directory
+VENV_DIR="$SCRIPT_DIR/.venv"
 
-# Activate the virtual environment
-source "$SCRIPT_DIR/.venv/bin/activate"
+# If venv already exists, activate it first
+if [ -f "$VENV_DIR/bin/activate" ]; then
+	# shellcheck disable=SC1090
+	source "$VENV_DIR/bin/activate"
+	# Prepare the environment (idempotent install/update)
+	python3 "$SCRIPT_DIR/bootstrap.py"
+else
+	# First-time setup: create venv, then activate, then finalize setup
+	python3 "$SCRIPT_DIR/bootstrap.py"
+	if [ -f "$VENV_DIR/bin/activate" ]; then
+		# shellcheck disable=SC1090
+		source "$VENV_DIR/bin/activate"
+		python3 "$SCRIPT_DIR/bootstrap.py"
+	else
+		# Minimal fallback to allow execution attempt without activation
+		export VIRTUAL_ENV="$VENV_DIR"
+		export PATH="$VENV_DIR/bin:$PATH"
+		unset PYTHONHOME
+	fi
+fi
 
 # Set implementation/python as PYTHONPATH so the voxlogica package is always found
 export PYTHONPATH="$SCRIPT_DIR/implementation/python"
 
 # Run the Python VoxLogicA main module with all passed arguments
-exec "$SCRIPT_DIR/.venv/bin/python" -m voxlogica.main "$@"
+exec "$VIRTUAL_ENV/bin/python" -m voxlogica.main "$@"

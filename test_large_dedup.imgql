@@ -1,7 +1,0 @@
-import "simpleitk"
-
-let img = ReadImage("tests/chris_t1.nii.gz")
-
-// Test with larger range to verify deduplication scales
-let data = for i in range(1,10) do BinaryThreshold(img,100,101,1,0)
-print "data" data

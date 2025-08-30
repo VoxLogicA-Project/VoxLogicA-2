@@ -2,6 +2,11 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
+  "containerEnv": {
+    "SHELL": "/bin/bash",
+    "NVIDIA_VISIBLE_DEVICES": "all",
+    "NVIDIA_DRIVER_CAPABILITIES": "all"
+  },
   "mounts": [
     {
       "type": "bind",
@@ -20,9 +25,13 @@
     }
   ],
   "runArgs": [
-    "--gpus=all",
-    "--device",
-    "nvidia.com/gpu=all",
+    "--device=/dev/dri",
+    "--device=/dev/nvidia0",
+    "--device=/dev/nvidiactl",
+    "--device=/dev/nvidia-uvm",
+    "--device=/dev/nvidia-modeset",
+    "--hooks-dir=/usr/share/containers/oci/hooks.d/",
+    "--hooks-dir=/etc/containers/oci/hooks.d/",
     "-w",
     "${env:HOME}",
     "--userns=keep-id",
@@ -30,6 +39,15 @@
   ],
   "customizations": {
     "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "terminal.integrated.profiles.linux": {
+          "bash": {
+            "path": "/bin/bash"
+          }
+        },
+        "python.defaultInterpreterPath": "/usr/bin/python3.13"
+      },
       "extensions": [
         "ms-python.python",
         "Tyriar.luna-paint",
