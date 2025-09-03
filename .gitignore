@@ -34,3 +34,4 @@ implementation/python/venv/
 *.json
 test.bin
 output.nii.gz
+applog.txt

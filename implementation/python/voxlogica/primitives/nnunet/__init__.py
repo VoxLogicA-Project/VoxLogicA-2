@@ -17,9 +17,7 @@ import dask.bag as db  # type: ignore
 
 logger = logging.getLogger(__name__)
 
-# REMOVEME: debug instrumentation to trace formatting error before primitive entry
-if logger.isEnabledFor(logging.DEBUG):
-    logger.debug("REMOVEME nnunet primitive imported from %s", __file__)
+# nnUNet primitives
 
 
 def _get_nnunet_env():
@@ -126,7 +124,12 @@ def train(**kwargs):
         labels_bag = kwargs["1"]
         modalities = kwargs["2"]
         work_dir = kwargs["3"]
-        dataset_id = kwargs.get("4", 1)
+        # Coerce dataset_id to integer (IMGQL numeric literals may be floats)
+        raw_dataset_id = kwargs.get("4", 1)
+        try:
+            dataset_id = int(float(raw_dataset_id))
+        except Exception as _e:  # noqa: BLE001
+            raise ValueError(f"dataset_id must be int-like: {raw_dataset_id!r}: {_e}")
         dataset_name = kwargs.get("5", "VoxLogicADataset")
         configuration = kwargs.get("6", "3d_fullres")
         nfolds = kwargs.get("7", 5)
@@ -188,16 +191,7 @@ def predict(**kwargs):
                     "predict requires keys 0..2 (input_images, model_path, output_dir)"
                 )
         input_images = Path(str(kwargs["0"]))
-        raw_model_arg = kwargs["1"]
-        # Allow passing the full training result dictionary directly
-        if isinstance(raw_model_arg, dict) and "model_path" in raw_model_arg:
-            model_path = Path(str(raw_model_arg.get("model_path")))
-            logger.debug(
-                "nnUNet predict: extracted model_path %s from training result dict",
-                model_path,
-            )
-        else:
-            model_path = Path(str(raw_model_arg))
+        model_path = Path(str(kwargs["1"]))
         output_dir = Path(str(kwargs["2"]))
         configuration = str(kwargs.get("3", "3d_fullres"))
         folds = kwargs.get("4")
@@ -248,15 +242,7 @@ def predict(**kwargs):
 
 def train_directory(**kwargs):
     try:
-        logger.info("[train_directory] ENTRY marker - function invoked")
-        if logger.isEnabledFor(logging.DEBUG):  # REMOVEME instrumentation
-            try:
-                logger.debug(
-                    "REMOVEME train_directory raw kwargs snapshot: %s",
-                    {k: (type(v).__name__, (repr(v)[:120])) for k, v in kwargs.items()},
-                )
-            except Exception as _dbg_e:  # noqa: BLE001
-                logger.debug("REMOVEME failed to log kwargs: %s", _dbg_e)
+        # Entry point for train_directory
         for k in ("0", "1", "2", "3"):
             if k not in kwargs:
                 raise ValueError(
@@ -266,17 +252,12 @@ def train_directory(**kwargs):
         labels_dir = Path(str(kwargs["1"]))
         modalities_arg = kwargs["2"]
         work_dir = Path(str(kwargs["3"]))
+        # Coerce dataset_id to integer early (IMGQL numeric literals may be floats)
         raw_dataset_id = kwargs.get("4", 1)
-        if logger.isEnabledFor(logging.DEBUG):  # REMOVEME instrumentation
-            logger.debug(
-                "REMOVEME raw_dataset_id type=%s value=%r",
-                type(raw_dataset_id).__name__,
-                raw_dataset_id,
-            )
         try:
             dataset_id = int(float(raw_dataset_id))
-        except Exception as e:  # noqa: BLE001
-            raise ValueError(f"dataset_id must be int-like: {raw_dataset_id!r}: {e}")
+        except Exception as _e:  # noqa: BLE001
+            raise ValueError(f"dataset_id must be int-like: {raw_dataset_id!r}: {_e}")
         dataset_name = str(kwargs.get("5", "VoxLogicADataset"))
         configuration = str(kwargs.get("6", "2d"))
         nfolds = int(kwargs.get("7", 1))
@@ -295,9 +276,7 @@ def train_directory(**kwargs):
         os.environ["nnUNet_raw"] = str(nnunet_raw)
         os.environ["nnUNet_preprocessed"] = str(nnunet_preprocessed)
         os.environ["nnUNet_results"] = str(nnunet_results)
-        logger.info(
-            f"[train_directory] dataset_id raw type={type(dataset_id).__name__} value={dataset_id!r}"
-        )
+        logger.info(f"[train_directory] dataset_id coerced type={type(dataset_id).__name__} value={dataset_id!r}")
         try:
             int(dataset_id)
         except Exception as _e:  # noqa: BLE001
@@ -311,55 +290,17 @@ def train_directory(**kwargs):
 
         # Detect conflicting dataset names for the same dataset id (common when reusing id=1 repeatedly)
         conflict_dirs = sorted(
-            {
-                p.name
-                for p in (work_dir / "nnUNet_raw").glob(f"Dataset{padded_id}_*")
-                if p.is_dir()
-            }
+            {p.name for p in (work_dir / "nnUNet_raw").glob(f"Dataset{padded_id}_*") if p.is_dir()}
         )
-        if (
-            len(conflict_dirs) > 1
-            and f"Dataset{padded_id}_{dataset_name}" not in conflict_dirs
-        ):
-            auto_resolve = (
-                os.environ.get("VOXLOGICA_NNUNET_AUTO_DATASET_ID_RESOLUTION", "0")
-                == "1"
-            )
-            if auto_resolve:
-                # Find next free id
-                existing_ids = set()
-                for p in (work_dir / "nnUNet_raw").glob("Dataset*_*/"):
-                    m = re.match(r"Dataset(\d{3})_", p.name)
-                    if m:
-                        existing_ids.add(int(m.group(1)))
-                new_id = int(dataset_id)
-                for candidate in range(1, 1000):
-                    if candidate not in existing_ids:
-                        new_id = candidate
-                        break
-                if new_id != dataset_id:
-                    logger.info(
-                        "[train_directory] Detected dataset id conflict for %s; auto-selecting free id %d",
-                        padded_id,
-                        new_id,
-                    )
-                    dataset_id = new_id
-                    padded_id = str(int(dataset_id)).zfill(3)
-                else:
-                    logger.warning(
-                        "[train_directory] Conflict auto-resolution enabled but no free id found; proceeding with original id %s (may fail)",
-                        padded_id,
-                    )
-            else:
-                raise ValueError(
-                    (
-                        "Multiple dataset names already exist for dataset id "
-                        f"{dataset_id} (found: {conflict_dirs}). Either:\n"
-                        f" - remove conflicting directories under {work_dir}/nnUNet_raw/nnUNet_preprocessed/nnUNet_results\n"
-                        " - choose a different dataset id\n"
-                        " - or set VOXLOGICA_NNUNET_AUTO_DATASET_ID_RESOLUTION=1 to auto-pick a free id."
-                    )
+        if len(conflict_dirs) > 1 and f"Dataset{padded_id}_{dataset_name}" not in conflict_dirs:
+            raise ValueError(
+                (
+                    "Multiple dataset names already exist for dataset id "
+                    f"{dataset_id} (found: {conflict_dirs}). Either:\n"
+                    f" - remove conflicting directories under {work_dir}/nnUNet_raw/nnUNet_preprocessed/nnUNet_results\n"
+                    " - choose a different dataset id"
                 )
+            )
 
         padded_name = f"Dataset{padded_id}_{dataset_name}"
         unpadded_name = f"Dataset{dataset_id}_{dataset_name}"
@@ -474,7 +415,7 @@ def train_directory(**kwargs):
         plan_cmd = [
             _get_nnunet_command_path("nnUNetv2_plan_and_preprocess"),
             "-d",
-            str(dataset_id),
+            str(int(dataset_id)),
             "--verify_dataset_integrity",
             "-c",
             configuration,
@@ -492,7 +433,7 @@ def train_directory(**kwargs):
             # nnUNetv2_train does not expose a --device flag; CPU enforcement is via CUDA_VISIBLE_DEVICES.
             train_cmd = [
                 _get_nnunet_command_path("nnUNetv2_train"),
-                str(dataset_id),
+                str(int(dataset_id)),
                 configuration,
                 str(fold),
             ]
@@ -540,22 +481,8 @@ def train_directory(**kwargs):
             "label_value_map": label_value_map,
         }
     except Exception as e:  # noqa: BLE001
-        # Expanded diagnostics to locate mysterious format error seen in engine execution
-        import traceback, inspect
-
-        tb = traceback.format_exc()
-        if isinstance(e, ValueError) and "Unknown format code" in str(e):
-            # Provide additional context for debugging formatting issues
-            logger.error("[train_directory] Detected formatting ValueError: %s", e)
-        try:
-            src = inspect.getsource(train_directory)
-        except Exception:  # noqa: BLE001
-            src = "<unavailable>"
-        logger.error("nnUNet train_directory internal exception detail:\n%s", tb)
-        logger.debug(
-            "Current train_directory source (truncated to 800 chars): %s", src[:800]
-        )
-        raise ValueError(f"nnUNet train_directory failed: {e}\nTRACE:\n{tb}") from e
+        logger.error(f"nnUNet train_directory failed: {e}")
+        raise ValueError(f"nnUNet train_directory failed: {e}") from e
 
 
 def get_primitives():
