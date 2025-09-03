@@ -25,13 +25,7 @@
     }
   ],
   "runArgs": [
-    "--device=/dev/dri",
-    "--device=/dev/nvidia0",
-    "--device=/dev/nvidiactl",
-    "--device=/dev/nvidia-uvm",
-    "--device=/dev/nvidia-modeset",
-    "--hooks-dir=/usr/share/containers/oci/hooks.d/",
-    "--hooks-dir=/etc/containers/oci/hooks.d/",
+    "--gpus=all",
     "-w",
     "${env:HOME}",
     "--userns=keep-id",
