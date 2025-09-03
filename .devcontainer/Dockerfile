@@ -17,7 +17,7 @@ USER devuser
 WORKDIR /home/devuser/workspace
 
 # Copy sitecustomize to site-packages so it's picked up on Python startup
-COPY --chown=devuser:devuser sitecustomize.py /usr/local/lib/python3.13/site-packages/sitecustomize.py
+COPY --chown=devuser:devuser .devcontainer/sitecustomize.py /usr/local/lib/python3.13/site-packages/sitecustomize.py
 
 # Also set environment variables at container level to disable torch dynamic compilation
 ENV TORCH_COMPILE_DISABLE=1 \

@@ -1,4 +1,34 @@
 {
+  "name": "VoxLogicA - Devcontainer",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.shell.linux": "/bin/bash"
+      },
+      "extensions": []
+    }
+  },
+  "runArgs": [
+    // Podman: bind-mount the host's /usr/bin/nvidia-smi if present and add devices
+    "--device=/dev/dri",
+    "--device=/dev/nvidiactl",
+    "--device=/dev/nvidia-uvm",
+    "--device=/dev/nvidia0",
+    "-v",
+    "/usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro",
+    "-e",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "-e",
+    "NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics"
+  ],
+  "workspaceFolder": "/workspaces/VoxLogicA-2",
+  "postCreateCommand": "echo 'Devcontainer created'"
+}
+{
   "build": {
     "dockerfile": "Dockerfile"
   },
