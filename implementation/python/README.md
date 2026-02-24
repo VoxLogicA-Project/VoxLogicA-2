@@ -1,92 +1,58 @@
 # VoxLogicA 2 - Python Implementation
 
-This is the Python implementation of VoxLogicA 2, a spatial model checker and image analysis tool.
+This is the Python implementation of VoxLogicA 2.
 
 ## Installation
 
 ### From Source
 
-Clone the repository and install the Python package:
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -e implementation/python
+```
+
+### Test Dependencies (includes Hypothesis)
+
+Use either:
 
 ```bash
-# Create a virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r implementation/python/requirements-test.txt
+```
 
-# Install the package in development mode
-pip install -e .
+or:
+
+```bash
+pip install -e implementation/python[test]
 ```
 
 ## Usage
 
 ### CLI
 
-VoxLogicA can be used as a command-line tool:
-
 ```bash
-# Show help
-voxlogica --help
-
-# Show version
-voxlogica version
-
-# Run a VoxLogicA program
-voxlogica run path/to/program.imgql
-
-# Run with debug output
-voxlogica run path/to/program.imgql --debug
-
-# Save the task graph as a DOT file
-voxlogica run path/to/program.imgql --save-task-graph graph.dot
-
-# Save the task graph as JSON
-voxlogica run path/to/program.imgql --save-task-graph-as-json graph.json
-
-# Save multiple formats
-voxlogica run path/to/program.imgql --save-task-graph graph.dot --save-task-graph-as-json graph.json
+# from repo root
+./voxlogica version
+./voxlogica run test.imgql
 ```
 
 ### API Server
 
-VoxLogicA can also be run as an API server:
-
 ```bash
-# Start the API server
-voxlogica serve
-
-# Start with custom host and port
-voxlogica serve --host 0.0.0.0 --port 8080
+./voxlogica serve
 ```
-
-Once the server is running, you can access the API documentation at `http://localhost:8000/docs`.
-
-### API Endpoints
-
-- `GET /api/v1/version`: Get the VoxLogicA version
-- `POST /api/v1/run`: Run a VoxLogicA program with various output options
 
 ## Development
 
 ### Running Tests
 
-Use the test infrastructure script from the repository root:
-
 ```bash
-# Run all tests
+# installs test dependencies first (unless VOXLOGICA_SKIP_TEST_DEPS_INSTALL=1)
 ./tests/run-tests.sh
 
-# Run tests with specific language
-./tests/run-tests.sh --language python
+# run only unit + contract
+./tests/run-tests.sh -m "unit or contract"
 
-# Run tests with debug output
-./tests/run-tests.sh --debug
+# run full pytest directly
+pytest
 ```
-
-The test infrastructure automatically handles virtual environment activation and dependency installation.
-
-## Features
-
-- Modern Python API with type hints
-- FastAPI-based REST API
-- Typer-based CLI
-- Lark-based parser for the imgql language

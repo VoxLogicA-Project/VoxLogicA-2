@@ -19,5 +19,16 @@ setup(
             "voxlogica=voxlogica.main:app",
         ],
     },
+    extras_require={
+        "test": [
+            "pytest>=7.0.0",
+            "pytest-cov>=4.0.0",
+            "pytest-mock>=3.10.0",
+            "hypothesis>=6.0.0",
+            "dask[complete]>=2023.5.0",
+            "ruff>=0.7.0",
+            "mypy>=1.10.0",
+        ],
+    },
     python_requires=">=3.9",
 )
