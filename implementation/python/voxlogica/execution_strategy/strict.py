@@ -20,7 +20,7 @@ from voxlogica.execution_strategy.results import (
 from voxlogica.lazy.ir import NodeId, NodeSpec, SymbolicPlan
 from voxlogica.parser import EBool, ECall, EFor, ELet, ENumber, EString, Expression, parse_expression_content
 from voxlogica.primitives.registry import PrimitiveRegistry
-from voxlogica.storage import DefinitionStore, MaterializationStore
+from voxlogica.storage import DefinitionStore, MaterializationStore, ResultsDatabase
 
 
 @dataclass
@@ -66,15 +66,24 @@ class StrictExecutionStrategy(ExecutionStrategy):
 
     name = "strict"
 
-    def __init__(self, registry: PrimitiveRegistry | None = None):
+    def __init__(
+        self,
+        registry: PrimitiveRegistry | None = None,
+        results_database: ResultsDatabase | None = None,
+    ):
         self.registry = registry or PrimitiveRegistry()
+        self.results_database = results_database
 
     def compile(self, plan: SymbolicPlan) -> PreparedPlan:
         self.registry.apply_imports(plan.imported_namespaces)
         return PreparedPlan(
             plan=plan,
             definition_store=DefinitionStore(plan.nodes),
-            materialization_store=MaterializationStore(),
+            materialization_store=MaterializationStore(
+                backend=self.results_database,
+                read_through=False,
+                write_through=True,
+            ),
             strategy_name=self.name,
         )
 

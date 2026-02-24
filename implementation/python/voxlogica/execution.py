@@ -15,6 +15,7 @@ from voxlogica.execution_strategy import (
 )
 from voxlogica.lazy.ir import NodeId, SymbolicPlan
 from voxlogica.primitives.registry import PrimitiveRegistry
+from voxlogica.storage import ResultsDatabase, get_storage
 
 
 @dataclass
@@ -75,17 +76,17 @@ class ExecutionEngine:
 
     def __init__(
         self,
-        storage_backend: Any | None = None,
+        storage_backend: ResultsDatabase | None = None,
         primitives_loader: PrimitivesLoader | None = None,
         auto_cleanup_stale_operations: bool = True,
     ):
-        self.storage = storage_backend
+        self.storage = storage_backend or get_storage()
         self.primitives = primitives_loader or PrimitivesLoader()
         self.registry = self.primitives.registry
 
         self._strategies = {
-            "dask": DaskExecutionStrategy(self.registry),
-            "strict": StrictExecutionStrategy(self.registry),
+            "dask": DaskExecutionStrategy(self.registry, self.storage),
+            "strict": StrictExecutionStrategy(self.registry, self.storage),
         }
         self.default_strategy = "dask"
 
