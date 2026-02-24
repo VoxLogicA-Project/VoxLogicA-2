@@ -13,7 +13,7 @@ The runtime does not call primitive modules directly. It resolves a `PrimitiveSp
 ## Current Resolution Rules
 1. Qualified call (`namespace.primitive`) is exact.
 2. Unqualified call resolves deterministically: `default` first, then explicitly imported namespaces, then remaining namespaces in lexical order.
-3. Legacy modules are adapter-backed and emit deprecation warnings.
+3. In-repo primitive modules are fully migrated to stable `PrimitiveSpec` contracts (legacy adapter remains only as external compatibility path).
 
 ## Module Authoring Rules
 1. New primitives should expose `PRIMITIVE_SPEC` and `KERNEL` (or `execute` alias).

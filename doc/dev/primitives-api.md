@@ -42,6 +42,10 @@ No set-order behavior is allowed in primitive resolution.
 ## Migration Rules
 Legacy primitive modules (`execute(**kwargs)` / `register_primitives()`) are supported via adapter with deprecation warning.
 
+Repository status:
+- All in-repo primitive namespaces are migrated to `PrimitiveSpec`.
+- Legacy adapter path is retained for external/third-party compatibility only.
+
 Migration target:
 1. Define `PRIMITIVE_SPEC`.
 2. Expose explicit `KERNEL` (or `execute` alias).

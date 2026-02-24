@@ -38,3 +38,4 @@ applog.txt
 output_medical.nii.gz
 output_uncompressed.nii
 output.png
+.hypothesis/

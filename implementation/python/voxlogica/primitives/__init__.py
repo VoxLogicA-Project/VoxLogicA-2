@@ -1,5 +1,6 @@
 # VoxLogica-2 Primitives Directory
 """
 This directory contains primitive operation implementations for VoxLogica-2.
-Each primitive is implemented as a Python module with an 'execute' function.
+Primitives are registered through `PrimitiveSpec` contracts and resolved
+by `PrimitiveRegistry` with deterministic namespace rules.
 """
