@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import warnings
-
 import pytest
 
 from voxlogica.lazy.ir import NodeSpec
@@ -32,12 +30,11 @@ def test_primitive_specs_have_required_contract_fields():
 
 
 @pytest.mark.contract
-def test_legacy_adapter_emits_deprecation_warning():
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", DeprecationWarning)
-        PrimitiveRegistry()
+def test_all_registered_primitives_use_stable_contract():
+    registry = PrimitiveRegistry()
+    for namespace in registry.list_namespaces():
+        registry.import_namespace(namespace)
 
-    assert any(
-        "Legacy primitive contract" in str(item.message)
-        for item in caught
-    )
+    specs = [registry.get_spec(name) for name in registry.list_primitives().keys()]
+    assert specs, "Expected at least one registered primitive"
+    assert not any(spec.is_legacy_adapter for spec in specs)

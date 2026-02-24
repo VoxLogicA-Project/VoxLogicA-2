@@ -14,6 +14,8 @@ import logging
 import time
 import json
 
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+
 logger = logging.getLogger(__name__)
 
 def execute(**kwargs) -> Dict[str, Any]:
@@ -177,3 +179,16 @@ def execute(**kwargs) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Workflow controller failed: {e}")
         raise ValueError(f"Workflow controller computation failed: {e}") from e
+
+
+KERNEL = execute
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="workflow_controller",
+    namespace="test",
+    kind="effect",
+    arity=AritySpec.variadic(1),
+    attrs_schema={},
+    planner=default_planner_factory("test.workflow_controller", kind="effect"),
+    kernel_name="test.workflow_controller",
+    description="Generate adaptive workflow enqueue plans",
+)

@@ -2,6 +2,9 @@
 Demonstration primitive showing that ANY structured data works
 """
 
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+
+
 def execute(**kwargs):
     """
     Returns arbitrary structured data to show that VoxLogicA 
@@ -22,3 +25,16 @@ def execute(**kwargs):
         "numbers": [1, 2, 3, 4, 5],
         "booleans": {"true": True, "false": False, "null": None}
     }
+
+
+KERNEL = execute
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="demo_data",
+    namespace="test",
+    kind="scalar",
+    arity=AritySpec.variadic(0),
+    attrs_schema={},
+    planner=default_planner_factory("test.demo_data", kind="scalar"),
+    kernel_name="test.demo_data",
+    description="Return structured demo payload",
+)

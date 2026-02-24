@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 import json
 
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+
 
 def execute(**kwargs):
     """Load dataset from path at runtime.
@@ -33,3 +35,16 @@ def execute(**kwargs):
         return [line.rstrip("\n") for line in path.read_text(encoding="utf-8").splitlines()]
 
     return path.read_bytes()
+
+
+KERNEL = execute
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="load",
+    namespace="default",
+    kind="dataset",
+    arity=AritySpec.fixed(1),
+    attrs_schema={},
+    planner=default_planner_factory("default.load", kind="dataset"),
+    kernel_name="default.load",
+    description="Load a dataset from path or iterable input",
+)

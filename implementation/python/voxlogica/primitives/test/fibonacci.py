@@ -4,6 +4,9 @@ Fibonacci primitive for VoxLogicA-2
 Computes the nth Fibonacci number using an iterative algorithm.
 """
 
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+
+
 def execute(**kwargs):
     """
     Execute fibonacci computation
@@ -45,3 +48,16 @@ def execute(**kwargs):
         return b
     except Exception as e:
         raise ValueError(f"Fibonacci computation failed: {e}") from e
+
+
+KERNEL = execute
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="fibonacci",
+    namespace="test",
+    kind="scalar",
+    arity=AritySpec.fixed(1),
+    attrs_schema={},
+    planner=default_planner_factory("test.fibonacci", kind="scalar"),
+    kernel_name="test.fibonacci",
+    description="Compute the nth Fibonacci number",
+)

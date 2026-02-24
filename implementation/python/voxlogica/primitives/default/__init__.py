@@ -8,10 +8,14 @@ as unqualified operators for backward compatibility.
 import importlib
 from pathlib import Path
 
+
+def register_specs():
+    """Static namespace; primitive specs are provided by module files."""
+    return {}
+
+
 def register_primitives():
-    """Register static primitives in this namespace"""
-    # Static primitives are loaded by file-based discovery
-    # This function is for consistency but not used for static namespaces
+    """Legacy compatibility shim."""
     return {}
 
 def list_primitives():

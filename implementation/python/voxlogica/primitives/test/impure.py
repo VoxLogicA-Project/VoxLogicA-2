@@ -4,6 +4,8 @@ This is useful for testing memoization - if memoization works correctly,
 this primitive should only be called once for identical subexpressions.
 """
 
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+
 
 def execute(**kwargs):
     """
@@ -26,3 +28,16 @@ def execute(**kwargs):
     logger.info(f"IMPURE CALLED WITH: {input_value}")
     print(f"IMPURE DEBUG: file={__file__} version=return3 input={input_value}")
     return input_value
+
+
+KERNEL = execute
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="impure",
+    namespace="test",
+    kind="effect",
+    arity=AritySpec.fixed(1),
+    attrs_schema={},
+    planner=default_planner_factory("test.impure", kind="effect"),
+    kernel_name="test.impure",
+    description="Impure diagnostic primitive for memoization checks",
+)

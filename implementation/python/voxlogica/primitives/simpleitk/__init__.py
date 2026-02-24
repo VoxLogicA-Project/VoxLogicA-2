@@ -11,12 +11,15 @@ from typing import Dict, Callable, Any
 import logging
 
 from voxlogica.main import VERBOSE_LEVEL
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 
 logger = logging.getLogger(__name__)
 
 # Cache for dynamically registered primitives
 _dynamic_primitives_cache: Dict[str, Callable] = {}
 _primitives_list_cache: Dict[str, str] = {}
+_dynamic_specs_cache: Dict[str, tuple[PrimitiveSpec, Callable]] = {}
+_source_functions_cache: Dict[str, Callable] = {}
 
 def _wrap_sitk_function(func: Callable, func_name: str) -> Callable:
     """Wrap a SimpleITK function to conform to VoxLogicA primitive interface"""
@@ -80,65 +83,134 @@ def _wrap_sitk_function(func: Callable, func_name: str) -> Callable:
     
     return execute
 
-def register_primitives():
-    """Register SimpleITK functions, preferring functional interfaces over filter classes"""
-    global _dynamic_primitives_cache, _primitives_list_cache
-    
+def _iter_sitk_functions():
+    """Yield callable SimpleITK functional APIs exposed as primitives."""
+    for name in dir(sitk):
+        if name.startswith("_"):
+            continue
+
+        attr = getattr(sitk, name)
+        if not callable(attr):
+            continue
+
+        # Skip filter class constructors when a functional counterpart exists.
+        if name.endswith("Filter") or name.endswith("ImageFilter"):
+            functional_name = name.replace("ImageFilter", "").replace("Filter", "")
+            if hasattr(sitk, functional_name) and functional_name != name:
+                logger.log(
+                    VERBOSE_LEVEL,
+                    f"Skipping filter class {name}, preferring functional {functional_name}",
+                )
+                continue
+
+        if isinstance(attr, type):
+            logger.log(VERBOSE_LEVEL, f"Skipping class constructor: {name}")
+            continue
+
+        yield name, attr
+
+
+def _describe_function(name: str, func: Callable) -> str:
+    docstring = func.__doc__ or f"SimpleITK {name} function"
+    if "(" in docstring and ")" in docstring:
+        lines = docstring.split("\n")
+        sig_line = next(
+            (line.strip() for line in lines if "(" in line and ")" in line),
+            lines[0] if lines else "",
+        )
+        return sig_line.strip()
+    return docstring.split("\n")[0].strip()
+
+
+def _infer_arity(func: Callable) -> AritySpec:
+    try:
+        signature = inspect.signature(func)
+    except Exception:
+        return AritySpec.variadic(0)
+
+    required = 0
+    optional = 0
+    has_varargs = False
+    has_varkw = False
+
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
+            has_varargs = True
+            continue
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            has_varkw = True
+            continue
+        if parameter.default is inspect.Parameter.empty:
+            required += 1
+        else:
+            optional += 1
+
+    if has_varargs or has_varkw:
+        return AritySpec.variadic(required)
+
+    return AritySpec(min_args=required, max_args=required + optional)
+
+
+def get_primitives() -> Dict[str, Callable]:
+    """Register SimpleITK functions and return wrapped kernels."""
+    global _dynamic_primitives_cache, _primitives_list_cache, _source_functions_cache
+
     if _dynamic_primitives_cache:
         return _dynamic_primitives_cache
-    
+
     try:
-        sitk_functions = {}
-        
-        # Get all callable SimpleITK functions
-        for name in dir(sitk):
-            if not name.startswith('_'):  # Skip private attributes
-                attr = getattr(sitk, name)
-                if callable(attr):
-                    # Skip filter class constructors that end with "Filter" or "ImageFilter"
-                    # These create filter objects, not functional processing
-                    if name.endswith('Filter') or name.endswith('ImageFilter'):
-                        # Check if there's a functional version (e.g., DiscreteGaussian for DiscreteGaussianImageFilter)
-                        functional_name = name.replace('ImageFilter', '').replace('Filter', '')
-                        if hasattr(sitk, functional_name) and functional_name != name:
-                            # Use the functional version instead
-                            logger.log(VERBOSE_LEVEL, f"Skipping filter class {name}, preferring functional {functional_name}")
-                            continue
-                    
-                    # Skip obvious class constructors (type objects)
-                    if isinstance(attr, type):
-                        logger.log(VERBOSE_LEVEL, f"Skipping class constructor: {name}")
-                        continue
-                    
-                    # Wrap the function
-                    wrapped_func = _wrap_sitk_function(attr, name)
-                    sitk_functions[name] = wrapped_func
-                    
-                    # Store description for list_primitives
-                    docstring = attr.__doc__ or f"SimpleITK {name} function"
-                    # Extract first line or function signature from docstring
-                    if '(' in docstring and ')' in docstring:
-                        # Try to extract function signature
-                        lines = docstring.split('\n')
-                        sig_line = next((line.strip() for line in lines if '(' in line and ')' in line), lines[0] if lines else '')
-                        description = sig_line.strip()
-                    else:
-                        description = docstring.split('\n')[0].strip()
-                    
-                    _primitives_list_cache[name] = description
-                    
-        logger.log(VERBOSE_LEVEL,f"Registered {len(sitk_functions)} SimpleITK primitives dynamically")
+        sitk_functions: Dict[str, Callable] = {}
+        for name, attr in _iter_sitk_functions():
+            sitk_functions[name] = _wrap_sitk_function(attr, name)
+            _source_functions_cache[name] = attr
+            _primitives_list_cache[name] = _describe_function(name, attr)
+
+        logger.log(
+            VERBOSE_LEVEL,
+            f"Registered {len(sitk_functions)} SimpleITK primitives dynamically",
+        )
         _dynamic_primitives_cache = sitk_functions
         return sitk_functions
-        
+
     except Exception as e:
         logger.error(f"Failed to register SimpleITK primitives: {e}")
         return {}
 
+
+def register_specs() -> Dict[str, tuple[PrimitiveSpec, Callable]]:
+    """Register SimpleITK primitives with stable PrimitiveSpec contracts."""
+    global _dynamic_specs_cache
+    if _dynamic_specs_cache:
+        return _dynamic_specs_cache
+
+    specs: Dict[str, tuple[PrimitiveSpec, Callable]] = {}
+    for name, kernel in get_primitives().items():
+        qualified = f"simpleitk.{name}"
+        source_func = _source_functions_cache.get(name, kernel)
+        spec = PrimitiveSpec(
+            name=name,
+            namespace="simpleitk",
+            kind="scalar",
+            arity=_infer_arity(source_func),
+            attrs_schema={},
+            planner=default_planner_factory(qualified, kind="scalar"),
+            kernel_name=qualified,
+            description=_primitives_list_cache.get(name, f"SimpleITK {name}"),
+        )
+        specs[name] = (spec, kernel)
+
+    _dynamic_specs_cache = specs
+    return specs
+
+
+def register_primitives():
+    """Legacy compatibility shim."""
+    return get_primitives()
+
 def list_primitives():
     """List all primitives available in this namespace"""
     # Ensure dynamic primitives are registered
-    register_primitives()
+    get_primitives()
     return _primitives_list_cache.copy()
 
 def get_serializers():

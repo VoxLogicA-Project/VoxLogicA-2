@@ -4,6 +4,9 @@ Multiplication primitive for VoxLogica-2
 Implements multiplication operation for numeric types.
 """
 
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+
+
 def execute(left, right):
     """
     Execute multiplication operation
@@ -20,3 +23,16 @@ def execute(left, right):
         return result
     except Exception as e:
         raise ValueError(f"Multiplication failed: {e}") from e
+
+
+KERNEL = execute
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="multiplication",
+    namespace="default",
+    kind="scalar",
+    arity=AritySpec.fixed(2),
+    attrs_schema={},
+    planner=default_planner_factory("default.multiplication", kind="scalar"),
+    kernel_name="default.multiplication",
+    description="Multiplication operation for numeric values",
+)

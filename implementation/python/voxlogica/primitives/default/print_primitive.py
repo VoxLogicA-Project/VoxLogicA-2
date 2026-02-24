@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+
 
 def execute(**kwargs):
     """Print label=value and return the rendered string."""
@@ -17,3 +19,16 @@ def execute(**kwargs):
     rendered = f"{label}={value}"
     print(rendered)
     return rendered
+
+
+KERNEL = execute
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="print_primitive",
+    namespace="default",
+    kind="effect",
+    arity=AritySpec.fixed(2),
+    attrs_schema={},
+    planner=default_planner_factory("default.print_primitive", kind="effect"),
+    kernel_name="default.print_primitive",
+    description="Render and print a label/value pair",
+)

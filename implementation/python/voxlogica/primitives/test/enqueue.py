@@ -12,6 +12,8 @@ new computation tasks.
 from typing import Dict, Any, Optional
 import logging
 
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+
 logger = logging.getLogger(__name__)
 
 def execute(**kwargs) -> Dict[str, Any]:
@@ -71,3 +73,16 @@ def execute(**kwargs) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Enqueue primitive failed: {e}")
         raise ValueError(f"Enqueue computation failed: {e}") from e
+
+
+KERNEL = execute
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="enqueue",
+    namespace="test",
+    kind="effect",
+    arity=AritySpec.variadic(1),
+    attrs_schema={},
+    planner=default_planner_factory("test.enqueue", kind="effect"),
+    kernel_name="test.enqueue",
+    description="Return enqueue instructions for test workflows",
+)

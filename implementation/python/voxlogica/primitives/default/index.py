@@ -2,6 +2,9 @@
 Tuple indexing primitive for VoxLogicA-2 default library
 """
 
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+
+
 def execute(**kwargs):
     """Return the element at position idx from the tuple_value.
     Args:
@@ -18,3 +21,16 @@ def execute(**kwargs):
         except Exception:
             raise ValueError(f"Index argument must be convertible to int, got: {idx}")
     return tuple_value[idx]
+
+
+KERNEL = execute
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="index",
+    namespace="default",
+    kind="scalar",
+    arity=AritySpec.fixed(2),
+    attrs_schema={},
+    planner=default_planner_factory("default.index", kind="scalar"),
+    kernel_name="default.index",
+    description="Tuple/list index access",
+)

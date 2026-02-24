@@ -8,12 +8,14 @@ import json
 import shutil
 import logging
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any, Callable, Dict, List
 import re
 import subprocess
 import importlib.util
 from datetime import datetime
 import dask.bag as db  # type: ignore
+
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 
 logger = logging.getLogger(__name__)
 
@@ -485,7 +487,7 @@ def train_directory(**kwargs):
         raise ValueError(f"nnUNet train_directory failed: {e}") from e
 
 
-def get_primitives():
+def get_primitives() -> Dict[str, Callable[..., Any]]:
     return {
         "train": train,
         "predict": predict,
@@ -498,5 +500,38 @@ def list_primitives():
     return {k: "nnUNet primitive" for k in get_primitives().keys()}
 
 
+def register_specs() -> Dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
+    arities = {
+        "train": AritySpec(min_args=4, max_args=8),
+        "predict": AritySpec(min_args=3, max_args=6),
+        "train_directory": AritySpec(min_args=4, max_args=9),
+        "env_check": AritySpec.variadic(0),
+    }
+
+    descriptions = {
+        "train": "Train nnUNet model from bag-based dataset inputs",
+        "predict": "Run nnUNet inference from trained model",
+        "train_directory": "Train nnUNet model from image/label directory layout",
+        "env_check": "Inspect nnUNet and torch runtime environment",
+    }
+
+    specs: Dict[str, tuple[PrimitiveSpec, Callable[..., Any]]] = {}
+    for primitive_name, kernel in get_primitives().items():
+        qualified = f"nnunet.{primitive_name}"
+        spec = PrimitiveSpec(
+            name=primitive_name,
+            namespace="nnunet",
+            kind="effect",
+            arity=arities.get(primitive_name, AritySpec.variadic(0)),
+            attrs_schema={},
+            planner=default_planner_factory(qualified, kind="effect"),
+            kernel_name=qualified,
+            description=descriptions.get(primitive_name, "nnUNet primitive"),
+        )
+        specs[primitive_name] = (spec, kernel)
+    return specs
+
+
 def register_primitives():
+    """Legacy compatibility shim."""
     return get_primitives()

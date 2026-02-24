@@ -7,6 +7,9 @@ Implements range operation that returns a Dask bag for lazy for loop support.
 import dask.bag as db
 from typing import Union
 
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+
+
 def execute(**kwargs) -> db.Bag:
     """
     Execute range operation that returns a Dask bag
@@ -69,3 +72,16 @@ def execute(**kwargs) -> db.Bag:
         
     except Exception as e:
         raise ValueError(f"Range operation failed: {e}") from e
+
+
+KERNEL = execute
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="range",
+    namespace="default",
+    kind="sequence",
+    arity=AritySpec(min_args=1, max_args=2),
+    attrs_schema={},
+    planner=default_planner_factory("default.range", kind="sequence"),
+    kernel_name="default.range",
+    description="Create a sequence from integer range bounds",
+)

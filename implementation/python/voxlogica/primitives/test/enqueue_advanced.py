@@ -13,6 +13,8 @@ from typing import Dict, Any, Optional, Union, List
 import logging
 import time
 
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+
 logger = logging.getLogger(__name__)
 
 class EnqueueInstruction:
@@ -153,3 +155,16 @@ def execute(**kwargs) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Advanced enqueue primitive failed: {e}")
         raise ValueError(f"Advanced enqueue computation failed: {e}") from e
+
+
+KERNEL = execute
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="enqueue_advanced",
+    namespace="test",
+    kind="effect",
+    arity=AritySpec.variadic(1),
+    attrs_schema={},
+    planner=default_planner_factory("test.enqueue_advanced", kind="effect"),
+    kernel_name="test.enqueue_advanced",
+    description="Return advanced enqueue instructions with metadata",
+)

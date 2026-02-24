@@ -9,6 +9,8 @@ import dask.bag as db
 from typing import Any, Dict
 import logging
 
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+
 logger = logging.getLogger(__name__)
 
 def execute(**kwargs) -> db.Bag:
@@ -54,3 +56,15 @@ PRIMITIVE_METADATA = {
         "closure": "closure"
     }
 }
+
+KERNEL = execute
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="dask_map",
+    namespace="default",
+    kind="sequence",
+    arity=AritySpec.fixed(2),
+    attrs_schema={},
+    planner=default_planner_factory("default.dask_map", kind="sequence"),
+    kernel_name="default.dask_map",
+    description="Apply a closure to each element of a Dask bag",
+)

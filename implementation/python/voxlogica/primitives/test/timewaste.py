@@ -8,6 +8,9 @@ testing purposes where you want to consume CPU cycles with two numeric arguments
 
 import numpy as np
 
+from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+
+
 def execute(**kwargs):
     """
     Execute timewaste computation (expensive numpy operations)
@@ -110,3 +113,16 @@ def execute(**kwargs):
         
     except Exception as e:
         raise ValueError(f"Timewaste computation failed: {e}") from e
+
+
+KERNEL = execute
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="timewaste",
+    namespace="test",
+    kind="scalar",
+    arity=AritySpec.fixed(2),
+    attrs_schema={},
+    planner=default_planner_factory("test.timewaste", kind="scalar"),
+    kernel_name="test.timewaste",
+    description="CPU-intensive numeric workload for stress testing",
+)
