@@ -8,6 +8,7 @@ with Write-Ahead Logging (WAL) mode for thread-safe operations.
 import sqlite3
 import json
 import pickle
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Dict, Set, Union, List, Callable
 from contextlib import contextmanager
@@ -928,3 +929,76 @@ def set_storage(storage: StorageBackend) -> None:
     """Set global storage instance (for testing)."""
     global _storage_instance
     _storage_instance = storage
+
+
+@dataclass
+class MaterializationRecord:
+    """Runtime materialization entry for a symbolic node."""
+
+    status: str
+    value: Any = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class DefinitionStore:
+    """Immutable symbolic definition store: NodeId -> NodeSpec."""
+
+    def __init__(self, definitions: Optional[Dict[str, Any]] = None):
+        self._definitions: Dict[str, Any] = dict(definitions or {})
+
+    def get(self, node_id: str) -> Any:
+        return self._definitions[node_id]
+
+    def contains(self, node_id: str) -> bool:
+        return node_id in self._definitions
+
+    def items(self):
+        return self._definitions.items()
+
+    def snapshot(self) -> Dict[str, Any]:
+        return dict(self._definitions)
+
+
+class MaterializationStore:
+    """Runtime artifact store: NodeId -> result and metadata."""
+
+    def __init__(self):
+        self._records: Dict[str, MaterializationRecord] = {}
+
+    def has(self, node_id: str) -> bool:
+        record = self._records.get(node_id)
+        return record is not None and record.status == "materialized"
+
+    def get(self, node_id: str) -> Any:
+        record = self._records.get(node_id)
+        if record is None or record.status != "materialized":
+            raise KeyError(f"No materialized record for node {node_id}")
+        return record.value
+
+    def put(self, node_id: str, value: Any, metadata: Optional[Dict[str, Any]] = None) -> None:
+        self._records[node_id] = MaterializationRecord(
+            status="materialized",
+            value=value,
+            metadata=dict(metadata or {}),
+        )
+
+    def fail(self, node_id: str, message: str) -> None:
+        self._records[node_id] = MaterializationRecord(
+            status="failed",
+            value=None,
+            metadata={"error": message},
+        )
+
+    def metadata(self, node_id: str) -> Dict[str, Any]:
+        record = self._records.get(node_id)
+        if record is None:
+            return {}
+        return dict(record.metadata)
+
+    @property
+    def completed_nodes(self) -> set[str]:
+        return {
+            node_id
+            for node_id, record in self._records.items()
+            if record.status == "materialized"
+        }
