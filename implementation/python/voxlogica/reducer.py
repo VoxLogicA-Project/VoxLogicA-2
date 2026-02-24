@@ -1,579 +1,388 @@
-"""
-VoxLogicA Reducer module - Python implementation (simplified)
-"""
+"""Symbolic reducer: AST -> SymbolicPlan."""
 
 from __future__ import annotations
 
-from typing import (
-    Dict,
-    List,
-    Set,
-    Optional,
-    Sequence,
-    Tuple,
-    Union,
-    Any
-)
 from dataclasses import dataclass, field
 from pathlib import Path
-
-import hashlib
-import canonicaljson
+from typing import Any, Optional, Sequence
 import logging
+
+from voxlogica.lazy import GoalSpec, NodeId, NodeSpec, SymbolicPlan
+from voxlogica.lazy.hash import hash_node
+from voxlogica.parser import (
+    Command,
+    Declaration,
+    EBool,
+    ECall,
+    EFor,
+    ELet,
+    ENumber,
+    EString,
+    Expression,
+    Import,
+    Print,
+    Program,
+    Save,
+    parse_import,
+    parse_program_content,
+)
+from voxlogica.primitives.api import PrimitiveCall
+from voxlogica.primitives.registry import PrimitiveRegistry
 
 logger = logging.getLogger(__name__)
 
-from voxlogica.lazy import LazyCompilation, ForLoopCompilation
-from voxlogica.parser import (
-    Expression,
-    ECall,
-    ENumber,
-    EBool,
-    EString,
-    EFor,
-    ELet,
-    Command,
-    Declaration,
-    Save,
-    Print,
-    Import,
-    Program,
-    parse_program,
-    parse_program_content,
-    parse_import,
-)
+identifier = str
+Stack = list[tuple[str, str]]
 
-# Type aliases
-type identifier = str
-type NodeId = str
-type Arguments = Dict[str, NodeId]
-type Stack = list[Tuple[str, str]]
 
-@dataclass
+@dataclass(frozen=True)
 class ConstantValue:
-    """Constant value"""    
-    value: str | bool | int | float
+    """Compatibility view for constant nodes."""
 
-@dataclass
+    value: Any
+
+
+@dataclass(frozen=True)
 class Operation:
-    """Operation with operator and arguments"""
+    """Compatibility view for primitive nodes."""
+
     operator: str
-    arguments: Arguments
+    arguments: dict[str, NodeId]
+    attrs: dict[str, Any] = field(default_factory=dict)
 
-@dataclass  
+
+@dataclass(frozen=True)
 class ClosureValue:
-    """Closure value that captures a variable, expression, and environment"""
-    variable: str  # The parameter name (e.g., 'x' in lambda x: ...)
-    expression: Expression  # The body expression as AST
-    environment: 'Environment'  # The captured environment
-    workplan: 'WorkPlan'  # Reference to the workplan for context
-    _expression_cache: Dict[str, str] = field(default_factory=dict, init=False)  # Cache for expression reductions
-    
-    def _create_cache_key(self, env: 'Environment') -> str:
-        """Create a cache key based on the relevant environment variables.
-        
-        Includes ALL variables that might affect the expression result,
-        including the loop variable to ensure unique operations per iteration.
-        """
-        import hashlib
-        
-        # Get all variable names referenced in the expression
-        referenced_vars = self._get_referenced_variables(self.expression)
-        
-        # Create a minimal environment representation with ALL referenced variables
-        # INCLUDING the loop variable for unique operation IDs per iteration
-        relevant_env = {}
-        for var in referenced_vars:
-            if var in env.bindings:
-                # Create a serializable representation of the binding
-                binding = env.bindings[var]
-                if hasattr(binding, 'operation_id'):
-                    relevant_env[var] = binding.operation_id
-                else:
-                    relevant_env[var] = str(binding)
-        
-        # Combine expression syntax with relevant environment
-        cache_data = {
-            'expression': self.expression.to_syntax(),
-            'environment': relevant_env
-        }
-        
-        import canonicaljson
-        canonical_json = canonicaljson.encode_canonical_json(cache_data)
-        return hashlib.sha256(canonical_json).hexdigest()[:16]  # Use shorter hash for cache key
-    
-    def _get_referenced_variables(self, expr: Expression) -> Set[str]:
-        """Get all variable names referenced in an expression."""
-        from voxlogica.parser import ECall, ENumber, EBool, EString, EFor, ELet
-        
-        referenced = set()
-        
-        if isinstance(expr, ECall):
-            # For function calls, the identifier might be a variable reference (e.g., 'img')
-            # Simple heuristic: if it's a single identifier with no arguments, it's likely a variable
-            if not expr.arguments:
-                referenced.add(expr.identifier)
-            
-            # Recursively check arguments
-            for arg in expr.arguments:
-                referenced.update(self._get_referenced_variables(arg))
-                
-        elif isinstance(expr, EFor):
-            # For for-loops, check the iterable and body, but exclude the loop variable
-            referenced.update(self._get_referenced_variables(expr.iterable))
-            # Don't include the for-loop variable itself in the referenced variables
-            body_vars = self._get_referenced_variables(expr.body)
-            # Remove the loop variable from body references
-            body_vars.discard(expr.variable)
-            referenced.update(body_vars)
-            
-        elif isinstance(expr, ELet):
-            # For let expressions, check the value and body
-            referenced.update(self._get_referenced_variables(expr.value))
-            # Check body but exclude the let variable
-            body_vars = self._get_referenced_variables(expr.body)
-            body_vars.discard(expr.variable)
-            referenced.update(body_vars)
-            
-        elif isinstance(expr, (ENumber, EBool, EString)):
-            # Literals don't reference variables
-            pass
-        
-        return referenced
-    
-    def __call__(self, value: Any) -> Any:
-        """Execute the closure with the given value for the variable - returns computed result via storage system"""
-        try:
-            logger.debug(f"Executing closure: variable={self.variable}, expression={self.expression.to_syntax()}")
-            
-            # Check if the expression actually references the loop variable
-            referenced_vars = self._get_referenced_variables(self.expression)
-            variable_is_referenced = self.variable in referenced_vars
-            
-            # Only create a binding for the loop variable if it's actually referenced
-            if variable_is_referenced:
-                # For non-serializable objects (like Images), we can't create constant nodes
-                # Instead, we need to handle them differently in the environment
-                try:
-                    # Try to add the value as a constant node in the workplan
-                    value_node = ConstantValue(value=value)
-                    value_id = self.workplan.add_node(value_node)
-                    value_dval = OperationVal(value_id)
-                    logger.debug(f"Added value node {value_id[:8]}... = {type(value).__name__}")
-                except (TypeError, ValueError) as serialize_error:
-                    # Value is not serializable (e.g., SimpleITK Image)
-                    # Create a special handling for non-serializable values
-                    logger.debug(f"Value {type(value).__name__} is not serializable, using direct binding")
-                    
-                    # For non-serializable values, we need to store them temporarily and 
-                    # use a placeholder in the environment
-                    import uuid
-                    temp_id = f"temp_{uuid.uuid4().hex[:16]}"
-                    
-                    # Store the non-serializable value in a temporary location
-                    # We'll use the execution engine's storage for this
-                    try:
-                        from voxlogica.execution import get_execution_engine
-                        engine = get_execution_engine()
-                        # Use memory cache for non-serializable objects
-                        engine.storage._memory_cache[temp_id] = value
-                        value_dval = OperationVal(temp_id)
-                        logger.debug(f"Stored non-serializable value with temp ID {temp_id[:8]}...")
-                    except Exception as e:
-                        logger.warning(f"Failed to store non-serializable value: {e}")
-                        # As a fallback, return the original value directly without serialization
-                        # This will bypass the normal DAG construction for this value
-                        logger.debug(f"Using direct value binding for non-serializable {type(value).__name__}")
-                        # We'll create a temporary direct value binding
-                        temp_id = f"direct_value_{id(value)}"
-                        value_dval = OperationVal(temp_id)
-                
-                # Create environment with the variable bound to this value
-                env_with_binding = self.environment.bind(self.variable, value_dval)
-            else:
-                # Loop variable is not referenced, so don't create a binding for it
-                # This optimizes loop-invariant expressions by avoiding unnecessary work
-                logger.debug(f"Loop variable '{self.variable}' not referenced in expression, optimizing cache key")
-                env_with_binding = self.environment
-            
-            # Check expression cache before reducing
-            cache_key = self._create_cache_key(env_with_binding)
-            if cache_key in self._expression_cache:
-                result_id = self._expression_cache[cache_key]
-                logger.debug(f"Retrieved expression result from cache: {result_id[:8]}...")
-            else:
-                # Reduce the expression with this environment, using the existing workplan
-                # This builds the DAG lazily without executing anything
-                result_id = reduce_expression(env_with_binding, self.workplan, self.expression)
-                
-                # Cache the result for future iterations
-                self._expression_cache[cache_key] = result_id
-                logger.debug(f"Cached expression result: {result_id[:8]}...")
-            
-            logger.debug(f"Reduced expression to result_id {result_id[:8]}...")
-            
-            # Use the storage system to resolve the operation ID
-            try:
-                from voxlogica.execution import get_execution_engine
-                engine = get_execution_engine()
-                
-                # Check if the result is already computed and stored
-                if engine.storage.exists(result_id):
-                    result = engine.storage.retrieve(result_id)
-                    logger.debug(f"Retrieved cached result for {result_id[:8]}...")
-                    return result
-                else:
-                    # The result isn't cached yet - we need to execute it
-                    logger.debug(f"Operation {result_id[:8]}... not yet computed, executing now")
-                    
-                    # Get the operation from the workplan
-                    if result_id in self.workplan.nodes:
-                        operation = self.workplan.nodes[result_id]
-                        if isinstance(operation, Operation):
-                            # Execute the operation directly using the engine's execution logic
-                            try:
-                                # Execute the operation directly
-                                result = self._execute_operation_directly(engine, result_id, operation)
-                                logger.debug(f"Executed operation {result_id[:8]}... with result: {type(result)}")
-                                return result
-                            except Exception as exec_e:
-                                logger.warning(f"Failed to execute operation {result_id[:8]}...: {exec_e}")
-                                # Return operation ID as fallback
-                                return result_id
-                        elif isinstance(operation, ConstantValue):
-                            # It's a constant value
-                            return operation.value
-                        else:
-                            # Other node types, return operation ID
-                            return result_id
-                    else:
-                        # Operation not found in workplan, return operation ID
-                        logger.debug(f"Operation {result_id[:8]}... not found in workplan")
-                        return result_id
-                    
-            except Exception as e:
-                logger.warning(f"Failed to access storage for {result_id[:8]}...: {e}")
-                # Fallback: return the operation ID
-                return result_id
-                
-        except Exception as e:
-            logger.warning(f"Closure execution failed: {e}")
-            import traceback
-            logger.warning(f"Closure execution traceback: {traceback.format_exc()}")
-            # Fallback to returning the input value
-            return value
+    """Compatibility view for closure nodes."""
 
-    def _execute_operation_directly(self, engine, operation_id: str, operation: 'Operation') -> Any:
-        """Execute a single operation directly and store the result"""
-        try:
-            # First check if result already exists
-            if engine.storage.exists(operation_id):
-                return engine.storage.retrieve(operation_id)
-            
-            # Try to mark as running, with retry logic for database locking
-            import time
-            for attempt in range(3):
-                try:
-                    if engine.storage.mark_running(operation_id):
-                        break
-                    else:
-                        # Already being computed by another process, wait and retrieve
-                        time.sleep(0.1 * attempt)
-                        if engine.storage.exists(operation_id):
-                            return engine.storage.retrieve(operation_id)
-                except Exception as e:
-                    if "locked" in str(e).lower() and attempt < 2:
-                        time.sleep(0.1 * (attempt + 1))
-                        continue
-                    else:
-                        raise
-            else:
-                # If we couldn't mark as running after retries, try to retrieve result
-                if engine.storage.exists(operation_id):
-                    return engine.storage.retrieve(operation_id)
-                else:
-                    # As a last resort, return the operation ID
-                    return operation_id
-            
-            # Load the primitive function
-            primitive_func = engine.primitives.load_primitive(operation.operator)
-            
-            # Resolve arguments recursively
-            resolved_args = {}
-            for key, arg_id in operation.arguments.items():
-                if arg_id in self.workplan.nodes:
-                    arg_node = self.workplan.nodes[arg_id]
-                    if isinstance(arg_node, ConstantValue):
-                        resolved_args[key] = arg_node.value
-                    elif isinstance(arg_node, Operation):
-                        # Recursively execute dependencies
-                        resolved_args[key] = self._execute_operation_directly(engine, arg_id, arg_node)
-                    else:
-                        resolved_args[key] = arg_id
-                else:
-                    # Try to retrieve from storage first
-                    if engine.storage.exists(arg_id):
-                        resolved_args[key] = engine.storage.retrieve(arg_id)
-                    else:
-                        # Check if it's a temporary value in memory cache
-                        if hasattr(engine.storage, '_memory_cache') and arg_id in engine.storage._memory_cache:
-                            resolved_args[key] = engine.storage._memory_cache[arg_id]
-                        else:
-                            # Use the argument ID as-is (might be a literal value)
-                            resolved_args[key] = arg_id
-            
-            # Map numeric argument keys to semantic names for primitives
-            resolved_args = self._map_arguments_to_semantic_names(operation.operator, resolved_args)
-            
-            # Execute the primitive
-            result = primitive_func(**resolved_args)
-            
-            # Store the result (concurrent execution may cause benign database contention)
-            try:
-                engine.storage.store(operation_id, result)
-            except Exception as store_e:
-                # Database locks are expected during concurrent execution - not an error
-                error_msg = str(store_e).lower()
-                if "locked" in error_msg or "busy" in error_msg or "database" in error_msg:
-                    logger.debug(f"Concurrent storage attempt for {operation_id[:8]}... (benign): {store_e}")
-                else:
-                    logger.warning(f"Failed to store result for {operation_id[:8]}...: {store_e}")
-            
-            return result
-                
-        except Exception as e:
-            logger.error(f"Failed to execute operation {operation_id[:8]}...: {e}")
-            try:
-                engine.storage.mark_failed(operation_id, str(e))
-            except:
-                pass  # Ignore storage errors when marking failed
-            # Return the operation ID as fallback instead of raising
-            return operation_id
+    variable: str
+    body: str
+    captures: tuple[tuple[str, NodeId], ...]
 
-    def _map_arguments_to_semantic_names(self, operator: Any, args: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Map numeric argument keys to semantic names based on operator.
-        
-        Converts positional argument keys ('0', '1', etc.) to meaningful names
-        like 'left'/'right' for binary operators, improving primitive function signatures.
-        
-        Note: SimpleITK functions are excluded from mapping as they expect numeric argument keys.
-        
-        Args:
-            operator: Operator to map arguments for
-            args: Arguments with numeric keys
-            
-        Returns:
-            Arguments with semantic keys where applicable
-        """
-        operator_str = str(operator).lower()
-        
-        # Check if this is a SimpleITK function - if so, don't map arguments
-        # SimpleITK functions need numeric keys ('0', '1') for their *args handling
-        if self._is_simpleitk_function(operator_str):
-            return args
-        
-        # Binary operators mapping (only for built-in VoxLogicA primitives)
-        if operator_str in ['+', 'add', 'addition', '-', 'sub', 'subtract', 'subtraction',
-                           '*', 'mul', 'multiply', 'multiplication', '/', 'div', 'divide', 'division']:
-            if '0' in args and '1' in args:
-                return {'left': args['0'], 'right': args['1']}
-        
-        # If no mapping found, return original args
-        return args
-    
-    def _is_simpleitk_function(self, operator_str: str) -> bool:
-        """Check if an operator is a SimpleITK function."""
-        try:
-            # Import SimpleITK primitives and check if operator is registered
-            from voxlogica.primitives.simpleitk import register_primitives
-            simpleitk_primitives = register_primitives()
-            
-            # Check both exact name and capitalized versions
-            return (operator_str in simpleitk_primitives or 
-                    operator_str.capitalize() in simpleitk_primitives or
-                    operator_str.upper() in simpleitk_primitives)
-        except ImportError:
-            # SimpleITK not available
-            return False
-        except Exception:
-            # Any other error, assume not SimpleITK
-            return False
 
-type Node = ConstantValue | Operation | ClosureValue
+Goal = GoalSpec
+Node = NodeSpec
 
-@dataclass
-class Goal:
-    """Goal with operation type, operation ID, and name"""
-    operation: str  # "print" or "save"
-    id: NodeId
-    name: str
 
 @dataclass
 class WorkPlan:
-    """A purely lazy DAG of operations with goals - compilation happens on-demand"""
-    nodes: Dict[NodeId, Node] = field(default_factory=dict)
-    goals: List[Goal] = field(default_factory=list)
-    _imported_namespaces: Set[str] = field(default_factory=set)
-    lazy_compilations: List[LazyCompilation] = field(default_factory=list)
-    for_loop_compilations: List[ForLoopCompilation] = field(default_factory=list)
-    _expanded: bool = False
+    """Reducer output container with compatibility helpers."""
+
+    nodes: dict[NodeId, NodeSpec] = field(default_factory=dict)
+    goals: list[GoalSpec] = field(default_factory=list)
+    imported_namespaces: list[str] = field(default_factory=list)
+    registry: PrimitiveRegistry = field(default_factory=PrimitiveRegistry, repr=False)
+
+    def add_node(self, node: NodeSpec) -> NodeId:
+        node_id = hash_node(node)
+        if node_id not in self.nodes:
+            self.nodes[node_id] = node
+        return node_id
 
     def add_goal(self, operation: str, operation_id: NodeId, name: str) -> None:
-        """Add a goal to the work plan"""
-        self.goals.append(Goal(operation, operation_id, name))
-    
-    def _compute_node_id(self,node: Node) -> NodeId:
-        """Compute content-addressed SHA256 ID for an operation"""
-        import dataclasses
-        
-        # Special handling for ClosureValue which contains non-serializable objects
-        if isinstance(node, ClosureValue):
-            # Create a serializable representation using the expression syntax
-            serializable_dict = {
-                'type': 'ClosureValue',
-                'variable': node.variable,
-                'expression_str': node.expression.to_syntax(),
-                # We can't include environment or workplan in the hash since they're not serializable
-                # This means closure identity is based on variable name and expression only
-            }
-            canonical_json = canonicaljson.encode_canonical_json(serializable_dict)
-        else:
-            # Convert dataclass to dict for JSON serialization
-            if dataclasses.is_dataclass(node):
-                node_dict = dataclasses.asdict(node)
-            else:
-                node_dict = node
-            canonical_json = canonicaljson.encode_canonical_json(node_dict)
-        
-        sha256_hash = hashlib.sha256(canonical_json).hexdigest()
-        return sha256_hash
-    
-    def add_node(self, node: Node) -> NodeId:
-        """Add an operation to the work plan if not already present, return operation ID"""
-        operation_id = self._compute_node_id(node)
-        if operation_id not in self.nodes:
-            self.nodes[operation_id] = node
-        return operation_id
+        self.goals.append(GoalSpec(operation=operation, id=operation_id, name=name))
 
-    def add_lazy_compilation(self, lazy_comp: LazyCompilation) -> None:
-        """Add a lazy compilation to be processed on-demand"""
-        self.lazy_compilations.append(lazy_comp)
+    def import_namespace(self, namespace: str) -> None:
+        self.registry.import_namespace(namespace)
+        if namespace not in self.imported_namespaces:
+            self.imported_namespaces.append(namespace)
 
-    def add_for_loop_compilation(self, for_loop_comp: ForLoopCompilation) -> None:
-        """Add a for loop compilation to be processed on-demand"""
-        self.for_loop_compilations.append(for_loop_comp)
+    @property
+    def operations(self) -> dict[NodeId, Operation]:
+        output: dict[NodeId, Operation] = {}
+        for node_id, node in self.nodes.items():
+            if node.kind != "primitive":
+                continue
+            arguments = {str(index): arg for index, arg in enumerate(node.args)}
+            arguments.update(dict(node.kwargs))
+            output[node_id] = Operation(
+                operator=node.operator,
+                arguments=arguments,
+                attrs=dict(node.attrs),
+            )
+        return output
 
-    def _expand_and_compile_all(self) -> None:
-        """Expand all lazy compilations - triggered on first access to operations"""
-        if self._expanded:
-            return
-            
-        # Process all lazy compilations
-        for lazy_comp in self.lazy_compilations:
-            # For now, we'll process them immediately
-            # TODO: Implement parameter binding and lazy evaluation
-            pass
-
-        # Process all for loop compilations with Dask bag expansion
-        for for_loop_comp in self.for_loop_compilations:
-            self._expand_for_loop(for_loop_comp)
-            
-        self._expanded = True
-
-    def _expand_for_loop(self, for_loop_comp: ForLoopCompilation) -> NodeId:
-        """Expand a for loop using Dask bags"""
-        logger.debug(f"Expanding for loop: {for_loop_comp}")
-        
-        # First, evaluate the iterable expression to get the dataset
-        iterable_id = reduce_expression(
-            for_loop_comp.environment, 
-            self, 
-            for_loop_comp.iterable_expr,
-            for_loop_comp.stack
-        )
-        
-        # Create a map operation that applies the body to each element
-        # The for loop "for x in iterable do body" becomes "map(lambda x: body, iterable)"
-        # This will be represented as a "dask_map" operation
-        
-        # Create constant values for the variable name and body expression
-        variable_const = ConstantValue(for_loop_comp.variable)
-        variable_id = self.add_node(variable_const)
-        
-        body_const = ConstantValue(str(for_loop_comp.body_expr))
-        body_id = self.add_node(body_const)
-        
-        map_args = {
-            "0": iterable_id,  # The iterable (should be a Dask bag)
-            "variable": variable_id,  # The loop variable name as constant
-            "body": body_id  # The body expression (as string for now) as constant
+    @property
+    def constants(self) -> dict[NodeId, ConstantValue]:
+        return {
+            node_id: ConstantValue(value=node.attrs.get("value"))
+            for node_id, node in self.nodes.items()
+            if node.kind == "constant"
         }
-        
-        map_node = Operation(operator="dask_map", arguments=map_args)
-        map_id = self.add_node(map_node)
-        
-        logger.debug(f"Created dask_map operation: {map_id}")
-        return map_id
 
     @property
-    def operations(self) -> Dict[NodeId, Operation]:
-        """Return only Operation nodes - triggers lazy compilation on first access"""
-        if not self._expanded:
-            self._expand_and_compile_all()
-        return {k: v for k, v in self.nodes.items() if isinstance(v, Operation)}
+    def closures(self) -> dict[NodeId, ClosureValue]:
+        output: dict[NodeId, ClosureValue] = {}
+        for node_id, node in self.nodes.items():
+            if node.kind != "closure":
+                continue
+            output[node_id] = ClosureValue(
+                variable=str(node.attrs.get("parameter", "")),
+                body=str(node.attrs.get("body", "")),
+                captures=tuple(
+                    zip(
+                        tuple(node.attrs.get("capture_names", ())),
+                        node.args,
+                        strict=False,
+                    )
+                ),
+            )
+        return output
+
+    def to_symbolic_plan(self) -> SymbolicPlan:
+        return SymbolicPlan(
+            nodes=dict(self.nodes),
+            goals=list(self.goals),
+            imported_namespaces=tuple(self.imported_namespaces),
+        )
 
     @property
-    def constants(self) -> Dict[NodeId, ConstantValue]:
-        """Return only ConstantValue nodes."""
-        return {k: v for k, v in self.nodes.items() if isinstance(v, ConstantValue)}
-    
-    @property
-    def closures(self) -> Dict[NodeId, ClosureValue]:
-        """Return only ClosureValue nodes."""
-        return {k: v for k, v in self.nodes.items() if isinstance(v, ClosureValue)}
+    def definition_store(self) -> dict[NodeId, NodeSpec]:
+        return self.nodes
 
-@dataclass
+    def __str__(self) -> str:
+        return (
+            "WorkPlan(" 
+            f"nodes={len(self.nodes)}, goals={len(self.goals)}, "
+            f"imports={self.imported_namespaces}"
+            ")"
+        )
+
+
+@dataclass(frozen=True)
 class OperationVal:
-    """Operation value"""
+    """Symbolic ref in environment."""
+
     operation_id: NodeId
 
-@dataclass
+
+@dataclass(frozen=True)
 class FunctionVal:
-    """Function value"""
-    environment: Environment
-    parameters: List[identifier]
+    """Function value used for declaration-level closures."""
+
+    environment: "Environment"
+    parameters: list[identifier]
     expression: Expression
 
-# Dynamic values for evaluation
+
 DVal = OperationVal | FunctionVal
 
+
 class Environment:
-    """Environment for variable bindings"""
-    
-    def __init__(self, bindings: Optional[Dict[identifier, DVal]] = None):
+    """Lexical environment for reducer bindings."""
+
+    def __init__(self, bindings: Optional[dict[identifier, DVal]] = None):
         self.bindings = bindings or {}
-    
+
     def try_find(self, ide: identifier) -> Optional[DVal]:
-        """Try to find a binding for an identifier"""
         return self.bindings.get(ide)
-    
+
     def bind(self, ide: identifier, expr: DVal) -> "Environment":
-        """Create a new environment with an additional binding"""
         new_bindings = dict(self.bindings)
         new_bindings[ide] = expr
         return Environment(new_bindings)
-    
-    def bind_list(self, ide_list: List[identifier], expr_list: Sequence[DVal]) -> "Environment":
-        """Create a new environment with multiple bindings"""
+
+    def bind_list(self, ide_list: list[identifier], expr_list: Sequence[DVal]) -> "Environment":
         if len(ide_list) != len(expr_list):
-            raise RuntimeError("Internal error in module Reducer. Please report.")
-        
+            raise RuntimeError("Reducer internal error: arity mismatch")
+
         env = self
-        for ide, expr in zip(ide_list, expr_list):
+        for ide, expr in zip(ide_list, expr_list, strict=True):
             env = env.bind(ide, expr)
-        
+
         return env
+
+
+def _collect_referenced_variables(expr: Expression) -> set[str]:
+    if isinstance(expr, ECall):
+        refs = {expr.identifier}
+        for arg in expr.arguments:
+            refs.update(_collect_referenced_variables(arg))
+        return refs
+
+    if isinstance(expr, EFor):
+        refs = _collect_referenced_variables(expr.iterable)
+        body_refs = _collect_referenced_variables(expr.body)
+        body_refs.discard(expr.variable)
+        refs.update(body_refs)
+        return refs
+
+    if isinstance(expr, ELet):
+        refs = _collect_referenced_variables(expr.value)
+        body_refs = _collect_referenced_variables(expr.body)
+        body_refs.discard(expr.variable)
+        refs.update(body_refs)
+        return refs
+
+    return set()
+
+
+def _create_constant_node(work_plan: WorkPlan, value: Any) -> NodeId:
+    return work_plan.add_node(
+        NodeSpec(
+            kind="constant",
+            operator="constant",
+            attrs={"value": value},
+            output_kind="scalar",
+        )
+    )
+
+
+def _serialize_function_capture(
+    name: str,
+    function_value: FunctionVal,
+    seen: set[str],
+) -> dict[str, Any]:
+    if name in seen:
+        return {
+            "parameters": list(function_value.parameters),
+            "body": function_value.expression.to_syntax(),
+            "captures": {},
+            "functions": {},
+        }
+
+    next_seen = set(seen)
+    next_seen.add(name)
+
+    capture_refs: dict[str, NodeId] = {}
+    nested_functions: dict[str, dict[str, Any]] = {}
+
+    referenced = _collect_referenced_variables(function_value.expression)
+    for variable in function_value.parameters:
+        referenced.discard(variable)
+
+    for referenced_name in sorted(referenced):
+        binding = function_value.environment.try_find(referenced_name)
+        if isinstance(binding, OperationVal):
+            capture_refs[referenced_name] = binding.operation_id
+        elif isinstance(binding, FunctionVal):
+            nested_functions[referenced_name] = _serialize_function_capture(
+                referenced_name,
+                binding,
+                next_seen,
+            )
+
+    return {
+        "parameters": list(function_value.parameters),
+        "body": function_value.expression.to_syntax(),
+        "captures": capture_refs,
+        "functions": nested_functions,
+    }
+
+
+def _create_closure_node(
+    variable: str,
+    expression: Expression,
+    environment: Environment,
+    work_plan: WorkPlan,
+) -> NodeId:
+    referenced = _collect_referenced_variables(expression)
+    referenced.discard(variable)
+
+    captures: list[tuple[str, NodeId]] = []
+    function_captures: dict[str, dict[str, Any]] = {}
+    for name in sorted(referenced):
+        binding = environment.try_find(name)
+        if isinstance(binding, OperationVal):
+            captures.append((name, binding.operation_id))
+        elif isinstance(binding, FunctionVal):
+            function_captures[name] = _serialize_function_capture(name, binding, set())
+
+    capture_names = tuple(name for name, _ in captures)
+    capture_args = tuple(node_id for _, node_id in captures)
+
+    return work_plan.add_node(
+        NodeSpec(
+            kind="closure",
+            operator="closure",
+            args=capture_args,
+            attrs={
+                "parameter": variable,
+                "body": expression.to_syntax(),
+                "capture_names": list(capture_names),
+                "function_captures": function_captures,
+            },
+            output_kind="closure",
+        )
+    )
+
+
+def _plan_primitive_call(
+    work_plan: WorkPlan,
+    identifier: str,
+    args: tuple[NodeId, ...],
+    kwargs: tuple[tuple[str, NodeId], ...] = (),
+    attrs: Optional[dict[str, Any]] = None,
+    output_kind: str = "scalar",
+) -> NodeId:
+    attrs = dict(attrs or {})
+    call = PrimitiveCall(args=args, kwargs=kwargs, attrs=attrs)
+
+    try:
+        spec = work_plan.registry.get_spec(identifier)
+        spec.arity.validate(len(args) + len(kwargs))
+        node = spec.planner(call)
+    except Exception:
+        node = NodeSpec(
+            kind="primitive",
+            operator=identifier,
+            args=args,
+            kwargs=kwargs,
+            attrs=attrs,
+            output_kind=output_kind,
+        )
+
+    if output_kind != "unknown" and node.output_kind != output_kind:
+        node = NodeSpec(
+            kind=node.kind,
+            operator=node.operator,
+            args=node.args,
+            kwargs=node.kwargs,
+            attrs=dict(node.attrs),
+            output_kind=output_kind,
+        )
+
+    return work_plan.add_node(node)
+
+
+def _reduce_map_call(
+    env: Environment,
+    work_plan: WorkPlan,
+    call_expr: ECall,
+    stack: Stack,
+) -> NodeId:
+    function_expr = call_expr.arguments[0]
+    sequence_expr = call_expr.arguments[1]
+
+    sequence_id = reduce_expression(env, work_plan, sequence_expr, stack)
+
+    if not isinstance(function_expr, ECall) or function_expr.arguments:
+        raise RuntimeError("map first argument must be a function identifier")
+
+    binding = env.try_find(function_expr.identifier)
+    if not isinstance(binding, FunctionVal):
+        raise RuntimeError(
+            f"map first argument '{function_expr.identifier}' must reference a function"
+        )
+
+    if len(binding.parameters) != 1:
+        raise RuntimeError(
+            f"map function '{function_expr.identifier}' must accept exactly one argument"
+        )
+
+    closure_id = _create_closure_node(
+        variable=binding.parameters[0],
+        expression=binding.expression,
+        environment=binding.environment,
+        work_plan=work_plan,
+    )
+
+    return _plan_primitive_call(
+        work_plan,
+        identifier=call_expr.identifier,
+        args=(sequence_id, closure_id),
+        output_kind="sequence",
+    )
 
 
 def reduce_expression(
@@ -582,253 +391,180 @@ def reduce_expression(
     expr: Expression,
     stack: Optional[Stack] = None,
 ) -> NodeId:
-    """Reduce an expression to an operation ID"""
     current_stack: Stack = [] if stack is None else stack
 
     if isinstance(expr, ENumber):
-        node = ConstantValue(expr.value)
-        op_id = work_plan.add_node(node)
-        return op_id
+        return _create_constant_node(work_plan, expr.value)
 
-    elif isinstance(expr, EBool):
-        node = ConstantValue(expr.value)
-        op_id = work_plan.add_node(node)
-        return op_id
+    if isinstance(expr, EBool):
+        return _create_constant_node(work_plan, expr.value)
 
-    elif isinstance(expr, EString):
-        node = ConstantValue(expr.value)
-        op_id = work_plan.add_node(node)
-        return op_id
+    if isinstance(expr, EString):
+        return _create_constant_node(work_plan, expr.value)
 
-    elif isinstance(expr, ECall):
-        # If it's a variable reference without arguments
+    if isinstance(expr, ECall):
+        if expr.identifier in {"map", "default.map"} and len(expr.arguments) == 2:
+            return _reduce_map_call(env, work_plan, expr, current_stack)
+
         if not expr.arguments:
             val = env.try_find(expr.identifier)
             if val is None:
-                # If not found, create a new operation node with the identifier as operator
-                node = Operation(operator=expr.identifier, arguments={})
-                op_id = work_plan.add_node(node)
-                return op_id
-
+                return _plan_primitive_call(
+                    work_plan,
+                    identifier=expr.identifier,
+                    args=(),
+                )
             if isinstance(val, OperationVal):
                 return val.operation_id
 
             call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
-            raise RuntimeError(f"Function '{expr.identifier}' called without arguments\n" + "\n".join(f"{identifier} at {position}" for identifier, position in call_stack))
-
-        # It's a function call with arguments
-        this_stack: Stack = [(expr.identifier, expr.position)] + current_stack
-        args_ops = [
-            reduce_expression(env, work_plan, arg, this_stack)
-            for arg in expr.arguments
-        ]
-
-        # Convert list to dict with string numeric keys
-        args_dict = {str(i): op_id for i, op_id in enumerate(args_ops)}
-
-        # Check if it's a variable with arguments
-        val = env.try_find(expr.identifier)
-        if val is None:
-            # If not found, create a new operation node with the identifier and arguments
-            node = Operation(operator=expr.identifier, arguments=args_dict)
-            op_id = work_plan.add_node(node)
-            return op_id
-
-        if isinstance(val, OperationVal):
-            call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
             raise RuntimeError(
-                f"'{expr.identifier}' is not a function but was called with arguments\n" + "\n".join(f"{identifier} at {position}" for identifier, position in call_stack),
+                f"Function '{expr.identifier}' called without arguments\n"
+                + "\n".join(
+                    f"{name} at {position}" for name, position in call_stack
+                )
             )
 
-        if isinstance(val, FunctionVal):
-            if len(val.parameters) != len(args_dict):
-                call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
-                raise RuntimeError(
-                    f"Function '{expr.identifier}' expects {len(val.parameters)} arguments but was called with {len(args_dict)}\n" + "\n".join(f"{identifier} at {position}" for identifier, position in call_stack),
-                )
-
-            # Create operation values from argument operation IDs
-            arg_vals: Sequence[DVal] = [
-                OperationVal(op_id) for op_id in args_dict.values()
-            ]
-
-            # Create a new environment with function arguments bound
-            func_env = val.environment.bind_list(val.parameters, arg_vals)
-
-            # Reduce the function body in the new environment
-            func_stack: Stack = [(expr.identifier, expr.position)] + current_stack
-            return reduce_expression(func_env, work_plan, val.expression, func_stack)
-
-    elif isinstance(expr, EFor):
-        # Handle for loop expression - add to lazy compilation and return a future result ID
-        for_loop_comp = ForLoopCompilation(
-            variable=expr.variable,
-            iterable_expr=expr.iterable,
-            body_expr=expr.body,
-            environment=env,
-            stack=current_stack
+        call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
+        args_ids = tuple(
+            reduce_expression(env, work_plan, arg, call_stack)
+            for arg in expr.arguments
         )
-        
-        # Immediately expand the for loop to get the map operation
-        map_id = _expand_for_loop_now(for_loop_comp, work_plan)
-        return map_id
 
-    elif isinstance(expr, ELet):
-        # Handle let expression: let x = value in body
-        # 1. Reduce the value expression in the current environment
+        val = env.try_find(expr.identifier)
+        if val is None:
+            inferred_kind = (
+                "sequence"
+                if expr.identifier
+                in {
+                    "for_loop",
+                    "default.for_loop",
+                    "map",
+                    "default.map",
+                    "range",
+                    "default.range",
+                    "load",
+                    "default.load",
+                }
+                else "scalar"
+            )
+            return _plan_primitive_call(
+                work_plan,
+                identifier=expr.identifier,
+                args=args_ids,
+                output_kind=inferred_kind,
+            )
+
+        if isinstance(val, OperationVal):
+            raise RuntimeError(
+                f"'{expr.identifier}' is not a function but was called with arguments"
+            )
+
+        if len(val.parameters) != len(args_ids):
+            raise RuntimeError(
+                f"Function '{expr.identifier}' expects {len(val.parameters)} arguments but was called with {len(args_ids)}"
+            )
+
+        arg_vals: Sequence[DVal] = [OperationVal(arg_id) for arg_id in args_ids]
+        func_env = val.environment.bind_list(val.parameters, arg_vals)
+        return reduce_expression(func_env, work_plan, val.expression, call_stack)
+
+    if isinstance(expr, EFor):
+        iterable_id = reduce_expression(env, work_plan, expr.iterable, current_stack)
+        closure_id = _create_closure_node(
+            variable=expr.variable,
+            expression=expr.body,
+            environment=env,
+            work_plan=work_plan,
+        )
+        return _plan_primitive_call(
+            work_plan,
+            identifier="for_loop",
+            args=(iterable_id, closure_id),
+            output_kind="sequence",
+        )
+
+    if isinstance(expr, ELet):
         value_id = reduce_expression(env, work_plan, expr.value, current_stack)
-        
-        # 2. Create a new environment with the variable bound to the value
-        value_dval = OperationVal(value_id)
-        new_env = env.bind(expr.variable, value_dval)
-        
-        # 3. Reduce the body expression in the new environment
-        body_id = reduce_expression(new_env, work_plan, expr.body, current_stack)
-        
-        return body_id
+        new_env = env.bind(expr.variable, OperationVal(value_id))
+        return reduce_expression(new_env, work_plan, expr.body, current_stack)
 
-    # This should never happen if the parser is correct
-    raise RuntimeError("Internal error in reducer: unknown expression type")
-    return ""
-
-
-def _expand_for_loop_now(for_loop_comp: ForLoopCompilation, work_plan: 'WorkPlan') -> NodeId:
-    """Expand a for loop immediately during expression reduction"""
-    logger.debug(f"Expanding for loop: {for_loop_comp}")
-    
-    # First, evaluate the iterable expression to get the dataset
-    iterable_id = reduce_expression(
-        for_loop_comp.environment, 
-        work_plan, 
-        for_loop_comp.iterable_expr,
-        for_loop_comp.stack
-    )
-    
-    # Create a closure that captures the variable and body expression with environment
-    closure = ClosureValue(
-        variable=for_loop_comp.variable,
-        expression=for_loop_comp.body_expr,
-        environment=for_loop_comp.environment,
-        workplan=work_plan
-    )
-    closure_id = work_plan.add_node(closure)
-    
-    # Create a for_loop operation instead of dask_map for unified execution
-    loop_args = {
-        "0": iterable_id,  # The iterable (e.g., range result)
-        "closure": closure_id  # The closure to apply
-    }
-    
-    loop_node = Operation(operator="for_loop", arguments=loop_args)
-    loop_id = work_plan.add_node(loop_node)
-    
-    logger.debug(f"Created for_loop operation with closure: {loop_id}")
-    return loop_id
+    raise RuntimeError("Reducer internal error: unknown expression type")
 
 
 def reduce_command(
     env: Environment,
     work_plan: WorkPlan,
-    parsed_imports: Set[str],
+    parsed_imports: set[str],
     command: Command,
-) -> tuple[Environment, List[Command]]:
-    """Reduce a command and update the environment"""
-    
+) -> tuple[Environment, list[Command]]:
     if isinstance(command, Declaration):
         if not command.arguments:
-            # It's a simple variable declaration
             op_id = reduce_expression(env, work_plan, command.expression)
             return env.bind(command.identifier, OperationVal(op_id)), []
-        else:
-            # It's a function declaration
-            return (
-                env.bind(
-                    command.identifier,
-                    FunctionVal(env, command.arguments, command.expression),
-                ),
-                [],
-            )
-    
-    elif isinstance(command, Save):
+
+        return (
+            env.bind(
+                command.identifier,
+                FunctionVal(env, command.arguments, command.expression),
+            ),
+            [],
+        )
+
+    if isinstance(command, Save):
         op_id = reduce_expression(env, work_plan, command.expression)
         work_plan.add_goal("save", op_id, command.identifier)
         return env, []
-    
-    elif isinstance(command, Print):
+
+    if isinstance(command, Print):
         op_id = reduce_expression(env, work_plan, command.expression)
         work_plan.add_goal("print", op_id, command.identifier)
         return env, []
-    
-    elif isinstance(command, Import):
-        # Avoid circular imports
+
+    if isinstance(command, Import):
         if command.path in parsed_imports:
             return env, []
-        
+
         parsed_imports.add(command.path)
-        
-        # Check if this is a namespace import or file import
-        # Remove quotes from the path
         import_path = command.path.strip('"\'')
-        
-        # Check if it's a known namespace (no file extension, single word)
-        is_namespace_import = ('.' not in import_path and 
-                              '/' not in import_path and 
-                              not import_path.endswith('.imgql'))
-        
+
+        is_namespace_import = (
+            "." not in import_path
+            and "/" not in import_path
+            and not import_path.endswith(".imgql")
+        )
+
         if is_namespace_import:
-            # This is a namespace import - signal the execution engine
-            # We'll store this information in the workplan for now
-            # The execution engine will handle the actual namespace import
-            work_plan._imported_namespaces.add(import_path)
-            logger.debug(f"Marked namespace '{import_path}' for import")
+            work_plan.import_namespace(import_path)
             return env, []
-        else:
-            # This is a file import - use existing logic
-            try:
-                import_commands = parse_import(import_path)
-                return env, import_commands
-            except Exception as e:
-                raise RuntimeError(f"Failed to import '{import_path}': {str(e)}")
-                return env, []
-    
-    # This should never happen if the parser is correct
-    raise RuntimeError("Internal error in reducer: unknown command type")
-    return env, []
+
+        imported_commands = parse_import(import_path)
+        return env, imported_commands
+
+    raise RuntimeError("Reducer internal error: unknown command type")
 
 
 def reduce_program(program: Program) -> WorkPlan:
-    """Reduce a program to a work plan"""
     work_plan = WorkPlan()
     env = Environment()
-    parsed_imports: Set[str] = set()
-    
-    # Auto-import stdlib before processing user commands
+    parsed_imports: set[str] = set()
+
     stdlib_path = Path(__file__).parent / "stdlib" / "stdlib.imgql"
     if stdlib_path.exists():
         try:
-            with open(stdlib_path, 'r', encoding='utf-8') as f:
-                stdlib_content = f.read()
-            
-            # Parse and process stdlib
-            stdlib_program = parse_program_content(stdlib_content)
-            
-            # Process stdlib commands first
-            stdlib_commands = list(stdlib_program.commands)
-            while stdlib_commands:
-                command = stdlib_commands.pop(0)
+            stdlib_program = parse_program_content(stdlib_path.read_text(encoding="utf-8"))
+            commands = list(stdlib_program.commands)
+            while commands:
+                command = commands.pop(0)
                 env, imports = reduce_command(env, work_plan, parsed_imports, command)
-                stdlib_commands = imports + stdlib_commands
-                
-        except Exception as e:
-            logging.warning(f"Failed to load stdlib: {e}")
-    
-    # Make a copy of the commands list that we can modify
+                commands = imports + commands
+        except Exception as exc:
+            logger.warning("Failed to load stdlib: %s", exc)
+
     commands = list(program.commands)
-    
-    # Process commands until there are none left
     while commands:
         command = commands.pop(0)
         env, imports = reduce_command(env, work_plan, parsed_imports, command)
         commands = imports + commands
-    
+
     return work_plan

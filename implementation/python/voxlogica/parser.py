@@ -442,3 +442,22 @@ def parse_program_content(content: str) -> Program:
         raise ValueError(f"Expected Program object, got {type(result).__name__}")
 
     return result
+
+
+def parse_expression_content(content: str) -> Expression:
+    """
+    Parse a single VoxLogicA expression from a content string.
+
+    This helper wraps the expression in a synthetic declaration and reuses the
+    existing program parser to keep grammar handling centralized.
+    """
+    wrapped = f"let expr_tmp = {content}"
+    program = parse_program_content(wrapped)
+    if not program.commands:
+        raise ValueError("Expected expression content, got empty program")
+
+    first = program.commands[0]
+    if not isinstance(first, Declaration):
+        raise ValueError("Expected declaration when parsing wrapped expression")
+
+    return first.expression

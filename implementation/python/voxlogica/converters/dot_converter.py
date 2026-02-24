@@ -1,37 +1,42 @@
-"""
-DOT (Graphviz) converter for WorkPlan objects
-"""
+"""DOT (Graphviz) converter for symbolic WorkPlan objects."""
+
+from __future__ import annotations
 
 from typing import Optional, Dict, Any
-from voxlogica.reducer import Operation, ConstantValue
+
+
+def _node_arguments(node: Any) -> list[str]:
+    args = list(getattr(node, "args", ()))
+    kwargs = [value for _, value in getattr(node, "kwargs", ())]
+    return args + kwargs
 
 
 def to_dot(work_plan: Any, buffer_assignment: Optional[Dict[str, int]] = None) -> str:
-    """Convert WorkPlan to DOT (Graphviz) format
-    
-    Args:
-        work_plan: The WorkPlan to convert
-        buffer_assignment: Optional mapping of operation IDs to buffer IDs
-        
-    Returns:
-        DOT format string representation of the WorkPlan
-    """
-    dot_str = "digraph {\n"
+    """Convert WorkPlan to DOT format."""
+
+    lines = ["digraph {"]
+
     for node_id, node in work_plan.nodes.items():
-        if isinstance(node, Operation):
-            op_name = str(node.operator)
-            op_label = f"{op_name}"
+        if node.kind == "primitive":
+            label = node.operator
             if buffer_assignment and node_id in buffer_assignment:
-                buffer_id = buffer_assignment[node_id]
-                op_label = f"{op_name}\\nbuf:{buffer_id}"
-            dot_str += f'  "{node_id}" [label="{op_label}"]\n'
-            for argument in node.arguments.values():
-                dot_str += f'  "{argument}" -> "{node_id}";\n'
-        elif isinstance(node, ConstantValue):
-            value_label = f"const: {repr(node.value)}"
+                label = f"{label}\\nbuf:{buffer_assignment[node_id]}"
+            lines.append(f'  "{node_id}" [label="{label}"]')
+            for dep_id in _node_arguments(node):
+                lines.append(f'  "{dep_id}" -> "{node_id}";')
+
+        elif node.kind == "constant":
+            value_label = f"const: {repr(node.attrs.get('value'))}"
             if buffer_assignment and node_id in buffer_assignment:
-                buffer_id = buffer_assignment[node_id]
-                value_label += f"\\nbuf:{buffer_id}"
-            dot_str += f'  "{node_id}" [label="{value_label}"]\n'
-    dot_str += "}\n"
-    return dot_str
+                value_label = f"{value_label}\\nbuf:{buffer_assignment[node_id]}"
+            lines.append(f'  "{node_id}" [label="{value_label}"]')
+
+        elif node.kind == "closure":
+            variable = node.attrs.get("parameter", "arg")
+            label = f"closure({variable})"
+            lines.append(f'  "{node_id}" [label="{label}"]')
+            for dep_id in _node_arguments(node):
+                lines.append(f'  "{dep_id}" -> "{node_id}";')
+
+    lines.append("}")
+    return "\n".join(lines) + "\n"
