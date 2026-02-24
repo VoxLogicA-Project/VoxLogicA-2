@@ -1,63 +1,70 @@
 # AGENT INSTRUCTIONS
 
-Directories:
+This file defines repository-local operating rules for coding agents.
+It must stay consistent with `META/SWE_POLICY.md` and `META/GUIDE.md`.
 
-META: SWE tasks and such, related to the process of producing VoxLogica2. Dev documentation as such is part of the artifact and currently in the doc directory.
+## 1. Source of Truth
 
-tests: all test-related infrastructure
+1. GitHub Issues are canonical for lifecycle management:
+- backlog
+- priority
+- ownership
+- status
+- closure
 
-implementation: implementation
+2. In-repo documentation under `doc/` is canonical for technical requirements and design contracts.
 
-Unless specifically instructed otherwise, do not create new directories or files outside of the tests, meta or implementation directories. It is forbidden to create new directories or files in the root directory or in places different from the ones above.
+3. `META/` is for policy and supporting notes. `META/ISSUES` is optional and non-canonical.
 
-Coding conventions:
-- Use Python 3.11+ syntax and features.
-- Use type hints and docstrings for all functions and classes.
-- Use the type keyword for type hints, use "|" instead of Union
+## 2. Where Changes Belong
 
-Git diff:
-- git diff uses a pager by default, so use git diff --no-pager to see the output directly in the terminal.
+1. Implementation code goes in `implementation/`.
+2. Tests go in `tests/`.
+3. Requirements/design docs go in `doc/`.
+4. Process and local notes go in `META/`.
+5. Avoid creating new root-level files unless explicitly requested.
 
-# MANDATORY POLICIES
+## 3. Issue and Requirement Workflow
 
-- Do not run arbitrary credible commands to run tests or execute the tool: use the two main scripts in tests and in the root dir of the repo. They take care of loading the correct venv
+1. Start substantial work from a GitHub issue.
+2. Reference the issue in commits and PRs (`#<issue-number>`).
+3. Use closing keywords in PRs when acceptance criteria are met (`Fixes #<issue-number>`).
+4. For behavior changes, update relevant requirement/design docs in `doc/` or explicitly state no requirements impact.
 
-- Do not create venvs: they are already there.
+## 4. Testing and Execution Workflow
 
-- Do not write tests OUTSIDE of the tests directory
+1. Do not create virtual environments; use existing project tooling.
+2. Prefer repository entrypoints:
+- `./voxlogica` for user-facing runs
+- `./tests/run-tests.sh` (or `python -m tests.run_tests` when needed by test infra) for test suites
+3. Do not add tests outside `tests/`.
+4. New behavior should include tests, or a documented reason for no test.
 
-- Do not write tests randomly in the test directory: the testing infrastructure is well documented and new tests go there
+## 5. Coding Standards
 
-- Do not report issues at random: create a folder in the OPEN directory, add a README and all useful material, link issues to tests and tests to issues
+1. Use Python 3.11+ syntax and typing.
+2. Use clear docstrings for public functions/classes and complex internal logic.
+3. Prefer deterministic coordination over timeout-based control flow.
+4. Use locking only when necessary and justified by correctness constraints.
+5. Prefer event/future-driven coordination over polling where practical.
 
-# CODING POLICIES
+## 6. Branching and Change Size
 
-- Do not use timeouts unless absolutely justified and unavoidable. Prefer deterministic completion detection over timeout-based mechanisms.
+1. Prefer short-lived branches and small, mergeable slices.
+2. Avoid long-lived rewrite branches unless explicitly approved.
+3. Rebase/merge from `main` frequently to limit divergence.
 
-- Do not use locks unless absolutely justified and unavoidable. Prefer lock-free atomic operations and race-condition-aware algorithms.
+## 7. Documentation Hygiene
 
-- Always prefer event-driven or future-based waiting over polling or timeout-based waiting.
+1. Keep docs concise and avoid duplicated status narratives.
+2. Update docs close to code changes so contracts remain accurate.
+3. Do not store temporary chat logs or ephemeral notes in policy files.
 
-# WHAT TO DO INSTEAD
+## 8. Startup and Verification Expectations
 
-All files in META are important. GUIDE.md is the main guide.
-
-MANDATORY: For any request I make in chat about requirements, tasks, issues, whatever, make a formal record in META. The structure is flexible, emergent, do not prepare templates, scripts or set boundaries, just operate the META dir as if you were a senior software engineer and developer.
-
-MANDATORY: At the start of a new chat, confirm you know all the rules by writing READY so I know you read until this last line.
-
-MANDATORY: The AI is responsible for keeping the META directory and GUIDE.md up to date, concise, and free of redundancy.
-
-MANDATORY: Do not record temporary information into important files such as GUIDE.md or SWE_POLICY.md. We are not keeping temporary records by now, except for the issues in the OPEN directory, which are not temporary but rather open issues.
-
-MANDATORY: In any chat, when executing any command, it is required to follow the policies in the META directory and all SWE decisions therein.
-
-MANDATORY: The AI is responsible for checking and maintaining the documentation (in doc/) so that it is accurate with respect to the current implementation, and must act on changes appropriately.
-
-MANDATORY: The AI MUST always verify its answers before responding to any user question. This is to be treated as a core agent policy.
-
-MANDATORY: The AI must read README.md in the root directory at the start of each new chat. This file describes the tool usage and conventions for running and testing VoxLogicA.
-
-MANDATORY: The AI must read STATUS.md in the root directory at the start of each new chat and summarize its contents in the first message. This file contains the current development status, priorities, and next steps for the VoxLogicA-2 project.
-
-MANDATORY: For all testing and usage, the AI must use the main executable script (./voxlogica) as an end user would, not by invoking Python modules directly (e.g., not with python -m or similar). All CLI and API usage must follow the documented user workflow.
+1. At session start, read:
+- `README.md`
+- `META/SWE_POLICY.md`
+- `META/GUIDE.md`
+2. Consult `STATUS.md` when status context is relevant to the request.
+3. Validate claims against repository state before reporting conclusions.
