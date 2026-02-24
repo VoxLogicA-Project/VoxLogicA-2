@@ -1,0 +1,175 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  lint-type:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r implementation/python/requirements.txt
+          pip install -r implementation/python/requirements-test.txt
+          pip install ruff mypy
+
+      - name: Ruff
+        run: ruff check implementation/python/voxlogica tests
+
+      - name: MyPy
+        run: mypy implementation/python/voxlogica --ignore-missing-imports
+
+      - name: Docs link check
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          pattern = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+          failures = []
+
+          for doc in Path("doc/dev").glob("*.md"):
+            text = doc.read_text(encoding="utf-8")
+            for match in pattern.finditer(text):
+              target = match.group(1).strip()
+              if target.startswith(("http://", "https://", "#", "mailto:")):
+                continue
+              resolved = (doc.parent / target).resolve()
+              if not resolved.exists():
+                failures.append(f"{doc}: missing link target '{target}'")
+
+          if failures:
+            for item in failures:
+              print(item)
+            sys.exit(1)
+          print("Doc links OK")
+          PY
+
+  test-unit-contract:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r implementation/python/requirements.txt
+          pip install -r implementation/python/requirements-test.txt
+
+      - name: Run unit + contract
+        run: pytest -m "unit or contract"
+
+  test-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r implementation/python/requirements.txt
+          pip install -r implementation/python/requirements-test.txt
+
+      - name: Run integration + regression
+        run: pytest -m "integration or regression"
+
+  test-compat-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r implementation/python/requirements.txt
+          pip install -r implementation/python/requirements-test.txt
+
+      - name: CLI smoke
+        run: |
+          python -m voxlogica.main version
+          python -m voxlogica.main run tests/closure_basic_test.imgql --no-execute
+        env:
+          PYTHONPATH: implementation/python
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r implementation/python/requirements.txt
+          pip install -r implementation/python/requirements-test.txt
+
+      - name: Run full coverage suite
+        run: pytest -m "unit or contract or integration or regression" --cov=implementation/python/voxlogica --cov-report=xml --cov-report=term-missing --cov-fail-under=60
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  perf-smoke:
+    if: github.event_name == 'schedule'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r implementation/python/requirements.txt
+          pip install -r implementation/python/requirements-test.txt
+
+      - name: Run perf smoke
+        run: pytest -m perf --maxfail=1
