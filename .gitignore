@@ -35,3 +35,6 @@ implementation/python/venv/
 test.bin
 output.nii.gz
 applog.txt
+output_medical.nii.gz
+output_uncompressed.nii
+output.png
