@@ -19,6 +19,7 @@ The `modules/` directory contains detailed documentation for each Python module 
 
 - **[features.md](modules/features.md)** - Extensible feature system and registry
 - **[main.md](modules/main.md)** - CLI/API entry points and user interfaces
+- **[repl.md](modules/repl.md)** - Interactive session runtime (CLI REPL + GUI-ready API)
 - **[converters.md](modules/converters.md)** - Data format conversion utilities
 - **[primitives.md](modules/primitives.md)** - Extensible primitive operation libraries
 
@@ -114,6 +115,7 @@ All documentation follows consistent structure:
 ### Core Concepts
 - **Spatial Model Checking**: Domain-specific language for declarative image analysis
 - **Content-Addressed Storage**: Immutable data storage with SHA-256 based addressing
+- **Results Database API**: Modular storage backend contract for runtime materialization persistence
 - **Lazy Evaluation**: Deferred computation for performance optimization
 - **Distributed Execution**: Dask-based parallel processing for scalability
 - **Feature Registry**: Plugin system for extensible CLI/API functionality

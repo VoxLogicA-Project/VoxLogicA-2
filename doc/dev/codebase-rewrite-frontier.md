@@ -21,6 +21,7 @@ These modules are treated as stable core for the current architecture:
 5. `implementation/python/voxlogica/execution_strategy/{base.py,results.py,strict.py,dask.py}`
 6. `implementation/python/voxlogica/storage.py` (rewritten modular API)
 7. `implementation/python/voxlogica/execution.py` (strategy facade)
+8. `implementation/python/voxlogica/repl.py` (interactive session runtime)
 
 ## Kept for Compilation, Needs Rewrite
 

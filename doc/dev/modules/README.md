@@ -5,18 +5,20 @@ This directory contains detailed documentation for each Python implementation mo
 ## Module Categories
 
 ### Core Logic Modules
-- [**execution.py**](./execution.md) - Distributed execution engine with Dask integration
-- [**reducer.py**](./reducer.md) - Core reduction engine and workplan management
+- [**execution.py**](./execution.md) - Runtime facade over pluggable execution strategies
+- [**execution_strategy/**](./execution.md) - Strategy contracts and strict/dask implementations
+- [**reducer.py**](./reducer.md) - Symbolic reduction engine and workplan management
 - [**parser.py**](./parser.md) - VoxLogicA language parser and AST generation
-- [**lazy.py**](./lazy.md) - Lazy compilation infrastructure
+- [**lazy/**](./lazy.md) - Symbolic IR and plan hashing infrastructure
 
 ### Data Processing Modules  
-- [**storage.py**](./storage.md) - Content-addressed storage and caching system
+- [**storage.py**](./storage.md) - Modular results database + runtime stores
 - [**features.py**](./features.md) - Feature system for extensible primitives
 - [**converters/**](./converters.md) - Data format conversion utilities
 
 ### Interface Modules
 - [**main.py**](./main.md) - Command line interface and entry points
+- [**repl.py**](./repl.md) - Interactive session runtime for CLI/GUI embedding
 - [**version.py**](./version.md) - Version management utilities
 
 ### Primitive Libraries
@@ -28,10 +30,10 @@ This directory contains detailed documentation for each Python implementation mo
 VoxLogicA-2 follows a modular architecture with clear separation of concerns:
 
 1. **Language Layer**: `parser.py` handles VoxLogicA syntax and AST generation
-2. **Compilation Layer**: `reducer.py` and `lazy.py` manage workplan compilation and optimization
-3. **Execution Layer**: `execution.py` provides distributed execution via Dask
-4. **Storage Layer**: `storage.py` handles content-addressed caching and persistence
-5. **Extension Layer**: `features.py` and `primitives/` enable extensible operations
+2. **Compilation Layer**: `reducer.py` and `lazy/` manage symbolic plan construction
+3. **Execution Layer**: `execution.py` + `execution_strategy/` provide pluggable runtimes
+4. **Storage Layer**: `storage.py` defines definition/materialization stores and modular result DB backends
+5. **Extension Layer**: `features.py`, `repl.py`, and `primitives/` expose CLI/API/interactive workflows
 
 ## Documentation Standards
 
@@ -49,11 +51,12 @@ Each module documentation includes:
 | Module | Primary Purpose | Key Features |
 |--------|----------------|--------------|
 | `execution.py` | Distributed execution | Dask integration, futures coordination, task scheduling |
-| `reducer.py` | Workplan compilation | AST reduction, environment management, goal processing |
+| `reducer.py` | Workplan compilation | AST reduction, symbolic plan generation, goal processing |
 | `parser.py` | Language parsing | VoxLogicA syntax, AST generation, expression parsing |
-| `lazy.py` | Deferred compilation | Lazy evaluation, parameter binding, optimization |
-| `storage.py` | Data persistence | Content-addressed storage, caching, serialization |
+| `lazy/` | Symbolic IR | Node definitions, canonical hashing, plan contracts |
+| `storage.py` | Data persistence | Results database API, materialization tracking |
 | `features.py` | Extensibility | Plugin system, primitive registration, dynamic loading |
+| `repl.py` | Interactive execution | Incremental context, expression evaluation, result persistence |
 
 ## Navigation
 

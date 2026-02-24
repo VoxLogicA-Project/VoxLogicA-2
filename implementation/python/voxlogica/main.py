@@ -25,6 +25,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from voxlogica.features import FeatureRegistry
+from voxlogica.repl import run_interactive_repl
 from voxlogica.version import get_version
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 
@@ -372,6 +373,28 @@ def run(
     except Exception as e:
         logger.exception("An unexpected error occurred")
         raise typer.Exit(code=1) from e
+
+
+@app.command()
+def repl(
+    execution_strategy: str = typer.Option(
+        "dask",
+        "--execution-strategy",
+        help="Execution strategy to use (dask|strict)",
+    ),
+    debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging (between info and debug)"),
+) -> None:
+    """Start interactive VoxLogicA REPL."""
+    setup_logging(debug, verbose)
+    try:
+        exit_code = run_interactive_repl(strategy=execution_strategy)
+        raise typer.Exit(code=exit_code)
+    except typer.Exit:
+        raise
+    except Exception:
+        logger.exception("Unexpected REPL error")
+        raise typer.Exit(code=1)
 
 
 @app.command("list-primitives")
