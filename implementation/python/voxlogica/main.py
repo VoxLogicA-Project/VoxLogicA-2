@@ -101,7 +101,12 @@ class RunRequest(BaseModel):
     save_task_graph_as_json: Optional[str] = None
     save_syntax: Optional[str] = None
     compute_memory_assignment: Optional[bool] = False
+    execute: Optional[bool] = True
+    no_cache: Optional[bool] = False
     debug: Optional[bool] = False
+    verbose: Optional[bool] = False
+    dask_dashboard: Optional[bool] = False
+    execution_strategy: Optional[str] = "dask"
 
 
 # ----------------- Helper Functions -----------------
@@ -314,6 +319,11 @@ def run(
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging (between info and debug)"),
     dask_dashboard: bool = typer.Option(False, "--dask-dashboard", help="Enable Dask web dashboard for real-time task execution debugging"),
+    execution_strategy: str = typer.Option(
+        "dask",
+        "--execution-strategy",
+        help="Execution strategy to use (dask|strict)",
+    ),
 ) -> None:
     """Run a VoxLogicA program"""
     setup_logging(debug, verbose)
@@ -340,6 +350,7 @@ def run(
         "verbose": verbose,
         "no_cache": no_cache,
         "dask_dashboard": dask_dashboard,
+        "execution_strategy": execution_strategy,
     }
 
     try:

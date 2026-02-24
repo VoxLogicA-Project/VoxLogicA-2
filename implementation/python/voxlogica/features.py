@@ -96,6 +96,7 @@ def handle_run(
     verbose: bool = False,
     no_cache: bool = False,
     dask_dashboard: bool = False,
+    execution_strategy: str = "dask",
     **kwargs,
 ) -> OperationResult[Dict[str, Any]]:
     """Handle the unified run command with all options"""
@@ -139,12 +140,20 @@ def handle_run(
                     original_engine = get_execution_engine()
                     try:
                         set_execution_engine(custom_engine)
-                        execution_result = execute_workplan(program_obj, dask_dashboard=dask_dashboard)
+                        execution_result = execute_workplan(
+                            program_obj,
+                            dask_dashboard=dask_dashboard,
+                            strategy=execution_strategy,
+                        )
                     finally:
                         # Restore the original engine
                         set_execution_engine(original_engine)
                 else:
-                    execution_result = execute_workplan(program_obj, dask_dashboard=dask_dashboard)
+                    execution_result = execute_workplan(
+                        program_obj,
+                        dask_dashboard=dask_dashboard,
+                        strategy=execution_strategy,
+                    )
                 
                 if execution_result.success:
                     if filename:  # CLI mode
@@ -360,6 +369,12 @@ run_feature = FeatureRegistry.register(
                 "default": False,
                 "help": "Enable verbose logging (between info and debug)",
             },
+            "execution_strategy": {
+                "type": str,
+                "required": False,
+                "default": "dask",
+                "help": "Execution strategy to use (dask|strict)",
+            },
         },
         api_endpoint={
             "path": "/run",
@@ -390,6 +405,10 @@ run_feature = FeatureRegistry.register(
                 ),
                 "debug": (Optional[bool], "Enable debug mode"),
                 "verbose": (Optional[bool], "Enable verbose logging (between info and debug)"),
+                "execution_strategy": (
+                    Optional[str],
+                    "Execution strategy to use (dask|strict)",
+                ),
             },
             "response_model": Dict[str, Any],
         },
