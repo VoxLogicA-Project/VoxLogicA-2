@@ -41,3 +41,4 @@ pytest -m perf --maxfail=1
 
 - `tests/run-tests.sh` installs test dependencies by default.
 - Set `VOXLOGICA_SKIP_TEST_DEPS_INSTALL=1` to skip auto-install.
+- Legacy script-style and superseded tests are preserved under `tests/archive/legacy/`.
