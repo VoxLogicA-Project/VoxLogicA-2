@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 
 @pytest.mark.integration
-def test_simpleitk_direct_threshold_pipeline(tmp_path: Path):
+def test_simpleitk_direct_threshold_pipeline(tmp_path, sample_image_path):
     sitk = pytest.importorskip("SimpleITK")
 
-    input_path = Path("tests/chris_t1.nii.gz")
-    assert input_path.exists(), f"Missing test input: {input_path}"
-
-    image = sitk.ReadImage(str(input_path))
+    image = sitk.ReadImage(str(sample_image_path))
     assert image.GetDimension() in (2, 3)
 
     thresholded = sitk.BinaryThreshold(

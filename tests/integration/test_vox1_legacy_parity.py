@@ -10,6 +10,7 @@ import pytest
 import SimpleITK as sitk
 
 from tests._vox1_binary import LEGACY_BIN_ENV, resolve_legacy_binary_path
+from tests.data_registry import write_deterministic_color_sample, write_deterministic_gray_pair
 from voxlogica.execution_strategy.strict import StrictExecutionStrategy
 from voxlogica.parser import parse_program_content
 from voxlogica.reducer import reduce_program
@@ -134,29 +135,14 @@ def legacy_binary() -> Path:
 @pytest.fixture(scope="session")
 def parity_inputs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     root = tmp_path_factory.mktemp("vox1_legacy_parity")
-    gray1_path = root / "gray1.nii.gz"
-    gray2_path = root / "gray2.nii.gz"
-    color_path = root / "color.png"
-
-    base = np.arange(6 * 7 * 5, dtype=np.float32).reshape(6, 7, 5)
-    second = (np.flip(base, axis=0) * 0.65) + 7.0
-
-    gray1 = sitk.GetImageFromArray(base, isVector=False)
-    gray2 = sitk.GetImageFromArray(second.astype(np.float32), isVector=False)
-    gray1.SetSpacing((0.7, 1.3, 2.1))
-    gray2.CopyInformation(gray1)
-
-    color = np.zeros((9, 11, 3), dtype=np.uint8)
-    color[..., 0] = np.linspace(0, 255, 11, dtype=np.uint8)
-    color[..., 1] = np.linspace(255, 0, 9, dtype=np.uint8)[:, None]
-    color[..., 2] = ((color[..., 0].astype(np.uint16) + color[..., 1].astype(np.uint16)) // 2).astype(np.uint8)
-    color_img = sitk.GetImageFromArray(color, isVector=True)
-
-    sitk.WriteImage(gray1, str(gray1_path))
-    sitk.WriteImage(gray2, str(gray2_path))
-    sitk.WriteImage(color_img, str(color_path))
-
-    return {"gray1": gray1_path, "gray2": gray2_path, "color": color_path}
+    gray = write_deterministic_gray_pair(
+        root,
+        seed=3,
+        shape=(6, 7, 5),
+        spacing=(0.7, 1.3, 2.1),
+    )
+    color = write_deterministic_color_sample(root)
+    return {"gray1": gray["gray1"], "gray2": gray["gray2"], "color": color}
 
 
 def _build_prelude(case_domain: str, backend: str, inputs: dict[str, Path]) -> str:

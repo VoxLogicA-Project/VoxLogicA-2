@@ -112,6 +112,22 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch):
         assert primitives_resp.status_code == 200
         assert primitives_resp.json()["n"] == "default"
 
+        docs_resp = client.get("/api/v1/docs/gallery")
+        assert docs_resp.status_code == 200
+        assert "examples" in docs_resp.json()
+
+        jobs_resp = client.get("/api/v1/playground/jobs")
+        assert jobs_resp.status_code == 200
+        assert "jobs" in jobs_resp.json()
+
+        test_report_resp = client.get("/api/v1/testing/report")
+        assert test_report_resp.status_code == 200
+        assert "junit" in test_report_resp.json()
+
+        storage_resp = client.get("/api/v1/storage/stats")
+        assert storage_resp.status_code == 200
+        assert "available" in storage_resp.json()
+
         root_resp = client.get("/")
         assert root_resp.status_code == 200
 
@@ -172,4 +188,3 @@ def test_reload_handler_and_livereload_websocket(monkeypatch: pytest.MonkeyPatch
             ws.send_text('{"type":"error","message":"e"}')
             ws.send_text('{"type":"info","message":"i"}')
             ws.send_text("not-json")
-

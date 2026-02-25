@@ -25,6 +25,14 @@ from watchdog.observers.api import BaseObserver
 
 from voxlogica.features import FeatureRegistry, OperationResult, handle_list_primitives
 from voxlogica.repl import run_interactive_repl
+from voxlogica.serve_support import (
+    PERF_REPORT_SVG,
+    PlaygroundJobManager,
+    build_storage_stats_snapshot,
+    build_test_dashboard_snapshot,
+    load_gallery_document,
+)
+from voxlogica.storage import get_storage
 from voxlogica.version import get_version
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 
@@ -412,6 +420,7 @@ if static_path.exists():
     api_app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
 api_router = APIRouter(prefix="/api/v1")
+playground_jobs = PlaygroundJobManager()
 
 
 @api_router.get("/version")
@@ -449,6 +458,71 @@ async def list_primitives_endpoint(namespace: Optional[str] = Query(default=None
     if not result.success:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.error or "An error occurred")
     return result.data or {}
+
+
+@api_router.get("/docs/gallery")
+async def docs_gallery_endpoint() -> dict[str, Any]:
+    """Return markdown gallery and parsed playground directives."""
+    return load_gallery_document()
+
+
+@api_router.post("/playground/jobs")
+async def create_playground_job_endpoint(request: RunRequest) -> dict[str, Any]:
+    """Start an asynchronous playground execution job."""
+    return playground_jobs.create_job(request.model_dump())
+
+
+@api_router.get("/playground/jobs")
+async def list_playground_jobs_endpoint() -> dict[str, Any]:
+    """List recent playground jobs and statuses."""
+    return playground_jobs.list_jobs()
+
+
+@api_router.get("/playground/jobs/{job_id}")
+async def get_playground_job_endpoint(job_id: str) -> dict[str, Any]:
+    """Get current status and result for a playground job."""
+    payload = playground_jobs.get_job(job_id)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown playground job: {job_id}",
+        )
+    return payload
+
+
+@api_router.delete("/playground/jobs/{job_id}")
+async def kill_playground_job_endpoint(job_id: str) -> dict[str, Any]:
+    """Kill a running playground job and return terminal state."""
+    payload = playground_jobs.kill_job(job_id)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown playground job: {job_id}",
+        )
+    return payload
+
+
+@api_router.get("/testing/report")
+async def testing_report_endpoint() -> dict[str, Any]:
+    """Return aggregated test, coverage, and performance report snapshot."""
+    return build_test_dashboard_snapshot()
+
+
+@api_router.get("/testing/performance/chart")
+async def testing_performance_chart_endpoint() -> FileResponse:
+    """Serve the latest VoxLogicA-1 vs VoxLogicA-2 performance chart."""
+    if not PERF_REPORT_SVG.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Performance chart not found: {PERF_REPORT_SVG}",
+        )
+    return FileResponse(str(PERF_REPORT_SVG), media_type="image/svg+xml")
+
+
+@api_router.get("/storage/stats")
+async def storage_stats_endpoint() -> dict[str, Any]:
+    """Return persistent cache/storage statistics."""
+    return build_storage_stats_snapshot(get_storage())
 
 
 @api_app.get("/")

@@ -24,4 +24,18 @@ if [ "${VOXLOGICA_FETCH_VOX1:-1}" = "1" ]; then
   python tests/fetch_vox1_binary.py --quiet >/dev/null 2>&1 || true
 fi
 
-pytest "$@"
+REPORT_ROOT="${VOXLOGICA_TEST_REPORT_DIR:-$PROJECT_DIR/tests/reports}"
+mkdir -p "$REPORT_ROOT/perf"
+export VOXLOGICA_PERF_REPORT_DIR="${VOXLOGICA_PERF_REPORT_DIR:-$REPORT_ROOT/perf}"
+
+PYTEST_ARGS=("$@")
+if [ "${VOXLOGICA_DISABLE_AUTOREPORTS:-0}" != "1" ]; then
+  PYTEST_ARGS+=(
+    "--junitxml" "$REPORT_ROOT/junit.xml"
+    "--cov=implementation/python/voxlogica"
+    "--cov-report=xml:$REPORT_ROOT/coverage.xml"
+    "--cov-report=term"
+  )
+fi
+
+pytest "${PYTEST_ARGS[@]}"

@@ -31,6 +31,14 @@ Once started, the API will be available at:
 | ------------------------------------ | --------------------- | ---------------------------- |
 | `voxlogica version`                  | `GET /api/v1/version` | Get VoxLogicA version        |
 | `voxlogica run [options] file.imgql` | `POST /api/v1/run`    | Run program with all options |
+| `voxlogica list-primitives`          | `GET /api/v1/primitives` | List primitives and namespaces |
+| `serve playground`                   | `POST /api/v1/playground/jobs` | Start async playground execution |
+| `serve playground`                   | `GET /api/v1/playground/jobs/{job_id}` | Poll playground job status |
+| `serve playground`                   | `DELETE /api/v1/playground/jobs/{job_id}` | Kill running/stale playground job |
+| `serve gallery`                      | `GET /api/v1/docs/gallery` | Return markdown + parsed playground examples |
+| `serve quality dashboard`            | `GET /api/v1/testing/report` | JUnit + coverage + perf report snapshot |
+| `serve quality dashboard`            | `GET /api/v1/testing/performance/chart` | Latest vox1-vs-vox2 perf SVG |
+| `serve storage dashboard`            | `GET /api/v1/storage/stats` | Cache/storage statistics |
 
 ## Available Endpoints
 

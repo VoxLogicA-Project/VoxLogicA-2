@@ -40,6 +40,9 @@ output_uncompressed.nii
 output.png
 .hypothesis/
 .coverage
+.coverage.*
 coverage.xml
 .pytest_cache/
 .ruff_cache/
+tests/reports/*
+!tests/reports/.gitignore

@@ -7,6 +7,8 @@ import sys
 
 import pytest
 
+from tests.data_registry import CHRIS_T1
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_IMPL = REPO_ROOT / "implementation" / "python"
@@ -43,3 +45,10 @@ def sample_dataset_file(tmp_path: Path) -> Path:
     dataset_path = tmp_path / "dataset.txt"
     dataset_path.write_text("alpha\nbeta\ngamma\ndelta\n", encoding="utf-8")
     return dataset_path
+
+
+@pytest.fixture(scope="session")
+def sample_image_path() -> Path:
+    if not CHRIS_T1.exists():
+        raise FileNotFoundError(f"Missing canonical test image: {CHRIS_T1}")
+    return CHRIS_T1

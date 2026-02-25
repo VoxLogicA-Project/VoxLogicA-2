@@ -55,14 +55,14 @@ When you evaluate an expression in REPL, VoxLogicA computes it and stores the re
 
 ## Minimal Lazy Threshold Sweep Example
 
-The repository includes test image data at `tests/chris_t1.nii.gz`.
+The repository includes test image data at `tests/data/chris_t1.nii.gz`.
 
 This program computes the intensity range, builds a lazy symbolic sequence of all integer thresholds, and defines a lazy mapped sequence of thresholded masks:
 
 ```imgql
 import "simpleitk"
 
-let img = ReadImage("tests/chris_t1.nii.gz")
+let img = ReadImage("tests/data/chris_t1.nii.gz")
 let mm = MinimumMaximum(img)
 let lo = index(mm,0)
 let hi = index(mm,1)
@@ -118,3 +118,5 @@ For command-specific flags:
 - Module docs: `doc/dev/modules/`
 - Python package docs: `implementation/python/README.md`
 - API usage notes: `doc/user/api-usage.md`
+- Language guide + example gallery: `doc/user/language-gallery.md`
+- Serve studio dashboards: `doc/user/serve-studio.md`

@@ -28,7 +28,7 @@ def test_parser_keeps_qualified_identifiers_with_operator_support():
     program = parse_program_content(
         """
         import "simpleitk"
-        let img = simpleitk.ReadImage("tests/chris_t1.nii.gz")
+        let img = simpleitk.ReadImage("tests/data/chris_t1.nii.gz")
         let t = 1 .+ 2
         """
     )

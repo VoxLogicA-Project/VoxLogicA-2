@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 import statistics
 import subprocess
 import time
 
-import numpy as np
 import pytest
-import SimpleITK as sitk
 
 from tests._vox1_binary import LEGACY_BIN_ENV, resolve_legacy_binary_path
+from tests.data_registry import write_deterministic_gray_pair
 from voxlogica.execution_strategy.strict import StrictExecutionStrategy
 from voxlogica.parser import parse_program_content
 from voxlogica.reducer import reduce_program
+
+
+PERF_REPORT_DIR_ENV = "VOXLOGICA_PERF_REPORT_DIR"
 
 
 def _legacy_program(inputs: dict[str, Path], output_label: str) -> str:
@@ -25,8 +29,11 @@ def _legacy_program(inputs: dict[str, Path], output_label: str) -> str:
         "let ma = 40 .<= a\n"
         "let c1 = crossCorrelation(2,a,b,tt,min(b),max(b),16)\n"
         "let c2 = crossCorrelation(2,c1,a,tt,min(a),max(a),16)\n"
-        "let p = percentiles(c2,ma,0.5)\n"
-        f'print "{output_label}" avg(p,ma)\n'
+        "let p1 = percentiles(c2,ma,0.5)\n"
+        "let c3 = crossCorrelation(2,p1,b,tt,min(b),max(b),16)\n"
+        "let c4 = crossCorrelation(2,c3,p1,tt,min(p1),max(p1),16)\n"
+        "let p2 = percentiles(c4,ma,0.75)\n"
+        f'print "{output_label}" avg(p2,ma)\n'
     )
 
 
@@ -40,8 +47,11 @@ def _v2_program(inputs: dict[str, Path], output_label: str) -> str:
         "let ma = 40 .<= a\n"
         "let c1 = crossCorrelation(2,a,b,tt,min(b),max(b),16)\n"
         "let c2 = crossCorrelation(2,c1,a,tt,min(a),max(a),16)\n"
-        "let p = percentiles(c2,ma,0.5)\n"
-        f'print "{output_label}" avg(p,ma)\n'
+        "let p1 = percentiles(c2,ma,0.5)\n"
+        "let c3 = crossCorrelation(2,p1,b,tt,min(b),max(b),16)\n"
+        "let c4 = crossCorrelation(2,c3,p1,tt,min(p1),max(p1),16)\n"
+        "let p2 = percentiles(c4,ma,0.75)\n"
+        f'print "{output_label}" avg(p2,ma)\n'
     )
 
 
@@ -108,6 +118,27 @@ def _render_svg(path: Path, vox1_s: float, vox2_s: float) -> None:
     path.write_text(svg, encoding="utf-8")
 
 
+def _write_perf_report(chart: Path, vox1_s: float, vox2_s: float) -> None:
+    report_dir = os.environ.get(PERF_REPORT_DIR_ENV)
+    if not report_dir:
+        return
+    output_root = Path(report_dir).expanduser()
+    output_root.mkdir(parents=True, exist_ok=True)
+    output_chart = output_root / "vox1_vs_vox2_perf.svg"
+    output_chart.write_text(chart.read_text(encoding="utf-8"), encoding="utf-8")
+    payload = {
+        "vox1_median_s": float(vox1_s),
+        "vox2_median_s": float(vox2_s),
+        "speed_ratio": float(vox1_s / max(vox2_s, 1e-9)),
+        "chart_svg": str(output_chart),
+        "generated_at": time.time(),
+    }
+    (output_root / "vox1_vs_vox2_perf.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 @pytest.fixture(scope="session")
 def legacy_binary() -> Path:
     resolved = resolve_legacy_binary_path(auto_download=True)
@@ -123,21 +154,7 @@ def legacy_binary() -> Path:
 @pytest.fixture(scope="session")
 def perf_inputs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     root = tmp_path_factory.mktemp("vox1_vox2_perf_inputs")
-    gray1_path = root / "gray1.nii.gz"
-    gray2_path = root / "gray2.nii.gz"
-
-    rng = np.random.default_rng(13)
-    base = rng.normal(loc=90.0, scale=25.0, size=(24, 32, 32)).astype(np.float32)
-    second = (np.roll(base, shift=2, axis=0) * 0.82 + 11.0).astype(np.float32)
-
-    img1 = sitk.GetImageFromArray(base, isVector=False)
-    img2 = sitk.GetImageFromArray(second, isVector=False)
-    img1.SetSpacing((0.9, 1.1, 1.4))
-    img2.CopyInformation(img1)
-
-    sitk.WriteImage(img1, str(gray1_path))
-    sitk.WriteImage(img2, str(gray2_path))
-    return {"gray1": gray1_path, "gray2": gray2_path}
+    return write_deterministic_gray_pair(root, seed=13, shape=(28, 48, 48), spacing=(0.9, 1.1, 1.4))
 
 
 @pytest.mark.perf
@@ -166,3 +183,4 @@ def test_vox1_vs_vox2_perf_comparison_generates_graph(
     chart = tmp_path / "vox1_vs_vox2_perf.svg"
     _render_svg(chart, legacy_median, v2_median)
     assert chart.exists()
+    _write_perf_report(chart, legacy_median, v2_median)

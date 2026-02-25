@@ -1,7 +1,7 @@
 import "simpleitk"
 import "strings"
 
-let img = ReadImage("tests/chris_t1.nii.gz")
+let img = ReadImage("tests/data/chris_t1.nii.gz")
 let mm = MinimumMaximum(img)
 let lo = index(mm,0)
 let hi = index(mm,1)
