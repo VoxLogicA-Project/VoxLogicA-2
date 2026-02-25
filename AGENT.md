@@ -14,7 +14,7 @@ It must stay consistent with `META/SWE_POLICY.md` and `META/GUIDE.md`.
 
 2. In-repo documentation under `doc/` is canonical for technical requirements and design contracts.
 
-3. `META/` is for policy and supporting notes. `META/ISSUES` is optional and non-canonical.
+3. `META/` is for policy and supporting notes only.
 
 ## 2. Where Changes Belong
 
@@ -66,5 +66,4 @@ It must stay consistent with `META/SWE_POLICY.md` and `META/GUIDE.md`.
 - `README.md`
 - `META/SWE_POLICY.md`
 - `META/GUIDE.md`
-2. Consult `STATUS.md` when status context is relevant to the request.
-3. Validate claims against repository state before reporting conclusions.
+2. Validate claims against repository state before reporting conclusions.

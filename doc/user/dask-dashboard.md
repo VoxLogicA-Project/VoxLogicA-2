@@ -217,5 +217,5 @@ voxlogica run computation.imgql --dask-dashboard   # With monitoring
 
 - [Dask Documentation](https://docs.dask.org/)
 - [Dask Dashboard Documentation](https://docs.dask.org/en/latest/dashboard.html)
-- [VoxLogicA Memory Management Issue](../../META/ISSUES/OPEN/dask-memory-management/README.md)
+- [VoxLogicA GitHub Issues (memory)](https://github.com/VoxLogicA-Project/VoxLogicA-2/issues?q=is%3Aissue+memory)
 - [VoxLogicA Execution Engine](../../../implementation/python/voxlogica/execution.py)

@@ -1,7 +1,7 @@
 # Software Engineering Policy
 
 ## Status
-- Version: 2026-02-24
+- Version: 2026-02-25
 - Applies to: all code, tests, documentation, and release work in this repository
 - Policy owner: repository maintainers
 
@@ -21,7 +21,6 @@
 - risk level
 3. Pull requests must reference issue IDs.
 4. Pull requests should use closing keywords when completion criteria are met (for example `Fixes #123`).
-5. Local `META/ISSUES` content is optional supporting material only and must never be treated as canonical issue state.
 
 ## 3. Requirements Management
 1. Requirements are versioned in-repo under `doc/`, linked from the owning GitHub issue.
@@ -61,7 +60,7 @@
 
 ## 7. Testing Standards
 1. Tests must be placed under `tests/`.
-2. `tests/run_tests.py` is the canonical aggregate runner list.
+2. `pytest` is the canonical test runner (`./tests/run-tests.sh` is the repository entrypoint wrapper).
 3. For behavior changes, tests should cover:
 - nominal path
 - edge conditions
@@ -95,11 +94,3 @@
 - scope
 - risk assessment
 - expiry or follow-up action
-
-## 12. Archived and Superseded Local-Issue Policy
-Superseded on 2026-02-24:
-- local `META/ISSUES/OPEN` to `META/ISSUES/CLOSED` as primary issue lifecycle management
-- mandatory local issue folder movement as canonical tracking
-- local issue naming/date governance as primary control
-
-These local artifacts may be retained only as supplementary implementation notes.
