@@ -10,7 +10,7 @@ import math
 import numpy as np
 import SimpleITK as sitk
 try:
-    from numba import njit, prange
+    from numba import get_num_threads, njit, prange
     _HAS_NUMBA = True
 except Exception:  # pragma: no cover - optional acceleration
     _HAS_NUMBA = False
@@ -22,6 +22,9 @@ except Exception:  # pragma: no cover - optional acceleration
 
     def prange(*args):  # type: ignore[misc]
         return range(*args)
+
+    def get_num_threads() -> int:  # type: ignore[misc]
+        return os.cpu_count() or 1
 
 from voxlogica.primitives.default._sequence_math import apply_binary_op
 
@@ -48,6 +51,7 @@ def reset_runtime_state() -> None:
         _BASE_IMAGE = None
     _snake_cached.cache_clear()
     _hyperrectangle_cached.cache_clear()
+    _hyperrectangle_numba_faces_cached.cache_clear()
 
 
 def _is_image(value: object) -> bool:
@@ -411,12 +415,12 @@ def _through_mask_components_numba(
     flags = np.zeros(max_label + 1, dtype=np.uint8)
     n = cc_values.shape[0]
     for i in range(n):
-        cc = int(masked_values[i])
+        cc = masked_values[i]
         if cc > 0 and cc <= max_label:
             flags[cc] = np.uint8(1)
     result = np.zeros(n, dtype=np.uint8)
     for i in range(n):
-        cc = int(cc_values[i])
+        cc = cc_values[i]
         if cc > 0 and cc <= max_label:
             result[i] = flags[cc]
     return result
@@ -502,9 +506,7 @@ def _percentiles_numba(
     mask_values: np.ndarray,
     correction: float,
 ) -> np.ndarray:
-    result_values = np.empty(img_values.shape[0], dtype=np.float32)
-    for i in range(result_values.shape[0]):
-        result_values[i] = np.float32(-1.0)
+    result_values = np.full(img_values.shape[0], np.float32(-1.0), dtype=np.float32)
 
     population_size = 0
     for i in range(mask_values.shape[0]):
@@ -527,18 +529,18 @@ def _percentiles_numba(
     sorted_values = population_values[sorted_order]
 
     vol = float(population_size)
-    curvol = 0
+    curvol = 0.0
     group_start = 0
     while group_start < sorted_values.shape[0]:
         group_end = group_start + 1
         while group_end < sorted_values.shape[0] and sorted_values[group_end] == sorted_values[group_start]:
             group_end += 1
         group_size = group_end - group_start
-        value = ((float(curvol)) + (float(correction) * float(group_size))) / vol
+        value = (curvol + (correction * float(group_size))) / vol
         value32 = np.float32(value)
         for idx in range(group_start, group_end):
             result_values[sorted_indices[idx]] = value32
-        curvol += group_size
+        curvol += float(group_size)
         group_start = group_end
     return result_values
 
@@ -766,6 +768,32 @@ def _hyperrectangle_cached(
     return _hyperrectangle([int(v) for v in size_key], [int(v) for v in radius_key])
 
 
+@lru_cache(maxsize=64)
+def _hyperrectangle_numba_faces_cached(
+    size_key: tuple[int, ...],
+    radius_key: tuple[int, ...],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    indices, faces = _hyperrectangle_cached(size_key, radius_key)
+    ndims = len(faces)
+    max_len_minus = max((len(faces[dim][0]) for dim in range(ndims)), default=0)
+    max_len_plus = max((len(faces[dim][1]) for dim in range(ndims)), default=0)
+
+    faces_minus = np.zeros((ndims, max_len_minus), dtype=np.int64)
+    faces_plus = np.zeros((ndims, max_len_plus), dtype=np.int64)
+    faces_minus_len = np.zeros(ndims, dtype=np.int64)
+    faces_plus_len = np.zeros(ndims, dtype=np.int64)
+    for dim in range(ndims):
+        minus_face = np.asarray(faces[dim][0], dtype=np.int64)
+        plus_face = np.asarray(faces[dim][1], dtype=np.int64)
+        faces_minus_len[dim] = minus_face.shape[0]
+        faces_plus_len[dim] = plus_face.shape[0]
+        if minus_face.shape[0] > 0:
+            faces_minus[dim, : minus_face.shape[0]] = minus_face
+        if plus_face.shape[0] > 0:
+            faces_plus[dim, : plus_face.shape[0]] = plus_face
+    return np.asarray(indices, dtype=np.int64), faces_minus, faces_minus_len, faces_plus, faces_plus_len
+
+
 def _snake(inner_size: list[int], radius: list[int]) -> tuple[np.ndarray, np.ndarray]:
     inner_length = int(np.prod(inner_size, dtype=np.int64))
     outer_size = [n + (2 * radius[i]) for i, n in enumerate(inner_size)]
@@ -972,7 +1000,7 @@ def _crosscorr_kernel_numpy(
     return temporary_values
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def _bin_index_numba(m1: float, m2: float, delta: float, value: float, nbins: int) -> int:
     if value < m1 or value >= m2:
         return -1
@@ -985,31 +1013,47 @@ def _bin_index_numba(m1: float, m2: float, delta: float, value: float, nbins: in
 
 
 @njit(cache=True)
-def _hist_corr_numba(h2: np.ndarray, h1: np.ndarray) -> float:
+def _prepare_hist_corr_reference_numba(h2: np.ndarray) -> tuple[np.ndarray, float, np.uint8]:
     n = h2.shape[0]
     sum2 = 0.0
-    sum1 = 0.0
     for i in range(n):
         sum2 += float(h2[i])
-        sum1 += float(h1[i])
     avg2 = sum2 / float(n)
+
+    centered2 = np.empty(n, dtype=np.float64)
+    den2 = 0.0
+    for i in range(n):
+        d2 = float(h2[i]) - avg2
+        centered2[i] = d2
+        den2 += d2 * d2
+    return centered2, math.sqrt(den2), np.uint8(1 if den2 == 0.0 else 0)
+
+
+@njit(cache=True, inline="always")
+def _hist_corr_numba(
+    h2_centered: np.ndarray,
+    h2_sqrt_den: float,
+    h2_is_constant: np.uint8,
+    h1: np.ndarray,
+) -> float:
+    n = h2_centered.shape[0]
+    sum1 = 0.0
+    for i in range(n):
+        sum1 += float(h1[i])
     avg1 = sum1 / float(n)
 
-    den2 = 0.0
     den1 = 0.0
     num = 0.0
     for i in range(n):
-        d2 = float(h2[i]) - avg2
         d1 = float(h1[i]) - avg1
-        den2 += d2 * d2
         den1 += d1 * d1
-        num += d1 * d2
+        num += d1 * h2_centered[i]
 
-    if den1 == 0.0 and den2 == 0.0:
+    if den1 == 0.0 and h2_is_constant == 1:
         return 1.0
-    if den1 == 0.0 or den2 == 0.0:
+    if den1 == 0.0 or h2_is_constant == 1:
         return 0.0
-    return num / (math.sqrt(den1) * math.sqrt(den2))
+    return num / (math.sqrt(den1) * h2_sqrt_den)
 
 
 @njit(cache=True)
@@ -1024,7 +1068,7 @@ def _build_big_histogram_numba(
     hist = np.zeros(nbins, dtype=np.int64)
     for i in range(values.shape[0]):
         if mask_values[i] > 0:
-            hist_idx = _bin_index_numba(m1, m2, delta, float(values[i]), nbins)
+            hist_idx = _bin_index_numba(m1, m2, delta, values[i], nbins)
             if hist_idx >= 0:
                 hist[hist_idx] += 1
     return hist
@@ -1040,7 +1084,9 @@ def _crosscorr_kernel_numba(
     faces_minus_len: np.ndarray,
     faces_plus: np.ndarray,
     faces_plus_len: np.ndarray,
-    big_histogram: np.ndarray,
+    ref_centered_hist: np.ndarray,
+    ref_sqrt_den: float,
+    ref_is_constant: np.uint8,
     m1: float,
     m2: float,
     delta: float,
@@ -1063,11 +1109,13 @@ def _crosscorr_kernel_numba(
         local_hist = np.zeros(nbins, dtype=np.int64)
         for i in range(indices.shape[0]):
             linear_coord = start + int(indices[i])
-            hist_idx = _bin_index_numba(m1, m2, delta, float(outer_values[linear_coord]), nbins)
+            hist_idx = _bin_index_numba(m1, m2, delta, outer_values[linear_coord], nbins)
             if hist_idx >= 0:
                 local_hist[hist_idx] += 1
 
-        temporary_values[start] = np.float32(_hist_corr_numba(big_histogram, local_hist))
+        temporary_values[start] = np.float32(
+            _hist_corr_numba(ref_centered_hist, ref_sqrt_den, ref_is_constant, local_hist)
+        )
 
         target = fragstart + fragsize - 1
         previous = start
@@ -1091,18 +1139,20 @@ def _crosscorr_kernel_numba(
             for j in range(remove_len[face_idx]):
                 linear_el = int(remove_face[face_idx, j])
                 linear_coord = previous + linear_el
-                hist_idx = _bin_index_numba(m1, m2, delta, float(outer_values[linear_coord]), nbins)
+                hist_idx = _bin_index_numba(m1, m2, delta, outer_values[linear_coord], nbins)
                 if hist_idx >= 0:
                     local_hist[hist_idx] -= 1
 
             for j in range(add_len[face_idx]):
                 linear_el = int(add_face[face_idx, j])
                 linear_coord = center + linear_el
-                hist_idx = _bin_index_numba(m1, m2, delta, float(outer_values[linear_coord]), nbins)
+                hist_idx = _bin_index_numba(m1, m2, delta, outer_values[linear_coord], nbins)
                 if hist_idx >= 0:
                     local_hist[hist_idx] += 1
 
-            temporary_values[center] = np.float32(_hist_corr_numba(big_histogram, local_hist))
+            temporary_values[center] = np.float32(
+                _hist_corr_numba(ref_centered_hist, ref_sqrt_den, ref_is_constant, local_hist)
+            )
             previous = center
 
     return temporary_values
@@ -1166,46 +1216,41 @@ def crossCorrelation(
     size_key = tuple(int(v) for v in size)
     radius_key = tuple(int(v) for v in ball_radius)
     hidx, hdir = _snake_cached(size_key, radius_key)
-    nprocs = os.cpu_count() or 1
     backend = _crosscorr_backend()
+    if backend == "numba" and _HAS_NUMBA:
+        nprocs = max(1, int(get_num_threads()))
+    else:
+        nprocs = os.cpu_count() or 1
     needs_faces = backend == "numba" or backend == "python"
     indices: np.ndarray | None = None
     faces: list[list[list[int]]] | None = None
+    numba_faces: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
     if needs_faces:
         outer_size = [int(x) for x in outer_image.GetSize()]
         outer_size_key = tuple(int(v) for v in outer_size)
         indices, faces = _hyperrectangle_cached(outer_size_key, radius_key)
+        if backend == "numba" and _HAS_NUMBA:
+            numba_faces = _hyperrectangle_numba_faces_cached(outer_size_key, radius_key)
 
     if backend == "numba" and _HAS_NUMBA:
-        assert faces is not None
-        assert indices is not None
-        ndims = len(faces)
-        max_len_minus = max((len(faces[dim][0]) for dim in range(ndims)), default=0)
-        max_len_plus = max((len(faces[dim][1]) for dim in range(ndims)), default=0)
-        faces_minus = np.zeros((ndims, max_len_minus), dtype=np.int64)
-        faces_plus = np.zeros((ndims, max_len_plus), dtype=np.int64)
-        faces_minus_len = np.zeros(ndims, dtype=np.int64)
-        faces_plus_len = np.zeros(ndims, dtype=np.int64)
-        for dim in range(ndims):
-            minus_face = np.asarray(faces[dim][0], dtype=np.int64)
-            plus_face = np.asarray(faces[dim][1], dtype=np.int64)
-            faces_minus_len[dim] = minus_face.shape[0]
-            faces_plus_len[dim] = plus_face.shape[0]
-            if minus_face.shape[0] > 0:
-                faces_minus[dim, : minus_face.shape[0]] = minus_face
-            if plus_face.shape[0] > 0:
-                faces_plus[dim, : plus_face.shape[0]] = plus_face
+        assert numba_faces is not None
+        numba_indices, faces_minus, faces_minus_len, faces_plus, faces_plus_len = numba_faces
+        ref_centered_hist, ref_sqrt_den, ref_is_constant = _prepare_hist_corr_reference_numba(
+            np.asarray(big_histogram, dtype=np.int64)
+        )
 
         temporary_values = _crosscorr_kernel_numba(
             np.asarray(outer_values, dtype=np.float32),
             np.asarray(hidx, dtype=np.int64),
             np.asarray(hdir, dtype=np.int64),
-            np.asarray(indices, dtype=np.int64),
+            numba_indices,
             faces_minus,
             faces_minus_len,
             faces_plus,
             faces_plus_len,
-            np.asarray(big_histogram, dtype=np.int64),
+            ref_centered_hist,
+            float(ref_sqrt_den),
+            np.uint8(ref_is_constant),
             float(m1),
             float(m2),
             float(delta),
