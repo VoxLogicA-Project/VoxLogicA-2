@@ -307,6 +307,30 @@ def _load_perf_report(json_path: Path = PERF_REPORT_JSON, svg_path: Path = PERF_
             "svg_path": str(primitive_svg),
             "reason": "Report file not generated yet. Run perf tests and check job logs.",
         }
+    perf_test_metrics_json = json_path.parent / "perf_test_metrics.json"
+    if perf_test_metrics_json.exists():
+        try:
+            metrics_payload = json.loads(perf_test_metrics_json.read_text(encoding="utf-8"))
+            tests = metrics_payload.get("tests", [])
+            payload["test_metrics"] = {
+                "available": True,
+                "count": int(metrics_payload.get("count", len(tests))),
+                "tests": tests,
+                "json_path": str(perf_test_metrics_json),
+                "updated_at": _iso_utc(perf_test_metrics_json.stat().st_mtime),
+            }
+        except Exception as exc:  # noqa: BLE001
+            payload["test_metrics"] = {
+                "available": False,
+                "json_path": str(perf_test_metrics_json),
+                "error": f"Invalid perf test metrics JSON: {exc}",
+            }
+    else:
+        payload["test_metrics"] = {
+            "available": False,
+            "json_path": str(perf_test_metrics_json),
+            "reason": "Perf telemetry not generated yet. Run perf tests.",
+        }
     return payload
 
 

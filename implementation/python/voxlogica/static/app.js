@@ -106,6 +106,14 @@
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;");
 
+  const median = (values) => {
+    const nums = values.filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+    if (!nums.length) return NaN;
+    const mid = Math.floor(nums.length / 2);
+    if (nums.length % 2 === 1) return nums[mid];
+    return (nums[mid - 1] + nums[mid]) / 2;
+  };
+
   const setJobStatus = (status) => {
     const normalized = String(status || "idle").toLowerCase();
     dom.jobStatus.textContent = normalized;
@@ -448,7 +456,27 @@
         const speedRatio = Number(perf.speed_ratio || 0);
         const vox1 = Number(perf.vox1_median_s || 0);
         const vox2 = Number(perf.vox2_median_s || 0);
-        dom.perfSummary.textContent = `vox1 median: ${fmtSeconds(vox1)} | vox2 median: ${fmtSeconds(vox2)} | ratio vox1/vox2: ${speedRatio.toFixed(2)}x`;
+        const vox1Cpu = Number(perf.vox1_cpu_median_s || 0);
+        const vox2Cpu = Number(perf.vox2_cpu_median_s || 0);
+        const vox1Mem = Number(perf.vox1_ru_maxrss_delta_median_bytes || 0);
+        const vox2Mem = Number(perf.vox2_ru_maxrss_delta_median_bytes || 0);
+        const telemetry = perf.test_metrics || {};
+        let telemetrySummary = "";
+        if (telemetry.available) {
+          const tests = telemetry.tests || [];
+          const medCpuUtil = median(tests.map((t) => Number(t.cpu_utilization)));
+          const medHeap = median(tests.map((t) => Number(t.python_heap_peak_bytes)));
+          const medRss = median(tests.map((t) => Number(t.ru_maxrss_delta_bytes)));
+          telemetrySummary =
+            ` | perf tests: ${Number(telemetry.count || tests.length)} ` +
+            `| median util: ${fmtPercent(medCpuUtil)} ` +
+            `| median heap: ${fmtBytes(medHeap)} ` +
+            `| median rss delta: ${fmtBytes(medRss)}`;
+        }
+        dom.perfSummary.textContent =
+          `vox1 median: ${fmtSeconds(vox1)} (cpu ${fmtSeconds(vox1Cpu)}, rss ${fmtBytes(vox1Mem)}) ` +
+          `| vox2 median: ${fmtSeconds(vox2)} (cpu ${fmtSeconds(vox2Cpu)}, rss ${fmtBytes(vox2Mem)}) ` +
+          `| ratio vox1/vox2: ${speedRatio.toFixed(2)}x${telemetrySummary}`;
         dom.perfChart.src = `/api/v1/testing/performance/chart?t=${Date.now()}`;
         dom.perfChart.classList.remove("hidden");
         const primitive = perf.primitive_benchmarks || {};

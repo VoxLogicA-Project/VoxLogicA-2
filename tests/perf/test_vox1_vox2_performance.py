@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import resource
 import statistics
 import subprocess
+import sys
 import time
+import tracemalloc
 
 import pytest
 
@@ -55,10 +58,26 @@ def _v2_program(inputs: dict[str, Path], output_label: str) -> str:
     )
 
 
-def _run_legacy(binary: Path, workdir: Path, program_text: str) -> float:
+def _ru_maxrss_bytes_children() -> int:
+    value = float(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
+    if sys.platform == "darwin":
+        return int(value)
+    return int(value * 1024.0)
+
+
+def _ru_maxrss_bytes_self() -> int:
+    value = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    if sys.platform == "darwin":
+        return int(value)
+    return int(value * 1024.0)
+
+
+def _run_legacy(binary: Path, workdir: Path, program_text: str) -> dict[str, float]:
     program_path = workdir / "perf_legacy.imgql"
     program_path.write_text(program_text, encoding="utf-8")
     start = time.perf_counter()
+    cpu_before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    rss_before = _ru_maxrss_bytes_children()
     result = subprocess.run(
         [str(binary), str(program_path)],
         cwd=str(workdir),
@@ -67,25 +86,49 @@ def _run_legacy(binary: Path, workdir: Path, program_text: str) -> float:
         text=True,
     )
     elapsed = time.perf_counter() - start
+    cpu_after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    rss_after = _ru_maxrss_bytes_children()
     if result.returncode != 0:
         raise AssertionError(
             "Legacy perf program failed\n"
             f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
-    return elapsed
+    cpu_user = max(0.0, float(cpu_after.ru_utime - cpu_before.ru_utime))
+    cpu_sys = max(0.0, float(cpu_after.ru_stime - cpu_before.ru_stime))
+    cpu_total = cpu_user + cpu_sys
+    return {
+        "wall_time_s": elapsed,
+        "cpu_time_s": cpu_total,
+        "cpu_utilization": (cpu_total / elapsed) if elapsed > 0 else 0.0,
+        "ru_maxrss_delta_bytes": float(max(0, rss_after - rss_before)),
+    }
 
 
-def _run_v2(program_text: str) -> float:
+def _run_v2(program_text: str) -> dict[str, float]:
     start = time.perf_counter()
+    start_cpu = time.process_time()
+    rss_before = _ru_maxrss_bytes_self()
+    tracemalloc.start()
     program = parse_program_content(program_text)
     work_plan = reduce_program(program)
     strategy = StrictExecutionStrategy(registry=work_plan.registry)
     prepared = strategy.compile(work_plan.to_symbolic_plan())
     result = strategy.run(prepared)
+    current_bytes, peak_bytes = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
     elapsed = time.perf_counter() - start
+    cpu_total = max(0.0, time.process_time() - start_cpu)
+    rss_after = _ru_maxrss_bytes_self()
     if not result.success:
         raise AssertionError(f"VoxLogicA-2 perf program failed: {result.failed_operations}")
-    return elapsed
+    return {
+        "wall_time_s": elapsed,
+        "cpu_time_s": cpu_total,
+        "cpu_utilization": (cpu_total / elapsed) if elapsed > 0 else 0.0,
+        "ru_maxrss_delta_bytes": float(max(0, rss_after - rss_before)),
+        "python_heap_current_bytes": float(int(current_bytes)),
+        "python_heap_peak_bytes": float(int(peak_bytes)),
+    }
 
 
 def _render_svg(path: Path, vox1_s: float, vox2_s: float) -> None:
@@ -118,7 +161,7 @@ def _render_svg(path: Path, vox1_s: float, vox2_s: float) -> None:
     path.write_text(svg, encoding="utf-8")
 
 
-def _write_perf_report(chart: Path, vox1_s: float, vox2_s: float) -> None:
+def _write_perf_report(chart: Path, vox1: dict[str, float], vox2: dict[str, float]) -> None:
     report_dir = os.environ.get(PERF_REPORT_DIR_ENV)
     if not report_dir:
         return
@@ -126,10 +169,19 @@ def _write_perf_report(chart: Path, vox1_s: float, vox2_s: float) -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     output_chart = output_root / "vox1_vs_vox2_perf.svg"
     output_chart.write_text(chart.read_text(encoding="utf-8"), encoding="utf-8")
+    vox1_s = float(vox1["wall_time_s"])
+    vox2_s = float(vox2["wall_time_s"])
     payload = {
         "vox1_median_s": float(vox1_s),
         "vox2_median_s": float(vox2_s),
         "speed_ratio": float(vox1_s / max(vox2_s, 1e-9)),
+        "vox1_cpu_median_s": float(vox1.get("cpu_time_s", 0.0)),
+        "vox2_cpu_median_s": float(vox2.get("cpu_time_s", 0.0)),
+        "vox1_cpu_utilization_median": float(vox1.get("cpu_utilization", 0.0)),
+        "vox2_cpu_utilization_median": float(vox2.get("cpu_utilization", 0.0)),
+        "vox1_ru_maxrss_delta_median_bytes": float(vox1.get("ru_maxrss_delta_bytes", 0.0)),
+        "vox2_ru_maxrss_delta_median_bytes": float(vox2.get("ru_maxrss_delta_bytes", 0.0)),
+        "vox2_python_heap_peak_median_bytes": float(vox2.get("python_heap_peak_bytes", 0.0)),
         "chart_svg": str(output_chart),
         "generated_at": time.time(),
     }
@@ -171,11 +223,11 @@ def test_vox1_vs_vox2_perf_comparison_generates_graph(
     _run_legacy(legacy_binary, tmp_path, legacy_text)
     _run_v2(v2_text)
 
-    legacy_times = [_run_legacy(legacy_binary, tmp_path, legacy_text) for _ in range(2)]
-    v2_times = [_run_v2(v2_text) for _ in range(2)]
+    legacy_samples = [_run_legacy(legacy_binary, tmp_path, legacy_text) for _ in range(2)]
+    v2_samples = [_run_v2(v2_text) for _ in range(2)]
 
-    legacy_median = statistics.median(legacy_times)
-    v2_median = statistics.median(v2_times)
+    legacy_median = statistics.median(float(sample["wall_time_s"]) for sample in legacy_samples)
+    v2_median = statistics.median(float(sample["wall_time_s"]) for sample in v2_samples)
 
     assert legacy_median > 0.0
     assert v2_median > 0.0
@@ -183,4 +235,17 @@ def test_vox1_vs_vox2_perf_comparison_generates_graph(
     chart = tmp_path / "vox1_vs_vox2_perf.svg"
     _render_svg(chart, legacy_median, v2_median)
     assert chart.exists()
-    _write_perf_report(chart, legacy_median, v2_median)
+    legacy_summary = {
+        "wall_time_s": legacy_median,
+        "cpu_time_s": statistics.median(float(sample["cpu_time_s"]) for sample in legacy_samples),
+        "cpu_utilization": statistics.median(float(sample["cpu_utilization"]) for sample in legacy_samples),
+        "ru_maxrss_delta_bytes": statistics.median(float(sample["ru_maxrss_delta_bytes"]) for sample in legacy_samples),
+    }
+    v2_summary = {
+        "wall_time_s": v2_median,
+        "cpu_time_s": statistics.median(float(sample["cpu_time_s"]) for sample in v2_samples),
+        "cpu_utilization": statistics.median(float(sample["cpu_utilization"]) for sample in v2_samples),
+        "ru_maxrss_delta_bytes": statistics.median(float(sample["ru_maxrss_delta_bytes"]) for sample in v2_samples),
+        "python_heap_peak_bytes": statistics.median(float(sample["python_heap_peak_bytes"]) for sample in v2_samples),
+    }
+    _write_perf_report(chart, legacy_summary, v2_summary)

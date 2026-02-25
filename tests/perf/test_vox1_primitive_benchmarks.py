@@ -4,9 +4,12 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import resource
 import statistics
 import subprocess
+import sys
 import time
+import tracemalloc
 
 import pytest
 
@@ -66,10 +69,26 @@ def _program(prelude: str, expr: str) -> str:
     )
 
 
-def _run_legacy(binary: Path, workdir: Path, program_text: str) -> float:
+def _ru_maxrss_bytes_children() -> int:
+    value = float(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
+    if sys.platform == "darwin":
+        return int(value)
+    return int(value * 1024.0)
+
+
+def _ru_maxrss_bytes_self() -> int:
+    value = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    if sys.platform == "darwin":
+        return int(value)
+    return int(value * 1024.0)
+
+
+def _run_legacy(binary: Path, workdir: Path, program_text: str) -> dict[str, float]:
     source = workdir / "legacy_primitive_bench.imgql"
     source.write_text(program_text, encoding="utf-8")
     start = time.perf_counter()
+    cpu_before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    rss_before = _ru_maxrss_bytes_children()
     result = subprocess.run(
         [str(binary), str(source)],
         cwd=str(workdir),
@@ -78,25 +97,49 @@ def _run_legacy(binary: Path, workdir: Path, program_text: str) -> float:
         text=True,
     )
     elapsed = time.perf_counter() - start
+    cpu_after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    rss_after = _ru_maxrss_bytes_children()
     if result.returncode != 0:
         raise AssertionError(
             "Legacy benchmark program failed\n"
             f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
-    return elapsed
+    cpu_user = max(0.0, float(cpu_after.ru_utime - cpu_before.ru_utime))
+    cpu_sys = max(0.0, float(cpu_after.ru_stime - cpu_before.ru_stime))
+    cpu_total = cpu_user + cpu_sys
+    return {
+        "wall_time_s": elapsed,
+        "cpu_time_s": cpu_total,
+        "cpu_utilization": (cpu_total / elapsed) if elapsed > 0 else 0.0,
+        "ru_maxrss_delta_bytes": float(max(0, rss_after - rss_before)),
+    }
 
 
-def _run_v2(program_text: str) -> float:
+def _run_v2(program_text: str) -> dict[str, float]:
     start = time.perf_counter()
+    start_cpu = time.process_time()
+    rss_before = _ru_maxrss_bytes_self()
+    tracemalloc.start()
     program = parse_program_content(program_text)
     work_plan = reduce_program(program)
     strategy = StrictExecutionStrategy(registry=work_plan.registry)
     prepared = strategy.compile(work_plan.to_symbolic_plan())
     result = strategy.run(prepared)
+    current_bytes, peak_bytes = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
     elapsed = time.perf_counter() - start
+    cpu_total = max(0.0, time.process_time() - start_cpu)
+    rss_after = _ru_maxrss_bytes_self()
     if not result.success:
         raise AssertionError(f"VoxLogicA-2 benchmark failed: {result.failed_operations}")
-    return elapsed
+    return {
+        "wall_time_s": elapsed,
+        "cpu_time_s": cpu_total,
+        "cpu_utilization": (cpu_total / elapsed) if elapsed > 0 else 0.0,
+        "ru_maxrss_delta_bytes": float(max(0, rss_after - rss_before)),
+        "python_heap_current_bytes": float(int(current_bytes)),
+        "python_heap_peak_bytes": float(int(peak_bytes)),
+    }
 
 
 def _render_histogram_svg(path: Path, rows: list[dict[str, float | str]]) -> None:
@@ -185,17 +228,38 @@ def test_vox1_primitive_benchmarks_generate_histogram(
 
         _run_legacy(legacy_binary, tmp_path, legacy_text)
         _run_v2(v2_text)
-        legacy_times = [_run_legacy(legacy_binary, tmp_path, legacy_text) for _ in range(2)]
-        v2_times = [_run_v2(v2_text) for _ in range(2)]
+        legacy_samples = [_run_legacy(legacy_binary, tmp_path, legacy_text) for _ in range(2)]
+        v2_samples = [_run_v2(v2_text) for _ in range(2)]
 
-        legacy_median = statistics.median(legacy_times)
-        v2_median = statistics.median(v2_times)
+        legacy_median = statistics.median(float(sample["wall_time_s"]) for sample in legacy_samples)
+        v2_median = statistics.median(float(sample["wall_time_s"]) for sample in v2_samples)
         rows.append(
             {
                 "name": case.name,
                 "vox1_median_s": float(legacy_median),
                 "vox2_median_s": float(v2_median),
                 "speed_ratio": float(legacy_median / max(v2_median, 1e-9)),
+                "vox1_cpu_median_s": float(
+                    statistics.median(float(sample["cpu_time_s"]) for sample in legacy_samples)
+                ),
+                "vox2_cpu_median_s": float(
+                    statistics.median(float(sample["cpu_time_s"]) for sample in v2_samples)
+                ),
+                "vox1_cpu_utilization_median": float(
+                    statistics.median(float(sample["cpu_utilization"]) for sample in legacy_samples)
+                ),
+                "vox2_cpu_utilization_median": float(
+                    statistics.median(float(sample["cpu_utilization"]) for sample in v2_samples)
+                ),
+                "vox1_ru_maxrss_delta_median_bytes": float(
+                    statistics.median(float(sample["ru_maxrss_delta_bytes"]) for sample in legacy_samples)
+                ),
+                "vox2_ru_maxrss_delta_median_bytes": float(
+                    statistics.median(float(sample["ru_maxrss_delta_bytes"]) for sample in v2_samples)
+                ),
+                "vox2_python_heap_peak_median_bytes": float(
+                    statistics.median(float(sample["python_heap_peak_bytes"]) for sample in v2_samples)
+                ),
             }
         )
 
