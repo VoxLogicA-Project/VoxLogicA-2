@@ -1071,6 +1071,24 @@ def inspect_store_result(storage: Any, *, node_id: str, path: str = "") -> dict[
     return payload
 
 
+def describe_runtime_value(*, node_id: str, value: Any, path: str = "") -> dict[str, Any]:
+    """Describe an in-memory value using the same schema as store inspection."""
+    normalized = _normalize_result_path(path)
+    target = _resolve_value_path(value, normalized)
+    return {
+        "available": True,
+        "node_id": node_id,
+        "status": "materialized",
+        "runtime_version": "runtime",
+        "created_at": _iso_utc(time.time()),
+        "updated_at": _iso_utc(time.time()),
+        "metadata": {"source": "runtime"},
+        "error": None,
+        "path": normalized,
+        "descriptor": _describe_value(target, node_id=node_id, path=normalized),
+    }
+
+
 def _image_to_png_bytes(image: Any) -> bytes:
     sitk = _import_simpleitk()
     if sitk is None:
@@ -1207,21 +1225,38 @@ def _playground_worker(send_conn: Any, request_payload: dict[str, Any], log_path
                     "execute": bool(request_payload.get("execute", True)),
                     "no_cache": bool(request_payload.get("no_cache", False)),
                     "program_chars": len(str(request_payload.get("program", ""))),
+                    "job_kind": request_payload.get("_job_kind", "run"),
+                    "priority_node": request_payload.get("_priority_node"),
                 },
             }
         )
-        run_result = handle_run(**request_payload)
+        run_result = handle_run(**request_payload, _include_execution_events=True)
         if run_result.success:
-            packet = {"ok": True, "result": run_result.data}
             result_payload = run_result.data or {}
             execution_payload = result_payload.get("execution", {})
+            if not isinstance(execution_payload, dict):
+                execution_payload = {}
+                result_payload["execution"] = execution_payload
             execution_summary = (
                 dict(execution_payload)
                 if isinstance(execution_payload, dict)
                 else {}
             )
-            execution_summary.pop("node_events", None)
             node_events = execution_payload.get("node_events", [])
+            if isinstance(node_events, list):
+                for index, node_event in enumerate(node_events):
+                    if not isinstance(node_event, dict):
+                        continue
+                    _append_log(
+                        {
+                            "event": "playground.node",
+                            "index": index + 1,
+                            **node_event,
+                        }
+                    )
+            execution_payload.pop("node_events", None)
+            execution_summary.pop("node_events", None)
+            packet = {"ok": True, "result": result_payload}
             _append_log(
                 {
                     "event": "playground.run.completed",
@@ -1248,13 +1283,12 @@ def _playground_worker(send_conn: Any, request_payload: dict[str, Any], log_path
         packet = {
             "ok": False,
             "error": str(exc),
-            "traceback": traceback.format_exc(limit=15),
         }
         _append_log(
             {
                 "event": "playground.run.exception",
                 "error": str(exc),
-                "traceback": packet["traceback"],
+                "traceback": traceback.format_exc(limit=15),
             }
         )
     finally:
@@ -1310,12 +1344,17 @@ class PlaygroundJob:
     result: dict[str, Any] | None = None
     error: str | None = None
     metrics: dict[str, Any] = field(default_factory=dict)
-    traceback: str | None = None
     process: mp.Process | None = None
     recv_conn: Any = None
     log_path: Path | None = None
 
-    def as_public(self, include_result: bool = True) -> dict[str, Any]:
+    def as_public(
+        self,
+        include_result: bool = True,
+        *,
+        include_log_tail: bool = False,
+        tail_lines: int = 120,
+    ) -> dict[str, Any]:
         payload = {
             "job_id": self.job_id,
             "status": self.status,
@@ -1326,14 +1365,17 @@ class PlaygroundJob:
                 "execution_strategy": self.request_payload.get("execution_strategy", "dask"),
                 "execute": bool(self.request_payload.get("execute", True)),
                 "no_cache": bool(self.request_payload.get("no_cache", False)),
+                "job_kind": self.request_payload.get("_job_kind", "run"),
+                "priority_node": self.request_payload.get("_priority_node"),
             },
             "metrics": self.metrics,
             "error": self.error,
-            "traceback": self.traceback,
             "log_path": str(self.log_path) if self.log_path is not None else None,
         }
         if include_result:
             payload["result"] = self.result
+        if include_log_tail:
+            payload["log_tail"] = _read_log_tail(self.log_path, lines=tail_lines)
         return payload
 
 
@@ -1379,9 +1421,6 @@ class PlaygroundJobManager:
                 else:
                     job.status = "failed"
                     job.error = str(packet.get("error", "Execution failed"))
-                    tb = packet.get("traceback")
-                    if isinstance(tb, str) and tb:
-                        job.traceback = tb
             try:
                 recv_conn.close()
             except Exception:
@@ -1445,7 +1484,7 @@ class PlaygroundJobManager:
         if job.finished_at is None:
             job.finished_at = time.time()
 
-    def create_job(self, request_payload: dict[str, Any]) -> dict[str, Any]:
+    def _create_job_locked(self, request_payload: dict[str, Any]) -> PlaygroundJob:
         payload = dict(request_payload)
         payload["execute"] = bool(payload.get("execute", True))
         job_id = uuid.uuid4().hex
@@ -1459,29 +1498,92 @@ class PlaygroundJobManager:
             daemon=True,
         )
 
+        job = PlaygroundJob(
+            job_id=job_id,
+            request_payload=payload,
+            created_at=created_at,
+            status="queued",
+            process=process,
+            recv_conn=recv_conn,
+            log_path=log_path,
+        )
+        self._jobs[job_id] = job
+        try:
+            process.start()
+        except Exception:
+            self._jobs.pop(job_id, None)
+            send_conn.close()
+            recv_conn.close()
+            raise
+        send_conn.close()
+        job.status = "running"
+        job.started_at = time.time()
+        return job
+
+    def _find_latest_value_job_locked(
+        self,
+        *,
+        program_hash: str,
+        node_id: str,
+        execution_strategy: str,
+    ) -> PlaygroundJob | None:
+        for job in sorted(self._jobs.values(), key=lambda item: item.created_at, reverse=True):
+            request = job.request_payload
+            if str(request.get("_job_kind", "")) != "value-resolve":
+                continue
+            if str(request.get("_program_hash", "")) != program_hash:
+                continue
+            if str(request.get("_priority_node", "")) != node_id:
+                continue
+            if str(request.get("execution_strategy", "dask")) != execution_strategy:
+                continue
+            return job
+        return None
+
+    def create_job(self, request_payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             self._cleanup_locked()
-            job = PlaygroundJob(
-                job_id=job_id,
-                request_payload=payload,
-                created_at=created_at,
-                status="queued",
-                process=process,
-                recv_conn=recv_conn,
-                log_path=log_path,
-            )
-            self._jobs[job_id] = job
-            try:
-                process.start()
-            except Exception:
-                self._jobs.pop(job_id, None)
-                send_conn.close()
-                recv_conn.close()
-                raise
-            send_conn.close()
-            job.status = "running"
-            job.started_at = time.time()
+            job = self._create_job_locked(request_payload)
             return job.as_public(include_result=False)
+
+    def ensure_value_job(
+        self,
+        request_payload: dict[str, Any],
+        *,
+        program_hash: str,
+        node_id: str,
+        execution_strategy: str,
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._cleanup_locked()
+            existing = self._find_latest_value_job_locked(
+                program_hash=program_hash,
+                node_id=node_id,
+                execution_strategy=execution_strategy,
+            )
+            if existing is not None and existing.status in {"queued", "running"}:
+                return existing.as_public(include_result=True, include_log_tail=True, tail_lines=120)
+            job = self._create_job_locked(request_payload)
+            return job.as_public(include_result=False, include_log_tail=True, tail_lines=80)
+
+    def get_value_job(
+        self,
+        *,
+        program_hash: str,
+        node_id: str,
+        execution_strategy: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            self._cleanup_locked()
+            job = self._find_latest_value_job_locked(
+                program_hash=program_hash,
+                node_id=node_id,
+                execution_strategy=execution_strategy,
+            )
+            if job is None:
+                return None
+            self._poll_locked(job)
+            return job.as_public(include_result=True, include_log_tail=True, tail_lines=120)
 
     def list_jobs(self) -> dict[str, Any]:
         with self._lock:
@@ -1492,7 +1594,7 @@ class PlaygroundJobManager:
                 reverse=True,
             )
             return {
-                "jobs": [job.as_public(include_result=False) for job in jobs[:60]],
+                "jobs": [job.as_public(include_result=False, include_log_tail=False) for job in jobs[:60]],
                 "total_jobs": len(self._jobs),
                 "generated_at": _iso_utc(time.time()),
             }
@@ -1504,7 +1606,7 @@ class PlaygroundJobManager:
             if job is None:
                 return None
             self._poll_locked(job)
-            return job.as_public(include_result=True)
+            return job.as_public(include_result=True, include_log_tail=True, tail_lines=180)
 
     def kill_job(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -1514,7 +1616,7 @@ class PlaygroundJobManager:
                 return None
             if job.status == "running":
                 self._kill_locked(job, reason="Killed by user request")
-            return job.as_public(include_result=True)
+            return job.as_public(include_result=True, include_log_tail=True, tail_lines=180)
 
 
 @dataclass

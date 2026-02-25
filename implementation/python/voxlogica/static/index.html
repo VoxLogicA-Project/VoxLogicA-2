@@ -63,7 +63,8 @@ print "sum" x</textarea>
             </div>
             <p id="programLibraryMeta" class="muted"></p>
             <p class="muted">
-              Tip: run once, then double-click a variable name to inspect its stored value instantly.
+              Hover or double-click a variable to inspect it lazily. Missing values are queued immediately with
+              priority and computed on demand.
             </p>
             <div class="row controls">
               <button id="runProgramBtn" class="btn btn-primary">Run Program</button>
@@ -119,6 +120,7 @@ print "sum" x</textarea>
             <h3 class="subheading">Execution Log</h3>
             <p id="playExecSummary" class="muted">No execution trace yet.</p>
             <div id="playExecLog" class="table-like muted">Run a query to see computed vs cached nodes.</div>
+            <pre id="playExecRaw" class="mono-scroll compact-log"></pre>
           </article>
         </div>
 

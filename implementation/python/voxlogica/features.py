@@ -126,40 +126,6 @@ def _collect_exports(
     return messages, saved_files
 
 
-def _preview_value(value: Any) -> dict[str, Any]:
-    value_type = f"{type(value).__module__}.{type(value).__name__}"
-    preview: dict[str, Any] = {
-        "type": value_type,
-        "repr": str(value)[:320],
-    }
-    if hasattr(value, "iter_values") and callable(value.iter_values):
-        items: list[Any] = []
-        total = 0
-        truncated = False
-        for item in value.iter_values():
-            total += 1
-            if len(items) < 16:
-                items.append(item)
-            else:
-                truncated = True
-                break
-        preview["sequence_preview"] = {
-            "items": _json_safe(items),
-            "items_count": len(items),
-            "truncated": truncated,
-            "reported_total_size": getattr(value, "total_size", None),
-            "iterated_count": total,
-        }
-        return preview
-
-    try:
-        preview["json"] = _json_safe(value)
-    except Exception:
-        pass
-
-    return preview
-
-
 def handle_version(**kwargs) -> OperationResult[Dict[str, str]]:
     """Return current VoxLogicA version."""
     from voxlogica.version import get_version
@@ -181,6 +147,8 @@ def handle_run(
     no_cache: bool = False,
     dask_dashboard: bool = False,
     execution_strategy: str = "dask",
+    _include_execution_events: bool = False,
+    _goals: list[str] | None = None,
     **kwargs,
 ) -> OperationResult[Dict[str, Any]]:
     """Run parse/reduce/export/execute pipeline for a VoxLogicA program."""
@@ -200,6 +168,7 @@ def handle_run(
                     workplan,
                     dask_dashboard=dask_dashboard,
                     strategy=execution_strategy,
+                    goals=_goals,
                 )
             else:
                 engine = ExecutionEngine()
@@ -207,6 +176,7 @@ def handle_run(
                     workplan,
                     dask_dashboard=dask_dashboard,
                     strategy=execution_strategy,
+                    goals=_goals,
                 )
 
             if not execution_result.success:
@@ -227,18 +197,36 @@ def handle_run(
             "task_graph": str(workplan),
             "syntax": str(syntax),
             "symbol_table": declaration_bindings,
+            "print_targets": [
+                {
+                    "name": goal.name,
+                    "node_id": goal.id,
+                }
+                for goal in workplan.goals
+                if goal.operation == "print"
+            ],
         }
 
         if execution_result is not None:
-            result["execution"] = {
+            execution_payload: dict[str, Any] = {
                 "success": execution_result.success,
                 "completed_operations": len(execution_result.completed_operations),
                 "failed_operations": len(execution_result.failed_operations),
                 "execution_time": execution_result.execution_time,
                 "total_operations": execution_result.total_operations,
                 "cache_summary": execution_result.cache_summary,
-                "node_events": execution_result.node_events,
             }
+            if _include_execution_events:
+                execution_payload["node_events"] = execution_result.node_events
+            else:
+                execution_payload["events_available"] = bool(execution_result.node_events)
+                execution_payload["events_total"] = int(
+                    (execution_result.cache_summary or {}).get(
+                        "events_total",
+                        len(execution_result.node_events),
+                    )
+                )
+            result["execution"] = execution_payload
             if execution_result.failed_operations:
                 result["execution"]["errors"] = execution_result.failed_operations
 
@@ -255,11 +243,9 @@ def handle_run(
                         goal_payload["error"] = execution_result.failed_operations[goal.id]
                     else:
                         try:
-                            value = prepared_plan.materialization_store.get(goal.id)
                             metadata = prepared_plan.materialization_store.metadata(goal.id)
                             goal_payload["status"] = "materialized"
                             goal_payload["metadata"] = metadata
-                            goal_payload["preview"] = _preview_value(value)
                         except Exception as exc:  # noqa: BLE001
                             goal_payload["status"] = "unavailable"
                             goal_payload["error"] = str(exc)

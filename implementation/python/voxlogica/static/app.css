@@ -341,6 +341,13 @@ body {
   color: #c8dfff;
 }
 
+.mono-scroll.compact-log {
+  min-height: 120px;
+  max-height: 240px;
+  font-size: 0.72rem;
+  margin-top: 0.5rem;
+}
+
 .inline-error {
   margin-top: 0.6rem;
   color: #ffe0e0;

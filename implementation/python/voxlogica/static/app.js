@@ -16,6 +16,15 @@
     playSelectableTargets: [],
     latestGoalResults: [],
     latestSymbolTable: {},
+    precomputedSymbolTable: {},
+    precomputedPrintTargets: [],
+    currentProgramHash: null,
+    symbolRefreshToken: 0,
+    symbolRefreshTimer: null,
+    valuePollTimer: null,
+    pendingValueRequest: null,
+    hoverTimer: null,
+    lastHoverToken: "",
   };
 
   const dom = {
@@ -48,6 +57,7 @@
     playResultInspector: document.getElementById("playResultInspector"),
     playExecSummary: document.getElementById("playExecSummary"),
     playExecLog: document.getElementById("playExecLog"),
+    playExecRaw: document.getElementById("playExecRaw"),
     moduleFilter: document.getElementById("moduleFilter"),
     galleryCards: document.getElementById("galleryCards"),
     refreshQualityBtn: document.getElementById("refreshQualityBtn"),
@@ -190,8 +200,8 @@
     const result = (job && job.result) || {};
     dom.executionOutput.textContent = result ? JSON.stringify(result, null, 2) : "";
     dom.taskGraphOutput.textContent = result.task_graph || "(no task graph in payload)";
-    renderPlayExecutionLog(result);
-    await refreshPlaySelector(result);
+    renderPlayExecutionLog(job);
+    await refreshPlaySelector(result, { autoInspectFirst: true });
   };
 
   const stopPollingCurrentJob = () => {
@@ -206,6 +216,14 @@
       clearInterval(state.testPollTimer);
       state.testPollTimer = null;
     }
+  };
+
+  const stopValuePolling = () => {
+    if (state.valuePollTimer) {
+      clearInterval(state.valuePollTimer);
+      state.valuePollTimer = null;
+    }
+    state.pendingValueRequest = null;
   };
 
   const onJobTerminal = async (job) => {
@@ -229,6 +247,7 @@
     try {
       const job = await api(`/api/v1/playground/jobs/${state.currentJobId}`);
       setJobStatus(job.status);
+      renderPlayExecutionLog(job);
       if (job.status === "running") {
         renderRuntimeMetrics(job);
         return;
@@ -245,6 +264,7 @@
 
   const createPlaygroundJob = async () => {
     setRunError("");
+    await refreshProgramSymbols();
     const payload = {
       program: dom.programInput.value,
       execute: true,
@@ -254,8 +274,11 @@
     try {
       setBusy(true);
       setJobStatus("running");
+      stopValuePolling();
       dom.executionOutput.textContent = "";
       dom.taskGraphOutput.textContent = "";
+      dom.playExecLog.innerHTML = `<div class="muted">Execution started. Waiting for log events...</div>`;
+      if (dom.playExecRaw) dom.playExecRaw.textContent = "";
       renderRuntimeMetrics(null);
       const job = await api("/api/v1/playground/jobs", {
         method: "POST",
@@ -290,16 +313,17 @@
     dom.taskGraphOutput.textContent = "";
     setRunError("");
     renderRuntimeMetrics(null);
-    dom.playExecSummary.textContent = "No execution trace yet.";
+    dom.playExecSummary.textContent = "No execution log yet.";
     dom.playExecLog.innerHTML = `<div class="muted">Run a query to see computed vs cached nodes.</div>`;
+    if (dom.playExecRaw) dom.playExecRaw.textContent = "";
     state.latestGoalResults = [];
     state.latestSymbolTable = {};
-    state.playSelectableTargets = [];
-    dom.playResultSelector.innerHTML = `<option value="">Run a query first</option>`;
-    dom.playResultSelector.disabled = true;
-    dom.playResultMeta.textContent = "Choose a print label or variable to inspect.";
+    state.lastHoverToken = "";
+    stopValuePolling();
+    dom.playResultMeta.textContent = "Choose or hover a variable to inspect lazily.";
     ensurePlayResultViewer();
     state.playResultViewer.renderRecord(null);
+    refreshPlaySelector({}, { keepViewer: true, preserveMeta: true });
   };
 
   const encodePath = (path) =>
@@ -377,6 +401,7 @@
       const payload = await api(`/api/v1/playground/files/${encodePath(rel)}`);
       dom.programInput.value = payload.content || "";
       dom.programLibraryMeta.textContent = `${payload.path} | ${fmtBytes(Number(payload.bytes || 0))}`;
+      await refreshProgramSymbols();
       activateTab("playground");
     } catch (err) {
       dom.programLibraryMeta.textContent = `Unable to load ${rel}: ${err.message}`;
@@ -514,86 +539,236 @@
     };
   };
 
-  const renderPlayExecutionLog = (runResult) => {
-    const execution = (runResult && runResult.execution) || {};
+  const parseLogTail = (logTail) => {
+    const out = [];
+    const lines = String(logTail || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed === "object") {
+          out.push(parsed);
+          continue;
+        }
+      } catch (_err) {
+        // Keep raw lines visible when they are not JSON payloads.
+      }
+      out.push({ event: "raw", message: line });
+    }
+    return out;
+  };
+
+  const renderPlayExecutionLog = (job) => {
+    const result = (job && job.result) || {};
+    const execution = (result && result.execution) || {};
     const summary = execution.cache_summary || {};
-    const events = Array.isArray(execution.node_events) ? execution.node_events : [];
+    const logTail = String((job && job.log_tail) || "");
+    if (dom.playExecRaw) {
+      dom.playExecRaw.textContent = logTail;
+    }
+    const entries = parseLogTail(logTail);
+    const nodeEvents = entries.filter((entry) => entry.event === "playground.node");
+    const displayedEvents = nodeEvents.length ? nodeEvents : entries.filter((entry) => entry.event !== "raw");
     dom.playExecSummary.textContent =
       `computed ${Number(summary.computed || 0)} | ` +
       `cached(store) ${Number(summary.cached_store || 0)} | ` +
       `cached(local) ${Number(summary.cached_local || 0)} | ` +
       `failed ${Number(summary.failed || 0)} | ` +
-      `events ${Number(summary.events_stored || events.length)}/${Number(summary.events_total || events.length)}`;
-    if (!events.length) {
-      dom.playExecLog.innerHTML = `<div class="muted">No node events available for this run.</div>`;
+      `events ${Number(summary.events_stored || nodeEvents.length)}/${Number(summary.events_total || nodeEvents.length)}`;
+    if (!displayedEvents.length) {
+      dom.playExecLog.innerHTML = `<div class="muted">No node events available yet. Raw log is shown below.</div>`;
       return;
     }
-    const rows = events.slice(-260).reverse();
+    const rows = displayedEvents.slice(-220).reverse();
     dom.playExecLog.innerHTML = rows
-      .map((event) => {
-        const status = sanitize(event.status || "unknown");
-        const source = sanitize(event.cache_source || "-");
-        const operator = sanitize(event.operator || "-");
-        const durationMs = `${(Number(event.duration_s || 0) * 1000).toFixed(2)} ms`;
-        const node = sanitize(String(event.node_id || "").slice(0, 12));
-        const extra = event.error ? ` | ${sanitize(String(event.error))}` : "";
+      .map((entry) => {
+        if (entry.event === "playground.node") {
+          const status = sanitize(entry.status || "unknown");
+          const source = sanitize(entry.cache_source || "-");
+          const operator = sanitize(entry.operator || "-");
+          const durationMs = `${(Number(entry.duration_s || 0) * 1000).toFixed(2)} ms`;
+          const node = sanitize(String(entry.node_id || "").slice(0, 12));
+          const extra = entry.error ? ` | ${sanitize(String(entry.error))}` : "";
+          return `
+            <article class="table-like-row">
+              <div class="name"><span class="mini-chip">${status}</span> ${operator}</div>
+              <div class="detail">node=${node} | source=${source} | duration=${durationMs}${extra}</div>
+            </article>
+          `;
+        }
+        const eventName = sanitize(entry.event || "event");
+        const detail = sanitize(
+          entry.message ||
+            entry.error ||
+            JSON.stringify(entry).slice(0, 180),
+        );
         return `
           <article class="table-like-row">
-            <div class="name"><span class="mini-chip">${status}</span> ${operator}</div>
-            <div class="detail">node=${node} | source=${source} | duration=${durationMs}${extra}</div>
+            <div class="name">${eventName}</div>
+            <div class="detail">${detail}</div>
           </article>
         `;
       })
       .join("");
   };
 
-  const inspectPlayTarget = async (nodeId, path = "") => {
-    ensurePlayResultViewer();
-    state.playResultViewer.setLoading(`Loading value for ${nodeId} ...`);
-    try {
-      const suffix = path ? `?path=${encodeURIComponent(path)}` : "";
-      const payload = await api(`/api/v1/results/store/${encodeURIComponent(nodeId)}${suffix}`);
-      state.playResultViewer.renderRecord(payload);
-      dom.playResultMeta.textContent =
-        `Inspecting ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} from persisted store.`;
-    } catch (err) {
-      state.playResultViewer.setError(
-        `Stored value unavailable: ${err.message}. Run with cache enabled to inspect this target.`,
-      );
-      dom.playResultMeta.textContent = `Unable to inspect ${nodeId}: ${err.message}`;
-    }
-  };
-
-  const refreshPlaySelector = async (runResult) => {
-    ensurePlayResultViewer();
-    state.latestGoalResults = Array.isArray(runResult && runResult.goal_results) ? runResult.goal_results : [];
-    state.latestSymbolTable = (runResult && runResult.symbol_table) || {};
+  const buildPlayTargets = () => {
     const targets = [];
-
-    for (const goal of state.latestGoalResults) {
-      if (goal && goal.operation === "print" && goal.node_id) {
-        targets.push({
-          kind: "print",
-          label: String(goal.name || "print"),
-          nodeId: String(goal.node_id),
-        });
-      }
+    const seen = new Set();
+    const pushTarget = (target) => {
+      const key = `${target.kind}:${target.label}:${target.nodeId}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      targets.push(target);
+    };
+    for (const goal of state.precomputedPrintTargets) {
+      if (!goal || !goal.node_id) continue;
+      pushTarget({
+        kind: "print",
+        label: String(goal.name || "print"),
+        nodeId: String(goal.node_id),
+      });
     }
-    for (const [name, nodeId] of Object.entries(state.latestSymbolTable)) {
+    for (const goal of state.latestGoalResults) {
+      if (!goal || goal.operation !== "print" || !goal.node_id) continue;
+      pushTarget({
+        kind: "print",
+        label: String(goal.name || "print"),
+        nodeId: String(goal.node_id),
+      });
+    }
+    const mergedSymbols = { ...state.precomputedSymbolTable, ...state.latestSymbolTable };
+    for (const [name, nodeId] of Object.entries(mergedSymbols)) {
       if (!nodeId || typeof nodeId !== "string") continue;
-      targets.push({
+      pushTarget({
         kind: "variable",
         label: String(name),
         nodeId,
       });
     }
+    return targets;
+  };
 
+  const requestPlayValue = async ({ nodeId, variable = "", path = "", enqueue = true }) => {
+    return api("/api/v1/playground/value", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        program: dom.programInput.value,
+        execution_strategy: dom.executionStrategy.value,
+        node_id: nodeId,
+        variable,
+        path,
+        enqueue,
+      }),
+    });
+  };
+
+  const applyPlayValuePayload = (payload, requestState) => {
+    const materialization = String(payload.materialization || "");
+    const computeStatus = String(payload.compute_status || "");
+    const nodeId = String(payload.node_id || requestState.nodeId || "");
+    const path = payload.path || requestState.path || "";
+    const jobId = payload.job_id ? String(payload.job_id) : "";
+    if (materialization === "cached" || materialization === "computed" || payload.descriptor) {
+      stopValuePolling();
+      state.playResultViewer.renderRecord(payload);
+      dom.playResultMeta.textContent =
+        `Inspecting ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} | ` +
+        `${materialization || "materialized"} | status=${computeStatus || "materialized"}`;
+      return;
+    }
+
+    if (materialization === "pending" || computeStatus === "queued" || computeStatus === "running") {
+      state.playResultViewer.setLoading(
+        `Value ${nodeId.slice(0, 12)} ${path || ""} is ${computeStatus || "pending"}...`,
+      );
+      dom.playResultMeta.textContent =
+        `Waiting for ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} | ` +
+        `${computeStatus || "pending"}${jobId ? ` | job ${jobId.slice(0, 12)}` : ""}`;
+      if (payload.log_tail && dom.playExecRaw) {
+        dom.playExecRaw.textContent = String(payload.log_tail);
+      }
+      if (!state.valuePollTimer) {
+        state.pendingValueRequest = {
+          nodeId,
+          variable: requestState.variable || "",
+          path,
+        };
+        state.valuePollTimer = setInterval(async () => {
+          const pending = state.pendingValueRequest;
+          if (!pending) return;
+          try {
+            const polled = await requestPlayValue({
+              nodeId: pending.nodeId,
+              variable: pending.variable,
+              path: pending.path,
+              enqueue: false,
+            });
+            applyPlayValuePayload(polled, pending);
+          } catch (err) {
+            state.playResultViewer.setError(`Polling value failed: ${err.message}`);
+            stopValuePolling();
+          }
+        }, 900);
+      }
+      return;
+    }
+
+    stopValuePolling();
+    const errorMessage =
+      payload.error ||
+      (materialization === "missing"
+        ? "Value is not materialized yet."
+        : `Unable to inspect value (${materialization || computeStatus || "unknown"}).`);
+    state.playResultViewer.setError(errorMessage);
+    dom.playResultMeta.textContent =
+      `Unable to inspect ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""}: ${errorMessage}`;
+  };
+
+  const inspectPlayTarget = async (nodeId, path = "", options = {}) => {
+    ensurePlayResultViewer();
+    const variable = String(options.variable || "");
+    stopValuePolling();
+    state.playResultViewer.setLoading(`Loading value for ${nodeId} ...`);
+    try {
+      const payload = await requestPlayValue({
+        nodeId,
+        variable,
+        path,
+        enqueue: options.enqueue !== false,
+      });
+      applyPlayValuePayload(payload, { nodeId, variable, path });
+    } catch (err) {
+      stopValuePolling();
+      state.playResultViewer.setError(`Value lookup failed: ${err.message}`);
+      dom.playResultMeta.textContent = `Unable to inspect ${nodeId.slice(0, 12)}: ${err.message}`;
+    }
+  };
+
+  const refreshPlaySelector = async (runResult = {}, options = {}) => {
+    ensurePlayResultViewer();
+    if (runResult && Array.isArray(runResult.goal_results)) {
+      state.latestGoalResults = runResult.goal_results;
+    }
+    if (runResult && runResult.symbol_table && typeof runResult.symbol_table === "object") {
+      state.latestSymbolTable = runResult.symbol_table;
+    }
+
+    const previous = state.playSelectableTargets[Number(dom.playResultSelector.value)];
+    const targets = buildPlayTargets();
     state.playSelectableTargets = targets;
     if (!targets.length) {
       dom.playResultSelector.innerHTML = `<option value="">No print labels or variables available</option>`;
       dom.playResultSelector.disabled = true;
-      dom.playResultMeta.textContent = "No selectable targets in this query.";
-      state.playResultViewer.renderRecord(null);
+      if (!options.preserveMeta) {
+        dom.playResultMeta.textContent = "No selectable targets in this query.";
+      }
+      if (!options.keepViewer) {
+        state.playResultViewer.renderRecord(null);
+      }
       return;
     }
 
@@ -604,31 +779,149 @@
           `<option value="${index}">${sanitize(target.kind === "print" ? `print: ${target.label}` : `var: ${target.label}`)}</option>`,
       )
       .join("");
-    dom.playResultSelector.value = "0";
-    await inspectPlayTarget(targets[0].nodeId, "");
+
+    let selectedIndex = 0;
+    if (previous) {
+      const matched = targets.findIndex(
+        (target) => target.nodeId === previous.nodeId && target.kind === previous.kind && target.label === previous.label,
+      );
+      if (matched >= 0) selectedIndex = matched;
+    }
+    dom.playResultSelector.value = `${selectedIndex}`;
+    if (options.autoInspectFirst) {
+      const target = targets[selectedIndex];
+      await inspectPlayTarget(target.nodeId, "", { variable: target.kind === "variable" ? target.label : "" });
+    }
   };
 
-  const handleProgramDoubleClick = async () => {
-    const text = dom.programInput.value || "";
-    let token = (dom.programInput.value || "").slice(dom.programInput.selectionStart, dom.programInput.selectionEnd).trim();
-    if (!token) {
-      const pos = dom.programInput.selectionStart || 0;
-      const left = text.slice(0, pos);
-      const right = text.slice(pos);
-      const leftMatch = left.match(/[A-Za-z0-9_.$+\-*/<>=!?~]+$/);
-      const rightMatch = right.match(/^[A-Za-z0-9_.$+\-*/<>=!?~]+/);
-      token = `${leftMatch ? leftMatch[0] : ""}${rightMatch ? rightMatch[0] : ""}`.trim();
+  const refreshProgramSymbols = async () => {
+    if (state.capabilities.playground_symbols === false) return;
+    const token = state.symbolRefreshToken + 1;
+    state.symbolRefreshToken = token;
+    const program = dom.programInput.value || "";
+    if (!program.trim()) {
+      state.precomputedSymbolTable = {};
+      state.precomputedPrintTargets = [];
+      state.currentProgramHash = null;
+      await refreshPlaySelector({}, { keepViewer: true, preserveMeta: true });
+      return;
     }
-    token = token.replace(/^[^A-Za-z0-9_.$+\-*/<>=!?~]+|[^A-Za-z0-9_.$+\-*/<>=!?~]+$/g, "");
-    if (!token) return;
-    const nodeId = state.latestSymbolTable[token];
-    if (!nodeId || typeof nodeId !== "string") return;
+    try {
+      const payload = await api("/api/v1/playground/symbols", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ program }),
+      });
+      if (token !== state.symbolRefreshToken) return;
+      state.precomputedSymbolTable = payload.symbol_table || {};
+      state.precomputedPrintTargets = payload.print_targets || [];
+      state.currentProgramHash = payload.program_hash || null;
+      await refreshPlaySelector({}, { keepViewer: true, preserveMeta: true });
+    } catch (_err) {
+      if (token !== state.symbolRefreshToken) return;
+      state.precomputedSymbolTable = {};
+      state.precomputedPrintTargets = [];
+      state.currentProgramHash = null;
+      await refreshPlaySelector({}, { keepViewer: true, preserveMeta: true });
+    }
+  };
 
+  const scheduleProgramSymbolsRefresh = () => {
+    if (state.symbolRefreshTimer) {
+      clearTimeout(state.symbolRefreshTimer);
+      state.symbolRefreshTimer = null;
+    }
+    state.symbolRefreshTimer = setTimeout(() => {
+      refreshProgramSymbols();
+    }, 260);
+  };
+
+  const tokenPattern = /[A-Za-z0-9_.$+\-*/<>=!?~^%:&|]/;
+  const extractTokenAt = (text, position) => {
+    if (!text || !Number.isInteger(position) || position < 0) return "";
+    const safePos = Math.max(0, Math.min(position, text.length));
+    let start = safePos;
+    let end = safePos;
+    while (start > 0 && tokenPattern.test(text[start - 1])) start -= 1;
+    while (end < text.length && tokenPattern.test(text[end])) end += 1;
+    const token = text.slice(start, end).trim();
+    return token.replace(/^[^A-Za-z0-9_.$+\-*/<>=!?~^%:&|]+|[^A-Za-z0-9_.$+\-*/<>=!?~^%:&|]+$/g, "");
+  };
+
+  const textIndexFromPoint = (textarea, clientX, clientY) => {
+    const text = textarea.value || "";
+    const rect = textarea.getBoundingClientRect();
+    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return null;
+    const style = window.getComputedStyle(textarea);
+    const font = style.font || `${style.fontSize} ${style.fontFamily}`;
+    const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.5;
+    const padLeft = Number.parseFloat(style.paddingLeft) || 0;
+    const padTop = Number.parseFloat(style.paddingTop) || 0;
+    const probe = document.createElement("span");
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.whiteSpace = "pre";
+    probe.style.font = font;
+    probe.textContent = "MMMMMMMMMM";
+    document.body.appendChild(probe);
+    const charWidth = Math.max(1, probe.getBoundingClientRect().width / 10);
+    probe.remove();
+
+    const x = clientX - rect.left + textarea.scrollLeft - padLeft;
+    const y = clientY - rect.top + textarea.scrollTop - padTop;
+    const lineIndex = Math.max(0, Math.floor(y / lineHeight));
+    const colIndex = Math.max(0, Math.floor(x / charWidth));
+    const lines = text.split("\n");
+    const boundedLine = Math.min(lineIndex, Math.max(0, lines.length - 1));
+    let offset = 0;
+    for (let idx = 0; idx < boundedLine; idx += 1) {
+      offset += lines[idx].length + 1;
+    }
+    offset += Math.min(colIndex, lines[boundedLine].length);
+    return Math.min(offset, text.length);
+  };
+
+  const resolveSymbolNode = (token) => {
+    if (!token) return "";
+    return state.precomputedSymbolTable[token] || state.latestSymbolTable[token] || "";
+  };
+
+  const inspectSymbolToken = async (token) => {
+    const nodeId = resolveSymbolNode(token);
+    if (!nodeId) return;
     const index = state.playSelectableTargets.findIndex((target) => target.kind === "variable" && target.label === token);
     if (index >= 0) {
       dom.playResultSelector.value = `${index}`;
     }
-    await inspectPlayTarget(nodeId, "");
+    await inspectPlayTarget(nodeId, "", { variable: token });
+  };
+
+  const handleProgramHover = (event) => {
+    if (state.activeTab !== "playground") return;
+    if (state.hoverTimer) {
+      clearTimeout(state.hoverTimer);
+      state.hoverTimer = null;
+    }
+    state.hoverTimer = setTimeout(async () => {
+      const position = textIndexFromPoint(dom.programInput, event.clientX, event.clientY);
+      if (!Number.isInteger(position)) return;
+      const token = extractTokenAt(dom.programInput.value || "", position);
+      if (!token || token === state.lastHoverToken) return;
+      state.lastHoverToken = token;
+      if (!resolveSymbolNode(token)) return;
+      await inspectSymbolToken(token);
+    }, 260);
+  };
+
+  const handleProgramDoubleClick = async () => {
+    const text = dom.programInput.value || "";
+    let token = text.slice(dom.programInput.selectionStart, dom.programInput.selectionEnd).trim();
+    if (!token) {
+      token = extractTokenAt(text, dom.programInput.selectionStart || 0);
+    }
+    if (!token) return;
+    state.lastHoverToken = token;
+    await inspectSymbolToken(token);
   };
 
   const renderBarList = (container, items, valueField, labelField, formatter = (v) => `${v}`) => {
@@ -697,6 +990,10 @@
             setJobStatus(job.status);
             renderRuntimeMetrics(job);
             await renderExecutionPayload(job);
+            if (job.status === "running") {
+              stopPollingCurrentJob();
+              state.pollTimer = setInterval(pollCurrentJob, 800);
+            }
             if (job.error) {
               setRunError(job.error);
             }
@@ -769,12 +1066,13 @@
     }
 
     dom.galleryCards.querySelectorAll("[data-load-example]").forEach((button) => {
-      button.addEventListener("click", () => {
+      button.addEventListener("click", async () => {
         const exampleId = button.getAttribute("data-load-example");
         const selected = state.examples.find((item) => item.id === exampleId);
         if (!selected) return;
         dom.programInput.value = selected.code;
         if (selected.strategy) dom.executionStrategy.value = selected.strategy;
+        await refreshProgramSymbols();
         activateTab("playground");
       });
     });
@@ -1038,6 +1336,9 @@
         dom.resultListMeta.textContent = "Store results viewer unavailable on this backend.";
         dom.playResultMeta.textContent = "Stored-value inspection unavailable on this backend.";
       }
+      if (state.capabilities.playground_symbols === false || state.capabilities.playground_value_resolver === false) {
+        dom.playResultMeta.textContent = "Lazy hover inspector unavailable on this backend.";
+      }
     } catch (err) {
       if (String(err.message).includes("404")) {
         state.capabilities.testing_jobs = false;
@@ -1081,6 +1382,7 @@
     }
     if (tabName === "playground") {
       loadProgramLibrary();
+      refreshProgramSymbols();
     }
   };
 
@@ -1112,6 +1414,17 @@
     dom.runProgramBtn.addEventListener("click", createPlaygroundJob);
     dom.killProgramBtn.addEventListener("click", killCurrentJob);
     dom.clearOutputBtn.addEventListener("click", clearOutput);
+    dom.programInput.addEventListener("input", () => {
+      scheduleProgramSymbolsRefresh();
+    });
+    dom.programInput.addEventListener("mousemove", handleProgramHover);
+    dom.programInput.addEventListener("mouseleave", () => {
+      state.lastHoverToken = "";
+      if (state.hoverTimer) {
+        clearTimeout(state.hoverTimer);
+        state.hoverTimer = null;
+      }
+    });
     dom.programInput.addEventListener("dblclick", handleProgramDoubleClick);
     dom.loadProgramFileBtn.addEventListener("click", loadProgramFromLibrary);
     dom.playResultSelector.addEventListener("change", async () => {
@@ -1119,7 +1432,7 @@
       if (!Number.isFinite(idx)) return;
       const target = state.playSelectableTargets[idx];
       if (!target || !target.nodeId) return;
-      await inspectPlayTarget(target.nodeId, "");
+      await inspectPlayTarget(target.nodeId, "", { variable: target.kind === "variable" ? target.label : "" });
     });
     dom.refreshJobsBtn.addEventListener("click", refreshJobList);
     dom.moduleFilter.addEventListener("change", () => renderGalleryCards(dom.moduleFilter.value));
@@ -1147,6 +1460,7 @@
     setTestingControlsBusy(false);
     setTestRunStatus("idle");
     dom.playResultSelector.disabled = true;
+    dom.playResultMeta.textContent = "Choose or hover a variable to inspect lazily.";
     ensureResultViewer();
     ensurePlayResultViewer();
     await Promise.all([
@@ -1160,6 +1474,7 @@
       refreshStorageStats(),
       refreshStoreResults(),
     ]);
+    await refreshProgramSymbols();
     connectLiveReload();
     setInterval(() => {
       if (state.activeTab === "quality") {
@@ -1172,6 +1487,7 @@
       }
       if (state.activeTab === "playground") {
         refreshJobList();
+        refreshProgramSymbols();
       }
       if (state.activeTab === "results") {
         refreshStoreResults();

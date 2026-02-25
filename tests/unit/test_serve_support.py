@@ -142,6 +142,21 @@ def test_playground_manager_handles_eof_from_worker_pipe() -> None:
     assert listed["job_id"] == "job-eof"
     assert listed["status"] == "failed"
     assert "terminated before delivering result payload" in str(listed["error"])
+    assert "traceback" not in listed
+
+
+@pytest.mark.unit
+def test_playground_job_public_payload_omits_traceback() -> None:
+    job = PlaygroundJob(
+        job_id="job-1",
+        request_payload={"execution_strategy": "dask", "_job_kind": "value-resolve"},
+        created_at=0.0,
+        status="failed",
+        error="boom",
+    )
+    payload = job.as_public(include_result=False, include_log_tail=False)
+    assert payload["request"]["job_kind"] == "value-resolve"
+    assert "traceback" not in payload
 
 
 @pytest.mark.unit

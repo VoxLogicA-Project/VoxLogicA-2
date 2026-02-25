@@ -10,6 +10,7 @@ import typer
 
 from voxlogica.features import OperationResult
 from voxlogica import main as main_mod
+from voxlogica.storage import SQLiteResultsDatabase
 
 
 @pytest.mark.unit
@@ -104,7 +105,21 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             return None
 
     monkeypatch.setattr(main_mod, "FeatureRegistry", FakeRegistry)
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
     monkeypatch.setattr(main_mod, "handle_list_primitives", lambda namespace=None: OperationResult.ok({"n": namespace}))
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            create_job=lambda payload: {"job_id": "p1", "status": "running"},
+            list_jobs=lambda: {"jobs": [], "total_jobs": 0, "generated_at": "-"},
+            get_job=lambda job_id: {"job_id": job_id, "status": "completed", "result": {}, "log_tail": ""},
+            kill_job=lambda job_id: {"job_id": job_id, "status": "killed", "log_tail": ""},
+            get_value_job=lambda **kwargs: None,
+            ensure_value_job=lambda payload, **kwargs: {"job_id": "vp1", "status": "running", "log_tail": ""},
+        ),
+    )
     monkeypatch.setattr(
         main_mod,
         "testing_jobs",
@@ -118,72 +133,105 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
     monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
 
-    with TestClient(main_mod.api_app) as client:
-        version_resp = client.get("/api/v1/version")
-        assert version_resp.status_code == 200
-        assert version_resp.json()["version"] == "2.0.0"
+    try:
+        with TestClient(main_mod.api_app) as client:
+            version_resp = client.get("/api/v1/version")
+            assert version_resp.status_code == 200
+            assert version_resp.json()["version"] == "2.0.0"
 
-        run_resp = client.post("/api/v1/run", json={"program": 'print "x" 1'})
-        assert run_resp.status_code == 200
-        assert run_resp.json()["ok"] is True
+            run_resp = client.post("/api/v1/run", json={"program": 'print "x" 1'})
+            assert run_resp.status_code == 200
+            assert run_resp.json()["ok"] is True
 
-        primitives_resp = client.get("/api/v1/primitives", params={"namespace": "default"})
-        assert primitives_resp.status_code == 200
-        assert primitives_resp.json()["n"] == "default"
+            primitives_resp = client.get("/api/v1/primitives", params={"namespace": "default"})
+            assert primitives_resp.status_code == 200
+            assert primitives_resp.json()["n"] == "default"
 
-        docs_resp = client.get("/api/v1/docs/gallery")
-        assert docs_resp.status_code == 200
-        assert "examples" in docs_resp.json()
+            docs_resp = client.get("/api/v1/docs/gallery")
+            assert docs_resp.status_code == 200
+            assert "examples" in docs_resp.json()
 
-        files_resp = client.get("/api/v1/playground/files")
-        assert files_resp.status_code == 200
-        files_payload = files_resp.json()
-        assert files_payload["available"] is True
-        assert files_payload["files"][0]["path"] == "demo.imgql"
-        file_resp = client.get("/api/v1/playground/files/demo.imgql")
-        assert file_resp.status_code == 200
-        assert 'print "demo" 1' in file_resp.json()["content"]
+            files_resp = client.get("/api/v1/playground/files")
+            assert files_resp.status_code == 200
+            files_payload = files_resp.json()
+            assert files_payload["available"] is True
+            assert files_payload["files"][0]["path"] == "demo.imgql"
+            file_resp = client.get("/api/v1/playground/files/demo.imgql")
+            assert file_resp.status_code == 200
+            assert 'print "demo" 1' in file_resp.json()["content"]
 
-        blocked_run = client.post("/api/v1/run", json={"program": 'print "x" 1', "save_task_graph": "/tmp/x.dot"})
-        assert blocked_run.status_code == 400
+            blocked_run = client.post("/api/v1/run", json={"program": 'print "x" 1', "save_task_graph": "/tmp/x.dot"})
+            assert blocked_run.status_code == 400
 
-        jobs_resp = client.get("/api/v1/playground/jobs")
-        assert jobs_resp.status_code == 200
-        assert "jobs" in jobs_resp.json()
-        blocked_job = client.post(
-            "/api/v1/playground/jobs",
-            json={"program": 'print "x" 1', "save_syntax": "/tmp/syntax.txt"},
-        )
-        assert blocked_job.status_code == 400
+            symbols_resp = client.post("/api/v1/playground/symbols", json={"program": "let x = 2 + 3"})
+            assert symbols_resp.status_code == 200
+            symbol_payload = symbols_resp.json()
+            assert symbol_payload["available"] is True
+            assert "x" in symbol_payload["symbol_table"]
+            node_id = symbol_payload["symbol_table"]["x"]
 
-        test_report_resp = client.get("/api/v1/testing/report")
-        assert test_report_resp.status_code == 200
-        assert "junit" in test_report_resp.json()
-        primitive_chart_resp = client.get("/api/v1/testing/performance/primitive-chart")
-        assert primitive_chart_resp.status_code in {200, 404}
+            value_pending = client.post(
+                "/api/v1/playground/value",
+                json={"program": "let x = 2 + 3", "variable": "x", "execution_strategy": "strict"},
+            )
+            assert value_pending.status_code == 200
+            assert value_pending.json()["materialization"] == "pending"
+            assert value_pending.json()["compute_status"] in {"queued", "running"}
 
-        storage_resp = client.get("/api/v1/storage/stats")
-        assert storage_resp.status_code == 200
-        assert "available" in storage_resp.json()
-        results_resp = client.get("/api/v1/results/store")
-        assert results_resp.status_code == 200
-        assert "available" in results_resp.json()
-        assert client.get("/api/v1/results/store/missing-node").status_code == 404
+            fake_storage.put_success(node_id, 5)
+            value_cached = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "let x = 2 + 3",
+                    "variable": "x",
+                    "execution_strategy": "strict",
+                    "enqueue": False,
+                },
+            )
+            assert value_cached.status_code == 200
+            assert value_cached.json()["materialization"] == "cached"
+            assert value_cached.json()["descriptor"]["kind"] == "integer"
+            assert value_cached.json()["descriptor"]["value"] == 5
 
-        test_job_start = client.post("/api/v1/testing/jobs", json={"profile": "quick", "include_perf": False})
-        assert test_job_start.status_code == 200
-        assert test_job_start.json()["status"] == "running"
+            jobs_resp = client.get("/api/v1/playground/jobs")
+            assert jobs_resp.status_code == 200
+            assert "jobs" in jobs_resp.json()
+            blocked_job = client.post(
+                "/api/v1/playground/jobs",
+                json={"program": 'print "x" 1', "save_syntax": "/tmp/syntax.txt"},
+            )
+            assert blocked_job.status_code == 400
 
-        test_jobs = client.get("/api/v1/testing/jobs")
-        assert test_jobs.status_code == 200
-        assert "jobs" in test_jobs.json()
+            test_report_resp = client.get("/api/v1/testing/report")
+            assert test_report_resp.status_code == 200
+            assert "junit" in test_report_resp.json()
+            primitive_chart_resp = client.get("/api/v1/testing/performance/primitive-chart")
+            assert primitive_chart_resp.status_code in {200, 404}
 
-        test_job = client.get("/api/v1/testing/jobs/t1")
-        assert test_job.status_code == 200
-        assert test_job.json()["status"] == "completed"
+            storage_resp = client.get("/api/v1/storage/stats")
+            assert storage_resp.status_code == 200
+            assert "available" in storage_resp.json()
+            results_resp = client.get("/api/v1/results/store")
+            assert results_resp.status_code == 200
+            assert "available" in results_resp.json()
+            assert client.get("/api/v1/results/store/missing-node").status_code == 404
 
-        root_resp = client.get("/")
-        assert root_resp.status_code == 200
+            test_job_start = client.post("/api/v1/testing/jobs", json={"profile": "quick", "include_perf": False})
+            assert test_job_start.status_code == 200
+            assert test_job_start.json()["status"] == "running"
+
+            test_jobs = client.get("/api/v1/testing/jobs")
+            assert test_jobs.status_code == 200
+            assert "jobs" in test_jobs.json()
+
+            test_job = client.get("/api/v1/testing/jobs/t1")
+            assert test_job.status_code == 200
+            assert test_job.json()["status"] == "completed"
+
+            root_resp = client.get("/")
+            assert root_resp.status_code == 200
+    finally:
+        fake_storage.close()
 
 
 @pytest.mark.unit

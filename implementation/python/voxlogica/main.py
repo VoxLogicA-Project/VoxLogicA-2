@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -24,6 +25,8 @@ from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver
 
 from voxlogica.features import FeatureRegistry, OperationResult, handle_list_primitives
+from voxlogica.parser import parse_program_content
+from voxlogica.reducer import reduce_program_with_bindings
 from voxlogica.repl import run_interactive_repl
 from voxlogica.serve_support import (
     PERF_REPORT_SVG,
@@ -87,6 +90,23 @@ class TestRunRequest(BaseModel):
     include_perf: bool = True
 
 
+class PlaygroundSymbolsRequest(BaseModel):
+    """Payload to pre-compute variable hashes for editor interactions."""
+
+    program: str
+
+
+class PlaygroundValueRequest(BaseModel):
+    """Payload to lazily resolve one variable/node value for viewer interactions."""
+
+    program: str
+    execution_strategy: str = "dask"
+    node_id: str | None = None
+    variable: str | None = None
+    path: str | None = None
+    enqueue: bool = True
+
+
 def _validate_no_server_save(request: RunRequest) -> None:
     blocked_fields: list[str] = []
     if request.save_task_graph:
@@ -120,6 +140,41 @@ def _prepare_serve_run_payload(request: RunRequest) -> dict[str, Any]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         payload["filename"] = loaded["absolute_path"]
     return payload
+
+
+def _program_introspection(program_text: str) -> tuple[Any, dict[str, str], list[dict[str, str]]]:
+    syntax = parse_program_content(program_text)
+    workplan, symbol_table = reduce_program_with_bindings(syntax)
+    print_targets = [
+        {"name": goal.name, "node_id": goal.id}
+        for goal in workplan.goals
+        if goal.operation == "print"
+    ]
+    return workplan, symbol_table, print_targets
+
+
+def _program_hash(program_text: str) -> str:
+    return hashlib.sha1(program_text.encode("utf-8")).hexdigest()
+
+
+def _resolve_requested_node(
+    *,
+    symbol_table: dict[str, str],
+    node_id: str | None,
+    variable: str | None,
+) -> tuple[str, str]:
+    resolved_node = (node_id or "").strip()
+    resolved_variable = (variable or "").strip()
+    if not resolved_node and resolved_variable:
+        mapped = symbol_table.get(resolved_variable)
+        if mapped:
+            resolved_node = mapped
+    if not resolved_node:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing node selection: provide `node_id` or a bound `variable`.",
+        )
+    return resolved_node, resolved_variable
 
 
 class ElapsedMsFormatter(logging.Formatter):
@@ -506,6 +561,8 @@ async def capabilities_endpoint() -> dict[str, Any]:
     return {
         "playground_jobs": True,
         "playground_program_library": True,
+        "playground_symbols": True,
+        "playground_value_resolver": True,
         "testing_jobs": True,
         "testing_report": True,
         "storage_stats": True,
@@ -559,6 +616,147 @@ async def get_playground_file_endpoint(relative_path: str) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@api_router.post("/playground/symbols")
+async def playground_symbols_endpoint(request: PlaygroundSymbolsRequest) -> dict[str, Any]:
+    """Parse-only endpoint used by editor hover/selector to pre-compute node hashes."""
+    try:
+        workplan, symbol_table, print_targets = _program_introspection(request.program)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unable to parse program: {exc}") from exc
+    return {
+        "available": True,
+        "program_hash": _program_hash(request.program),
+        "operations": len(workplan.operations),
+        "goals": len(workplan.goals),
+        "symbol_table": symbol_table,
+        "print_targets": print_targets,
+    }
+
+
+@api_router.post("/playground/value")
+async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str, Any]:
+    """Resolve one node lazily with cache-first lookup and prioritized on-demand execution."""
+    try:
+        workplan, symbol_table, _print_targets = _program_introspection(request.program)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unable to parse program: {exc}") from exc
+
+    node_id, variable_name = _resolve_requested_node(
+        symbol_table=symbol_table,
+        node_id=request.node_id,
+        variable=request.variable,
+    )
+    strategy = (request.execution_strategy or "dask").strip() or "dask"
+    view_path = request.path or ""
+    storage = get_storage()
+
+    def _attach_common(payload: dict[str, Any]) -> dict[str, Any]:
+        payload["node_id"] = node_id
+        payload["path"] = view_path
+        payload["execution_strategy"] = strategy
+        if variable_name:
+            payload["variable"] = variable_name
+        return payload
+
+    inspected: dict[str, Any] | None = None
+    try:
+        inspected = inspect_store_result(storage, node_id=node_id, path=view_path)
+    except KeyError:
+        inspected = None
+
+    if inspected is not None and str(inspected.get("status")) == "materialized":
+        inspected["materialization"] = "cached"
+        inspected["compute_status"] = "cached"
+        return _attach_common(inspected)
+
+    program_hash = _program_hash(request.program)
+    tracked_job = playground_jobs.get_value_job(
+        program_hash=program_hash,
+        node_id=node_id,
+        execution_strategy=strategy,
+    )
+
+    if tracked_job is not None:
+        job_status = str(tracked_job.get("status", "unknown"))
+        if job_status in {"queued", "running"}:
+            return _attach_common(
+                {
+                    "available": False,
+                    "materialization": "pending",
+                    "compute_status": job_status,
+                    "job_id": tracked_job.get("job_id"),
+                    "log_tail": tracked_job.get("log_tail", ""),
+                    "store_status": inspected.get("status") if inspected is not None else "missing",
+                    "request_enqueued": False,
+                }
+            )
+        if job_status == "completed":
+            try:
+                inspected = inspect_store_result(storage, node_id=node_id, path=view_path)
+                if str(inspected.get("status")) == "materialized":
+                    inspected["materialization"] = "computed"
+                    inspected["compute_status"] = "completed"
+                    inspected["job_id"] = tracked_job.get("job_id")
+                    return _attach_common(inspected)
+            except KeyError:
+                inspected = None
+        if job_status in {"completed", "failed", "killed"} and not request.enqueue:
+            return _attach_common(
+                {
+                    "available": False,
+                    "materialization": "failed",
+                    "compute_status": job_status,
+                    "job_id": tracked_job.get("job_id"),
+                    "error": tracked_job.get("error") or "Value not materialized.",
+                    "store_status": inspected.get("status") if inspected is not None else "missing",
+                    "log_tail": tracked_job.get("log_tail", ""),
+                    "request_enqueued": False,
+                }
+            )
+
+    if not request.enqueue:
+        if inspected is not None:
+            inspected["materialization"] = "store-status"
+            inspected["compute_status"] = str(inspected.get("status", "unknown"))
+            return _attach_common(inspected)
+        return _attach_common(
+            {
+                "available": False,
+                "materialization": "missing",
+                "compute_status": "missing",
+                "store_status": "missing",
+                "request_enqueued": False,
+            }
+        )
+
+    value_job = playground_jobs.ensure_value_job(
+        {
+            "program": request.program,
+            "execute": True,
+            "no_cache": False,
+            "execution_strategy": strategy,
+            "_goals": [node_id],
+            "_job_kind": "value-resolve",
+            "_priority_node": node_id,
+            "_program_hash": program_hash,
+        },
+        program_hash=program_hash,
+        node_id=node_id,
+        execution_strategy=strategy,
+    )
+    return _attach_common(
+        {
+            "available": False,
+            "materialization": "pending",
+            "compute_status": value_job.get("status", "queued"),
+            "job_id": value_job.get("job_id"),
+            "log_tail": value_job.get("log_tail", ""),
+            "store_status": inspected.get("status") if inspected is not None else "missing",
+            "request_enqueued": True,
+        }
+    )
 
 
 @api_router.post("/playground/jobs")
