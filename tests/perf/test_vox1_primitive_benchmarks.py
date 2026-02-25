@@ -21,19 +21,20 @@ from voxlogica.reducer import reduce_program
 
 
 PERF_REPORT_DIR_ENV = "VOXLOGICA_PERF_REPORT_DIR"
+PERF_SAMPLE_RUNS = max(2, int(os.environ.get("VOXLOGICA_PERF_SAMPLE_RUNS", "3")))
+PERF_WARMUP_RUNS = max(1, int(os.environ.get("VOXLOGICA_PERF_WARMUP_RUNS", "1")))
 
 
 @dataclass(frozen=True)
 class BenchmarkCase:
     name: str
-    expr: str
 
 
 CASES: tuple[BenchmarkCase, ...] = (
-    BenchmarkCase("add_mul_chain", "((a + b) *. 2) - ((b) /. 2)"),
-    BenchmarkCase("distance_and_mask", "mask(dt(ma),ma)"),
-    BenchmarkCase("percentiles", "percentiles(a,ma,0.5)"),
-    BenchmarkCase("cross_correlation", "crossCorrelation(1,a,b,tt,min(b),max(b),8)"),
+    BenchmarkCase("add_mul_chain"),
+    BenchmarkCase("distance_and_mask"),
+    BenchmarkCase("percentiles"),
+    BenchmarkCase("cross_correlation"),
 )
 
 
@@ -61,12 +62,126 @@ def _prelude_v2(inputs: dict[str, Path]) -> str:
     )
 
 
-def _program(prelude: str, expr: str) -> str:
-    return (
-        f"{prelude}"
-        f"let r = {expr}\n"
-        "print \"res\" avg(mask(r,ma),ma)\n"
+def _build_add_mul_workload() -> tuple[list[str], dict[str, object]]:
+    factors: tuple[tuple[float, float], ...] = (
+        (1.05, 2.10),
+        (1.17, 2.25),
+        (1.09, 2.35),
+        (1.22, 2.45),
+        (1.14, 2.55),
+        (1.26, 2.20),
+        (1.08, 2.30),
+        (1.31, 2.40),
+        (1.11, 2.50),
+        (1.28, 2.60),
+        (1.19, 2.15),
+        (1.34, 2.28),
+        (1.07, 2.38),
+        (1.23, 2.48),
+        (1.16, 2.58),
+        (1.30, 2.68),
     )
+    lines = ["let t0 = a"]
+    for idx, (mul, div) in enumerate(factors, start=1):
+        add_src = "b" if idx % 2 == 1 else "a"
+        sub_src = "a" if idx % 3 == 0 else "b"
+        lines.append(
+            f"let t{idx} = ((t{idx-1} + {add_src}) *. {mul:.3f}) - (({sub_src}) /. {div:.3f})"
+        )
+    lines.append(f"let r = t{len(factors)}")
+    return lines, {
+        "repetitions": len(factors),
+        "parameters": [
+            {"mul": float(mul), "div": float(div)}
+            for mul, div in factors
+        ],
+    }
+
+
+def _build_distance_workload() -> tuple[list[str], dict[str, object]]:
+    thresholds: tuple[int, ...] = (1, 2, 3, 4, 5, 3, 2, 4, 1, 2)
+    lines = ["let d0 = mask(dt(ma),ma)"]
+    for idx, threshold in enumerate(thresholds, start=1):
+        lines.append(f"let m{idx} = {threshold} .<= d{idx-1}")
+        lines.append(f"let d{idx} = mask(dt(m{idx}),ma)")
+    lines.append(f"let r = d{len(thresholds)}")
+    return lines, {
+        "repetitions": len(thresholds),
+        "parameters": [int(v) for v in thresholds],
+    }
+
+
+def _build_percentiles_workload() -> tuple[list[str], dict[str, object]]:
+    corrections: tuple[float, ...] = (0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95)
+    lines: list[str] = []
+    for idx, corr in enumerate(corrections):
+        src = "a" if idx % 2 == 0 else "b"
+        mask = "ma" if idx % 3 != 0 else "mb"
+        lines.append(f"let p{idx} = percentiles({src},{mask},{corr:.2f})")
+
+    lines.append("let acc0 = p0")
+    for idx in range(1, len(corrections)):
+        lines.append(f"let acc{idx} = acc{idx-1} + p{idx}")
+    lines.append(f"let r = acc{len(corrections)-1} /. {float(len(corrections)):.1f}")
+    return lines, {
+        "repetitions": len(corrections),
+        "parameters": [float(v) for v in corrections],
+    }
+
+
+def _build_crosscorr_workload() -> tuple[list[str], dict[str, object]]:
+    sweep: tuple[tuple[str, int, int, str, str], ...] = (
+        ("cc0", 1, 8, "a", "b"),
+        ("cc1", 2, 12, "b", "a"),
+        ("cc2", 3, 16, "cc0", "b"),
+        ("cc3", 2, 20, "cc1", "cc0"),
+        ("cc4", 1, 24, "cc2", "cc1"),
+        ("cc5", 3, 12, "cc3", "cc2"),
+        ("cc6", 2, 16, "cc4", "cc5"),
+        ("cc7", 1, 20, "cc6", "cc3"),
+    )
+    lines: list[str] = []
+    for name, radius, bins, lhs, rhs in sweep:
+        lines.append(
+            f"let {name} = crossCorrelation({radius},{lhs},{rhs},tt,min({rhs}),max({rhs}),{bins})"
+        )
+    lines.extend(
+        [
+            "let pc0 = percentiles(cc7,ma,0.45)",
+            "let pc1 = percentiles(cc6,ma,0.65)",
+            "let r = crossCorrelation(2,pc0,pc1,tt,min(pc1),max(pc1),16)",
+        ]
+    )
+    return lines, {
+        "repetitions": len(sweep) + 1,
+        "parameters": [
+            {
+                "name": name,
+                "radius": int(radius),
+                "bins": int(bins),
+                "lhs": lhs,
+                "rhs": rhs,
+            }
+            for name, radius, bins, lhs, rhs in sweep
+        ],
+    }
+
+
+def _build_program(prelude: str, case: BenchmarkCase) -> tuple[str, dict[str, object]]:
+    workload_map = {
+        "add_mul_chain": _build_add_mul_workload,
+        "distance_and_mask": _build_distance_workload,
+        "percentiles": _build_percentiles_workload,
+        "cross_correlation": _build_crosscorr_workload,
+    }
+    builder = workload_map[case.name]
+    lines, metadata = builder()
+    program = (
+        f"{prelude}"
+        f"{'\n'.join(lines)}\n"
+        'print "res" avg(mask(r,ma),ma)\n'
+    )
+    return program, metadata
 
 
 def _ru_maxrss_bytes_children() -> int:
@@ -145,7 +260,7 @@ def _run_v2(program_text: str) -> dict[str, float]:
 def _render_histogram_svg(path: Path, rows: list[dict[str, float | str]]) -> None:
     width = 960
     row_h = 52
-    height = 120 + row_h * len(rows)
+    height = 130 + row_h * len(rows)
     left = 260
     bar_max = width - left - 140
     max_time = max(
@@ -154,10 +269,10 @@ def _render_histogram_svg(path: Path, rows: list[dict[str, float | str]]) -> Non
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
         '<rect width="100%" height="100%" fill="#f5f8fd"/>',
-        '<text x="28" y="34" font-size="24" font-family="Arial, sans-serif" fill="#12263a">Vox1 Parity Primitive Benchmarks</text>',
-        '<text x="28" y="58" font-size="13" font-family="Arial, sans-serif" fill="#486581">Lower is better. Bars show median runtime per primitive case.</text>',
+        '<text x="28" y="34" font-size="24" font-family="Arial, sans-serif" fill="#12263a">Vox1 Parity Primitive Stress Benchmarks</text>',
+        '<text x="28" y="58" font-size="13" font-family="Arial, sans-serif" fill="#486581">Median wall time on repeated parameter sweeps per primitive (higher CPU load, less process-overhead bias).</text>',
     ]
-    y = 96
+    y = 102
     for row in rows:
         name = str(row["name"])
         t1 = float(row["vox1_median_s"])
@@ -186,6 +301,8 @@ def _write_report(rows: list[dict[str, float | str]], svg: Path) -> None:
         "cases": rows,
         "generated_at": time.time(),
         "chart_svg": str(out_svg),
+        "sample_runs": int(PERF_SAMPLE_RUNS),
+        "warmup_runs": int(PERF_WARMUP_RUNS),
     }
     (output_root / "primitive_benchmarks.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True),
@@ -208,7 +325,7 @@ def legacy_binary() -> Path:
 @pytest.fixture(scope="session")
 def perf_inputs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     root = tmp_path_factory.mktemp("vox1_primitive_perf_inputs")
-    return write_deterministic_gray_pair(root, seed=17, shape=(26, 44, 44), spacing=(0.9, 1.1, 1.3))
+    return write_deterministic_gray_pair(root, seed=17, shape=(32, 60, 60), spacing=(0.85, 1.10, 1.30))
 
 
 @pytest.mark.perf
@@ -223,13 +340,15 @@ def test_vox1_primitive_benchmarks_generate_histogram(
 
     rows: list[dict[str, float | str]] = []
     for case in CASES:
-        legacy_text = _program(legacy_prelude, case.expr)
-        v2_text = _program(v2_prelude, case.expr)
+        legacy_text, workload_meta = _build_program(legacy_prelude, case)
+        v2_text, _ = _build_program(v2_prelude, case)
 
-        _run_legacy(legacy_binary, tmp_path, legacy_text)
-        _run_v2(v2_text)
-        legacy_samples = [_run_legacy(legacy_binary, tmp_path, legacy_text) for _ in range(2)]
-        v2_samples = [_run_v2(v2_text) for _ in range(2)]
+        for _ in range(PERF_WARMUP_RUNS):
+            _run_legacy(legacy_binary, tmp_path, legacy_text)
+            _run_v2(v2_text)
+
+        legacy_samples = [_run_legacy(legacy_binary, tmp_path, legacy_text) for _ in range(PERF_SAMPLE_RUNS)]
+        v2_samples = [_run_v2(v2_text) for _ in range(PERF_SAMPLE_RUNS)]
 
         legacy_median = statistics.median(float(sample["wall_time_s"]) for sample in legacy_samples)
         v2_median = statistics.median(float(sample["wall_time_s"]) for sample in v2_samples)
@@ -239,6 +358,8 @@ def test_vox1_primitive_benchmarks_generate_histogram(
                 "vox1_median_s": float(legacy_median),
                 "vox2_median_s": float(v2_median),
                 "speed_ratio": float(legacy_median / max(v2_median, 1e-9)),
+                "workload_repetitions": float(int(workload_meta["repetitions"])),
+                "workload_parameters": json.dumps(workload_meta["parameters"], sort_keys=True),
                 "vox1_cpu_median_s": float(
                     statistics.median(float(sample["cpu_time_s"]) for sample in legacy_samples)
                 ),
