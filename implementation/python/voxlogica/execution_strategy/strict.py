@@ -90,6 +90,7 @@ class StrictExecutionStrategy(ExecutionStrategy):
     def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None) -> ExecutionResult:
         start = time.time()
         failures: dict[NodeId, str] = {}
+        self.registry.reset_runtime_state()
 
         if goals is None:
             target_goals = [goal.id for goal in prepared.plan.goals]

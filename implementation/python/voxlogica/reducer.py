@@ -537,7 +537,7 @@ def reduce_command(
 
         if is_namespace_import:
             work_plan.import_namespace(import_path)
-            return env, []
+            return env, list(work_plan.registry.namespace_imgql_exports(import_path))
 
         imported_commands = parse_import(import_path)
         return env, imported_commands

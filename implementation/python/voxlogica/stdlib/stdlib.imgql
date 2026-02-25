@@ -5,10 +5,7 @@
 
 // Import the default namespace to make basic primitives available
 import "default"
+import "vox1"
 
-// Define operator aliases as functions that call the primitives
-let +(left, right) = addition(left, right)
-let -(left, right) = subtraction(left, right)
-let *(left, right) = multiplication(left, right)
-let /(left, right) = division(left, right)
+// print(label, value) function-style helper, alongside the print command.
 let print(message, value) = print_primitive(message, value)

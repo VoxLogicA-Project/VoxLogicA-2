@@ -36,6 +36,8 @@ Required fields:
 - Validation on registration.
 - Deterministic qualified lookup (`namespace.primitive`).
 - Deterministic unqualified lookup using explicit import order (`default` first, then imported namespaces).
+- Namespace-level ImgQL library exports (`*.imgql`) loaded from each primitive namespace and injected on namespace import.
+- Optional namespace runtime reset hook (`reset_runtime_state()`) executed at strategy run start.
 
 No set-order behavior is allowed in primitive resolution.
 

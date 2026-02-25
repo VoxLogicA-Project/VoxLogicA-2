@@ -225,14 +225,10 @@ grammar = r"""
     
     function_name: identifier | OPERATOR
     variable_name: identifier | OPERATOR
-    identifier: qualified_identifier | simple_identifier
-    qualified_identifier: simple_identifier "." simple_identifier
-    simple_identifier: /[a-zA-Z_][a-zA-Z0-9_]*/
-    
-    // Make the OPERATOR pattern more specific to exclude "//" sequence, ".", and uppercase letters
-    // Removed "." from operator pattern to avoid conflicts with qualified identifiers
-    // Removed uppercase letters to avoid conflicts with function/constant names
-    OPERATOR: /(?!\/{2})[#;:_'|!$%&\/^=*\-+<>?@~\\]+/
+    identifier: IDENTIFIER
+
+    IDENTIFIER: /[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?/
+    OPERATOR: /(?!\/{2})(?:[#;:_'\.|!$%&\/^=*\-+<>?@~\\]+|[A-Z][A-Z0-9]*[#;:_'\.|!$%&\/^=*\-+<>?@~\\][A-Z0-9#;:_'\.|!$%&\/^=*\-+<>?@~\\]*)/
     number: SIGNED_NUMBER -> float
     boolean: "true" -> true
            | "false" -> false
@@ -340,11 +336,7 @@ class VoxLogicATransformer(Transformer):
         return identifier
 
     @v_args(inline=True)
-    def qualified_identifier(self, namespace, primitive):
-        return f"{namespace}.{primitive}"
-
-    @v_args(inline=True)
-    def simple_identifier(self, token):
+    def IDENTIFIER(self, token):
         return str(token)
 
     @v_args(inline=True)

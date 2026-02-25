@@ -10,6 +10,7 @@ import inspect
 import logging
 import warnings
 
+from voxlogica.parser import Command, parse_program_content
 from voxlogica.primitives.api import (
     AritySpec,
     KernelFn,
@@ -37,6 +38,7 @@ class PrimitiveRegistry:
         self._specs_by_namespace: dict[str, OrderedDict[str, PrimitiveSpec]] = {}
         self._import_order: list[str] = []
         self._namespace_modules: dict[str, Any] = {}
+        self._imgql_exports_by_namespace: dict[str, tuple[Command, ...]] = {}
         self._loaded_namespaces: set[str] = set()
         self._legacy_warning_emitted: set[str] = set()
 
@@ -67,6 +69,7 @@ class PrimitiveRegistry:
         namespace_module = importlib.import_module(module_path)
         self._namespace_modules[namespace] = namespace_module
         namespace_specs = self._specs_by_namespace.setdefault(namespace, OrderedDict())
+        namespace_exports: list[Command] = []
 
         for py_file in sorted(namespace_dir.glob("*.py"), key=lambda p: p.name):
             if py_file.name.startswith("_"):
@@ -92,14 +95,14 @@ class PrimitiveRegistry:
 
             spec, kernel = spec_and_kernel
             self.register(spec, kernel)
-            namespace_specs[primitive_name] = spec
+            namespace_specs[spec.name] = spec
 
         if hasattr(namespace_module, "register_specs"):
             registered_specs = namespace_module.register_specs()
             for primitive_name in sorted(registered_specs.keys()):
                 spec, kernel = registered_specs[primitive_name]
                 self.register(spec, kernel)
-                namespace_specs[primitive_name] = spec
+                namespace_specs[spec.name] = spec
         elif hasattr(namespace_module, "register_primitives"):
             dynamic = namespace_module.register_primitives()
             if isinstance(dynamic, dict):
@@ -108,7 +111,17 @@ class PrimitiveRegistry:
                     kernel = dynamic[primitive_name]
                     spec = self._legacy_spec(namespace, primitive_name, kernel)
                     self.register(spec, kernel)
-                    namespace_specs[primitive_name] = spec
+                    namespace_specs[spec.name] = spec
+
+        for imgql_file in sorted(namespace_dir.glob("*.imgql"), key=lambda p: p.name):
+            try:
+                program = parse_program_content(imgql_file.read_text(encoding="utf-8"))
+                namespace_exports.extend(program.commands)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed loading primitive imgql module %s: %s", imgql_file, exc
+                )
+        self._imgql_exports_by_namespace[namespace] = tuple(namespace_exports)
 
         self._loaded_namespaces.add(namespace)
 
@@ -207,13 +220,19 @@ class PrimitiveRegistry:
         for namespace in imported_namespaces:
             self.import_namespace(namespace)
 
+    def namespace_imgql_exports(self, namespace: str) -> tuple[Command, ...]:
+        if namespace not in self._loaded_namespaces:
+            self._load_namespace(namespace)
+        return self._imgql_exports_by_namespace.get(namespace, ())
+
     def resolve(self, name: str) -> PrimitiveSpec:
         if "." in name:
             namespace, primitive_name = name.split(".", 1)
-            qualified = f"{namespace}.{primitive_name}"
-            if qualified not in self._specs_by_qualified:
-                raise KeyError(f"Unknown primitive: {qualified}")
-            return self._specs_by_qualified[qualified]
+            if namespace and primitive_name and namespace in self._specs_by_namespace:
+                qualified = f"{namespace}.{primitive_name}"
+                if qualified not in self._specs_by_qualified:
+                    raise KeyError(f"Unknown primitive: {qualified}")
+                return self._specs_by_qualified[qualified]
 
         ordered = []
         if "default" in self._import_order:
@@ -271,6 +290,15 @@ class PrimitiveRegistry:
             for primitive_name, spec in namespace_specs.items():
                 output[f"{namespace}.{primitive_name}"] = spec.description or "Primitive"
         return output
+
+    def reset_runtime_state(self) -> None:
+        for namespace in self.list_namespaces():
+            namespace_module = self._namespace_modules.get(namespace)
+            if namespace_module is None:
+                continue
+            reset = getattr(namespace_module, "reset_runtime_state", None)
+            if callable(reset):
+                reset()
 
 
 def _infer_arity(kernel: KernelFn) -> AritySpec:
