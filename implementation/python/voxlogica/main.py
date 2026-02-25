@@ -15,7 +15,7 @@ import typer
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.routing import APIRouter
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -32,7 +32,13 @@ from voxlogica.serve_support import (
     TestingJobManager,
     build_storage_stats_snapshot,
     build_test_dashboard_snapshot,
+    inspect_store_result,
+    list_playground_programs,
+    list_store_results_snapshot,
     load_gallery_document,
+    load_playground_program,
+    render_store_result_nifti_gz,
+    render_store_result_png,
 )
 from voxlogica.storage import get_storage
 from voxlogica.version import get_version
@@ -79,6 +85,41 @@ class TestRunRequest(BaseModel):
 
     profile: str = "full"
     include_perf: bool = True
+
+
+def _validate_no_server_save(request: RunRequest) -> None:
+    blocked_fields: list[str] = []
+    if request.save_task_graph:
+        blocked_fields.append("save_task_graph")
+    if request.save_task_graph_as_dot:
+        blocked_fields.append("save_task_graph_as_dot")
+    if request.save_task_graph_as_json:
+        blocked_fields.append("save_task_graph_as_json")
+    if request.save_syntax:
+        blocked_fields.append("save_syntax")
+    if blocked_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Server-side save/export options are disabled in serve mode. "
+                f"Blocked fields: {', '.join(blocked_fields)}"
+            ),
+        )
+
+
+def _prepare_serve_run_payload(request: RunRequest) -> dict[str, Any]:
+    _validate_no_server_save(request)
+    payload = request.model_dump()
+    filename = (request.filename or "").strip()
+    if filename:
+        try:
+            loaded = load_playground_program(filename)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        payload["filename"] = loaded["absolute_path"]
+    return payload
 
 
 class ElapsedMsFormatter(logging.Formatter):
@@ -464,9 +505,11 @@ async def capabilities_endpoint() -> dict[str, Any]:
     """Return serve/API capabilities exposed by this backend process."""
     return {
         "playground_jobs": True,
+        "playground_program_library": True,
         "testing_jobs": True,
         "testing_report": True,
         "storage_stats": True,
+        "store_results_viewer": True,
         "gallery": True,
     }
 
@@ -478,7 +521,8 @@ async def run_program_endpoint(request: RunRequest) -> dict[str, Any]:
     if feature is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run feature not found")
 
-    result = feature.handler(**request.model_dump())
+    payload = _prepare_serve_run_payload(request)
+    result = feature.handler(**payload)
     if not result.success:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.error or "An error occurred")
 
@@ -500,10 +544,28 @@ async def docs_gallery_endpoint() -> dict[str, Any]:
     return load_gallery_document()
 
 
+@api_router.get("/playground/files")
+async def list_playground_files_endpoint(limit: int = Query(default=400, ge=1, le=1000)) -> dict[str, Any]:
+    """List available program files from the fixed playground load directory."""
+    return list_playground_programs(limit=limit)
+
+
+@api_router.get("/playground/files/{relative_path:path}")
+async def get_playground_file_endpoint(relative_path: str) -> dict[str, Any]:
+    """Load one program file from the fixed playground load directory."""
+    try:
+        return load_playground_program(relative_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
 @api_router.post("/playground/jobs")
 async def create_playground_job_endpoint(request: RunRequest) -> dict[str, Any]:
     """Start an asynchronous playground execution job."""
-    return playground_jobs.create_job(request.model_dump())
+    payload = _prepare_serve_run_payload(request)
+    return playground_jobs.create_job(payload)
 
 
 @api_router.get("/playground/jobs")
@@ -611,6 +673,73 @@ async def testing_performance_primitive_chart_endpoint() -> FileResponse:
 async def storage_stats_endpoint() -> dict[str, Any]:
     """Return persistent cache/storage statistics."""
     return build_storage_stats_snapshot(get_storage())
+
+
+@api_router.get("/results/store")
+async def list_store_results_endpoint(
+    limit: int = Query(default=120, ge=1, le=300),
+    status_filter: str | None = Query(default=None),
+    node_filter: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """List cached result records available for UI inspection."""
+    return list_store_results_snapshot(
+        get_storage(),
+        limit=limit,
+        status_filter=status_filter,
+        node_filter=node_filter,
+    )
+
+
+@api_router.get("/results/store/{node_id}")
+async def inspect_store_result_endpoint(
+    node_id: str,
+    path: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """Inspect one stored result record (optionally selecting a sub-path)."""
+    try:
+        return inspect_store_result(get_storage(), node_id=node_id, path=path or "")
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@api_router.get("/results/store/{node_id}/render/png")
+async def render_store_png_endpoint(
+    node_id: str,
+    path: str | None = Query(default=None),
+) -> Response:
+    """Render one store record (or nested value) as a PNG image."""
+    try:
+        payload = render_store_result_png(get_storage(), node_id=node_id, path=path or "")
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return Response(content=payload, media_type="image/png")
+
+
+@api_router.get("/results/store/{node_id}/render/nii.gz")
+async def render_store_nifti_endpoint(
+    node_id: str,
+    path: str | None = Query(default=None),
+) -> Response:
+    """Render one store record (or nested value) as gzipped NIfTI."""
+    try:
+        payload = render_store_result_nifti_gz(get_storage(), node_id=node_id, path=path or "")
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    headers = {
+        "Content-Disposition": f'inline; filename="{node_id}.nii.gz"',
+        "Cache-Control": "no-store",
+    }
+    return Response(content=payload, media_type="application/gzip", headers=headers)
 
 
 @api_app.get("/")

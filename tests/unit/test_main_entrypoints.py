@@ -88,7 +88,12 @@ def test_list_primitives_and_repl_and_serve(capsys: pytest.CaptureFixture[str], 
 
 
 @pytest.mark.unit
-def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch):
+def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    library = tmp_path / "playground-library"
+    library.mkdir(parents=True)
+    (library / "demo.imgql").write_text('print "demo" 1', encoding="utf-8")
+    monkeypatch.setenv("VOXLOGICA_SERVE_LOAD_DIR", str(library))
+
     class FakeRegistry:
         @staticmethod
         def get_feature(name: str):
@@ -130,9 +135,26 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch):
         assert docs_resp.status_code == 200
         assert "examples" in docs_resp.json()
 
+        files_resp = client.get("/api/v1/playground/files")
+        assert files_resp.status_code == 200
+        files_payload = files_resp.json()
+        assert files_payload["available"] is True
+        assert files_payload["files"][0]["path"] == "demo.imgql"
+        file_resp = client.get("/api/v1/playground/files/demo.imgql")
+        assert file_resp.status_code == 200
+        assert 'print "demo" 1' in file_resp.json()["content"]
+
+        blocked_run = client.post("/api/v1/run", json={"program": 'print "x" 1', "save_task_graph": "/tmp/x.dot"})
+        assert blocked_run.status_code == 400
+
         jobs_resp = client.get("/api/v1/playground/jobs")
         assert jobs_resp.status_code == 200
         assert "jobs" in jobs_resp.json()
+        blocked_job = client.post(
+            "/api/v1/playground/jobs",
+            json={"program": 'print "x" 1', "save_syntax": "/tmp/syntax.txt"},
+        )
+        assert blocked_job.status_code == 400
 
         test_report_resp = client.get("/api/v1/testing/report")
         assert test_report_resp.status_code == 200
@@ -143,6 +165,10 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch):
         storage_resp = client.get("/api/v1/storage/stats")
         assert storage_resp.status_code == 200
         assert "available" in storage_resp.json()
+        results_resp = client.get("/api/v1/results/store")
+        assert results_resp.status_code == 200
+        assert "available" in results_resp.json()
+        assert client.get("/api/v1/results/store/missing-node").status_code == 404
 
         test_job_start = client.post("/api/v1/testing/jobs", json={"profile": "quick", "include_perf": False})
         assert test_job_start.status_code == 200

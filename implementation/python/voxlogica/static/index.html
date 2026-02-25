@@ -28,6 +28,7 @@
 
     <nav class="tabbar" aria-label="Main pages">
       <button class="tab active" data-tab="playground">Playground</button>
+      <button class="tab" data-tab="results">Results Explorer</button>
       <button class="tab" data-tab="gallery">Example Gallery</button>
       <button class="tab" data-tab="quality">Test Intelligence</button>
       <button class="tab" data-tab="storage">Storage Stats</button>
@@ -55,6 +56,12 @@
 import "simpleitk"
 let x = 2 + 3
 print "sum" x</textarea>
+            <div class="row controls">
+              <label class="inline-control" for="programLibrarySelect">Program Library</label>
+              <select id="programLibrarySelect" class="select"></select>
+              <button id="loadProgramFileBtn" class="btn btn-ghost btn-small">Load from Library</button>
+            </div>
+            <p id="programLibraryMeta" class="muted"></p>
             <div class="row controls">
               <button id="runProgramBtn" class="btn btn-primary">Run Program</button>
               <button id="killProgramBtn" class="btn btn-danger" disabled>Kill Running Job</button>
@@ -108,6 +115,35 @@ print "sum" x</textarea>
           <article class="card">
             <h2>Task Graph (Text)</h2>
             <pre id="taskGraphOutput" class="mono-scroll"></pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel" id="tab-results">
+        <div class="grid-two">
+          <article class="card">
+            <div class="card-header">
+              <h2>Stored Results</h2>
+              <button id="refreshResultsBtn" class="btn btn-ghost btn-small">Refresh</button>
+            </div>
+            <div class="row gap-s controls">
+              <label class="inline-control" for="resultStatusFilter">Status</label>
+              <select id="resultStatusFilter" class="select">
+                <option value="">all</option>
+                <option value="materialized">materialized</option>
+                <option value="failed">failed</option>
+              </select>
+              <input id="resultSearchInput" class="input" type="search" placeholder="Filter by node id">
+            </div>
+            <p id="resultListMeta" class="muted"></p>
+            <div id="resultList" class="job-list"></div>
+          </article>
+          <article class="card">
+            <h2>Result Inspector</h2>
+            <p class="muted">
+              View values only from persisted store entries. Server-side save/export is intentionally disabled.
+            </p>
+            <div id="resultInspector" class="result-inspector"></div>
           </article>
         </div>
       </section>
@@ -252,6 +288,8 @@ print "sum" x</textarea>
     </main>
   </div>
 
+  <script src="https://unpkg.com/@niivue/niivue@0.64.0/dist/niivue.umd.js"></script>
+  <script src="/static/results_viewer.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 

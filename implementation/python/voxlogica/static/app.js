@@ -7,6 +7,11 @@
     testPollTimer: null,
     capabilities: {},
     examples: [],
+    programFiles: [],
+    storeRecords: [],
+    currentResultNodeId: null,
+    currentResultPath: "",
+    resultViewer: null,
   };
 
   const dom = {
@@ -16,6 +21,9 @@
     programInput: document.getElementById("programInput"),
     executionStrategy: document.getElementById("executionStrategy"),
     noCache: document.getElementById("noCache"),
+    programLibrarySelect: document.getElementById("programLibrarySelect"),
+    loadProgramFileBtn: document.getElementById("loadProgramFileBtn"),
+    programLibraryMeta: document.getElementById("programLibraryMeta"),
     runProgramBtn: document.getElementById("runProgramBtn"),
     killProgramBtn: document.getElementById("killProgramBtn"),
     clearOutputBtn: document.getElementById("clearOutputBtn"),
@@ -64,6 +72,12 @@
     storageMeta: document.getElementById("storageMeta"),
     payloadBuckets: document.getElementById("payloadBuckets"),
     runtimeVersions: document.getElementById("runtimeVersions"),
+    refreshResultsBtn: document.getElementById("refreshResultsBtn"),
+    resultStatusFilter: document.getElementById("resultStatusFilter"),
+    resultSearchInput: document.getElementById("resultSearchInput"),
+    resultListMeta: document.getElementById("resultListMeta"),
+    resultList: document.getElementById("resultList"),
+    resultInspector: document.getElementById("resultInspector"),
   };
 
   const api = async (path, init = {}) => {
@@ -194,6 +208,9 @@
       setRunError("");
     }
     await refreshJobList();
+    if (state.activeTab === "results") {
+      await refreshStoreResults();
+    }
   };
 
   const pollCurrentJob = async () => {
@@ -262,6 +279,190 @@
     dom.taskGraphOutput.textContent = "";
     setRunError("");
     renderRuntimeMetrics(null);
+  };
+
+  const encodePath = (path) =>
+    String(path || "")
+      .split("/")
+      .map((token) => encodeURIComponent(token))
+      .join("/");
+
+  const ensureResultViewer = () => {
+    if (state.resultViewer || !dom.resultInspector) return;
+    const ctor = window.VoxResultViewer && window.VoxResultViewer.ResultViewer;
+    if (typeof ctor === "function") {
+      state.resultViewer = new ctor(dom.resultInspector, {
+        onNavigate: (path) => {
+          if (!state.currentResultNodeId) return;
+          inspectStoreRecord(state.currentResultNodeId, path || "");
+        },
+      });
+      return;
+    }
+    state.resultViewer = {
+      setLoading: (message) => {
+        dom.resultInspector.innerHTML = `<div class="muted">${sanitize(message || "Loading...")}</div>`;
+      },
+      setError: (message) => {
+        dom.resultInspector.innerHTML = `<div class="inline-error">${sanitize(message || "Viewer error")}</div>`;
+      },
+      renderRecord: (record) => {
+        dom.resultInspector.innerHTML = `<pre class="mono-scroll">${sanitize(
+          JSON.stringify(record || {}, null, 2),
+        )}</pre>`;
+      },
+    };
+  };
+
+  const loadProgramLibrary = async () => {
+    if (!dom.programLibrarySelect) return;
+    if (state.capabilities.playground_program_library === false) {
+      dom.programLibrarySelect.innerHTML = `<option value="">unavailable</option>`;
+      dom.programLibraryMeta.textContent = "Program library endpoint unavailable on this backend.";
+      dom.loadProgramFileBtn.disabled = true;
+      return;
+    }
+    try {
+      const payload = await api("/api/v1/playground/files");
+      state.programFiles = payload.files || [];
+      if (!payload.available) {
+        dom.programLibrarySelect.innerHTML = `<option value="">library unavailable</option>`;
+        dom.programLibraryMeta.textContent = payload.error || "Program library unavailable.";
+        dom.loadProgramFileBtn.disabled = true;
+        return;
+      }
+      if (!state.programFiles.length) {
+        dom.programLibrarySelect.innerHTML = `<option value="">no .imgql files found</option>`;
+        dom.programLibraryMeta.textContent = `${payload.load_dir} | 0 files`;
+        dom.loadProgramFileBtn.disabled = true;
+        return;
+      }
+      dom.programLibrarySelect.innerHTML = state.programFiles
+        .map((entry) => `<option value="${sanitize(entry.path)}">${sanitize(entry.path)}</option>`)
+        .join("");
+      dom.programLibraryMeta.textContent = `${payload.load_dir} | ${state.programFiles.length} file(s)`;
+      dom.loadProgramFileBtn.disabled = false;
+    } catch (err) {
+      dom.programLibrarySelect.innerHTML = `<option value="">failed</option>`;
+      dom.programLibraryMeta.textContent = `Unable to load library: ${err.message}`;
+      dom.loadProgramFileBtn.disabled = true;
+    }
+  };
+
+  const loadProgramFromLibrary = async () => {
+    const rel = dom.programLibrarySelect && dom.programLibrarySelect.value;
+    if (!rel) return;
+    try {
+      const payload = await api(`/api/v1/playground/files/${encodePath(rel)}`);
+      dom.programInput.value = payload.content || "";
+      dom.programLibraryMeta.textContent = `${payload.path} | ${fmtBytes(Number(payload.bytes || 0))}`;
+      activateTab("playground");
+    } catch (err) {
+      dom.programLibraryMeta.textContent = `Unable to load ${rel}: ${err.message}`;
+    }
+  };
+
+  const renderStoreList = () => {
+    if (!dom.resultList) return;
+    dom.resultList.innerHTML = "";
+    if (!state.storeRecords.length) {
+      dom.resultList.innerHTML = `<div class="muted">No stored results found for current runtime.</div>`;
+      return;
+    }
+    dom.resultList.innerHTML = state.storeRecords
+      .map((record) => {
+        const active = state.currentResultNodeId === record.node_id ? "active" : "";
+        return `
+          <article class="job-item result-item ${active}" data-node-id="${sanitize(record.node_id)}">
+            <div class="job-row">
+              <strong>${sanitize(record.node_id.slice(0, 16))}</strong>
+              <span class="chip ${sanitize(record.status)}">${sanitize(record.status)}</span>
+            </div>
+            <div class="job-row">
+              <span>${sanitize(record.runtime_version || "-")}</span>
+              <span>${sanitize(fmtBytes(Number(record.payload_bytes || 0)))}</span>
+            </div>
+            <div class="job-row">
+              <span>${sanitize(record.updated_at || "-")}</span>
+              <button class="btn btn-ghost btn-small" data-open-result="${sanitize(record.node_id)}">Inspect</button>
+            </div>
+          </article>
+        `;
+      })
+      .join("");
+    dom.resultList.querySelectorAll("[data-open-result]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const nodeId = btn.getAttribute("data-open-result");
+        if (!nodeId) return;
+        inspectStoreRecord(nodeId, "");
+      });
+    });
+  };
+
+  const inspectStoreRecord = async (nodeId, path = "") => {
+    ensureResultViewer();
+    state.currentResultNodeId = nodeId;
+    state.currentResultPath = path || "";
+    renderStoreList();
+    state.resultViewer.setLoading(`Loading ${nodeId}${path || ""} ...`);
+    try {
+      const suffix = path ? `?path=${encodeURIComponent(path)}` : "";
+      const payload = await api(`/api/v1/results/store/${encodeURIComponent(nodeId)}${suffix}`);
+      state.resultViewer.renderRecord(payload);
+    } catch (err) {
+      state.resultViewer.setError(`Failed loading result ${nodeId}: ${err.message}`);
+    }
+  };
+
+  const refreshStoreResults = async () => {
+    ensureResultViewer();
+    if (state.capabilities.store_results_viewer === false) {
+      dom.resultListMeta.textContent = "Store results viewer unavailable on this backend.";
+      state.storeRecords = [];
+      renderStoreList();
+      state.resultViewer.setError("Store results endpoint unavailable.");
+      return;
+    }
+    const params = new URLSearchParams();
+    params.set("limit", "200");
+    const statusFilter = (dom.resultStatusFilter && dom.resultStatusFilter.value) || "";
+    const search = (dom.resultSearchInput && dom.resultSearchInput.value) || "";
+    if (statusFilter) params.set("status_filter", statusFilter);
+    if (search.trim()) params.set("node_filter", search.trim());
+    try {
+      const payload = await api(`/api/v1/results/store?${params.toString()}`);
+      if (!payload.available) {
+        dom.resultListMeta.textContent = payload.error || "Store results unavailable.";
+        state.storeRecords = [];
+        renderStoreList();
+        state.resultViewer.setError(payload.error || "Store results unavailable.");
+        return;
+      }
+      state.storeRecords = payload.records || [];
+      const summary = payload.summary || {};
+      dom.resultListMeta.textContent =
+        `${Number(summary.total || 0)} total | ` +
+        `${Number(summary.materialized || 0)} materialized | ` +
+        `${Number(summary.failed || 0)} failed`;
+      renderStoreList();
+      if (state.currentResultNodeId) {
+        const stillPresent = state.storeRecords.some((record) => record.node_id === state.currentResultNodeId);
+        if (stillPresent) {
+          await inspectStoreRecord(state.currentResultNodeId, state.currentResultPath || "");
+          return;
+        }
+      }
+      if (state.storeRecords.length) {
+        await inspectStoreRecord(state.storeRecords[0].node_id, "");
+      } else {
+        state.resultViewer.renderRecord(null);
+      }
+    } catch (err) {
+      dom.resultListMeta.textContent = `Unable to load results: ${err.message}`;
+      state.storeRecords = [];
+      renderStoreList();
+      state.resultViewer.setError(`Unable to load result list: ${err.message}`);
+    }
   };
 
   const renderBarList = (container, items, valueField, labelField, formatter = (v) => `${v}`) => {
@@ -642,6 +843,13 @@
       if (state.capabilities.testing_jobs === false) {
         setTestingUnavailableMessage("This backend does not expose testing jobs. Restart server from latest commit.");
       }
+      if (state.capabilities.playground_program_library === false) {
+        dom.programLibraryMeta.textContent = "Program library endpoint unavailable on this backend.";
+        dom.loadProgramFileBtn.disabled = true;
+      }
+      if (state.capabilities.store_results_viewer === false) {
+        dom.resultListMeta.textContent = "Store results viewer unavailable on this backend.";
+      }
     } catch (err) {
       if (String(err.message).includes("404")) {
         state.capabilities.testing_jobs = false;
@@ -680,6 +888,12 @@
     state.activeTab = tabName;
     dom.tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === tabName));
     dom.panels.forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${tabName}`));
+    if (tabName === "results") {
+      refreshStoreResults();
+    }
+    if (tabName === "playground") {
+      loadProgramLibrary();
+    }
   };
 
   const connectLiveReload = () => {
@@ -703,12 +917,14 @@
   };
 
   const bindEvents = () => {
+    let resultSearchDebounce = null;
     dom.tabs.forEach((tab) => {
       tab.addEventListener("click", () => activateTab(tab.dataset.tab));
     });
     dom.runProgramBtn.addEventListener("click", createPlaygroundJob);
     dom.killProgramBtn.addEventListener("click", killCurrentJob);
     dom.clearOutputBtn.addEventListener("click", clearOutput);
+    dom.loadProgramFileBtn.addEventListener("click", loadProgramFromLibrary);
     dom.refreshJobsBtn.addEventListener("click", refreshJobList);
     dom.moduleFilter.addEventListener("change", () => renderGalleryCards(dom.moduleFilter.value));
     dom.refreshQualityBtn.addEventListener("click", refreshQualityReport);
@@ -717,6 +933,15 @@
     dom.runPerfTestsBtn.addEventListener("click", () => startTestingJob("perf", true));
     dom.killTestRunBtn.addEventListener("click", killCurrentTestJob);
     dom.refreshStorageBtn.addEventListener("click", refreshStorageStats);
+    dom.refreshResultsBtn.addEventListener("click", refreshStoreResults);
+    dom.resultStatusFilter.addEventListener("change", refreshStoreResults);
+    dom.resultSearchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") refreshStoreResults();
+    });
+    dom.resultSearchInput.addEventListener("input", () => {
+      if (resultSearchDebounce) clearTimeout(resultSearchDebounce);
+      resultSearchDebounce = setTimeout(refreshStoreResults, 260);
+    });
   };
 
   const init = async () => {
@@ -725,14 +950,17 @@
     setJobStatus("idle");
     setTestingControlsBusy(false);
     setTestRunStatus("idle");
+    ensureResultViewer();
     await Promise.all([
       loadCapabilities(),
       loadVersionStamp(),
+      loadProgramLibrary(),
       loadGallery(),
       refreshJobList(),
       refreshQualityReport(),
       refreshTestingJobs(),
       refreshStorageStats(),
+      refreshStoreResults(),
     ]);
     connectLiveReload();
     setInterval(() => {
@@ -746,6 +974,9 @@
       }
       if (state.activeTab === "playground") {
         refreshJobList();
+      }
+      if (state.activeTab === "results") {
+        refreshStoreResults();
       }
     }, 15000);
   };

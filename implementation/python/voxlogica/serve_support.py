@@ -9,14 +9,17 @@ from typing import Any
 import multiprocessing as mp
 import json
 import os
+import pickle
 import re
 import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
+from urllib.parse import quote
 import xml.etree.ElementTree as ET
 import uuid
 
@@ -31,6 +34,13 @@ PERF_REPORT_JSON = PERF_REPORT_DIR / "vox1_vs_vox2_perf.json"
 PERF_REPORT_SVG = PERF_REPORT_DIR / "vox1_vs_vox2_perf.svg"
 TEST_JOB_LOG_DIR = TEST_REPORTS_DIR / "jobs"
 PLAYGROUND_JOB_LOG_DIR = TEST_REPORTS_DIR / "playground"
+DEFAULT_PLAYGROUND_LOAD_DIR = REPO_ROOT / "tests"
+PLAYGROUND_LOAD_DIR_ENV = "VOXLOGICA_SERVE_LOAD_DIR"
+MAX_PLAYGROUND_PROGRAM_BYTES = 2 * 1024 * 1024
+MAX_RESULT_LIST_LIMIT = 300
+MAX_RESULT_PREVIEW_ITEMS = 16
+MAX_RESULT_PREVIEW_DEPTH = 3
+MAX_INLINE_STRING_CHARS = 4096
 
 _PLAYGROUND_COMMENT = re.compile(
     r"<!--\s*vox:playground(?P<meta>.*?)-->\s*```imgql\s*(?P<code>.*?)\s*```",
@@ -454,6 +464,709 @@ def build_storage_stats_snapshot(storage: Any) -> dict[str, Any]:
         ],
         "generated_at": _iso_utc(time.time()),
     }
+
+
+def resolve_playground_load_directory() -> Path:
+    """Resolve the fixed directory used by the UI for loading programs."""
+    configured = os.environ.get(PLAYGROUND_LOAD_DIR_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return DEFAULT_PLAYGROUND_LOAD_DIR.resolve()
+
+
+def list_playground_programs(*, limit: int = 400) -> dict[str, Any]:
+    """List `.imgql` files under the fixed UI load directory."""
+    load_dir = resolve_playground_load_directory()
+    if not load_dir.exists():
+        return {
+            "available": False,
+            "load_dir": str(load_dir),
+            "error": f"Load directory does not exist: {load_dir}",
+            "files": [],
+        }
+    if not load_dir.is_dir():
+        return {
+            "available": False,
+            "load_dir": str(load_dir),
+            "error": f"Load directory is not a directory: {load_dir}",
+            "files": [],
+        }
+
+    safe_limit = max(1, min(int(limit), 1000))
+    entries: list[dict[str, Any]] = []
+    for path in sorted(load_dir.rglob("*.imgql")):
+        if len(entries) >= safe_limit:
+            break
+        if not path.is_file():
+            continue
+        rel = path.relative_to(load_dir).as_posix()
+        stat = path.stat()
+        entries.append(
+            {
+                "path": rel,
+                "bytes": int(stat.st_size),
+                "updated_at": _iso_utc(stat.st_mtime),
+            }
+        )
+    return {
+        "available": True,
+        "load_dir": str(load_dir),
+        "files": entries,
+        "truncated": len(entries) >= safe_limit,
+        "generated_at": _iso_utc(time.time()),
+    }
+
+
+def _resolve_allowed_program_path(relative_path: str) -> Path:
+    load_dir = resolve_playground_load_directory()
+    candidate = (load_dir / relative_path).resolve()
+    candidate.relative_to(load_dir)
+    if candidate.suffix.lower() != ".imgql":
+        raise ValueError("Only .imgql files can be loaded from the playground library")
+    if not candidate.exists() or not candidate.is_file():
+        raise FileNotFoundError(f"Program file not found: {relative_path}")
+    return candidate
+
+
+def load_playground_program(relative_path: str) -> dict[str, Any]:
+    """Load one `.imgql` file from the fixed UI load directory."""
+    try:
+        candidate = _resolve_allowed_program_path(relative_path)
+    except ValueError as exc:
+        raise ValueError(f"Invalid load path: {exc}") from exc
+
+    size = int(candidate.stat().st_size)
+    if size > MAX_PLAYGROUND_PROGRAM_BYTES:
+        raise ValueError(
+            f"Program file too large ({size} bytes). "
+            f"Max supported is {MAX_PLAYGROUND_PROGRAM_BYTES} bytes."
+        )
+    return {
+        "available": True,
+        "load_dir": str(resolve_playground_load_directory()),
+        "path": candidate.relative_to(resolve_playground_load_directory()).as_posix(),
+        "absolute_path": str(candidate),
+        "content": candidate.read_text(encoding="utf-8"),
+        "bytes": size,
+        "updated_at": _iso_utc(candidate.stat().st_mtime),
+    }
+
+
+def _storage_db_path(storage: Any) -> Path | None:
+    db_attr = getattr(storage, "db_path", None)
+    if db_attr is None:
+        return None
+    try:
+        path = Path(db_attr).expanduser().resolve()
+    except Exception:
+        return None
+    return path
+
+
+def _result_runtime_filter(storage: Any) -> str | None:
+    runtime_version = getattr(storage, "runtime_version", None)
+    if runtime_version is None:
+        return None
+    runtime_text = str(runtime_version).strip()
+    return runtime_text or None
+
+
+def list_store_results_snapshot(
+    storage: Any,
+    *,
+    limit: int = 120,
+    status_filter: str | None = None,
+    node_filter: str | None = None,
+) -> dict[str, Any]:
+    """List cached result records available for UI inspection."""
+    db_path = _storage_db_path(storage)
+    if db_path is None:
+        return {
+            "available": False,
+            "error": "Storage backend does not expose a SQLite path",
+            "records": [],
+        }
+    if not db_path.exists():
+        return {
+            "available": False,
+            "db_path": str(db_path),
+            "error": "Storage database does not exist yet",
+            "records": [],
+        }
+
+    safe_limit = max(1, min(int(limit), MAX_RESULT_LIST_LIMIT))
+    runtime_filter = _result_runtime_filter(storage)
+    where_clauses: list[str] = []
+    query_params: list[Any] = []
+
+    if status_filter:
+        where_clauses.append("status = ?")
+        query_params.append(status_filter)
+    if node_filter:
+        where_clauses.append("node_id LIKE ?")
+        query_params.append(f"%{node_filter}%")
+    if runtime_filter:
+        where_clauses.append("runtime_version = ?")
+        query_params.append(runtime_filter)
+
+    where_sql = ""
+    if where_clauses:
+        where_sql = "WHERE " + " AND ".join(where_clauses)
+
+    list_sql = f"""
+        SELECT
+            node_id,
+            status,
+            runtime_version,
+            payload_encoding,
+            LENGTH(payload) AS payload_bytes,
+            error,
+            created_at,
+            updated_at
+        FROM results
+        {where_sql}
+        ORDER BY updated_at DESC
+        LIMIT ?
+    """
+    count_sql = f"SELECT COUNT(*) AS total FROM results {where_sql}"
+    summary_sql = f"""
+        SELECT
+            SUM(CASE WHEN status = 'materialized' THEN 1 ELSE 0 END) AS materialized,
+            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+        FROM results
+        {where_sql}
+    """
+
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            records = conn.execute(list_sql, [*query_params, safe_limit]).fetchall()
+            total_row = conn.execute(count_sql, query_params).fetchone()
+            summary_row = conn.execute(summary_sql, query_params).fetchone()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "available": False,
+            "db_path": str(db_path),
+            "error": f"Unable to query store results: {exc}",
+            "records": [],
+        }
+
+    payload_records = [
+        {
+            "node_id": str(row["node_id"]),
+            "status": str(row["status"]),
+            "runtime_version": str(row["runtime_version"]),
+            "payload_encoding": str(row["payload_encoding"]),
+            "payload_bytes": _safe_int(row["payload_bytes"]),
+            "error": row["error"],
+            "created_at": _iso_utc(_safe_float(row["created_at"])),
+            "updated_at": _iso_utc(_safe_float(row["updated_at"])),
+        }
+        for row in records
+    ]
+    total = _safe_int(total_row["total"]) if total_row is not None else len(payload_records)
+    materialized = _safe_int(summary_row["materialized"]) if summary_row is not None else 0
+    failed = _safe_int(summary_row["failed"]) if summary_row is not None else 0
+    return {
+        "available": True,
+        "db_path": str(db_path),
+        "runtime_version_filter": runtime_filter,
+        "status_filter": status_filter,
+        "node_filter": node_filter,
+        "records": payload_records,
+        "summary": {
+            "total": total,
+            "materialized": materialized,
+            "failed": failed,
+        },
+        "generated_at": _iso_utc(time.time()),
+    }
+
+
+def _load_store_row(storage: Any, node_id: str) -> sqlite3.Row | None:
+    db_path = _storage_db_path(storage)
+    if db_path is None or not db_path.exists():
+        return None
+    runtime_filter = _result_runtime_filter(storage)
+    query = """
+        SELECT
+            node_id,
+            status,
+            payload,
+            payload_encoding,
+            error,
+            metadata_json,
+            runtime_version,
+            created_at,
+            updated_at
+        FROM results
+        WHERE node_id = ?
+    """
+    params: list[Any] = [node_id]
+    if runtime_filter:
+        query += " AND runtime_version = ?"
+        params.append(runtime_filter)
+    query += " ORDER BY updated_at DESC LIMIT 1"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(query, params).fetchone()
+
+
+def _decode_metadata(metadata_json: Any) -> dict[str, Any]:
+    if not isinstance(metadata_json, str):
+        return {}
+    try:
+        parsed = json.loads(metadata_json)
+    except Exception:
+        return {}
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
+def _deserialize_payload(payload: Any, encoding: str) -> Any:
+    if encoding == "none" or payload is None:
+        return None
+    if encoding != "pickle":
+        raise ValueError(f"Unsupported payload encoding: {encoding}")
+    if not isinstance(payload, (bytes, bytearray)):
+        raise ValueError("Invalid payload for pickle decoding")
+    return pickle.loads(payload)
+
+
+def _normalize_result_path(path: str | None) -> str:
+    raw = (path or "").strip()
+    if not raw or raw == "/":
+        return ""
+    if raw.startswith("/"):
+        return raw
+    return f"/{raw}"
+
+
+def _decode_path_token(token: str) -> str:
+    return token.replace("~1", "/").replace("~0", "~")
+
+
+def _encode_path_token(token: str) -> str:
+    return token.replace("~", "~0").replace("/", "~1")
+
+
+def _append_path(base: str, token: str) -> str:
+    encoded = _encode_path_token(token)
+    if not base:
+        return f"/{encoded}"
+    return f"{base}/{encoded}"
+
+
+def _resolve_value_path(value: Any, path: str) -> Any:
+    normalized = _normalize_result_path(path)
+    if not normalized:
+        return value
+    current = value
+    for token in [part for part in normalized.split("/") if part]:
+        key = _decode_path_token(token)
+        if isinstance(current, (list, tuple)):
+            try:
+                index = int(key)
+            except ValueError as exc:
+                raise KeyError(f"Invalid list index '{key}' in path '{path}'") from exc
+            if index < 0 or index >= len(current):
+                raise KeyError(f"List index out of range in path '{path}'")
+            current = current[index]
+            continue
+        if isinstance(current, dict):
+            if key not in current:
+                raise KeyError(f"Missing key '{key}' in path '{path}'")
+            current = current[key]
+            continue
+        raise KeyError(f"Cannot descend into value type {type(current).__name__} using path '{path}'")
+    return current
+
+
+def _import_numpy() -> Any | None:
+    try:
+        import numpy as np
+
+        return np
+    except Exception:
+        return None
+
+
+def _import_simpleitk() -> Any | None:
+    try:
+        import SimpleITK as sitk
+
+        return sitk
+    except Exception:
+        return None
+
+
+def _build_render_url(node_id: str, render_kind: str, path: str) -> str:
+    encoded_node = quote(node_id, safe="")
+    suffix = ""
+    normalized = _normalize_result_path(path)
+    if normalized:
+        suffix = f"?path={quote(normalized, safe='')}"
+    return f"/api/v1/results/store/{encoded_node}/render/{render_kind}{suffix}"
+
+
+def _string_preview(value: str) -> dict[str, Any]:
+    if len(value) <= MAX_INLINE_STRING_CHARS:
+        return {"text": value, "truncated": False}
+    return {
+        "text": value[:MAX_INLINE_STRING_CHARS],
+        "truncated": True,
+        "total_chars": len(value),
+    }
+
+
+def _sequence_numeric_preview(value: list[Any] | tuple[Any, ...]) -> list[float] | None:
+    if len(value) > 2048:
+        return None
+    out: list[float] = []
+    for item in value:
+        if isinstance(item, bool):
+            out.append(1.0 if item else 0.0)
+            continue
+        if isinstance(item, (int, float)):
+            out.append(float(item))
+            continue
+        return None
+    return out
+
+
+def _ndarray_stats(array: Any) -> dict[str, Any]:
+    np = _import_numpy()
+    if np is None:
+        return {}
+    if array.size == 0:
+        return {"empty": True}
+    if not np.issubdtype(array.dtype, np.number):
+        return {}
+    sample = array.reshape(-1)
+    if sample.size > 1_000_000:
+        step = max(1, sample.size // 1_000_000)
+        sample = sample[::step]
+    finite = sample
+    if np.issubdtype(sample.dtype, np.floating):
+        finite = sample[np.isfinite(sample)]
+        if finite.size == 0:
+            return {"has_finite": False}
+    return {
+        "min": float(np.min(finite)),
+        "max": float(np.max(finite)),
+        "mean": float(np.mean(finite)),
+    }
+
+
+def _describe_value(
+    value: Any,
+    *,
+    node_id: str,
+    path: str,
+    depth: int = 0,
+    seen_ids: set[int] | None = None,
+) -> dict[str, Any]:
+    np = _import_numpy()
+    sitk = _import_simpleitk()
+    seen = seen_ids if seen_ids is not None else set()
+
+    if depth > MAX_RESULT_PREVIEW_DEPTH:
+        return {"kind": "truncated", "reason": "depth-limit"}
+
+    if value is None:
+        return {"kind": "null", "value": None}
+    if isinstance(value, bool):
+        return {"kind": "boolean", "value": value}
+    if isinstance(value, int):
+        return {"kind": "integer", "value": value}
+    if isinstance(value, float):
+        return {"kind": "number", "value": value}
+    if isinstance(value, str):
+        return {
+            "kind": "string",
+            "length": len(value),
+            "preview": _string_preview(value),
+        }
+    if isinstance(value, bytes):
+        return {"kind": "bytes", "length": len(value)}
+
+    if np is not None and isinstance(value, np.generic):
+        return _describe_value(
+            value.item(),
+            node_id=node_id,
+            path=path,
+            depth=depth,
+            seen_ids=seen,
+        )
+
+    tracked = isinstance(value, (list, tuple, dict))
+    if np is not None and isinstance(value, np.ndarray):
+        tracked = True
+    if sitk is not None and isinstance(value, sitk.Image):
+        tracked = True
+
+    if tracked:
+        pointer = id(value)
+        if pointer in seen:
+            return {"kind": "cycle", "type": type(value).__name__}
+        seen.add(pointer)
+
+    if np is not None and isinstance(value, np.ndarray):
+        summary = {
+            "kind": "ndarray",
+            "dtype": str(value.dtype),
+            "shape": [int(v) for v in value.shape],
+            "size": int(value.size),
+            "stats": _ndarray_stats(value),
+        }
+        if value.ndim == 1 and value.size <= 4096:
+            summary["values"] = value.tolist()
+        if value.ndim == 2:
+            summary["render"] = {
+                "kind": "image2d",
+                "png_url": _build_render_url(node_id, "png", path),
+            }
+        elif value.ndim == 3:
+            summary["render"] = {
+                "kind": "medical-volume",
+                "nifti_url": _build_render_url(node_id, "nii.gz", path),
+            }
+        return summary
+
+    if sitk is not None and isinstance(value, sitk.Image):
+        size = [int(v) for v in value.GetSize()]
+        spacing = [float(v) for v in value.GetSpacing()]
+        origin = [float(v) for v in value.GetOrigin()]
+        direction = [float(v) for v in value.GetDirection()]
+        summary = {
+            "kind": "simpleitk-image",
+            "dimension": int(value.GetDimension()),
+            "size": size,
+            "spacing": spacing,
+            "origin": origin,
+            "direction": direction,
+            "pixel_id": str(value.GetPixelIDTypeAsString()),
+        }
+        if value.GetDimension() == 2:
+            summary["render"] = {
+                "kind": "image2d",
+                "png_url": _build_render_url(node_id, "png", path),
+            }
+        elif value.GetDimension() >= 3:
+            summary["render"] = {
+                "kind": "medical-volume",
+                "nifti_url": _build_render_url(node_id, "nii.gz", path),
+            }
+        return summary
+
+    if isinstance(value, (list, tuple)):
+        sequence: list[Any] | tuple[Any, ...] = value
+        payload: dict[str, Any] = {
+            "kind": "sequence",
+            "sequence_type": type(sequence).__name__,
+            "length": len(sequence),
+        }
+        numeric = _sequence_numeric_preview(sequence)
+        if numeric is not None:
+            payload["numeric_values"] = numeric
+        if depth < MAX_RESULT_PREVIEW_DEPTH and sequence:
+            items: list[dict[str, Any]] = []
+            for index, item in enumerate(sequence[:MAX_RESULT_PREVIEW_ITEMS]):
+                child_path = _append_path(path, str(index))
+                items.append(
+                    {
+                        "label": f"[{index}]",
+                        "path": child_path,
+                        "summary": _describe_value(
+                            item,
+                            node_id=node_id,
+                            path=child_path,
+                            depth=depth + 1,
+                            seen_ids=seen,
+                        ),
+                    }
+                )
+            payload["items"] = items
+            payload["truncated"] = len(sequence) > MAX_RESULT_PREVIEW_ITEMS
+        return payload
+
+    if isinstance(value, dict):
+        keys = list(value.keys())
+        key_preview = [str(k) for k in keys[:MAX_RESULT_PREVIEW_ITEMS]]
+        payload = {
+            "kind": "mapping",
+            "mapping_type": type(value).__name__,
+            "length": len(value),
+            "keys": key_preview,
+            "truncated": len(keys) > MAX_RESULT_PREVIEW_ITEMS,
+        }
+        if depth < MAX_RESULT_PREVIEW_DEPTH and keys:
+            entries: list[dict[str, Any]] = []
+            for key in keys[:MAX_RESULT_PREVIEW_ITEMS]:
+                child_path = _append_path(path, str(key))
+                entries.append(
+                    {
+                        "label": str(key),
+                        "path": child_path,
+                        "summary": _describe_value(
+                            value[key],
+                            node_id=node_id,
+                            path=child_path,
+                            depth=depth + 1,
+                            seen_ids=seen,
+                        ),
+                    }
+                )
+            payload["entries"] = entries
+        return payload
+
+    return {
+        "kind": "object",
+        "type": f"{type(value).__module__}.{type(value).__name__}",
+        "repr": repr(value)[:MAX_INLINE_STRING_CHARS],
+    }
+
+
+def _load_store_materialized_value(storage: Any, node_id: str) -> tuple[sqlite3.Row, Any]:
+    row = _load_store_row(storage, node_id)
+    if row is None:
+        raise KeyError(f"Unknown store result: {node_id}")
+    status = str(row["status"])
+    if status != "materialized":
+        raise ValueError(f"Store result '{node_id}' has status '{status}', not materialized")
+    value = _deserialize_payload(row["payload"], str(row["payload_encoding"]))
+    return row, value
+
+
+def inspect_store_result(storage: Any, *, node_id: str, path: str = "") -> dict[str, Any]:
+    """Inspect one stored result value (or one sub-path inside it)."""
+    row = _load_store_row(storage, node_id)
+    if row is None:
+        raise KeyError(f"Unknown store result: {node_id}")
+
+    status = str(row["status"])
+    payload: dict[str, Any] = {
+        "available": True,
+        "node_id": str(row["node_id"]),
+        "status": status,
+        "runtime_version": str(row["runtime_version"]),
+        "created_at": _iso_utc(_safe_float(row["created_at"])),
+        "updated_at": _iso_utc(_safe_float(row["updated_at"])),
+        "metadata": _decode_metadata(row["metadata_json"]),
+        "error": row["error"],
+        "path": _normalize_result_path(path),
+    }
+    if status != "materialized":
+        payload["descriptor"] = {"kind": "unavailable", "reason": f"status={status}"}
+        return payload
+
+    value = _deserialize_payload(row["payload"], str(row["payload_encoding"]))
+    target = _resolve_value_path(value, path)
+    payload["descriptor"] = _describe_value(
+        target,
+        node_id=node_id,
+        path=_normalize_result_path(path),
+    )
+    return payload
+
+
+def _image_to_png_bytes(image: Any) -> bytes:
+    sitk = _import_simpleitk()
+    if sitk is None:
+        raise RuntimeError("SimpleITK is not available")
+    scaled = sitk.RescaleIntensity(sitk.Cast(image, sitk.sitkFloat32), 0.0, 255.0)
+    scaled = sitk.Cast(scaled, sitk.sitkUInt8)
+    fd, tmp_name = tempfile.mkstemp(prefix="vox-result-", suffix=".png")
+    os.close(fd)
+    path = Path(tmp_name)
+    try:
+        sitk.WriteImage(scaled, str(path))
+        return path.read_bytes()
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _image_to_nifti_bytes(image: Any) -> bytes:
+    sitk = _import_simpleitk()
+    if sitk is None:
+        raise RuntimeError("SimpleITK is not available")
+    fd, tmp_name = tempfile.mkstemp(prefix="vox-result-", suffix=".nii.gz")
+    os.close(fd)
+    path = Path(tmp_name)
+    try:
+        sitk.WriteImage(image, str(path))
+        return path.read_bytes()
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _to_image2d(value: Any) -> Any:
+    sitk = _import_simpleitk()
+    np = _import_numpy()
+    if sitk is None:
+        raise RuntimeError("SimpleITK is not available")
+    if isinstance(value, sitk.Image):
+        if value.GetDimension() != 2:
+            raise ValueError("Only 2D images can be rendered as PNG")
+        return value
+    if np is not None and isinstance(value, np.ndarray):
+        if value.ndim != 2:
+            raise ValueError("Only 2D arrays can be rendered as PNG")
+        return sitk.GetImageFromArray(value)
+    if isinstance(value, (list, tuple)):
+        if np is None:
+            raise ValueError("NumPy unavailable for list-to-image conversion")
+        arr = np.asarray(value)
+        if arr.ndim != 2:
+            raise ValueError("Only 2D array-like values can be rendered as PNG")
+        return sitk.GetImageFromArray(arr)
+    raise ValueError(f"Unsupported value type for PNG rendering: {type(value).__name__}")
+
+
+def _to_image3d(value: Any) -> Any:
+    sitk = _import_simpleitk()
+    np = _import_numpy()
+    if sitk is None:
+        raise RuntimeError("SimpleITK is not available")
+    if isinstance(value, sitk.Image):
+        if value.GetDimension() != 3:
+            raise ValueError("Only 3D images can be rendered as NIfTI")
+        return value
+    if np is not None and isinstance(value, np.ndarray):
+        if value.ndim != 3:
+            raise ValueError("Only 3D arrays can be rendered as NIfTI")
+        return sitk.GetImageFromArray(value)
+    if isinstance(value, (list, tuple)):
+        if np is None:
+            raise ValueError("NumPy unavailable for list-to-image conversion")
+        arr = np.asarray(value)
+        if arr.ndim != 3:
+            raise ValueError("Only 3D array-like values can be rendered as NIfTI")
+        return sitk.GetImageFromArray(arr)
+    raise ValueError(f"Unsupported value type for NIfTI rendering: {type(value).__name__}")
+
+
+def render_store_result_png(storage: Any, *, node_id: str, path: str = "") -> bytes:
+    """Render one stored result (or sub-value) as PNG bytes."""
+    _row, value = _load_store_materialized_value(storage, node_id)
+    target = _resolve_value_path(value, path)
+    image = _to_image2d(target)
+    return _image_to_png_bytes(image)
+
+
+def render_store_result_nifti_gz(storage: Any, *, node_id: str, path: str = "") -> bytes:
+    """Render one stored result (or sub-value) as gzipped NIfTI bytes."""
+    _row, value = _load_store_materialized_value(storage, node_id)
+    target = _resolve_value_path(value, path)
+    image = _to_image3d(target)
+    return _image_to_nifti_bytes(image)
 
 
 def _ru_maxrss_bytes() -> int:
