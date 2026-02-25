@@ -30,6 +30,9 @@
   - `GET /api/v1/testing/jobs/{job_id}`
   - `DELETE /api/v1/testing/jobs/{job_id}`
   - includes live logfile tail and run/kill controls
+- Logs:
+  - test jobs: `tests/reports/jobs/<job_id>.log`
+  - playground jobs: `tests/reports/playground/<job_id>.log`
 
 4. **Storage Stats**
 - API: `GET /api/v1/storage/stats`

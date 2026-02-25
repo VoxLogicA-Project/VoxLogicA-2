@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import multiprocessing as mp
+import json
 import os
 import re
 import signal
@@ -29,6 +30,7 @@ PERF_REPORT_DIR = TEST_REPORTS_DIR / "perf"
 PERF_REPORT_JSON = PERF_REPORT_DIR / "vox1_vs_vox2_perf.json"
 PERF_REPORT_SVG = PERF_REPORT_DIR / "vox1_vs_vox2_perf.svg"
 TEST_JOB_LOG_DIR = TEST_REPORTS_DIR / "jobs"
+PLAYGROUND_JOB_LOG_DIR = TEST_REPORTS_DIR / "playground"
 
 _PLAYGROUND_COMMENT = re.compile(
     r"<!--\s*vox:playground(?P<meta>.*?)-->\s*```imgql\s*(?P<code>.*?)\s*```",
@@ -282,8 +284,6 @@ def _load_perf_report(json_path: Path = PERF_REPORT_JSON, svg_path: Path = PERF_
     primitive_svg = json_path.parent / "primitive_benchmarks.svg"
     if primitive_json.exists():
         try:
-            import json
-
             primitive_payload = json.loads(primitive_json.read_text(encoding="utf-8"))
             payload["primitive_benchmarks"] = {
                 "available": True,
@@ -305,6 +305,7 @@ def _load_perf_report(json_path: Path = PERF_REPORT_JSON, svg_path: Path = PERF_
             "available": False,
             "json_path": str(primitive_json),
             "svg_path": str(primitive_svg),
+            "reason": "Report file not generated yet. Run perf tests and check job logs.",
         }
     return payload
 
@@ -440,8 +441,16 @@ def _ru_maxrss_bytes() -> int:
     return int(value * 1024.0)
 
 
-def _playground_worker(send_conn: Any, request_payload: dict[str, Any]) -> None:
+def _playground_worker(send_conn: Any, request_payload: dict[str, Any], log_path_str: str) -> None:
     from voxlogica.features import handle_run
+
+    log_path = Path(log_path_str)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("", encoding="utf-8")
+
+    def _append_log(payload: dict[str, Any]) -> None:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
     started_at = time.time()
     wall_start = time.perf_counter()
@@ -452,17 +461,54 @@ def _playground_worker(send_conn: Any, request_payload: dict[str, Any]) -> None:
     tracemalloc.start()
     packet: dict[str, Any] = {"ok": False, "error": "Unknown worker failure"}
     try:
+        _append_log(
+            {
+                "event": "playground.run.started",
+                "started_at": _iso_utc(started_at),
+                "request": {
+                    "execution_strategy": request_payload.get("execution_strategy", "dask"),
+                    "execute": bool(request_payload.get("execute", True)),
+                    "no_cache": bool(request_payload.get("no_cache", False)),
+                    "program_chars": len(str(request_payload.get("program", ""))),
+                },
+            }
+        )
         run_result = handle_run(**request_payload)
         if run_result.success:
             packet = {"ok": True, "result": run_result.data}
+            _append_log(
+                {
+                    "event": "playground.run.completed",
+                    "success": True,
+                    "result_summary": {
+                        "operations": (run_result.data or {}).get("operations"),
+                        "goals": (run_result.data or {}).get("goals"),
+                        "execution": (run_result.data or {}).get("execution"),
+                    },
+                }
+            )
         else:
             packet = {"ok": False, "error": run_result.error or "Execution failed"}
+            _append_log(
+                {
+                    "event": "playground.run.completed",
+                    "success": False,
+                    "error": packet["error"],
+                }
+            )
     except Exception as exc:  # noqa: BLE001
         packet = {
             "ok": False,
             "error": str(exc),
             "traceback": traceback.format_exc(limit=15),
         }
+        _append_log(
+            {
+                "event": "playground.run.exception",
+                "error": str(exc),
+                "traceback": packet["traceback"],
+            }
+        )
     finally:
         current_bytes, peak_bytes = tracemalloc.get_traced_memory()
         tracemalloc.stop()
@@ -482,6 +528,13 @@ def _playground_worker(send_conn: Any, request_payload: dict[str, Any]) -> None:
         }
         packet["started_at"] = started_at
         packet["finished_at"] = finished_at
+        _append_log(
+            {
+                "event": "playground.run.metrics",
+                "metrics": packet["metrics"],
+                "finished_at": _iso_utc(finished_at),
+            }
+        )
         send_conn.send(packet)
         send_conn.close()
 
@@ -500,6 +553,7 @@ class PlaygroundJob:
     traceback: str | None = None
     process: mp.Process | None = None
     recv_conn: Any = None
+    log_path: Path | None = None
 
     def as_public(self, include_result: bool = True) -> dict[str, Any]:
         payload = {
@@ -516,6 +570,7 @@ class PlaygroundJob:
             "metrics": self.metrics,
             "error": self.error,
             "traceback": self.traceback,
+            "log_path": str(self.log_path) if self.log_path is not None else None,
         }
         if include_result:
             payload["result"] = self.result
@@ -626,9 +681,11 @@ class PlaygroundJobManager:
         job_id = uuid.uuid4().hex
         created_at = time.time()
         recv_conn, send_conn = self._ctx.Pipe(duplex=False)
+        PLAYGROUND_JOB_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_path = PLAYGROUND_JOB_LOG_DIR / f"{job_id}.log"
         process = self._ctx.Process(
             target=_playground_worker,
-            args=(send_conn, payload),
+            args=(send_conn, payload, str(log_path)),
             daemon=True,
         )
 
@@ -641,6 +698,7 @@ class PlaygroundJobManager:
                 status="queued",
                 process=process,
                 recv_conn=recv_conn,
+                log_path=log_path,
             )
             self._jobs[job_id] = job
             try:
@@ -790,10 +848,18 @@ class TestingJobManager:
         if code == 0:
             job.status = "completed"
             job.report_snapshot = build_test_dashboard_snapshot()
+            if job.log_path is not None:
+                with job.log_path.open("a", encoding="utf-8") as handle:
+                    handle.write("\n[testing.run.summary] success=true\n")
+                    handle.write(json.dumps(job.report_snapshot, sort_keys=True) + "\n")
         elif job.status != "killed":
             job.status = "failed"
             job.error = f"Test run exited with code {code}"
             job.report_snapshot = build_test_dashboard_snapshot()
+            if job.log_path is not None:
+                with job.log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(f"\n[testing.run.summary] success=false return_code={code}\n")
+                    handle.write(json.dumps(job.report_snapshot, sort_keys=True) + "\n")
 
     def _cleanup_locked(self) -> None:
         now = time.time()
@@ -871,7 +937,10 @@ class TestingJobManager:
             self._jobs[job_id] = job
             try:
                 with log_path.open("w", encoding="utf-8") as log_file:
+                    log_file.write(f"[testing.run.started] { _iso_utc(created_at) }\n")
                     log_file.write(f"$ {' '.join(command)}\n")
+                    log_file.write(f"cwd={REPO_ROOT}\n")
+                    log_file.write(f"profile={profile} include_perf={include_perf}\n")
                 log_handle = log_path.open("a", encoding="utf-8")
                 process = subprocess.Popen(
                     command,

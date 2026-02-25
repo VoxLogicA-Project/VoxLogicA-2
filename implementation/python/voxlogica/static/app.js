@@ -468,7 +468,8 @@
             dom.primitivePerfChart.classList.add("hidden");
           }
         } else {
-          dom.primitivePerfBars.innerHTML = `<div class="muted">No primitive benchmark report yet.</div>`;
+          const reason = primitive.reason || "No primitive benchmark report yet.";
+          dom.primitivePerfBars.innerHTML = `<div class="muted">${sanitize(reason)}</div>`;
           dom.primitivePerfChart.classList.add("hidden");
         }
       } else {
