@@ -10,6 +10,7 @@ High-grade-Glioblastoma_BRATS/output
 .vscode/settings.json
 examples/*/output
 tests/*/output
+tests/output/
 tests/*/output-gpu
 tests/*/output-cpu.config
 .vscode/

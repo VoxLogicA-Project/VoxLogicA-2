@@ -28,3 +28,27 @@ print "out" for x in range(0,6) do inc(x)
     dask_items = dask.page(dask_prepared, goal_id, offset=0, limit=100).items
 
     assert strict_items == dask_items
+
+
+@pytest.mark.contract
+def test_strict_and_dask_equivalent_for_sequence_arithmetic(reduce_from_text):
+    program = """
+let xs = range(0,6)
+let ys = ((xs / 5) * 10) + 1
+print "out" ys
+"""
+    workplan = reduce_from_text(program)
+    plan = workplan.to_symbolic_plan()
+    goal_id = plan.goals[0].id
+
+    strict = StrictExecutionStrategy(workplan.registry)
+    dask = DaskExecutionStrategy(workplan.registry)
+
+    strict_prepared = strict.compile(plan)
+    dask_prepared = dask.compile(plan)
+
+    strict_items = strict.page(strict_prepared, goal_id, offset=0, limit=100).items
+    dask_items = dask.page(dask_prepared, goal_id, offset=0, limit=100).items
+
+    assert strict_items == dask_items
+    assert strict_items == [1.0, 3.0, 5.0, 7.0, 9.0, 11.0]

@@ -5,6 +5,7 @@ Implements division operation for numeric types.
 """
 
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+from voxlogica.primitives.default._sequence_math import apply_binary_op
 
 
 def execute(left, right):
@@ -18,13 +19,13 @@ def execute(left, right):
     Returns:
         Quotient of left and right
     """
-    try:
-        if right == 0:
-            raise ValueError("Division by zero")
-        result = left / right
-        return result
-    except Exception as e:
-        raise ValueError(f"Division failed: {e}") from e
+    return apply_binary_op("Division", left, right, _safe_divide)
+
+
+def _safe_divide(left, right):
+    if right == 0:
+        raise ValueError("Division by zero")
+    return left / right
 
 
 KERNEL = execute

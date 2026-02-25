@@ -5,6 +5,7 @@ from pathlib import Path
 import dask.bag as db
 import pytest
 
+from voxlogica.execution_strategy.results import SequenceValue
 from voxlogica.primitives.default import (
     addition,
     dask_map,
@@ -29,6 +30,35 @@ def test_arithmetic_primitives():
     assert division.execute(8, 2) == 4
     with pytest.raises(ValueError):
         division.execute(1, 0)
+
+
+@pytest.mark.unit
+def test_sequence_arithmetic_overloads():
+    seq_add = addition.execute([1, 2, 3], 10)
+    assert isinstance(seq_add, SequenceValue)
+    assert list(seq_add.iter_values()) == [11, 12, 13]
+
+    seq_mul = multiplication.execute(2, [1, 2, 3])
+    assert isinstance(seq_mul, SequenceValue)
+    assert list(seq_mul.iter_values()) == [2, 4, 6]
+
+    pairwise = subtraction.execute([10, 20, 30], [1, 2, 3])
+    assert isinstance(pairwise, SequenceValue)
+    assert list(pairwise.iter_values()) == [9, 18, 27]
+
+    with pytest.raises(ValueError):
+        list(addition.execute([1, 2], [1, 2, 3]).iter_values())
+
+    with pytest.raises(ValueError):
+        list(division.execute([1, 2], 0).iter_values())
+
+
+@pytest.mark.unit
+def test_dask_arithmetic_overloads():
+    bag = db.from_sequence([1, 2, 3], npartitions=2)
+    assert addition.execute(bag, 5).compute() == [6, 7, 8]
+    assert multiplication.execute(3, bag).compute() == [3, 6, 9]
+    assert subtraction.execute(bag, bag).compute() == [0, 0, 0]
 
 
 @pytest.mark.unit

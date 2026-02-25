@@ -5,6 +5,7 @@ Implements addition operation for numeric types.
 """
 
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+from voxlogica.primitives.default._sequence_math import apply_binary_op
 
 
 def execute(left, right):
@@ -18,11 +19,12 @@ def execute(left, right):
     Returns:
         Sum of left and right
     """
-    try:
-        result = left + right
-        return result
-    except Exception as e:
-        raise ValueError(f"Addition failed: {e}") from e
+    return apply_binary_op(
+        "Addition",
+        left,
+        right,
+        lambda left_value, right_value: left_value + right_value,
+    )
 
 
 KERNEL = execute

@@ -8,15 +8,23 @@ let hi = index(mm,1)
 
 // Build 100 fractional thresholds linearly spaced between lo and hi (inclusive).
 let idxs = range(0,100)
-let mk_threshold(i) = lo + (hi-lo) * i / 99
-let mk_mask(i) = BinaryThreshold(img, mk_threshold(i), hi, 1, 0)
+let thresholds = lo + (hi-lo) * (idxs / 99)
+
+// BinaryThreshold semantics:
+// keep voxel if lower <= intensity <= upper
+// Here upper=hi, so increasing lower keeps only brighter voxels.
+let mk_mask(th) = BinaryThreshold(img, th, hi, 255, 0)
 
 // Build clean output filenames.
-let fname(i) = format_string("tests/output/threshold_sweep/mask_{:03.0f}.nii.gz", i)
+let fname(th) = concat(
+  "tests/output/threshold_sweep/mask_t_",
+  format_string("{:.6f}", th),
+  ".nii.gz"
+)
 
 // Write each thresholded image to disk.
-let save_mask(i) = WriteImage(mk_mask(i), fname(i))
-let writes = map(save_mask, idxs)
+let save_mask(th) = WriteImage(mk_mask(th), fname(th))
+let writes = map(save_mask, thresholds)
 
 // Force evaluation/materialization.
 print "n_thresholds" 100
