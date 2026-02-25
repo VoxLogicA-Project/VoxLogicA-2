@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -10,15 +9,10 @@ import numpy as np
 import pytest
 import SimpleITK as sitk
 
+from tests._vox1_binary import LEGACY_BIN_ENV, resolve_legacy_binary_path
 from voxlogica.execution_strategy.strict import StrictExecutionStrategy
 from voxlogica.parser import parse_program_content
 from voxlogica.reducer import reduce_program
-
-
-LEGACY_BIN_ENV = "VOXLOGICA1_EXPERIMENTAL_BIN"
-DEFAULT_LEGACY_BIN = Path(
-    "/tmp/VoxLogicA-experimental/src/bin/Release/net9.0/osx-x64/VoxLogicA"
-)
 
 
 @dataclass(frozen=True)
@@ -127,16 +121,12 @@ ALL_CASES: tuple[ParityCase, ...] = SCALAR_CASES + IMAGE_CASES
 
 @pytest.fixture(scope="session")
 def legacy_binary() -> Path:
-    configured = None
-    if LEGACY_BIN_ENV in os.environ:
-        configured = Path(os.environ[LEGACY_BIN_ENV]).expanduser()
-    if configured and configured.exists():
-        return configured
-    if DEFAULT_LEGACY_BIN.exists():
-        return DEFAULT_LEGACY_BIN
+    resolved = resolve_legacy_binary_path(auto_download=True)
+    if resolved is not None:
+        return resolved
     pytest.skip(
-        "Legacy VoxLogicA binary unavailable. Set VOXLOGICA1_EXPERIMENTAL_BIN "
-        "or build /tmp/VoxLogicA-experimental."
+        f"Legacy VoxLogicA binary unavailable. Set {LEGACY_BIN_ENV} or allow "
+        "release download from GitHub."
     )
     raise AssertionError("unreachable")
 

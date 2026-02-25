@@ -1,13 +1,78 @@
 name: CI
 
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 * * * *"
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      run_ci: ${{ steps.gate.outputs.run_ci }}
+    steps:
+      - name: Decide whether to run full CI
+        id: gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const eventName = context.eventName;
+            if (eventName === "workflow_dispatch") {
+              core.notice("Manual dispatch: running full CI.");
+              core.setOutput("run_ci", "true");
+              return;
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const workflowId = ".github/workflows/ci.yml";
+            const now = Date.now();
+            const oneDayMs = 24 * 60 * 60 * 1000;
+            const currentRunId = Number(process.env.GITHUB_RUN_ID);
+
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: workflowId,
+              event: "schedule",
+              per_page: 100,
+              status: "completed",
+            });
+
+            const recent = data.workflow_runs.find((run) => {
+              if (run.id === currentRunId) {
+                return false;
+              }
+              if (run.conclusion !== "success") {
+                return false;
+              }
+              const started = Date.parse(run.run_started_at || run.created_at);
+              return Number.isFinite(started) && (now - started) < oneDayMs;
+            });
+
+            if (recent) {
+              core.notice(`Skipping full CI: successful scheduled run already happened at ${recent.run_started_at || recent.created_at}.`);
+              core.setOutput("run_ci", "false");
+            } else {
+              core.notice("No successful scheduled run in last 24h: running full CI.");
+              core.setOutput("run_ci", "true");
+            }
+
+  skip-due-to-daily-limit:
+    needs: preflight
+    if: needs.preflight.outputs.run_ci != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip heavy jobs
+        run: echo "CI already ran successfully in the last 24h. Exiting early."
+
   lint-type:
+    needs: preflight
+    if: needs.preflight.outputs.run_ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -59,6 +124,8 @@ jobs:
           PY
 
   test-unit-contract:
+    needs: preflight
+    if: needs.preflight.outputs.run_ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -83,6 +150,8 @@ jobs:
         run: pytest -m "unit or contract"
 
   test-integration:
+    needs: preflight
+    if: needs.preflight.outputs.run_ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -99,10 +168,17 @@ jobs:
           pip install -r implementation/python/requirements.txt
           pip install -r implementation/python/requirements-test.txt
 
+      - name: Fetch VoxLogicA-1 binary (best-effort)
+        run: python tests/fetch_vox1_binary.py --quiet || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run integration + regression
         run: pytest -m "integration or regression"
 
   test-compat-cli:
+    needs: preflight
+    if: needs.preflight.outputs.run_ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -127,6 +203,8 @@ jobs:
           PYTHONPATH: implementation/python
 
   coverage:
+    needs: preflight
+    if: needs.preflight.outputs.run_ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -143,6 +221,11 @@ jobs:
           pip install -r implementation/python/requirements.txt
           pip install -r implementation/python/requirements-test.txt
 
+      - name: Fetch VoxLogicA-1 binary (best-effort)
+        run: python tests/fetch_vox1_binary.py --quiet || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run full coverage suite
         run: pytest -m "unit or contract or integration or regression" --cov=implementation/python/voxlogica --cov-report=xml --cov-report=term-missing --cov-fail-under=60
 
@@ -153,7 +236,8 @@ jobs:
           path: coverage.xml
 
   perf-smoke:
-    if: github.event_name == 'schedule'
+    needs: preflight
+    if: github.event_name == 'schedule' && needs.preflight.outputs.run_ci == 'true'
     continue-on-error: true
     runs-on: ubuntu-latest
     steps:
@@ -170,6 +254,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r implementation/python/requirements.txt
           pip install -r implementation/python/requirements-test.txt
+
+      - name: Fetch VoxLogicA-1 binary (best-effort)
+        run: python tests/fetch_vox1_binary.py --quiet || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run perf smoke
         run: pytest -m perf --maxfail=1

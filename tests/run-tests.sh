@@ -18,4 +18,10 @@ if [ "${VOXLOGICA_SKIP_TEST_DEPS_INSTALL:-0}" != "1" ]; then
 fi
 
 cd "$PROJECT_DIR"
+
+# Best-effort fetch of VoxLogicA-1 binary used by cross-version parity/perf tests.
+if [ "${VOXLOGICA_FETCH_VOX1:-1}" = "1" ]; then
+  python tests/fetch_vox1_binary.py --quiet >/dev/null 2>&1 || true
+fi
+
 pytest "$@"
