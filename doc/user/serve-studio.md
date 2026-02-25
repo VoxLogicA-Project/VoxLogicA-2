@@ -24,6 +24,11 @@
 - API: `GET /api/v1/testing/report`
 - Includes junit summary, coverage summary, and perf comparison report
 - Performance chart endpoint: `GET /api/v1/testing/performance/chart`
+- Interactive runs from UI:
+  - `POST /api/v1/testing/jobs`
+  - `GET /api/v1/testing/jobs/{job_id}`
+  - `DELETE /api/v1/testing/jobs/{job_id}`
+  - includes live logfile tail and run/kill controls
 
 4. **Storage Stats**
 - API: `GET /api/v1/storage/stats`

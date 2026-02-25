@@ -38,6 +38,9 @@ Once started, the API will be available at:
 | `serve gallery`                      | `GET /api/v1/docs/gallery` | Return markdown + parsed playground examples |
 | `serve quality dashboard`            | `GET /api/v1/testing/report` | JUnit + coverage + perf report snapshot |
 | `serve quality dashboard`            | `GET /api/v1/testing/performance/chart` | Latest vox1-vs-vox2 perf SVG |
+| `serve quality dashboard`            | `POST /api/v1/testing/jobs` | Start interactive test run (quick/full/perf) |
+| `serve quality dashboard`            | `GET /api/v1/testing/jobs/{job_id}` | Poll interactive test run + log tail |
+| `serve quality dashboard`            | `DELETE /api/v1/testing/jobs/{job_id}` | Kill interactive test run |
 | `serve storage dashboard`            | `GET /api/v1/storage/stats` | Cache/storage statistics |
 
 ## Available Endpoints

@@ -137,7 +137,16 @@ print "sum" x</textarea>
           <article class="card">
             <div class="card-header">
               <h2>Test & Coverage Overview</h2>
-              <button id="refreshQualityBtn" class="btn btn-ghost btn-small">Refresh</button>
+              <div class="row gap-s">
+                <button id="refreshQualityBtn" class="btn btn-ghost btn-small">Refresh</button>
+                <span id="testRunStatus" class="chip neutral">idle</span>
+              </div>
+            </div>
+            <div class="row controls">
+              <button id="runQuickTestsBtn" class="btn btn-ghost btn-small">Run Quick</button>
+              <button id="runFullTestsBtn" class="btn btn-primary btn-small">Run Full</button>
+              <button id="runPerfTestsBtn" class="btn btn-ghost btn-small">Run Perf</button>
+              <button id="killTestRunBtn" class="btn btn-danger btn-small" disabled>Kill Test Run</button>
             </div>
             <div class="stats-grid">
               <div class="stat">
@@ -173,6 +182,18 @@ print "sum" x</textarea>
             <h2>VoxLogicA-1 vs VoxLogicA-2 Performance</h2>
             <img id="perfChart" class="perf-chart hidden" alt="Performance comparison chart">
             <div id="perfSummary" class="muted">No performance report yet.</div>
+          </article>
+        </div>
+        <div class="grid-two">
+          <article class="card">
+            <h2>Test Run Logs</h2>
+            <pre id="testRunLog" class="mono-scroll"></pre>
+            <h3 class="subheading">Recent Test Jobs</h3>
+            <div id="recentTestJobs" class="job-list"></div>
+          </article>
+          <article class="card">
+            <h2>Test Titles</h2>
+            <div id="testTitles" class="table-like muted">No junit report loaded.</div>
           </article>
         </div>
         <article class="card">

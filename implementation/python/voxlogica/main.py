@@ -28,6 +28,7 @@ from voxlogica.repl import run_interactive_repl
 from voxlogica.serve_support import (
     PERF_REPORT_SVG,
     PlaygroundJobManager,
+    TestingJobManager,
     build_storage_stats_snapshot,
     build_test_dashboard_snapshot,
     load_gallery_document,
@@ -70,6 +71,13 @@ class RunRequest(BaseModel):
     verbose: Optional[bool] = False
     dask_dashboard: Optional[bool] = False
     execution_strategy: Optional[str] = "dask"
+
+
+class TestRunRequest(BaseModel):
+    """API payload for interactive test runs."""
+
+    profile: str = "full"
+    include_perf: bool = True
 
 
 class ElapsedMsFormatter(logging.Formatter):
@@ -421,6 +429,7 @@ if static_path.exists():
 
 api_router = APIRouter(prefix="/api/v1")
 playground_jobs = PlaygroundJobManager()
+testing_jobs = TestingJobManager()
 
 
 @api_router.get("/version")
@@ -506,6 +515,48 @@ async def kill_playground_job_endpoint(job_id: str) -> dict[str, Any]:
 async def testing_report_endpoint() -> dict[str, Any]:
     """Return aggregated test, coverage, and performance report snapshot."""
     return build_test_dashboard_snapshot()
+
+
+@api_router.post("/testing/jobs")
+async def create_testing_job_endpoint(request: TestRunRequest) -> dict[str, Any]:
+    """Start an asynchronous test run job from the web UI."""
+    try:
+        return testing_jobs.create_job(
+            profile=request.profile,
+            include_perf=bool(request.include_perf),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@api_router.get("/testing/jobs")
+async def list_testing_jobs_endpoint() -> dict[str, Any]:
+    """List recent test jobs."""
+    return testing_jobs.list_jobs()
+
+
+@api_router.get("/testing/jobs/{job_id}")
+async def get_testing_job_endpoint(job_id: str) -> dict[str, Any]:
+    """Get a test job status with recent log tail."""
+    payload = testing_jobs.get_job(job_id)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown testing job: {job_id}",
+        )
+    return payload
+
+
+@api_router.delete("/testing/jobs/{job_id}")
+async def kill_testing_job_endpoint(job_id: str) -> dict[str, Any]:
+    """Kill a running test job."""
+    payload = testing_jobs.kill_job(job_id)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown testing job: {job_id}",
+        )
+    return payload
 
 
 @api_router.get("/testing/performance/chart")

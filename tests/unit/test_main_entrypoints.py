@@ -96,6 +96,16 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(main_mod, "FeatureRegistry", FakeRegistry)
     monkeypatch.setattr(main_mod, "handle_list_primitives", lambda namespace=None: OperationResult.ok({"n": namespace}))
+    monkeypatch.setattr(
+        main_mod,
+        "testing_jobs",
+        SimpleNamespace(
+            create_job=lambda profile, include_perf: {"job_id": "t1", "status": "running", "profile": profile, "include_perf": include_perf},
+            list_jobs=lambda: {"jobs": []},
+            get_job=lambda job_id: {"job_id": job_id, "status": "completed", "log_tail": ""},
+            kill_job=lambda job_id: {"job_id": job_id, "status": "killed", "log_tail": ""},
+        ),
+    )
     monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
     monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
 
@@ -128,6 +138,18 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch):
         assert storage_resp.status_code == 200
         assert "available" in storage_resp.json()
 
+        test_job_start = client.post("/api/v1/testing/jobs", json={"profile": "quick", "include_perf": False})
+        assert test_job_start.status_code == 200
+        assert test_job_start.json()["status"] == "running"
+
+        test_jobs = client.get("/api/v1/testing/jobs")
+        assert test_jobs.status_code == 200
+        assert "jobs" in test_jobs.json()
+
+        test_job = client.get("/api/v1/testing/jobs/t1")
+        assert test_job.status_code == 200
+        assert test_job.json()["status"] == "completed"
+
         root_resp = client.get("/")
         assert root_resp.status_code == 200
 
@@ -140,12 +162,25 @@ def test_api_error_paths(monkeypatch: pytest.MonkeyPatch):
             return None
 
     monkeypatch.setattr(main_mod, "FeatureRegistry", MissingRegistry)
+    monkeypatch.setattr(
+        main_mod,
+        "testing_jobs",
+        SimpleNamespace(
+            create_job=lambda profile, include_perf: (_ for _ in ()).throw(ValueError("bad profile")),
+            list_jobs=lambda: {"jobs": []},
+            get_job=lambda job_id: None,
+            kill_job=lambda job_id: None,
+        ),
+    )
     monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
     monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
 
     with TestClient(main_mod.api_app) as client:
         assert client.get("/api/v1/version").status_code == 404
         assert client.post("/api/v1/run", json={"program": "x"}).status_code == 404
+        assert client.post("/api/v1/testing/jobs", json={"profile": "unknown"}).status_code == 400
+        assert client.get("/api/v1/testing/jobs/missing").status_code == 404
+        assert client.delete("/api/v1/testing/jobs/missing").status_code == 404
 
     monkeypatch.setattr(main_mod, "handle_list_primitives", lambda namespace=None: OperationResult.fail("bad"))
     with TestClient(main_mod.api_app) as client:

@@ -3,6 +3,8 @@
     activeTab: "playground",
     currentJobId: null,
     pollTimer: null,
+    currentTestJobId: null,
+    testPollTimer: null,
     examples: [],
   };
 
@@ -31,6 +33,14 @@
     moduleFilter: document.getElementById("moduleFilter"),
     galleryCards: document.getElementById("galleryCards"),
     refreshQualityBtn: document.getElementById("refreshQualityBtn"),
+    testRunStatus: document.getElementById("testRunStatus"),
+    runQuickTestsBtn: document.getElementById("runQuickTestsBtn"),
+    runFullTestsBtn: document.getElementById("runFullTestsBtn"),
+    runPerfTestsBtn: document.getElementById("runPerfTestsBtn"),
+    killTestRunBtn: document.getElementById("killTestRunBtn"),
+    testRunLog: document.getElementById("testRunLog"),
+    recentTestJobs: document.getElementById("recentTestJobs"),
+    testTitles: document.getElementById("testTitles"),
     qTotalTests: document.getElementById("qTotalTests"),
     qPassed: document.getElementById("qPassed"),
     qFailed: document.getElementById("qFailed"),
@@ -104,6 +114,17 @@
     }
   };
 
+  const setTestRunStatus = (status) => {
+    const normalized = String(status || "idle").toLowerCase();
+    dom.testRunStatus.textContent = normalized;
+    dom.testRunStatus.classList.remove("neutral", "running", "completed", "failed", "killed");
+    if (["running", "completed", "failed", "killed"].includes(normalized)) {
+      dom.testRunStatus.classList.add(normalized);
+    } else {
+      dom.testRunStatus.classList.add("neutral");
+    }
+  };
+
   const setRunError = (message) => {
     if (!message) {
       dom.runError.textContent = "";
@@ -141,6 +162,13 @@
     if (state.pollTimer) {
       clearInterval(state.pollTimer);
       state.pollTimer = null;
+    }
+  };
+
+  const stopPollingCurrentTestJob = () => {
+    if (state.testPollTimer) {
+      clearInterval(state.testPollTimer);
+      state.testPollTimer = null;
     }
   };
 
@@ -381,6 +409,7 @@
       renderBarList(dom.coverageBars, modules, "line_percent", "name", (v) => `${Number(v).toFixed(2)}%`);
 
       const failed = (report.junit && report.junit.failed_cases) || [];
+      const allCases = (report.junit && report.junit.test_cases) || [];
       if (!failed.length) {
         dom.failedCases.innerHTML = `<div class="muted">No failures in current report.</div>`;
       } else {
@@ -390,6 +419,21 @@
               <article class="table-like-row">
                 <div class="name">${sanitize(item.id)}</div>
                 <div class="detail">${sanitize(item.message || "Failure without message")}</div>
+              </article>
+            `,
+          )
+          .join("");
+      }
+      if (!allCases.length) {
+        dom.testTitles.innerHTML = `<div class="muted">No test titles in current report.</div>`;
+      } else {
+        dom.testTitles.innerHTML = allCases
+          .slice(0, 200)
+          .map(
+            (item) => `
+              <article class="table-like-row">
+                <div class="name">${sanitize(item.id)}</div>
+                <div class="detail">status=${sanitize(item.status)} | time=${sanitize(fmtSeconds(Number(item.time_s || 0)))}</div>
               </article>
             `,
           )
@@ -410,6 +454,116 @@
       }
     } catch (err) {
       dom.perfSummary.textContent = `Failed loading report: ${err.message}`;
+    }
+  };
+
+  const setTestingControlsBusy = (running) => {
+    dom.runQuickTestsBtn.disabled = running;
+    dom.runFullTestsBtn.disabled = running;
+    dom.runPerfTestsBtn.disabled = running;
+    dom.killTestRunBtn.disabled = !running;
+  };
+
+  const refreshTestingJobs = async () => {
+    try {
+      const payload = await api("/api/v1/testing/jobs");
+      const jobs = payload.jobs || [];
+      if (!jobs.length) {
+        dom.recentTestJobs.innerHTML = `<div class="muted">No test jobs started from UI yet.</div>`;
+        return;
+      }
+      dom.recentTestJobs.innerHTML = jobs
+        .map((job) => {
+          const canKill = job.status === "running";
+          return `
+            <article class="job-item">
+              <div class="job-row">
+                <strong>${sanitize(job.job_id.slice(0, 12))}</strong>
+                <span class="chip ${sanitize(job.status)}">${sanitize(job.status)}</span>
+              </div>
+              <div class="job-row">
+                <span>${sanitize(job.profile)}</span>
+                <span>${sanitize(job.include_perf ? "with perf" : "no perf")}</span>
+              </div>
+              <div class="job-row">
+                <span>${sanitize(job.created_at || "-")}</span>
+                ${canKill ? `<button class="btn btn-danger btn-small" data-kill-test-job="${sanitize(job.job_id)}">Kill</button>` : ""}
+              </div>
+            </article>
+          `;
+        })
+        .join("");
+      dom.recentTestJobs.querySelectorAll("[data-kill-test-job]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const jobId = button.getAttribute("data-kill-test-job");
+          if (!jobId) return;
+          await api(`/api/v1/testing/jobs/${jobId}`, { method: "DELETE" });
+          if (state.currentTestJobId === jobId) {
+            stopPollingCurrentTestJob();
+            setTestingControlsBusy(false);
+            setTestRunStatus("killed");
+          }
+          await refreshTestingJobs();
+        });
+      });
+    } catch (err) {
+      dom.recentTestJobs.innerHTML = `<div class="muted">Failed to load test jobs: ${sanitize(err.message)}</div>`;
+    }
+  };
+
+  const pollCurrentTestJob = async () => {
+    if (!state.currentTestJobId) return;
+    try {
+      const job = await api(`/api/v1/testing/jobs/${state.currentTestJobId}`);
+      setTestRunStatus(job.status);
+      dom.testRunLog.textContent = job.log_tail || "";
+      if (job.status === "running") {
+        return;
+      }
+      stopPollingCurrentTestJob();
+      setTestingControlsBusy(false);
+      await Promise.all([refreshQualityReport(), refreshTestingJobs()]);
+    } catch (err) {
+      stopPollingCurrentTestJob();
+      setTestingControlsBusy(false);
+      setTestRunStatus("failed");
+      dom.testRunLog.textContent = `Unable to poll test job: ${err.message}`;
+    }
+  };
+
+  const startTestingJob = async (profile, includePerf) => {
+    try {
+      setTestingControlsBusy(true);
+      setTestRunStatus("running");
+      dom.testRunLog.textContent = "";
+      const job = await api("/api/v1/testing/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile, include_perf: includePerf }),
+      });
+      state.currentTestJobId = job.job_id;
+      dom.testRunLog.textContent = job.log_tail || "";
+      stopPollingCurrentTestJob();
+      state.testPollTimer = setInterval(pollCurrentTestJob, 1200);
+      await Promise.all([pollCurrentTestJob(), refreshTestingJobs()]);
+    } catch (err) {
+      setTestingControlsBusy(false);
+      setTestRunStatus("failed");
+      dom.testRunLog.textContent = `Unable to start test run: ${err.message}`;
+    }
+  };
+
+  const killCurrentTestJob = async () => {
+    if (!state.currentTestJobId) return;
+    try {
+      const job = await api(`/api/v1/testing/jobs/${state.currentTestJobId}`, { method: "DELETE" });
+      stopPollingCurrentTestJob();
+      setTestingControlsBusy(false);
+      setTestRunStatus(job.status);
+      dom.testRunLog.textContent = job.log_tail || "";
+      await refreshTestingJobs();
+    } catch (err) {
+      dom.testRunLog.textContent = `Unable to kill current test job: ${err.message}`;
     }
   };
 
@@ -473,6 +627,10 @@
     dom.refreshJobsBtn.addEventListener("click", refreshJobList);
     dom.moduleFilter.addEventListener("change", () => renderGalleryCards(dom.moduleFilter.value));
     dom.refreshQualityBtn.addEventListener("click", refreshQualityReport);
+    dom.runQuickTestsBtn.addEventListener("click", () => startTestingJob("quick", false));
+    dom.runFullTestsBtn.addEventListener("click", () => startTestingJob("full", true));
+    dom.runPerfTestsBtn.addEventListener("click", () => startTestingJob("perf", true));
+    dom.killTestRunBtn.addEventListener("click", killCurrentTestJob);
     dom.refreshStorageBtn.addEventListener("click", refreshStorageStats);
   };
 
@@ -480,17 +638,22 @@
     bindEvents();
     setBusy(false);
     setJobStatus("idle");
+    setTestingControlsBusy(false);
+    setTestRunStatus("idle");
     await Promise.all([
       loadVersionStamp(),
       loadGallery(),
       refreshJobList(),
       refreshQualityReport(),
+      refreshTestingJobs(),
       refreshStorageStats(),
     ]);
     connectLiveReload();
     setInterval(() => {
       if (state.activeTab === "quality") {
         refreshQualityReport();
+        refreshTestingJobs();
+        pollCurrentTestJob();
       }
       if (state.activeTab === "storage") {
         refreshStorageStats();

@@ -7,8 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import multiprocessing as mp
+import os
 import re
+import signal
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -25,6 +28,7 @@ COVERAGE_REPORT_PATH = TEST_REPORTS_DIR / "coverage.xml"
 PERF_REPORT_DIR = TEST_REPORTS_DIR / "perf"
 PERF_REPORT_JSON = PERF_REPORT_DIR / "vox1_vs_vox2_perf.json"
 PERF_REPORT_SVG = PERF_REPORT_DIR / "vox1_vs_vox2_perf.svg"
+TEST_JOB_LOG_DIR = TEST_REPORTS_DIR / "jobs"
 
 _PLAYGROUND_COMMENT = re.compile(
     r"<!--\s*vox:playground(?P<meta>.*?)-->\s*```imgql\s*(?P<code>.*?)\s*```",
@@ -143,6 +147,7 @@ def _load_junit_report(path: Path = JUNIT_REPORT_PATH) -> dict[str, Any]:
     duration = 0.0
     failed_cases: list[dict[str, str]] = []
     slow_cases: list[dict[str, Any]] = []
+    test_cases: list[dict[str, Any]] = []
 
     for suite in suites:
         total += _safe_int(suite.attrib.get("tests", 0))
@@ -164,6 +169,13 @@ def _load_junit_report(path: Path = JUNIT_REPORT_PATH) -> dict[str, Any]:
         slow_cases.append(record)
         failure = case.find("failure")
         error = case.find("error")
+        skipped_node = case.find("skipped")
+        status_name = "passed"
+        if skipped_node is not None:
+            status_name = "skipped"
+        if failure is not None or error is not None:
+            status_name = "failed"
+        test_cases.append({**record, "status": status_name})
         if failure is not None or error is not None:
             node = failure if failure is not None else error
             message = "" if node is None else str(node.attrib.get("message", ""))
@@ -186,6 +198,7 @@ def _load_junit_report(path: Path = JUNIT_REPORT_PATH) -> dict[str, Any]:
         },
         "failed_cases": failed_cases[:30],
         "slow_cases": slow_cases[:20],
+        "test_cases": test_cases[:400],
         "updated_at": _iso_utc(path.stat().st_mtime),
     }
 
@@ -646,3 +659,234 @@ class PlaygroundJobManager:
             if job.status == "running":
                 self._kill_locked(job, reason="Killed by user request")
             return job.as_public(include_result=True)
+
+
+@dataclass
+class TestingJob:
+    job_id: str
+    created_at: float
+    profile: str
+    include_perf: bool
+    status: str = "queued"
+    started_at: float | None = None
+    finished_at: float | None = None
+    error: str | None = None
+    return_code: int | None = None
+    process: subprocess.Popen[str] | None = None
+    log_handle: Any = None
+    log_path: Path | None = None
+    report_snapshot: dict[str, Any] | None = None
+
+    def as_public(self, *, include_log_tail: bool = True, tail_lines: int = 80) -> dict[str, Any]:
+        payload = {
+            "job_id": self.job_id,
+            "status": self.status,
+            "created_at": _iso_utc(self.created_at),
+            "started_at": _iso_utc(self.started_at),
+            "finished_at": _iso_utc(self.finished_at),
+            "profile": self.profile,
+            "include_perf": self.include_perf,
+            "return_code": self.return_code,
+            "error": self.error,
+            "log_path": str(self.log_path) if self.log_path is not None else None,
+            "report_snapshot": self.report_snapshot,
+        }
+        if include_log_tail:
+            payload["log_tail"] = _read_log_tail(self.log_path, lines=tail_lines)
+        return payload
+
+
+def _read_log_tail(path: Path | None, *, lines: int = 80) -> str:
+    if path is None or not path.exists():
+        return ""
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    split_lines = content.splitlines()
+    return "\n".join(split_lines[-lines:])
+
+
+def _build_test_command(profile: str, include_perf: bool) -> list[str]:
+    profile_name = profile.strip().lower()
+    cmd = ["bash", "tests/run-tests.sh"]
+    if profile_name == "quick":
+        cmd.extend(["-m", "unit or contract"])
+        return cmd
+    if profile_name in {"integration", "regression"}:
+        cmd.extend(["-m", "integration or regression"])
+        return cmd
+    if profile_name in {"perf", "performance"}:
+        cmd.extend(["-m", "perf"])
+        return cmd
+    if profile_name == "full":
+        if include_perf:
+            return cmd
+        cmd.extend(["-m", "not perf"])
+        return cmd
+    raise ValueError(f"Unsupported test profile: {profile}")
+
+
+class TestingJobManager:
+    """Server-side test runner with job control and logfile tails."""
+
+    def __init__(
+        self,
+        *,
+        retain_seconds: float = 24 * 3600.0,
+        max_jobs: int = 80,
+    ):
+        self._lock = threading.RLock()
+        self._jobs: dict[str, TestingJob] = {}
+        self._retain_seconds = retain_seconds
+        self._max_jobs = max_jobs
+        TEST_JOB_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _poll_locked(self, job: TestingJob) -> None:
+        process = job.process
+        if process is None:
+            return
+        code = process.poll()
+        if code is None:
+            return
+
+        job.return_code = int(code)
+        job.process = None
+        if job.log_handle is not None:
+            try:
+                job.log_handle.close()
+            except Exception:
+                pass
+            job.log_handle = None
+        job.finished_at = time.time()
+        if code == 0:
+            job.status = "completed"
+            job.report_snapshot = build_test_dashboard_snapshot()
+        elif job.status != "killed":
+            job.status = "failed"
+            job.error = f"Test run exited with code {code}"
+            job.report_snapshot = build_test_dashboard_snapshot()
+
+    def _cleanup_locked(self) -> None:
+        now = time.time()
+        for job in list(self._jobs.values()):
+            self._poll_locked(job)
+
+        removable: list[str] = []
+        for job_id, job in self._jobs.items():
+            if job.status in {"completed", "failed", "killed"} and job.finished_at is not None:
+                if now - job.finished_at > self._retain_seconds:
+                    removable.append(job_id)
+
+        if len(self._jobs) - len(removable) > self._max_jobs:
+            ordered = sorted(
+                (
+                    (jid, job.finished_at or job.created_at)
+                    for jid, job in self._jobs.items()
+                    if job.status in {"completed", "failed", "killed"}
+                ),
+                key=lambda item: item[1],
+            )
+            for jid, _ in ordered:
+                if len(self._jobs) - len(removable) <= self._max_jobs:
+                    break
+                if jid not in removable:
+                    removable.append(jid)
+
+        for jid in removable:
+            self._jobs.pop(jid, None)
+
+    def _kill_locked(self, job: TestingJob, reason: str) -> None:
+        process = job.process
+        if process is not None and process.poll() is None:
+            try:
+                if process.pid is not None:
+                    os.killpg(process.pid, signal.SIGTERM)
+            except Exception:
+                process.terminate()
+            try:
+                process.wait(timeout=4.0)
+            except Exception:
+                try:
+                    if process.pid is not None:
+                        os.killpg(process.pid, signal.SIGKILL)
+                except Exception:
+                    process.kill()
+        job.process = None
+        if job.log_handle is not None:
+            try:
+                job.log_handle.close()
+            except Exception:
+                pass
+            job.log_handle = None
+        job.status = "killed"
+        job.error = reason
+        job.finished_at = time.time()
+        job.return_code = -9
+
+    def create_job(self, *, profile: str = "full", include_perf: bool = True) -> dict[str, Any]:
+        command = _build_test_command(profile, include_perf)
+        created_at = time.time()
+        job_id = uuid.uuid4().hex
+        log_path = TEST_JOB_LOG_DIR / f"{job_id}.log"
+
+        with self._lock:
+            self._cleanup_locked()
+            job = TestingJob(
+                job_id=job_id,
+                created_at=created_at,
+                profile=profile,
+                include_perf=include_perf,
+                status="queued",
+                log_path=log_path,
+            )
+            self._jobs[job_id] = job
+            try:
+                with log_path.open("w", encoding="utf-8") as log_file:
+                    log_file.write(f"$ {' '.join(command)}\n")
+                log_handle = log_path.open("a", encoding="utf-8")
+                process = subprocess.Popen(
+                    command,
+                    cwd=str(REPO_ROOT),
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    start_new_session=True,
+                )
+            except Exception:
+                self._jobs.pop(job_id, None)
+                raise
+            job.process = process
+            job.log_handle = log_handle
+            job.status = "running"
+            job.started_at = time.time()
+            return job.as_public(include_log_tail=True, tail_lines=40)
+
+    def list_jobs(self) -> dict[str, Any]:
+        with self._lock:
+            self._cleanup_locked()
+            jobs = sorted(self._jobs.values(), key=lambda item: item.created_at, reverse=True)
+            return {
+                "jobs": [job.as_public(include_log_tail=False) for job in jobs[:40]],
+                "total_jobs": len(self._jobs),
+                "generated_at": _iso_utc(time.time()),
+            }
+
+    def get_job(self, job_id: str, *, tail_lines: int = 120) -> dict[str, Any] | None:
+        with self._lock:
+            self._cleanup_locked()
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            self._poll_locked(job)
+            return job.as_public(include_log_tail=True, tail_lines=tail_lines)
+
+    def kill_job(self, job_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            self._cleanup_locked()
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            if job.status == "running":
+                self._kill_locked(job, reason="Killed by user request")
+            return job.as_public(include_log_tail=True)
