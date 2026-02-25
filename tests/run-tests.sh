@@ -3,25 +3,25 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/.."
-VENV_DIR="$PROJECT_DIR/.venv"
-REQ_TEST="$PROJECT_DIR/implementation/python/requirements-test.txt"
-if [ -d "$VENV_DIR" ]; then
-  if [ -f "$VENV_DIR/bin/activate" ]; then
-    source "$VENV_DIR/bin/activate"
-  elif [ -f "$VENV_DIR/Scripts/activate" ]; then
-    source "$VENV_DIR/Scripts/activate"
-  fi
-fi
 
 if [ "${VOXLOGICA_SKIP_TEST_DEPS_INSTALL:-0}" != "1" ]; then
-  python -m pip install -q -r "$REQ_TEST"
+  python3 "$PROJECT_DIR/bootstrap.py" --with-test
+fi
+
+if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
+  VENV_PY="$PROJECT_DIR/.venv/bin/python"
+elif [ -x "$PROJECT_DIR/.venv/Scripts/python.exe" ]; then
+  VENV_PY="$PROJECT_DIR/.venv/Scripts/python.exe"
+else
+  echo "Virtualenv python not found under $PROJECT_DIR/.venv" >&2
+  exit 1
 fi
 
 cd "$PROJECT_DIR"
 
 # Best-effort fetch of VoxLogicA-1 binary used by cross-version parity/perf tests.
 if [ "${VOXLOGICA_FETCH_VOX1:-1}" = "1" ]; then
-  python tests/fetch_vox1_binary.py --quiet >/dev/null 2>&1 || true
+  "$VENV_PY" tests/fetch_vox1_binary.py --quiet >/dev/null 2>&1 || true
 fi
 
 REPORT_ROOT="${VOXLOGICA_TEST_REPORT_DIR:-$PROJECT_DIR/tests/reports}"
@@ -38,4 +38,4 @@ if [ "${VOXLOGICA_DISABLE_AUTOREPORTS:-0}" != "1" ]; then
   )
 fi
 
-pytest "${PYTEST_ARGS[@]}"
+"$VENV_PY" -m pytest "${PYTEST_ARGS[@]}"

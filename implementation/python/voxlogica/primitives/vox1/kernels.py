@@ -909,7 +909,7 @@ def _crosscorr_kernel_numpy(
     npixels: int,
     nprocs: int,
 ) -> np.ndarray:
-    temporary_values = np.array(outer_values, copy=True)
+    temporary_values = np.copy(outer_values)
     if nbins <= 0 or npixels <= 0:
         return temporary_values
 
@@ -1029,7 +1029,7 @@ def _crosscorr_kernel_numba(
     npixels: int,
     nprocs: int,
 ) -> np.ndarray:
-    temporary_values = np.array(outer_values, copy=True)
+    temporary_values = np.copy(outer_values)
     fragsize = npixels // nprocs
     if fragsize <= 0:
         fragsize = npixels

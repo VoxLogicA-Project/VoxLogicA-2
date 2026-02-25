@@ -7,24 +7,14 @@ This is the Python implementation of VoxLogicA 2.
 ### From Source
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -e implementation/python
+# install uv once (https://docs.astral.sh/uv/)
+
+# from repo root; creates/updates .venv from .python-version + pinned requirements
+python3 bootstrap.py --with-test
 ```
 
 ### Test Dependencies (includes Hypothesis)
-
-Use either:
-
-```bash
-pip install -r implementation/python/requirements-test.txt
-```
-
-or:
-
-```bash
-pip install -e implementation/python[test]
-```
+Already included by `python3 bootstrap.py --with-test`.
 
 ## Usage
 
@@ -54,5 +44,15 @@ pip install -e implementation/python[test]
 ./tests/run-tests.sh -m "unit or contract"
 
 # run full pytest directly
-pytest
+.venv/bin/python -m pytest
 ```
+
+### Release Upgrade Helper
+
+```bash
+# validate pins, force-sync .venv, run full test suite
+python3 implementation/python/release_upgrade.py
+```
+
+Interpreter pin:
+- `.python-version` at repo root is the canonical Python version for bootstrap.

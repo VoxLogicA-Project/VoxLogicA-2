@@ -7,13 +7,9 @@ Pytest is the canonical test runner.
 From repo root:
 
 ```bash
-pip install -r implementation/python/requirements-test.txt
-```
+# install uv once (https://docs.astral.sh/uv/)
 
-or:
-
-```bash
-pip install -e implementation/python[test]
+python3 bootstrap.py --with-test
 ```
 
 `requirements-test.txt` includes `hypothesis`.
@@ -25,21 +21,28 @@ pip install -e implementation/python[test]
 ./tests/run-tests.sh
 
 # explicit pytest
-pytest
+.venv/bin/python -m pytest
 
 # fast checks
-pytest -m "unit or contract"
+.venv/bin/python -m pytest -m "unit or contract"
 
 # integration + regression
-pytest -m "integration or regression"
+.venv/bin/python -m pytest -m "integration or regression"
 
 # perf marker
-pytest -m perf --maxfail=1
+.venv/bin/python -m pytest -m perf --maxfail=1
+```
+
+## Release Upgrade Helper
+
+```bash
+# validate pins, force-sync .venv, then run tests
+python3 implementation/python/release_upgrade.py
 ```
 
 ## Notes
 
-- `tests/run-tests.sh` installs test dependencies by default.
+- `tests/run-tests.sh` bootstraps `.venv` from pinned requirements by default.
 - Set `VOXLOGICA_SKIP_TEST_DEPS_INSTALL=1` to skip auto-install.
 - Canonical static test assets live under `tests/data/` (for example `tests/data/chris_t1.nii.gz`).
 - Test dashboards consume artifacts written under `tests/reports/`:

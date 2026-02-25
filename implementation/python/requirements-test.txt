@@ -1,8 +1,7 @@
-pytest>=7.0.0
-pytest-cov>=4.0.0
-pytest-mock>=3.10.0
-dask[complete]>=2023.5.0
-hypothesis>=6.0.0
-ruff>=0.7.0
-mypy>=1.10.0
-httpx>=0.27.0
+pytest==8.4.0
+pytest-cov==6.1.1
+pytest-mock==3.14.1
+hypothesis==6.151.9
+ruff==0.15.2
+mypy==1.19.1
+httpx==0.28.1

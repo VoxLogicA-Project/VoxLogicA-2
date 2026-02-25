@@ -14,6 +14,12 @@ Current runtime architecture:
 Run from repo root:
 
 ```bash
+# Install uv once (https://docs.astral.sh/uv/)
+# Example (macOS/Linux): curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Deterministic environment sync (creates/updates .venv using .python-version + pinned requirements)
+python3 bootstrap.py --with-test
+
 # Show CLI help
 ./voxlogica --help
 
@@ -37,8 +43,22 @@ Run from repo root:
 ./tests/run-tests.sh
 
 # Or direct
-pytest
+.venv/bin/python -m pytest
 ```
+
+## Release Upgrade
+
+```bash
+# Validate pinned requirements, force-sync .venv, run full tests
+python3 implementation/python/release_upgrade.py
+
+# Sync only (no tests)
+python3 implementation/python/release_upgrade.py --skip-tests
+```
+
+Python version policy:
+- The canonical interpreter pin is [`.python-version`](/Users/vincenzo/data/local/repos/VoxLogicA-2/.python-version).
+- Update that file (for example `3.12.8` -> `3.12.9`) and rerun bootstrap/release helper.
 
 ## Interactive REPL
 
