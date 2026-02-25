@@ -19,12 +19,12 @@ let .>.(a,b) = num_gt(a,b)
 let .= (n,i) = eq_sv(n,i)
 let .<= (n,i) = geq_sv(n,i)
 let .>= (n,i) = leq_sv(n,i)
-let ./ (n,i) = div_sv(n,i)
-let .- (n,i) = sub_sv(n,i)
-let /. (i,n) = div_vs(i,n)
-let -. (i,n) = sub_vs(i,n)
-let +. (i,n) = add_vs(i,n)
-let *. (i,n) = mul_vs(i,n)
+let ./ (n,i) = n / i
+let .- (n,i) = n - i
+let /. (i,n) = i / n
+let -. (i,n) = i - n
+let +. (i,n) = i + n
+let *. (i,n) = i * n
 
 let &(a,b) = and(a,b)
 let |(a,b) = or(a,b)
@@ -52,8 +52,8 @@ let >. (i,n) = n .< i
 let >=. (i,n) = n .<= i
 let =. (i,n) = n .= i
 
-let .* (a,b) = b *. a
-let .+ (a,b) = b +. a
+let .* (a,b) = a * b
+let .+ (a,b) = a + b
 
 let pdt(x) = mask(dt(x),dt(x) >. 0)
 let distgeq(x,y) = x .<= pdt(y)
