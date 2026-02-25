@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from threading import RLock
 import os
 import math
@@ -45,6 +46,8 @@ def reset_runtime_state() -> None:
     global _BASE_IMAGE
     with _BASE_IMAGE_LOCK:
         _BASE_IMAGE = None
+    _snake_cached.cache_clear()
+    _hyperrectangle_cached.cache_clear()
 
 
 def _is_image(value: object) -> bool:
@@ -755,6 +758,14 @@ def _hyperrectangle(size: list[int], hyper_radius: list[int]) -> tuple[np.ndarra
     return indices, faces
 
 
+@lru_cache(maxsize=64)
+def _hyperrectangle_cached(
+    size_key: tuple[int, ...],
+    radius_key: tuple[int, ...],
+) -> tuple[np.ndarray, list[list[list[int]]]]:
+    return _hyperrectangle([int(v) for v in size_key], [int(v) for v in radius_key])
+
+
 def _snake(inner_size: list[int], radius: list[int]) -> tuple[np.ndarray, np.ndarray]:
     inner_length = int(np.prod(inner_size, dtype=np.int64))
     outer_size = [n + (2 * radius[i]) for i, n in enumerate(inner_size)]
@@ -804,6 +815,14 @@ def _snake(inner_size: list[int], radius: list[int]) -> tuple[np.ndarray, np.nda
         current_dir = step()
 
     return pathidx, pathdir
+
+
+@lru_cache(maxsize=64)
+def _snake_cached(
+    inner_size_key: tuple[int, ...],
+    radius_key: tuple[int, ...],
+) -> tuple[np.ndarray, np.ndarray]:
+    return _snake([int(v) for v in inner_size_key], [int(v) for v in radius_key])
 
 
 def _mk_delta(m1: float, m2: float, k: int) -> float:
@@ -1144,7 +1163,9 @@ def crossCorrelation(
 
     outer_array = sitk.GetArrayViewFromImage(outer_image)
     outer_values = outer_array.reshape(-1).astype(np.float32, copy=False)
-    hidx, hdir = _snake(size, ball_radius)
+    size_key = tuple(int(v) for v in size)
+    radius_key = tuple(int(v) for v in ball_radius)
+    hidx, hdir = _snake_cached(size_key, radius_key)
     nprocs = os.cpu_count() or 1
     backend = _crosscorr_backend()
     needs_faces = backend == "numba" or backend == "python"
@@ -1152,7 +1173,8 @@ def crossCorrelation(
     faces: list[list[list[int]]] | None = None
     if needs_faces:
         outer_size = [int(x) for x in outer_image.GetSize()]
-        indices, faces = _hyperrectangle(outer_size, ball_radius)
+        outer_size_key = tuple(int(v) for v in outer_size)
+        indices, faces = _hyperrectangle_cached(outer_size_key, radius_key)
 
     if backend == "numba" and _HAS_NUMBA:
         assert faces is not None
