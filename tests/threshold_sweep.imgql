@@ -1,21 +1,22 @@
 import "simpleitk"
+import "strings"
 
 let img = ReadImage("tests/chris_t1.nii.gz")
 let mm = MinimumMaximum(img)
 let lo = index(mm,0)
 let hi = index(mm,1)
 
-// Keep the demo bounded to exactly 100 generated masks.
-let thresholds = range(lo, lo+100)
-let mk_mask(th) = BinaryThreshold(img, th, hi, 1, 0)
+// Build 100 fractional thresholds linearly spaced between lo and hi (inclusive).
+let idxs = range(0,100)
+let mk_threshold(i) = lo + (hi-lo) * i / 99
+let mk_mask(i) = BinaryThreshold(img, mk_threshold(i), hi, 1, 0)
 
-// Build a unique output filename for each thresholded image.
-// Note: print_primitive returns a string "<label>=<value>".
-let fname(th) = print_primitive("tests/output/threshold_sweep/mask_", th)
+// Build clean output filenames.
+let fname(i) = format_string("tests/output/threshold_sweep/mask_{:03.0f}.nii.gz", i)
 
 // Write each thresholded image to disk.
-let save_mask(th) = WriteImage(mk_mask(th), fname(th) + ".nii.gz")
-let writes = map(save_mask, thresholds)
+let save_mask(i) = WriteImage(mk_mask(i), fname(i))
+let writes = map(save_mask, idxs)
 
 // Force evaluation/materialization.
 print "n_thresholds" 100
