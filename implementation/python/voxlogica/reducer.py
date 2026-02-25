@@ -545,10 +545,26 @@ def reduce_command(
     raise RuntimeError("Reducer internal error: unknown command type")
 
 
-def reduce_program(program: Program) -> WorkPlan:
+def _reduce_program_internal(
+    program: Program,
+    *,
+    collect_bindings: bool = False,
+) -> tuple[WorkPlan, dict[str, NodeId]]:
     work_plan = WorkPlan()
     env = Environment()
     parsed_imports: set[str] = set()
+    declaration_bindings: dict[str, NodeId] = {}
+
+    def _track_binding(command: Command, updated_env: Environment) -> None:
+        if not collect_bindings:
+            return
+        if not isinstance(command, Declaration):
+            return
+        if command.arguments:
+            return
+        binding = updated_env.try_find(command.identifier)
+        if isinstance(binding, OperationVal):
+            declaration_bindings[command.identifier] = binding.operation_id
 
     stdlib_path = Path(__file__).parent / "stdlib" / "stdlib.imgql"
     if stdlib_path.exists():
@@ -558,6 +574,7 @@ def reduce_program(program: Program) -> WorkPlan:
             while commands:
                 command = commands.pop(0)
                 env, imports = reduce_command(env, work_plan, parsed_imports, command)
+                _track_binding(command, env)
                 commands = imports + commands
         except Exception as exc:
             logger.warning("Failed to load stdlib: %s", exc)
@@ -566,6 +583,17 @@ def reduce_program(program: Program) -> WorkPlan:
     while commands:
         command = commands.pop(0)
         env, imports = reduce_command(env, work_plan, parsed_imports, command)
+        _track_binding(command, env)
         commands = imports + commands
 
+    return work_plan, declaration_bindings
+
+
+def reduce_program(program: Program) -> WorkPlan:
+    work_plan, _bindings = _reduce_program_internal(program, collect_bindings=False)
     return work_plan
+
+
+def reduce_program_with_bindings(program: Program) -> tuple[WorkPlan, dict[str, NodeId]]:
+    """Reduce program and return final declaration->node_id mapping."""
+    return _reduce_program_internal(program, collect_bindings=True)

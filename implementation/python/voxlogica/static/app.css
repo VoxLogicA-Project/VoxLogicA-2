@@ -503,6 +503,10 @@ body {
   min-height: 480px;
 }
 
+.result-inspector.compact {
+  min-height: 220px;
+}
+
 .viewer-header {
   display: flex;
   align-items: center;

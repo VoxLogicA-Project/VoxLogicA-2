@@ -62,6 +62,9 @@ print "sum" x</textarea>
               <button id="loadProgramFileBtn" class="btn btn-ghost btn-small">Load from Library</button>
             </div>
             <p id="programLibraryMeta" class="muted"></p>
+            <p class="muted">
+              Tip: run once, then double-click a variable name to inspect its stored value instantly.
+            </p>
             <div class="row controls">
               <button id="runProgramBtn" class="btn btn-primary">Run Program</button>
               <button id="killProgramBtn" class="btn btn-danger" disabled>Kill Running Job</button>
@@ -104,6 +107,18 @@ print "sum" x</textarea>
             </div>
             <h3 class="subheading">Recent Jobs</h3>
             <div id="recentJobs" class="job-list"></div>
+            <h3 class="subheading">Focused Result</h3>
+            <div class="row gap-s controls">
+              <label class="inline-control" for="playResultSelector">Target</label>
+              <select id="playResultSelector" class="select">
+                <option value="">Run a query first</option>
+              </select>
+            </div>
+            <p id="playResultMeta" class="muted">Choose a print label or variable to inspect.</p>
+            <div id="playResultInspector" class="result-inspector compact"></div>
+            <h3 class="subheading">Execution Log</h3>
+            <p id="playExecSummary" class="muted">No execution trace yet.</p>
+            <div id="playExecLog" class="table-like muted">Run a query to see computed vs cached nodes.</div>
           </article>
         </div>
 

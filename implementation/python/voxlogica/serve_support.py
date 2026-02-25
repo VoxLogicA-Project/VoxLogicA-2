@@ -1213,14 +1213,25 @@ def _playground_worker(send_conn: Any, request_payload: dict[str, Any], log_path
         run_result = handle_run(**request_payload)
         if run_result.success:
             packet = {"ok": True, "result": run_result.data}
+            result_payload = run_result.data or {}
+            execution_payload = result_payload.get("execution", {})
+            execution_summary = (
+                dict(execution_payload)
+                if isinstance(execution_payload, dict)
+                else {}
+            )
+            execution_summary.pop("node_events", None)
+            node_events = execution_payload.get("node_events", [])
             _append_log(
                 {
                     "event": "playground.run.completed",
                     "success": True,
                     "result_summary": {
-                        "operations": (run_result.data or {}).get("operations"),
-                        "goals": (run_result.data or {}).get("goals"),
-                        "execution": (run_result.data or {}).get("execution"),
+                        "operations": result_payload.get("operations"),
+                        "goals": result_payload.get("goals"),
+                        "execution": execution_summary,
+                        "execution_cache_summary": execution_payload.get("cache_summary", {}),
+                        "execution_event_count": len(node_events) if isinstance(node_events, list) else 0,
                     },
                 }
             )

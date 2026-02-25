@@ -80,3 +80,5 @@ class ExecutionResult:
     failed_operations: dict[NodeId, str]
     execution_time: float
     total_operations: int
+    cache_summary: dict[str, Any] = field(default_factory=dict)
+    node_events: list[dict[str, Any]] = field(default_factory=list)

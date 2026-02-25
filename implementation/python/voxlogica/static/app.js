@@ -12,6 +12,10 @@
     currentResultNodeId: null,
     currentResultPath: "",
     resultViewer: null,
+    playResultViewer: null,
+    playSelectableTargets: [],
+    latestGoalResults: [],
+    latestSymbolTable: {},
   };
 
   const dom = {
@@ -39,6 +43,11 @@
     metricHeapPeak: document.getElementById("metricHeapPeak"),
     metricRssDelta: document.getElementById("metricRssDelta"),
     metricJobId: document.getElementById("metricJobId"),
+    playResultSelector: document.getElementById("playResultSelector"),
+    playResultMeta: document.getElementById("playResultMeta"),
+    playResultInspector: document.getElementById("playResultInspector"),
+    playExecSummary: document.getElementById("playExecSummary"),
+    playExecLog: document.getElementById("playExecLog"),
     moduleFilter: document.getElementById("moduleFilter"),
     galleryCards: document.getElementById("galleryCards"),
     refreshQualityBtn: document.getElementById("refreshQualityBtn"),
@@ -177,10 +186,12 @@
     dom.noCache.disabled = busy;
   };
 
-  const renderExecutionPayload = (job) => {
+  const renderExecutionPayload = async (job) => {
     const result = (job && job.result) || {};
     dom.executionOutput.textContent = result ? JSON.stringify(result, null, 2) : "";
     dom.taskGraphOutput.textContent = result.task_graph || "(no task graph in payload)";
+    renderPlayExecutionLog(result);
+    await refreshPlaySelector(result);
   };
 
   const stopPollingCurrentJob = () => {
@@ -201,7 +212,7 @@
     setBusy(false);
     setJobStatus(job.status);
     renderRuntimeMetrics(job);
-    renderExecutionPayload(job);
+    await renderExecutionPayload(job);
     if (job.error) {
       setRunError(job.error);
     } else {
@@ -279,6 +290,16 @@
     dom.taskGraphOutput.textContent = "";
     setRunError("");
     renderRuntimeMetrics(null);
+    dom.playExecSummary.textContent = "No execution trace yet.";
+    dom.playExecLog.innerHTML = `<div class="muted">Run a query to see computed vs cached nodes.</div>`;
+    state.latestGoalResults = [];
+    state.latestSymbolTable = {};
+    state.playSelectableTargets = [];
+    dom.playResultSelector.innerHTML = `<option value="">Run a query first</option>`;
+    dom.playResultSelector.disabled = true;
+    dom.playResultMeta.textContent = "Choose a print label or variable to inspect.";
+    ensurePlayResultViewer();
+    state.playResultViewer.renderRecord(null);
   };
 
   const encodePath = (path) =>
@@ -465,6 +486,151 @@
     }
   };
 
+  const ensurePlayResultViewer = () => {
+    if (state.playResultViewer || !dom.playResultInspector) return;
+    const ctor = window.VoxResultViewer && window.VoxResultViewer.ResultViewer;
+    if (typeof ctor === "function") {
+      state.playResultViewer = new ctor(dom.playResultInspector, {
+        onNavigate: (path) => {
+          const target = state.playSelectableTargets[Number(dom.playResultSelector.value)];
+          if (!target || !target.nodeId) return;
+          inspectPlayTarget(target.nodeId, path || "");
+        },
+      });
+      return;
+    }
+    state.playResultViewer = {
+      setLoading: (message) => {
+        dom.playResultInspector.innerHTML = `<div class="muted">${sanitize(message || "Loading...")}</div>`;
+      },
+      setError: (message) => {
+        dom.playResultInspector.innerHTML = `<div class="inline-error">${sanitize(message || "Viewer error")}</div>`;
+      },
+      renderRecord: (record) => {
+        dom.playResultInspector.innerHTML = `<pre class="mono-scroll">${sanitize(
+          JSON.stringify(record || {}, null, 2),
+        )}</pre>`;
+      },
+    };
+  };
+
+  const renderPlayExecutionLog = (runResult) => {
+    const execution = (runResult && runResult.execution) || {};
+    const summary = execution.cache_summary || {};
+    const events = Array.isArray(execution.node_events) ? execution.node_events : [];
+    dom.playExecSummary.textContent =
+      `computed ${Number(summary.computed || 0)} | ` +
+      `cached(store) ${Number(summary.cached_store || 0)} | ` +
+      `cached(local) ${Number(summary.cached_local || 0)} | ` +
+      `failed ${Number(summary.failed || 0)} | ` +
+      `events ${Number(summary.events_stored || events.length)}/${Number(summary.events_total || events.length)}`;
+    if (!events.length) {
+      dom.playExecLog.innerHTML = `<div class="muted">No node events available for this run.</div>`;
+      return;
+    }
+    const rows = events.slice(-260).reverse();
+    dom.playExecLog.innerHTML = rows
+      .map((event) => {
+        const status = sanitize(event.status || "unknown");
+        const source = sanitize(event.cache_source || "-");
+        const operator = sanitize(event.operator || "-");
+        const durationMs = `${(Number(event.duration_s || 0) * 1000).toFixed(2)} ms`;
+        const node = sanitize(String(event.node_id || "").slice(0, 12));
+        const extra = event.error ? ` | ${sanitize(String(event.error))}` : "";
+        return `
+          <article class="table-like-row">
+            <div class="name"><span class="mini-chip">${status}</span> ${operator}</div>
+            <div class="detail">node=${node} | source=${source} | duration=${durationMs}${extra}</div>
+          </article>
+        `;
+      })
+      .join("");
+  };
+
+  const inspectPlayTarget = async (nodeId, path = "") => {
+    ensurePlayResultViewer();
+    state.playResultViewer.setLoading(`Loading value for ${nodeId} ...`);
+    try {
+      const suffix = path ? `?path=${encodeURIComponent(path)}` : "";
+      const payload = await api(`/api/v1/results/store/${encodeURIComponent(nodeId)}${suffix}`);
+      state.playResultViewer.renderRecord(payload);
+      dom.playResultMeta.textContent =
+        `Inspecting ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} from persisted store.`;
+    } catch (err) {
+      state.playResultViewer.setError(
+        `Stored value unavailable: ${err.message}. Run with cache enabled to inspect this target.`,
+      );
+      dom.playResultMeta.textContent = `Unable to inspect ${nodeId}: ${err.message}`;
+    }
+  };
+
+  const refreshPlaySelector = async (runResult) => {
+    ensurePlayResultViewer();
+    state.latestGoalResults = Array.isArray(runResult && runResult.goal_results) ? runResult.goal_results : [];
+    state.latestSymbolTable = (runResult && runResult.symbol_table) || {};
+    const targets = [];
+
+    for (const goal of state.latestGoalResults) {
+      if (goal && goal.operation === "print" && goal.node_id) {
+        targets.push({
+          kind: "print",
+          label: String(goal.name || "print"),
+          nodeId: String(goal.node_id),
+        });
+      }
+    }
+    for (const [name, nodeId] of Object.entries(state.latestSymbolTable)) {
+      if (!nodeId || typeof nodeId !== "string") continue;
+      targets.push({
+        kind: "variable",
+        label: String(name),
+        nodeId,
+      });
+    }
+
+    state.playSelectableTargets = targets;
+    if (!targets.length) {
+      dom.playResultSelector.innerHTML = `<option value="">No print labels or variables available</option>`;
+      dom.playResultSelector.disabled = true;
+      dom.playResultMeta.textContent = "No selectable targets in this query.";
+      state.playResultViewer.renderRecord(null);
+      return;
+    }
+
+    dom.playResultSelector.disabled = false;
+    dom.playResultSelector.innerHTML = targets
+      .map(
+        (target, index) =>
+          `<option value="${index}">${sanitize(target.kind === "print" ? `print: ${target.label}` : `var: ${target.label}`)}</option>`,
+      )
+      .join("");
+    dom.playResultSelector.value = "0";
+    await inspectPlayTarget(targets[0].nodeId, "");
+  };
+
+  const handleProgramDoubleClick = async () => {
+    const text = dom.programInput.value || "";
+    let token = (dom.programInput.value || "").slice(dom.programInput.selectionStart, dom.programInput.selectionEnd).trim();
+    if (!token) {
+      const pos = dom.programInput.selectionStart || 0;
+      const left = text.slice(0, pos);
+      const right = text.slice(pos);
+      const leftMatch = left.match(/[A-Za-z0-9_.$+\-*/<>=!?~]+$/);
+      const rightMatch = right.match(/^[A-Za-z0-9_.$+\-*/<>=!?~]+/);
+      token = `${leftMatch ? leftMatch[0] : ""}${rightMatch ? rightMatch[0] : ""}`.trim();
+    }
+    token = token.replace(/^[^A-Za-z0-9_.$+\-*/<>=!?~]+|[^A-Za-z0-9_.$+\-*/<>=!?~]+$/g, "");
+    if (!token) return;
+    const nodeId = state.latestSymbolTable[token];
+    if (!nodeId || typeof nodeId !== "string") return;
+
+    const index = state.playSelectableTargets.findIndex((target) => target.kind === "variable" && target.label === token);
+    if (index >= 0) {
+      dom.playResultSelector.value = `${index}`;
+    }
+    await inspectPlayTarget(nodeId, "");
+  };
+
   const renderBarList = (container, items, valueField, labelField, formatter = (v) => `${v}`) => {
     container.innerHTML = "";
     if (!items || !items.length) {
@@ -512,12 +678,33 @@
               </div>
               <div class="job-row">
                 <span>${sanitize(job.created_at || "-")}</span>
-                ${canKill ? `<button class="btn btn-danger btn-small" data-kill-job="${sanitize(job.job_id)}">Kill</button>` : ""}
+                <div class="row gap-s">
+                  <button class="btn btn-ghost btn-small" data-open-job="${sanitize(job.job_id)}">Open</button>
+                  ${canKill ? `<button class="btn btn-danger btn-small" data-kill-job="${sanitize(job.job_id)}">Kill</button>` : ""}
+                </div>
               </div>
             </article>
           `;
         })
         .join("");
+      dom.recentJobs.querySelectorAll("[data-open-job]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const jobId = button.getAttribute("data-open-job");
+          if (!jobId) return;
+          try {
+            const job = await api(`/api/v1/playground/jobs/${jobId}`);
+            state.currentJobId = jobId;
+            setJobStatus(job.status);
+            renderRuntimeMetrics(job);
+            await renderExecutionPayload(job);
+            if (job.error) {
+              setRunError(job.error);
+            }
+          } catch (err) {
+            setRunError(`Unable to open ${jobId}: ${err.message}`);
+          }
+        });
+      });
       dom.recentJobs.querySelectorAll("[data-kill-job]").forEach((button) => {
         button.addEventListener("click", async () => {
           const jobId = button.getAttribute("data-kill-job");
@@ -849,6 +1036,7 @@
       }
       if (state.capabilities.store_results_viewer === false) {
         dom.resultListMeta.textContent = "Store results viewer unavailable on this backend.";
+        dom.playResultMeta.textContent = "Stored-value inspection unavailable on this backend.";
       }
     } catch (err) {
       if (String(err.message).includes("404")) {
@@ -924,7 +1112,15 @@
     dom.runProgramBtn.addEventListener("click", createPlaygroundJob);
     dom.killProgramBtn.addEventListener("click", killCurrentJob);
     dom.clearOutputBtn.addEventListener("click", clearOutput);
+    dom.programInput.addEventListener("dblclick", handleProgramDoubleClick);
     dom.loadProgramFileBtn.addEventListener("click", loadProgramFromLibrary);
+    dom.playResultSelector.addEventListener("change", async () => {
+      const idx = Number(dom.playResultSelector.value);
+      if (!Number.isFinite(idx)) return;
+      const target = state.playSelectableTargets[idx];
+      if (!target || !target.nodeId) return;
+      await inspectPlayTarget(target.nodeId, "");
+    });
     dom.refreshJobsBtn.addEventListener("click", refreshJobList);
     dom.moduleFilter.addEventListener("change", () => renderGalleryCards(dom.moduleFilter.value));
     dom.refreshQualityBtn.addEventListener("click", refreshQualityReport);
@@ -950,7 +1146,9 @@
     setJobStatus("idle");
     setTestingControlsBusy(false);
     setTestRunStatus("idle");
+    dom.playResultSelector.disabled = true;
     ensureResultViewer();
+    ensurePlayResultViewer();
     await Promise.all([
       loadCapabilities(),
       loadVersionStamp(),

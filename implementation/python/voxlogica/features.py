@@ -10,9 +10,9 @@ import logging
 
 from voxlogica.converters import to_dot, to_json
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
-from voxlogica.execution import ExecutionEngine, execute_workplan
+from voxlogica.execution import ExecutionEngine
 from voxlogica.parser import parse_program, parse_program_content
-from voxlogica.reducer import reduce_program
+from voxlogica.reducer import reduce_program_with_bindings
 from voxlogica.storage import NoCacheStorageBackend
 
 
@@ -126,6 +126,40 @@ def _collect_exports(
     return messages, saved_files
 
 
+def _preview_value(value: Any) -> dict[str, Any]:
+    value_type = f"{type(value).__module__}.{type(value).__name__}"
+    preview: dict[str, Any] = {
+        "type": value_type,
+        "repr": str(value)[:320],
+    }
+    if hasattr(value, "iter_values") and callable(value.iter_values):
+        items: list[Any] = []
+        total = 0
+        truncated = False
+        for item in value.iter_values():
+            total += 1
+            if len(items) < 16:
+                items.append(item)
+            else:
+                truncated = True
+                break
+        preview["sequence_preview"] = {
+            "items": _json_safe(items),
+            "items_count": len(items),
+            "truncated": truncated,
+            "reported_total_size": getattr(value, "total_size", None),
+            "iterated_count": total,
+        }
+        return preview
+
+    try:
+        preview["json"] = _json_safe(value)
+    except Exception:
+        pass
+
+    return preview
+
+
 def handle_version(**kwargs) -> OperationResult[Dict[str, str]]:
     """Return current VoxLogicA version."""
     from voxlogica.version import get_version
@@ -152,21 +186,24 @@ def handle_run(
     """Run parse/reduce/export/execute pipeline for a VoxLogicA program."""
     try:
         syntax = _load_syntax(program, filename)
-        workplan = reduce_program(syntax)
+        workplan, declaration_bindings = reduce_program_with_bindings(syntax)
 
         cli_mode = bool(filename)
         execution_result = None
+        prepared_plan = None
         if execute:
+            engine: ExecutionEngine
             if no_cache:
                 logger.info("No-cache mode enabled - results are not persisted")
                 engine = ExecutionEngine(storage_backend=NoCacheStorageBackend())
-                execution_result = engine.execute_workplan(
+                execution_result, prepared_plan = engine.execute_with_prepared(
                     workplan,
                     dask_dashboard=dask_dashboard,
                     strategy=execution_strategy,
                 )
             else:
-                execution_result = execute_workplan(
+                engine = ExecutionEngine()
+                execution_result, prepared_plan = engine.execute_with_prepared(
                     workplan,
                     dask_dashboard=dask_dashboard,
                     strategy=execution_strategy,
@@ -189,6 +226,7 @@ def handle_run(
             "goals": len(workplan.goals),
             "task_graph": str(workplan),
             "syntax": str(syntax),
+            "symbol_table": declaration_bindings,
         }
 
         if execution_result is not None:
@@ -198,9 +236,35 @@ def handle_run(
                 "failed_operations": len(execution_result.failed_operations),
                 "execution_time": execution_result.execution_time,
                 "total_operations": execution_result.total_operations,
+                "cache_summary": execution_result.cache_summary,
+                "node_events": execution_result.node_events,
             }
             if execution_result.failed_operations:
                 result["execution"]["errors"] = execution_result.failed_operations
+
+            goal_results: list[dict[str, Any]] = []
+            if prepared_plan is not None:
+                for goal in workplan.goals:
+                    goal_payload: dict[str, Any] = {
+                        "operation": goal.operation,
+                        "name": goal.name,
+                        "node_id": goal.id,
+                    }
+                    if goal.id in execution_result.failed_operations:
+                        goal_payload["status"] = "failed"
+                        goal_payload["error"] = execution_result.failed_operations[goal.id]
+                    else:
+                        try:
+                            value = prepared_plan.materialization_store.get(goal.id)
+                            metadata = prepared_plan.materialization_store.metadata(goal.id)
+                            goal_payload["status"] = "materialized"
+                            goal_payload["metadata"] = metadata
+                            goal_payload["preview"] = _preview_value(value)
+                        except Exception as exc:  # noqa: BLE001
+                            goal_payload["status"] = "unavailable"
+                            goal_payload["error"] = str(exc)
+                    goal_results.append(goal_payload)
+            result["goal_results"] = goal_results
 
         messages, saved_files = _collect_exports(
             cli_mode=cli_mode,

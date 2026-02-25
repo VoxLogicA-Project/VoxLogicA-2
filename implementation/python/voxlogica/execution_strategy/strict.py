@@ -20,7 +20,7 @@ from voxlogica.execution_strategy.results import (
 from voxlogica.lazy.ir import NodeId, NodeSpec, SymbolicPlan
 from voxlogica.parser import EBool, ECall, EFor, ELet, ENumber, EString, Expression, parse_expression_content
 from voxlogica.primitives.registry import PrimitiveRegistry
-from voxlogica.storage import DefinitionStore, MaterializationStore, ResultsDatabase
+from voxlogica.storage import MATERIALIZED_STATUS, DefinitionStore, MaterializationStore, ResultsDatabase
 
 
 @dataclass
@@ -73,6 +73,9 @@ class StrictExecutionStrategy(ExecutionStrategy):
     ):
         self.registry = registry or PrimitiveRegistry()
         self.results_database = results_database
+        self._node_events: list[dict[str, Any]] = []
+        self._cache_summary: dict[str, Any] = {}
+        self._event_limit = 8000
 
     def compile(self, plan: SymbolicPlan) -> PreparedPlan:
         self.registry.apply_imports(plan.imported_namespaces)
@@ -91,6 +94,16 @@ class StrictExecutionStrategy(ExecutionStrategy):
         start = time.time()
         failures: dict[NodeId, str] = {}
         self.registry.reset_runtime_state()
+        self._node_events = []
+        self._cache_summary = {
+            "computed": 0,
+            "cached_local": 0,
+            "cached_store": 0,
+            "failed": 0,
+            "events_total": 0,
+            "events_stored": 0,
+            "events_truncated": False,
+        }
 
         if goals is None:
             target_goals = [goal.id for goal in prepared.plan.goals]
@@ -120,6 +133,8 @@ class StrictExecutionStrategy(ExecutionStrategy):
             failed_operations=failures,
             execution_time=duration,
             total_operations=len(prepared.plan.nodes),
+            cache_summary=dict(self._cache_summary),
+            node_events=list(self._node_events),
         )
 
     def stream(self, prepared: PreparedPlan, node: NodeId, chunk_size: int) -> Iterable[list[object]]:
@@ -162,12 +177,46 @@ class StrictExecutionStrategy(ExecutionStrategy):
         return PageResult(items=items, offset=offset, limit=limit, next_offset=next_offset)
 
     def _evaluate_node(self, prepared: PreparedPlan, node_id: NodeId) -> Any:
-        if prepared.materialization_store.has(node_id):
-            return prepared.materialization_store.get(node_id)
-
         node = prepared.definition_store.get(node_id)
+        node_label = self._normalize_operator(node.operator)
+
+        if prepared.materialization_store.has(node_id):
+            value = prepared.materialization_store.get(node_id)
+            metadata = prepared.materialization_store.metadata(node_id)
+            source = str(metadata.get("source", "runtime-local"))
+            self._record_node_event(
+                node_id=node_id,
+                operator=node.operator,
+                output_kind=node.output_kind,
+                status="cached",
+                cache_source=source,
+                duration_s=0.0,
+            )
+            return value
+
+        if self.results_database is not None and node.output_kind != "effect":
+            try:
+                record = self.results_database.get_record(node_id)
+            except Exception:
+                record = None
+            if record is not None and record.status == MATERIALIZED_STATUS:
+                prepared.materialization_store.put(
+                    node_id,
+                    record.value,
+                    metadata={"source": "results-db", "cache_hit": True},
+                )
+                self._record_node_event(
+                    node_id=node_id,
+                    operator=node.operator,
+                    output_kind=node.output_kind,
+                    status="cached",
+                    cache_source="results-db",
+                    duration_s=0.0,
+                )
+                return record.value
 
         try:
+            started = time.perf_counter()
             if node.kind == "constant":
                 value = node.attrs.get("value")
             elif node.kind == "closure":
@@ -177,12 +226,79 @@ class StrictExecutionStrategy(ExecutionStrategy):
             else:
                 raise ValueError(f"Unsupported node kind: {node.kind}")
 
-            prepared.materialization_store.put(node_id, value)
+            prepared.materialization_store.put(
+                node_id,
+                value,
+                metadata={"source": "runtime", "cache_hit": False, "operator": node_label},
+            )
+            duration_s = time.perf_counter() - started
+            self._record_node_event(
+                node_id=node_id,
+                operator=node.operator,
+                output_kind=node.output_kind,
+                status="computed",
+                cache_source="runtime",
+                duration_s=duration_s,
+            )
             return value
 
         except Exception as exc:  # noqa: BLE001
+            duration_s = 0.0
+            try:
+                duration_s = time.perf_counter() - started
+            except Exception:
+                duration_s = 0.0
             prepared.materialization_store.fail(node_id, str(exc))
+            self._record_node_event(
+                node_id=node_id,
+                operator=node.operator,
+                output_kind=node.output_kind,
+                status="failed",
+                cache_source="runtime",
+                duration_s=duration_s,
+                error=str(exc),
+            )
             raise
+
+    def _record_node_event(
+        self,
+        *,
+        node_id: str,
+        operator: str,
+        output_kind: str,
+        status: str,
+        cache_source: str,
+        duration_s: float,
+        error: str | None = None,
+    ) -> None:
+        self._cache_summary["events_total"] = int(self._cache_summary.get("events_total", 0)) + 1
+        event = {
+            "index": int(self._cache_summary["events_total"]),
+            "node_id": node_id,
+            "operator": operator,
+            "output_kind": output_kind,
+            "status": status,
+            "cache_source": cache_source,
+            "duration_s": float(max(0.0, duration_s)),
+        }
+        if error:
+            event["error"] = error
+
+        if len(self._node_events) < self._event_limit:
+            self._node_events.append(event)
+            self._cache_summary["events_stored"] = len(self._node_events)
+        else:
+            self._cache_summary["events_truncated"] = True
+
+        if status == "computed":
+            self._cache_summary["computed"] = int(self._cache_summary.get("computed", 0)) + 1
+        elif status == "failed":
+            self._cache_summary["failed"] = int(self._cache_summary.get("failed", 0)) + 1
+        elif status == "cached":
+            if cache_source == "results-db":
+                self._cache_summary["cached_store"] = int(self._cache_summary.get("cached_store", 0)) + 1
+            else:
+                self._cache_summary["cached_local"] = int(self._cache_summary.get("cached_local", 0)) + 1
 
     def _build_runtime_closure(self, prepared: PreparedPlan, node: NodeSpec) -> RuntimeClosure:
         body = parse_expression_content(str(node.attrs.get("body", "")))

@@ -3,6 +3,8 @@
 `./voxlogica serve` now exposes a multi-page studio at `/` with:
 
 - Playground with async execution jobs
+- Human-oriented side-by-side query/result lens (print-label selector + variable double-click)
+- Results Explorer for persisted store artifacts (medical Niivue viewer, 2D image preview, structured values)
 - Progressive markdown-driven example gallery
 - Test/coverage/performance dashboard
 - Storage/cache statistics dashboard
@@ -14,13 +16,35 @@
 - Poll status/results (`GET /api/v1/playground/jobs/{job_id}`)
 - Kill stale/running computations (`DELETE /api/v1/playground/jobs/{job_id}`)
 - Always-on telemetry: wall time, CPU time, CPU utilization, Python heap peak, RSS delta
+- Result lens:
+  - selector built from print goals and declared variables
+  - variable quick-inspection via editor double-click
+  - per-query execution trace with `computed` vs `cached` node events
+- Program library (fixed load directory only):
+  - `GET /api/v1/playground/files`
+  - `GET /api/v1/playground/files/{relative_path}`
+  - directory controlled by `VOXLOGICA_SERVE_LOAD_DIR` (defaults to `tests/`)
 
-2. **Example Gallery**
+2. **Results Explorer**
+- Store-only inspection APIs:
+  - `GET /api/v1/results/store`
+  - `GET /api/v1/results/store/{node_id}`
+  - `GET /api/v1/results/store/{node_id}/render/png`
+  - `GET /api/v1/results/store/{node_id}/render/nii.gz`
+- Renderers:
+  - 3D medical volumes via Niivue (`.nii.gz` streamed from store payloads)
+  - 2D images as PNG
+  - compositional structured values (numbers, strings, arrays, mappings)
+- Safety model:
+  - no server-side save/export is allowed in serve mode
+  - inspection is limited to persisted results in the store
+
+3. **Example Gallery**
 - Source markdown: `doc/user/language-gallery.md`
 - API: `GET /api/v1/docs/gallery`
 - Examples are extracted from comment directives and executable `imgql` code fences
 
-3. **Test Intelligence**
+4. **Test Intelligence**
 - API: `GET /api/v1/testing/report`
 - Includes junit summary, coverage summary, and perf comparison report
 - Performance chart endpoint: `GET /api/v1/testing/performance/chart`
@@ -34,7 +58,7 @@
   - test jobs: `tests/reports/jobs/<job_id>.log`
   - playground jobs: `tests/reports/playground/<job_id>.log`
 
-4. **Storage Stats**
+5. **Storage Stats**
 - API: `GET /api/v1/storage/stats`
 - Includes cached record counts, payload sizes, runtime-version distribution, and DB footprint
 

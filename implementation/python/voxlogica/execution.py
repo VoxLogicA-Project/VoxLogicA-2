@@ -99,6 +99,21 @@ class ExecutionEngine:
         dask_dashboard: bool = False,
         strategy: str | None = None,
     ) -> ExecutionResult:
+        result, _prepared = self.execute_with_prepared(
+            workplan=workplan,
+            execution_id=execution_id,
+            dask_dashboard=dask_dashboard,
+            strategy=strategy,
+        )
+        return result
+
+    def execute_with_prepared(
+        self,
+        workplan,
+        execution_id: Optional[str] = None,
+        dask_dashboard: bool = False,
+        strategy: str | None = None,
+    ) -> tuple[ExecutionResult, PreparedPlan]:
         selected = strategy or self.default_strategy
         if selected not in self._strategies:
             raise ValueError(
@@ -111,7 +126,7 @@ class ExecutionEngine:
         prepared = execution_strategy.compile(plan)
         self._last_prepared = prepared
 
-        return execution_strategy.run(prepared, goals=None)
+        return execution_strategy.run(prepared, goals=None), prepared
 
     def compile_plan(self, workplan, strategy: str | None = None) -> PreparedPlan:
         selected = strategy or self.default_strategy
