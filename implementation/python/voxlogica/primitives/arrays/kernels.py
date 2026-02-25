@@ -398,7 +398,7 @@ def compare_arrays(**kwargs):
                 'min_difference': float(np.min(diff)),
                 'max_difference': float(np.max(diff))
             }
-        except:
+        except Exception:
             # If numerical operations fail, return basic comparison
             return {
                 'shapes_match': True,

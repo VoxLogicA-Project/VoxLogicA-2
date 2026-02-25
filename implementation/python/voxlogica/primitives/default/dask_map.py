@@ -6,7 +6,6 @@ returning a new Dask bag with the results.
 """
 
 import dask.bag as db
-from typing import Any, Dict
 import logging
 
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory

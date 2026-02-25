@@ -13,7 +13,6 @@ import re
 import subprocess
 import importlib.util
 from datetime import datetime
-import dask.bag as db  # type: ignore
 
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 

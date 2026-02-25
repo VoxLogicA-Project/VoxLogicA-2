@@ -4,7 +4,6 @@ Test namespace for VoxLogicA-2 primitives
 Contains non-basic primitives moved from the original primitives directory.
 """
 
-import os
 import importlib
 from pathlib import Path
 
@@ -48,7 +47,7 @@ def list_primitives():
                 
                 primitives[module_name] = description
                 
-            except Exception as e:
+            except Exception:
                 # If import fails, still list the primitive with a generic description
                 primitives[module_name] = f"Primitive from {module_name}.py"
     

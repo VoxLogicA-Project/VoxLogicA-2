@@ -9,7 +9,7 @@ This version shows how a primitive could return special instructions
 that the execution engine could interpret to schedule additional work.
 """
 
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any
 import logging
 import time
 

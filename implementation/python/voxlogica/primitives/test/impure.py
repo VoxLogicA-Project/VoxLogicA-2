@@ -23,7 +23,6 @@ def execute(**kwargs):
     
     input_value = kwargs['0']
     import logging
-    import os
     logger = logging.getLogger("voxlogica.primitives.test.impure")
     logger.info(f"IMPURE CALLED WITH: {input_value}")
     print(f"IMPURE DEBUG: file={__file__} version=return3 input={input_value}")

@@ -32,6 +32,8 @@ implementation/python/venv/
 
 # Test artifacts
 *.json
+!tests/regression/golden/
+!tests/regression/golden/*.json
 test.bin
 output.nii.gz
 applog.txt

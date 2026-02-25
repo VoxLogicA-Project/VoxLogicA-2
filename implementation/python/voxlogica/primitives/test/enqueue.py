@@ -9,7 +9,7 @@ This is a proof-of-concept showing that primitives can dynamically create
 new computation tasks.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import logging
 
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory

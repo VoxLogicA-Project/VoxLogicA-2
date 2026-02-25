@@ -12,7 +12,6 @@ from voxlogica.parser import (
     Declaration,
     Import,
     Print,
-    Program,
     Save,
     parse_expression_content,
     parse_program_content,
@@ -252,19 +251,19 @@ def run_interactive_repl(strategy: str = "dask") -> int:
 
         if line.startswith(":load "):
             filename = line[len(":load ") :].strip()
-            result = session.load_file(filename, execute_goals=False)
+            load_result = session.load_file(filename, execute_goals=False)
             print(
                 "loaded declarations="
-                f"{result.declarations_added}, skipped_goals={result.goals_skipped}"
+                f"{load_result.declarations_added}, skipped_goals={load_result.goals_skipped}"
             )
             continue
 
         if line.startswith(":run "):
             filename = line[len(":run ") :].strip()
-            result = session.load_file(filename, execute_goals=True)
+            run_result = session.load_file(filename, execute_goals=True)
             print(
                 "loaded declarations="
-                f"{result.declarations_added}, executed_goals={result.goals_executed}"
+                f"{run_result.declarations_added}, executed_goals={run_result.goals_executed}"
             )
             continue
 

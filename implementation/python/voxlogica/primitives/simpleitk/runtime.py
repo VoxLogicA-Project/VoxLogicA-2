@@ -7,7 +7,7 @@ No mapping, no aliases - just raw SimpleITK function names.
 
 import SimpleITK as sitk
 import inspect
-from typing import Dict, Callable, Any
+from typing import Dict, Callable
 import logging
 
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
@@ -215,7 +215,6 @@ def list_primitives():
 
 def get_serializers():
     """Return serializers provided by SimpleITK primitives"""
-    from typing import Dict, Type, Callable, Any
     from pathlib import Path
     
     def write_image_wrapper(image, filepath: Path) -> None:

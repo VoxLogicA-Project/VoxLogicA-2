@@ -8,6 +8,7 @@ from typing import Any, Optional, Sequence
 import logging
 
 from voxlogica.lazy import GoalSpec, NodeId, NodeSpec, SymbolicPlan
+from voxlogica.lazy.ir import OutputKind
 from voxlogica.lazy.hash import hash_node
 from voxlogica.parser import (
     Command,
@@ -313,7 +314,7 @@ def _plan_primitive_call(
     args: tuple[NodeId, ...],
     kwargs: tuple[tuple[str, NodeId], ...] = (),
     attrs: Optional[dict[str, Any]] = None,
-    output_kind: str = "scalar",
+    output_kind: OutputKind = "scalar",
 ) -> NodeId:
     attrs = dict(attrs or {})
     call = PrimitiveCall(args=args, kwargs=kwargs, attrs=attrs)
@@ -425,15 +426,15 @@ def reduce_expression(
                 )
             )
 
-        call_stack: Stack = [(expr.identifier, expr.position)] + current_stack
+        next_stack: Stack = [(expr.identifier, expr.position)] + current_stack
         args_ids = tuple(
-            reduce_expression(env, work_plan, arg, call_stack)
+            reduce_expression(env, work_plan, arg, next_stack)
             for arg in expr.arguments
         )
 
         val = env.try_find(expr.identifier)
         if val is None:
-            inferred_kind = (
+            inferred_kind: OutputKind = (
                 "sequence"
                 if expr.identifier
                 in {
@@ -467,7 +468,7 @@ def reduce_expression(
 
         arg_vals: Sequence[DVal] = [OperationVal(arg_id) for arg_id in args_ids]
         func_env = val.environment.bind_list(val.parameters, arg_vals)
-        return reduce_expression(func_env, work_plan, val.expression, call_stack)
+        return reduce_expression(func_env, work_plan, val.expression, next_stack)
 
     if isinstance(expr, EFor):
         iterable_id = reduce_expression(env, work_plan, expr.iterable, current_stack)

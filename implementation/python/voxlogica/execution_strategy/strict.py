@@ -149,7 +149,7 @@ class StrictExecutionStrategy(ExecutionStrategy):
         try:
             sequence = self._coerce_sequence(value)
             items = sequence.page(offset=offset, limit=limit)
-            next_offset = offset + len(items)
+            next_offset: int | None = offset + len(items)
             if len(items) < limit:
                 next_offset = None
         except ValueError:
@@ -267,7 +267,7 @@ class StrictExecutionStrategy(ExecutionStrategy):
 
         return SequenceValue(iterator_factory, total_size=total_size)
 
-    def _evaluate_range(self, args: list[Any], kwargs: dict[str, Any]) -> SequenceValue:
+    def _evaluate_range(self, args: list[Any], kwargs: dict[str, Any]) -> Any:
         if not args:
             raise ValueError("range requires at least one argument")
 

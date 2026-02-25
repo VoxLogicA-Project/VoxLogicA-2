@@ -5,7 +5,6 @@ Implements range operation that returns a Dask bag for lazy for loop support.
 """
 
 import dask.bag as db
-from typing import Union
 
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 

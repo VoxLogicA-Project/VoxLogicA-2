@@ -1,0 +1,60 @@
+{
+  "nodes": [
+    {
+      "kind": "closure",
+      "operator": "closure",
+      "output_kind": "closure",
+      "argc": 0,
+      "kwarg_names": [],
+      "attr_keys": [
+        "body",
+        "capture_names",
+        "function_captures",
+        "parameter"
+      ]
+    },
+    {
+      "kind": "constant",
+      "operator": "constant",
+      "output_kind": "scalar",
+      "argc": 0,
+      "kwarg_names": [],
+      "attr_keys": [
+        "value"
+      ]
+    },
+    {
+      "kind": "constant",
+      "operator": "constant",
+      "output_kind": "scalar",
+      "argc": 0,
+      "kwarg_names": [],
+      "attr_keys": [
+        "value"
+      ]
+    },
+    {
+      "kind": "primitive",
+      "operator": "default.for_loop",
+      "output_kind": "sequence",
+      "argc": 2,
+      "kwarg_names": [],
+      "attr_keys": []
+    },
+    {
+      "kind": "primitive",
+      "operator": "default.range",
+      "output_kind": "sequence",
+      "argc": 2,
+      "kwarg_names": [],
+      "attr_keys": []
+    }
+  ],
+  "goals": [
+    {
+      "operation": "print",
+      "name": "out",
+      "target_kind": "primitive"
+    }
+  ]
+}

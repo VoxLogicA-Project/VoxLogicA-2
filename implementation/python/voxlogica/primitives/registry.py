@@ -253,16 +253,22 @@ class PrimitiveRegistry:
             if namespace_name not in self._loaded_namespaces:
                 self._load_namespace(namespace_name)
 
-            specs = self._specs_by_namespace.get(namespace_name, {})
+            selected_specs: OrderedDict[str, PrimitiveSpec] = self._specs_by_namespace.get(
+                namespace_name,
+                OrderedDict(),
+            )
             return {
                 name: spec.description or "Primitive"
-                for name, spec in specs.items()
+                for name, spec in selected_specs.items()
             }
 
         output: dict[str, str] = {}
         for namespace in self.list_namespaces():
-            specs = self._specs_by_namespace.get(namespace, {})
-            for primitive_name, spec in specs.items():
+            namespace_specs: OrderedDict[str, PrimitiveSpec] = self._specs_by_namespace.get(
+                namespace,
+                OrderedDict(),
+            )
+            for primitive_name, spec in namespace_specs.items():
                 output[f"{namespace}.{primitive_name}"] = spec.description or "Primitive"
         return output
 

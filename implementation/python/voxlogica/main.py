@@ -7,7 +7,6 @@ import contextlib
 import json
 import logging
 from pathlib import Path
-import sys
 import time
 from typing import Any, Optional, TypeVar, Generic
 
@@ -22,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.api import BaseObserver
 
 from voxlogica.features import FeatureRegistry, OperationResult, handle_list_primitives
 from voxlogica.repl import run_interactive_repl
@@ -318,7 +318,7 @@ def repl(
 
 
 live_reload_clients: set[WebSocket] = set()
-_file_observer: Observer | None = None
+_file_observer: BaseObserver | None = None
 
 
 class ReloadEventHandler(FileSystemEventHandler):

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from voxlogica.lazy.hash import hash_node
-from voxlogica.lazy.ir import GoalSpec, NodeId, NodeSpec, SymbolicPlan
+from voxlogica.lazy.ir import GoalSpec, NodeId, NodeSpec, OutputKind, SymbolicPlan
 
 
 class SymbolicPlanner:
@@ -22,7 +22,7 @@ class SymbolicPlanner:
             self._nodes[node_id] = node
         return node_id
 
-    def add_constant(self, value: Any, output_kind: str = "scalar") -> NodeId:
+    def add_constant(self, value: Any, output_kind: OutputKind = "scalar") -> NodeId:
         return self.add_node(
             NodeSpec(
                 kind="constant",
