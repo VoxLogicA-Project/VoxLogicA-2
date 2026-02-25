@@ -214,20 +214,25 @@ grammar = r"""
     formal_args: "(" identifier ("," identifier)* ")"
     actual_args: "(" expression ("," expression)* ")"
     
-    expression: simple_expr | call_expr | op_expr | paren_expr | for_expr | let_expr
+    expression: simple_expr | call_id_expr | call_op_expr | call_upper_expr | prefix_expr | op_expr | paren_expr | for_expr | let_expr
     
     simple_expr: number | boolean | string
-    call_expr: function_name actual_args?
-    op_expr: expression OPERATOR expression
+    call_id_expr: identifier actual_args?
+    call_op_expr: OPERATOR actual_args
+    call_upper_expr: UPPER_IDENTIFIER actual_args
+    op_expr: expression infix_operator expression
+    prefix_expr: prefix_operator expression
     paren_expr: "(" expression ")"
     for_expr: "for" identifier "in" expression "do" expression
     let_expr: "let" identifier "=" expression "in" expression
     
-    function_name: identifier | OPERATOR
-    variable_name: identifier | OPERATOR
+    variable_name: identifier | OPERATOR | UPPER_IDENTIFIER
+    infix_operator: OPERATOR | UPPER_IDENTIFIER
+    prefix_operator: OPERATOR | UPPER_IDENTIFIER
     identifier: IDENTIFIER
 
-    IDENTIFIER: /[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?/
+    IDENTIFIER: /[a-z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?/
+    UPPER_IDENTIFIER: /[A-Z][a-zA-Z0-9_]*/
     OPERATOR: /(?!\/{2})(?:[#;:_'\.|!$%&\/^=*\-+<>?@~\\]+|[A-Z][A-Z0-9]*[#;:_'\.|!$%&\/^=*\-+<>?@~\\][A-Z0-9#;:_'\.|!$%&\/^=*\-+<>?@~\\]*)/
     number: SIGNED_NUMBER -> float
     boolean: "true" -> true
@@ -298,18 +303,34 @@ class VoxLogicATransformer(Transformer):
         return list(args)
 
     @v_args(inline=True)
-    def call_expr(self, function_name, args=None):
+    def call_id_expr(self, function_name, args=None):
         if args is None:
             args = []
         return ECall("pos", function_name, args)
 
     @v_args(inline=True)
-    def function_name(self, name):
-        return str(name)
+    def call_op_expr(self, function_name, args):
+        return ECall("pos", str(function_name), args)
+
+    @v_args(inline=True)
+    def call_upper_expr(self, function_name, args):
+        return ECall("pos", str(function_name), args)
 
     @v_args(inline=True)
     def op_expr(self, left, op, right):
         return ECall("pos", op, [left, right])
+
+    @v_args(inline=True)
+    def prefix_expr(self, op, expr):
+        return ECall("pos", op, [expr])
+
+    @v_args(inline=True)
+    def infix_operator(self, op):
+        return str(op)
+
+    @v_args(inline=True)
+    def prefix_operator(self, op):
+        return str(op)
 
     @v_args(inline=True)
     def paren_expr(self, expr):
@@ -337,6 +358,10 @@ class VoxLogicATransformer(Transformer):
 
     @v_args(inline=True)
     def IDENTIFIER(self, token):
+        return str(token)
+
+    @v_args(inline=True)
+    def UPPER_IDENTIFIER(self, token):
         return str(token)
 
     @v_args(inline=True)

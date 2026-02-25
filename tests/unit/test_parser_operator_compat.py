@@ -54,3 +54,54 @@ def test_namespace_imgql_exports_are_applied_on_namespace_import():
     assert result.success
     goal_id = prepared.plan.goals[0].id
     assert prepared.materialization_store.get(goal_id) == 5.0
+
+
+@pytest.mark.unit
+def test_uppercase_identifier_can_be_used_infix():
+    program = parse_program_content(
+        """
+        let SUM(a,b) = a + b
+        print "res" 4 SUM 5
+        """
+    )
+    work_plan = reduce_program(program)
+    strategy = StrictExecutionStrategy(registry=work_plan.registry)
+    prepared = strategy.compile(work_plan.to_symbolic_plan())
+    result = strategy.run(prepared)
+    assert result.success
+    res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
+    assert prepared.materialization_store.get(res_goal.id) == 9.0
+
+
+@pytest.mark.unit
+def test_symbol_identifier_can_be_used_infix():
+    program = parse_program_content(
+        """
+        let +?(a,b) = a + b
+        print "res" 4 +? 5
+        """
+    )
+    work_plan = reduce_program(program)
+    strategy = StrictExecutionStrategy(registry=work_plan.registry)
+    prepared = strategy.compile(work_plan.to_symbolic_plan())
+    result = strategy.run(prepared)
+    assert result.success
+    res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
+    assert prepared.materialization_store.get(res_goal.id) == 9.0
+
+
+@pytest.mark.unit
+def test_symbolic_operator_can_be_used_prefix_for_unary_call():
+    program = parse_program_content(
+        """
+        let NEG(x) = 0 - x
+        print "res" NEG 7
+        """
+    )
+    work_plan = reduce_program(program)
+    strategy = StrictExecutionStrategy(registry=work_plan.registry)
+    prepared = strategy.compile(work_plan.to_symbolic_plan())
+    result = strategy.run(prepared)
+    assert result.success
+    res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
+    assert prepared.materialization_store.get(res_goal.id) == -7.0
