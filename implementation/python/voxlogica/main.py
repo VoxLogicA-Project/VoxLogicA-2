@@ -446,6 +446,18 @@ async def get_version_endpoint() -> dict[str, Any]:
     return result.data or {}
 
 
+@api_router.get("/capabilities")
+async def capabilities_endpoint() -> dict[str, Any]:
+    """Return serve/API capabilities exposed by this backend process."""
+    return {
+        "playground_jobs": True,
+        "testing_jobs": True,
+        "testing_report": True,
+        "storage_stats": True,
+        "gallery": True,
+    }
+
+
 @api_router.post("/run")
 async def run_program_endpoint(request: RunRequest) -> dict[str, Any]:
     """Execute a VoxLogicA run request."""

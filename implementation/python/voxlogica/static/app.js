@@ -5,6 +5,7 @@
     pollTimer: null,
     currentTestJobId: null,
     testPollTimer: null,
+    capabilities: {},
     examples: [],
   };
 
@@ -464,6 +465,16 @@
     dom.killTestRunBtn.disabled = !running;
   };
 
+  const setTestingUnavailableMessage = (message) => {
+    setTestingControlsBusy(false);
+    dom.runQuickTestsBtn.disabled = true;
+    dom.runFullTestsBtn.disabled = true;
+    dom.runPerfTestsBtn.disabled = true;
+    dom.killTestRunBtn.disabled = true;
+    setTestRunStatus("unavailable");
+    dom.testRunLog.textContent = message;
+  };
+
   const refreshTestingJobs = async () => {
     try {
       const payload = await api("/api/v1/testing/jobs");
@@ -532,6 +543,10 @@
   };
 
   const startTestingJob = async (profile, includePerf) => {
+    if (state.capabilities.testing_jobs === false) {
+      setTestingUnavailableMessage("Testing jobs API unavailable. Restart `./voxlogica serve` from latest code.");
+      return;
+    }
     try {
       setTestingControlsBusy(true);
       setTestRunStatus("running");
@@ -564,6 +579,23 @@
       await refreshTestingJobs();
     } catch (err) {
       dom.testRunLog.textContent = `Unable to kill current test job: ${err.message}`;
+    }
+  };
+
+  const loadCapabilities = async () => {
+    try {
+      const caps = await api("/api/v1/capabilities");
+      state.capabilities = caps || {};
+      if (state.capabilities.testing_jobs === false) {
+        setTestingUnavailableMessage("This backend does not expose testing jobs. Restart server from latest commit.");
+      }
+    } catch (err) {
+      if (String(err.message).includes("404")) {
+        state.capabilities.testing_jobs = false;
+        setTestingUnavailableMessage(
+          "Backend is older than UI (missing /api/v1/capabilities). Stop and restart `./voxlogica serve`."
+        );
+      }
     }
   };
 
@@ -641,6 +673,7 @@
     setTestingControlsBusy(false);
     setTestRunStatus("idle");
     await Promise.all([
+      loadCapabilities(),
       loadVersionStamp(),
       loadGallery(),
       refreshJobList(),
