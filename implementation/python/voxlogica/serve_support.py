@@ -535,8 +535,20 @@ def _playground_worker(send_conn: Any, request_payload: dict[str, Any], log_path
                 "finished_at": _iso_utc(finished_at),
             }
         )
-        send_conn.send(packet)
-        send_conn.close()
+        try:
+            send_conn.send(packet)
+        except (BrokenPipeError, EOFError, OSError):
+            _append_log(
+                {
+                    "event": "playground.run.send_failed",
+                    "error": "Result pipe closed before payload delivery",
+                }
+            )
+        finally:
+            try:
+                send_conn.close()
+            except Exception:
+                pass
 
 
 @dataclass
@@ -601,21 +613,31 @@ class PlaygroundJobManager:
         process = job.process
         recv_conn = job.recv_conn
         if recv_conn is not None and recv_conn.poll():
-            packet = recv_conn.recv()
-            job.started_at = _safe_float(packet.get("started_at", job.started_at or time.time()))
-            job.finished_at = _safe_float(packet.get("finished_at", time.time()))
-            job.metrics = dict(packet.get("metrics", {}))
-            if bool(packet.get("ok")):
-                job.status = "completed"
-                result = packet.get("result")
-                job.result = result if isinstance(result, dict) else {"payload": result}
-            else:
+            try:
+                packet = recv_conn.recv()
+            except (EOFError, OSError):
                 job.status = "failed"
-                job.error = str(packet.get("error", "Execution failed"))
-                tb = packet.get("traceback")
-                if isinstance(tb, str) and tb:
-                    job.traceback = tb
-            recv_conn.close()
+                job.error = "Execution process terminated before delivering result payload"
+                job.finished_at = time.time()
+                packet = None
+            if isinstance(packet, dict):
+                job.started_at = _safe_float(packet.get("started_at", job.started_at or time.time()))
+                job.finished_at = _safe_float(packet.get("finished_at", time.time()))
+                job.metrics = dict(packet.get("metrics", {}))
+                if bool(packet.get("ok")):
+                    job.status = "completed"
+                    result = packet.get("result")
+                    job.result = result if isinstance(result, dict) else {"payload": result}
+                else:
+                    job.status = "failed"
+                    job.error = str(packet.get("error", "Execution failed"))
+                    tb = packet.get("traceback")
+                    if isinstance(tb, str) and tb:
+                        job.traceback = tb
+            try:
+                recv_conn.close()
+            except Exception:
+                pass
             job.recv_conn = None
 
         if process is not None and not process.is_alive():

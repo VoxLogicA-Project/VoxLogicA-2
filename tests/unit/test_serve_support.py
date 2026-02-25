@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from voxlogica.serve_support import (
+    PlaygroundJob,
+    PlaygroundJobManager,
     build_storage_stats_snapshot,
     build_test_dashboard_snapshot,
     parse_playground_examples,
@@ -103,3 +105,34 @@ def test_build_storage_stats_snapshot_summarizes_sqlite_backend(tmp_path: Path):
     assert snapshot["summary"]["total_records"] == 2
     assert snapshot["summary"]["materialized_records"] == 1
     assert snapshot["summary"]["failed_records"] == 1
+
+
+class _FakeRecvConnEOF:
+    def poll(self) -> bool:
+        return True
+
+    def recv(self):  # noqa: ANN001
+        raise EOFError()
+
+    def close(self) -> None:
+        return
+
+
+@pytest.mark.unit
+def test_playground_manager_handles_eof_from_worker_pipe() -> None:
+    manager = PlaygroundJobManager()
+    job = PlaygroundJob(
+        job_id="job-eof",
+        request_payload={},
+        created_at=0.0,
+        status="running",
+        recv_conn=_FakeRecvConnEOF(),
+    )
+    manager._jobs[job.job_id] = job
+
+    payload = manager.list_jobs()
+    assert payload["total_jobs"] == 1
+    listed = payload["jobs"][0]
+    assert listed["job_id"] == "job-eof"
+    assert listed["status"] == "failed"
+    assert "terminated before delivering result payload" in str(listed["error"])
