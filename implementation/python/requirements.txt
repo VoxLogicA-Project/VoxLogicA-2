@@ -7,6 +7,7 @@ canonicaljson>=2.0.0
 watchdog
 dask[complete]>=2023.5.0
 numpy>=1.21.0
+numba>=0.60.0
 SimpleITK>=2.0.0
 nnunetv2>=2.4.0
 # NOTE: nnunetv2 >= 2.4.0 is the preferred minimum for full feature compatibility.

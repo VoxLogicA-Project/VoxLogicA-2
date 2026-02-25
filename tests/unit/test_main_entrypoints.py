@@ -46,6 +46,10 @@ def test_run_command_success_and_file_not_found(tmp_path: Path, monkeypatch: pyt
     assert captured["execute"] is False
     assert captured["execution_strategy"] == "strict"
 
+    captured.clear()
+    main_mod.run(str(src), execute=False, execution_strategy="dask", strict=True)
+    assert captured["execution_strategy"] == "strict"
+
     with pytest.raises(typer.Exit):
         main_mod.run(str(tmp_path / "missing.imgql"))
 
@@ -133,6 +137,8 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch):
         test_report_resp = client.get("/api/v1/testing/report")
         assert test_report_resp.status_code == 200
         assert "junit" in test_report_resp.json()
+        primitive_chart_resp = client.get("/api/v1/testing/performance/primitive-chart")
+        assert primitive_chart_resp.status_code in {200, 404}
 
         storage_resp = client.get("/api/v1/storage/stats")
         assert storage_resp.status_code == 200

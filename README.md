@@ -23,6 +23,9 @@ Run from repo root:
 # Run a program file
 ./voxlogica run test.imgql
 
+# Run with strict strategy shortcut (parity/debug)
+./voxlogica run --strict test.imgql
+
 # Start API server
 ./voxlogica serve
 ```

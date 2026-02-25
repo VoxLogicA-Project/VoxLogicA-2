@@ -8,11 +8,33 @@ import math
 
 import numpy as np
 import SimpleITK as sitk
+try:
+    from numba import njit
+    _HAS_NUMBA = True
+except Exception:  # pragma: no cover - optional acceleration
+    _HAS_NUMBA = False
+
+    def njit(*args, **kwargs):  # type: ignore[misc]
+        def _decorator(func):
+            return func
+        return _decorator
 
 from voxlogica.primitives.default._sequence_math import apply_binary_op
 
 _BASE_IMAGE: sitk.Image | None = None
 _BASE_IMAGE_LOCK = RLock()
+_CROSSCORR_BACKEND_ENV = "VOXLOGICA_VOX1_CROSSCORR_BACKEND"
+
+
+def _crosscorr_backend() -> str:
+    requested = os.environ.get(_CROSSCORR_BACKEND_ENV, "").strip().lower()
+    if requested in {"python", "numba"}:
+        if requested == "numba" and not _HAS_NUMBA:
+            return "python"
+        return requested
+    if _HAS_NUMBA:
+        return "numba"
+    return "python"
 
 
 def reset_runtime_state() -> None:
@@ -744,6 +766,124 @@ def _hist_corr(h2: np.ndarray, h1: np.ndarray) -> float:
     return num / den
 
 
+@njit(cache=True)
+def _bin_index_numba(m1: float, m2: float, delta: float, value: float, nbins: int) -> int:
+    if value < m1 or value >= m2:
+        return -1
+    if delta == 0.0:
+        return -1
+    idx = int((value - m1) / delta)
+    if idx < 0 or idx >= nbins:
+        return -1
+    return idx
+
+
+@njit(cache=True)
+def _hist_corr_numba(h2: np.ndarray, h1: np.ndarray) -> float:
+    n = h2.shape[0]
+    sum2 = 0.0
+    sum1 = 0.0
+    for i in range(n):
+        sum2 += float(h2[i])
+        sum1 += float(h1[i])
+    avg2 = sum2 / float(n)
+    avg1 = sum1 / float(n)
+
+    den2 = 0.0
+    den1 = 0.0
+    num = 0.0
+    for i in range(n):
+        d2 = float(h2[i]) - avg2
+        d1 = float(h1[i]) - avg1
+        den2 += d2 * d2
+        den1 += d1 * d1
+        num += d1 * d2
+
+    if den1 == 0.0 and den2 == 0.0:
+        return 1.0
+    if den1 == 0.0 or den2 == 0.0:
+        return 0.0
+    return num / (math.sqrt(den1) * math.sqrt(den2))
+
+
+@njit(cache=True)
+def _crosscorr_kernel_numba(
+    outer_values: np.ndarray,
+    hidx: np.ndarray,
+    hdir: np.ndarray,
+    indices: np.ndarray,
+    faces_minus: np.ndarray,
+    faces_minus_len: np.ndarray,
+    faces_plus: np.ndarray,
+    faces_plus_len: np.ndarray,
+    big_histogram: np.ndarray,
+    m1: float,
+    m2: float,
+    delta: float,
+    nbins: int,
+    npixels: int,
+    nprocs: int,
+) -> np.ndarray:
+    temporary_values = np.array(outer_values, copy=True)
+    fragsize = npixels // nprocs
+    if fragsize <= 0:
+        fragsize = npixels
+        nprocs = 1
+
+    for procindex in range(nprocs):
+        fragstart = procindex * fragsize
+        if fragstart >= npixels:
+            break
+
+        start = int(hidx[fragstart])
+        local_hist = np.zeros(nbins, dtype=np.int64)
+        for i in range(indices.shape[0]):
+            linear_coord = start + int(indices[i])
+            hist_idx = _bin_index_numba(m1, m2, delta, float(outer_values[linear_coord]), nbins)
+            if hist_idx >= 0:
+                local_hist[hist_idx] += 1
+
+        temporary_values[start] = np.float32(_hist_corr_numba(big_histogram, local_hist))
+
+        target = fragstart + fragsize - 1
+        previous = start
+        upper = target
+        if upper > npixels - 1:
+            upper = npixels - 1
+        for pos in range(fragstart + 1, upper + 1):
+            center = int(hidx[pos])
+            direction = int(hdir[pos])
+            face_idx = abs(direction) - 1
+            remove_face = faces_minus
+            remove_len = faces_minus_len
+            add_face = faces_plus
+            add_len = faces_plus_len
+            if direction < 0:
+                remove_face = faces_plus
+                remove_len = faces_plus_len
+                add_face = faces_minus
+                add_len = faces_minus_len
+
+            for j in range(remove_len[face_idx]):
+                linear_el = int(remove_face[face_idx, j])
+                linear_coord = previous + linear_el
+                hist_idx = _bin_index_numba(m1, m2, delta, float(outer_values[linear_coord]), nbins)
+                if hist_idx >= 0:
+                    local_hist[hist_idx] -= 1
+
+            for j in range(add_len[face_idx]):
+                linear_el = int(add_face[face_idx, j])
+                linear_coord = center + linear_el
+                hist_idx = _bin_index_numba(m1, m2, delta, float(outer_values[linear_coord]), nbins)
+                if hist_idx >= 0:
+                    local_hist[hist_idx] += 1
+
+            temporary_values[center] = np.float32(_hist_corr_numba(big_histogram, local_hist))
+            previous = center
+
+    return temporary_values
+
+
 def crossCorrelation(
     rad: float,
     a: object,
@@ -791,57 +931,94 @@ def crossCorrelation(
 
     outer_array = sitk.GetArrayViewFromImage(outer_image)
     outer_values = outer_array.reshape(-1).astype(np.float32, copy=False)
-    temporary_values = np.array(outer_values, copy=True)
-
     hidx, hdir = _snake(size, ball_radius)
+    nprocs = os.cpu_count() or 1
+    backend = _crosscorr_backend()
 
-    def local_add(
-        local_histogram: np.ndarray,
-        linear_center: int,
-        increment: int,
-        linear_el: int,
-    ) -> None:
-        linear_coord = linear_center + linear_el
-        _bin(
+    if backend == "numba" and _HAS_NUMBA:
+        ndims = len(faces)
+        max_len_minus = max((len(faces[dim][0]) for dim in range(ndims)), default=0)
+        max_len_plus = max((len(faces[dim][1]) for dim in range(ndims)), default=0)
+        faces_minus = np.zeros((ndims, max_len_minus), dtype=np.int64)
+        faces_plus = np.zeros((ndims, max_len_plus), dtype=np.int64)
+        faces_minus_len = np.zeros(ndims, dtype=np.int64)
+        faces_plus_len = np.zeros(ndims, dtype=np.int64)
+        for dim in range(ndims):
+            minus_face = np.asarray(faces[dim][0], dtype=np.int64)
+            plus_face = np.asarray(faces[dim][1], dtype=np.int64)
+            faces_minus_len[dim] = minus_face.shape[0]
+            faces_plus_len[dim] = plus_face.shape[0]
+            if minus_face.shape[0] > 0:
+                faces_minus[dim, : minus_face.shape[0]] = minus_face
+            if plus_face.shape[0] > 0:
+                faces_plus[dim, : plus_face.shape[0]] = plus_face
+
+        temporary_values = _crosscorr_kernel_numba(
+            np.asarray(outer_values, dtype=np.float32),
+            np.asarray(hidx, dtype=np.int64),
+            np.asarray(hdir, dtype=np.int64),
+            np.asarray(indices, dtype=np.int64),
+            faces_minus,
+            faces_minus_len,
+            faces_plus,
+            faces_plus_len,
+            np.asarray(big_histogram, dtype=np.int64),
             float(m1),
             float(m2),
-            delta,
-            increment,
-            float(outer_values[linear_coord]),
-            local_histogram,
+            float(delta),
+            int(nbins),
+            int(npixels),
+            int(nprocs),
         )
+    else:
+        temporary_values = np.array(outer_values, copy=True)
 
-    nprocs = os.cpu_count() or 1
-    fragsize = npixels // nprocs
-    for procindex in range(nprocs):
-        fragstart = procindex * fragsize
-        if fragstart >= npixels:
-            break
+        def local_add(
+            local_histogram: np.ndarray,
+            linear_center: int,
+            increment: int,
+            linear_el: int,
+        ) -> None:
+            linear_coord = linear_center + linear_el
+            _bin(
+                float(m1),
+                float(m2),
+                delta,
+                increment,
+                float(outer_values[linear_coord]),
+                local_histogram,
+            )
 
-        start = int(hidx[fragstart])
-        local_hist = np.zeros(nbins, dtype=np.int64)
-        for linear_el in indices:
-            local_add(local_hist, start, 1, int(linear_el))
-        temporary_values[start] = np.float32(_hist_corr(big_histogram, local_hist))
+        fragsize = npixels // nprocs
+        for procindex in range(nprocs):
+            fragstart = procindex * fragsize
+            if fragstart >= npixels:
+                break
 
-        target = fragstart + fragsize - 1
-        previous = start
-        for pos in range(fragstart + 1, min(target, npixels - 1) + 1):
-            center = int(hidx[pos])
-            direction = int(hdir[pos])
-            face_idx = abs(direction) - 1
-            face_minus = faces[face_idx][0]
-            face_plus = faces[face_idx][1]
-            if direction < 0:
-                face_minus, face_plus = face_plus, face_minus
+            start = int(hidx[fragstart])
+            local_hist = np.zeros(nbins, dtype=np.int64)
+            for linear_el in indices:
+                local_add(local_hist, start, 1, int(linear_el))
+            temporary_values[start] = np.float32(_hist_corr(big_histogram, local_hist))
 
-            for linear_el in face_minus:
-                local_add(local_hist, previous, -1, int(linear_el))
-            for linear_el in face_plus:
-                local_add(local_hist, center, 1, int(linear_el))
+            target = fragstart + fragsize - 1
+            previous = start
+            for pos in range(fragstart + 1, min(target, npixels - 1) + 1):
+                center = int(hidx[pos])
+                direction = int(hdir[pos])
+                face_idx = abs(direction) - 1
+                face_minus = faces[face_idx][0]
+                face_plus = faces[face_idx][1]
+                if direction < 0:
+                    face_minus, face_plus = face_plus, face_minus
 
-            temporary_values[center] = np.float32(_hist_corr(big_histogram, local_hist))
-            previous = center
+                for linear_el in face_minus:
+                    local_add(local_hist, previous, -1, int(linear_el))
+                for linear_el in face_plus:
+                    local_add(local_hist, center, 1, int(linear_el))
+
+                temporary_values[center] = np.float32(_hist_corr(big_histogram, local_hist))
+                previous = center
 
     temporary_image = _make_image_from_flat(
         temporary_values,

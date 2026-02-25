@@ -27,6 +27,7 @@ from voxlogica.features import FeatureRegistry, OperationResult, handle_list_pri
 from voxlogica.repl import run_interactive_repl
 from voxlogica.serve_support import (
     PERF_REPORT_SVG,
+    PERF_REPORT_DIR,
     PlaygroundJobManager,
     TestingJobManager,
     build_storage_stats_snapshot,
@@ -246,6 +247,11 @@ def run(
         "--execution-strategy",
         help="Execution strategy to use (dask|strict)",
     ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Shortcut for --execution-strategy strict (useful for parity/debug tests)",
+    ),
 ) -> None:
     """Run a VoxLogicA program."""
 
@@ -261,6 +267,7 @@ def run(
         logger.error("Error reading file %s: %s", filename, exc)
         raise typer.Exit(code=1)
 
+    chosen_strategy = "strict" if strict else execution_strategy
     feature = _feature_or_exit("run")
     result = feature.handler(
         program=program,
@@ -275,7 +282,7 @@ def run(
         debug=debug,
         verbose=verbose,
         dask_dashboard=dask_dashboard,
-        execution_strategy=execution_strategy,
+        execution_strategy=chosen_strategy,
     )
 
     _handle_cli_result("run", result)
@@ -323,13 +330,19 @@ def repl(
         "--execution-strategy",
         help="Execution strategy to use (dask|strict)",
     ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Shortcut for --execution-strategy strict (useful for parity/debug tests)",
+    ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging"),
 ) -> None:
     """Start interactive VoxLogicA REPL."""
 
     setup_logging(debug, verbose)
-    exit_code = run_interactive_repl(strategy=execution_strategy)
+    chosen_strategy = "strict" if strict else execution_strategy
+    exit_code = run_interactive_repl(strategy=chosen_strategy)
     raise typer.Exit(code=exit_code)
 
 
@@ -580,6 +593,18 @@ async def testing_performance_chart_endpoint() -> FileResponse:
             detail=f"Performance chart not found: {PERF_REPORT_SVG}",
         )
     return FileResponse(str(PERF_REPORT_SVG), media_type="image/svg+xml")
+
+
+@api_router.get("/testing/performance/primitive-chart")
+async def testing_performance_primitive_chart_endpoint() -> FileResponse:
+    """Serve per-primitive benchmark histogram chart."""
+    primitive_chart = PERF_REPORT_DIR / "primitive_benchmarks.svg"
+    if not primitive_chart.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Primitive benchmark chart not found: {primitive_chart}",
+        )
+    return FileResponse(str(primitive_chart), media_type="image/svg+xml")
 
 
 @api_router.get("/storage/stats")

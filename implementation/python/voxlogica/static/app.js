@@ -52,6 +52,8 @@
     failedCases: document.getElementById("failedCases"),
     perfChart: document.getElementById("perfChart"),
     perfSummary: document.getElementById("perfSummary"),
+    primitivePerfChart: document.getElementById("primitivePerfChart"),
+    primitivePerfBars: document.getElementById("primitivePerfBars"),
     refreshStorageBtn: document.getElementById("refreshStorageBtn"),
     sTotal: document.getElementById("sTotal"),
     sMaterialized: document.getElementById("sMaterialized"),
@@ -449,9 +451,31 @@
         dom.perfSummary.textContent = `vox1 median: ${fmtSeconds(vox1)} | vox2 median: ${fmtSeconds(vox2)} | ratio vox1/vox2: ${speedRatio.toFixed(2)}x`;
         dom.perfChart.src = `/api/v1/testing/performance/chart?t=${Date.now()}`;
         dom.perfChart.classList.remove("hidden");
+        const primitive = perf.primitive_benchmarks || {};
+        if (primitive.available) {
+          const cases = primitive.cases || [];
+          renderBarList(
+            dom.primitivePerfBars,
+            cases,
+            "speed_ratio",
+            "name",
+            (v) => `${Number(v).toFixed(3)}x`,
+          );
+          if (primitive.svg_available) {
+            dom.primitivePerfChart.src = `/api/v1/testing/performance/primitive-chart?t=${Date.now()}`;
+            dom.primitivePerfChart.classList.remove("hidden");
+          } else {
+            dom.primitivePerfChart.classList.add("hidden");
+          }
+        } else {
+          dom.primitivePerfBars.innerHTML = `<div class="muted">No primitive benchmark report yet.</div>`;
+          dom.primitivePerfChart.classList.add("hidden");
+        }
       } else {
         dom.perfSummary.textContent = "No performance report yet. Run `./tests/run-tests.sh` with perf tests enabled.";
         dom.perfChart.classList.add("hidden");
+        dom.primitivePerfBars.innerHTML = `<div class="muted">No primitive benchmark report yet.</div>`;
+        dom.primitivePerfChart.classList.add("hidden");
       }
     } catch (err) {
       dom.perfSummary.textContent = `Failed loading report: ${err.message}`;

@@ -24,6 +24,7 @@
 - API: `GET /api/v1/testing/report`
 - Includes junit summary, coverage summary, and perf comparison report
 - Performance chart endpoint: `GET /api/v1/testing/performance/chart`
+- Primitive benchmark histogram endpoint: `GET /api/v1/testing/performance/primitive-chart`
 - Interactive runs from UI:
   - `POST /api/v1/testing/jobs`
   - `GET /api/v1/testing/jobs/{job_id}`

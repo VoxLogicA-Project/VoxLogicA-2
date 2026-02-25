@@ -278,6 +278,34 @@ def _load_perf_report(json_path: Path = PERF_REPORT_JSON, svg_path: Path = PERF_
     payload["svg_path"] = str(svg_path)
     payload["svg_available"] = svg_path.exists()
     payload["updated_at"] = _iso_utc(json_path.stat().st_mtime)
+    primitive_json = json_path.parent / "primitive_benchmarks.json"
+    primitive_svg = json_path.parent / "primitive_benchmarks.svg"
+    if primitive_json.exists():
+        try:
+            import json
+
+            primitive_payload = json.loads(primitive_json.read_text(encoding="utf-8"))
+            payload["primitive_benchmarks"] = {
+                "available": True,
+                "cases": primitive_payload.get("cases", []),
+                "json_path": str(primitive_json),
+                "svg_path": str(primitive_svg),
+                "svg_available": primitive_svg.exists(),
+                "updated_at": _iso_utc(primitive_json.stat().st_mtime),
+            }
+        except Exception as exc:  # noqa: BLE001
+            payload["primitive_benchmarks"] = {
+                "available": False,
+                "error": f"Invalid primitive benchmark JSON: {exc}",
+                "json_path": str(primitive_json),
+                "svg_path": str(primitive_svg),
+            }
+    else:
+        payload["primitive_benchmarks"] = {
+            "available": False,
+            "json_path": str(primitive_json),
+            "svg_path": str(primitive_svg),
+        }
     return payload
 
 
