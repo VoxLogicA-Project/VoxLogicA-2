@@ -62,9 +62,11 @@
       this.onNavigate = options.onNavigate || (() => {});
       this.nv = null;
       this.carouselState = {};
+      this.mountToken = 0;
     }
 
     destroyNiivue() {
+      this.mountToken += 1;
       if (this.nv && typeof this.nv.destroy === "function") {
         this.nv.destroy();
       }
@@ -290,19 +292,43 @@
       }
       try {
         this.destroyNiivue();
+        const token = ++this.mountToken;
+        if (!canvas || !canvas.isConnected) {
+          return;
+        }
+        const width = Math.max(640, canvas.clientWidth || 0);
+        const height = Math.max(420, canvas.clientHeight || 0);
+        canvas.width = width;
+        canvas.height = height;
         const nv = new ns.Niivue({
           dragAndDropEnabled: false,
           isRuler: false,
           show3Dcrosshair: true,
           backColor: [0.02, 0.03, 0.05, 1.0],
+          isResizeCanvas: false,
         });
         this.nv = nv;
         await nv.attachToCanvas(canvas);
-        await nv.loadVolumes([{ url, name: "stored-volume" }]);
+        if (token !== this.mountToken || !canvas.isConnected) {
+          this.destroyNiivue();
+          return;
+        }
+        await nv.loadVolumes([
+          {
+            url,
+            // Work around Niivue 0.64 edge-case with bare "nii.gz" URL basenames.
+            name: "stored-volume.nii.gz",
+          },
+        ]);
+        if (token !== this.mountToken || !canvas.isConnected) {
+          this.destroyNiivue();
+          return;
+        }
         if (ns.SLICE_TYPE && typeof nv.setSliceType === "function") {
           nv.setSliceType(ns.SLICE_TYPE.MULTIPLANAR);
         }
       } catch (error) {
+        if (canvas && !canvas.isConnected) return;
         const failed = create("div", "viewer-error");
         failed.textContent = `Unable to open medical viewer: ${error && error.message ? error.message : error}`;
         canvas.replaceWith(failed);
