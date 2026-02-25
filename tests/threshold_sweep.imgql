@@ -5,8 +5,18 @@ let mm = MinimumMaximum(img)
 let lo = index(mm,0)
 let hi = index(mm,1)
 
-let thresholds = range(lo, hi+1)
+// Keep the demo bounded to exactly 100 generated masks.
+let thresholds = range(lo, lo+100)
 let mk_mask(th) = BinaryThreshold(img, th, hi, 1, 0)
-let masks = map(mk_mask, thresholds)
 
-print "n_thresholds" hi-lo+1
+// Build a unique output filename for each thresholded image.
+// Note: print_primitive returns a string "<label>=<value>".
+let fname(th) = print_primitive("tests/output/threshold_sweep/mask_", th)
+
+// Write each thresholded image to disk.
+let save_mask(th) = WriteImage(mk_mask(th), fname(th) + ".nii.gz")
+let writes = map(save_mask, thresholds)
+
+// Force evaluation/materialization.
+print "n_thresholds" 100
+print "writes" writes
