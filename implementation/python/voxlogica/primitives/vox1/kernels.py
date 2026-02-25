@@ -9,7 +9,7 @@ import math
 import numpy as np
 import SimpleITK as sitk
 try:
-    from numba import njit
+    from numba import njit, prange
     _HAS_NUMBA = True
 except Exception:  # pragma: no cover - optional acceleration
     _HAS_NUMBA = False
@@ -18,6 +18,9 @@ except Exception:  # pragma: no cover - optional acceleration
         def _decorator(func):
             return func
         return _decorator
+
+    def prange(*args):  # type: ignore[misc]
+        return range(*args)
 
 from voxlogica.primitives.default._sequence_math import apply_binary_op
 
@@ -28,13 +31,13 @@ _CROSSCORR_BACKEND_ENV = "VOXLOGICA_VOX1_CROSSCORR_BACKEND"
 
 def _crosscorr_backend() -> str:
     requested = os.environ.get(_CROSSCORR_BACKEND_ENV, "").strip().lower()
-    if requested in {"python", "numba"}:
+    if requested in {"python", "numba", "numpy"}:
         if requested == "numba" and not _HAS_NUMBA:
             return "python"
         return requested
     if _HAS_NUMBA:
         return "numba"
-    return "python"
+    return "numpy"
 
 
 def reset_runtime_state() -> None:
@@ -396,6 +399,26 @@ def Lcc(image: object) -> sitk.Image:
     return lcc(image)
 
 
+@njit(cache=True)
+def _through_mask_components_numba(
+    masked_values: np.ndarray,
+    cc_values: np.ndarray,
+    max_label: int,
+) -> np.ndarray:
+    flags = np.zeros(max_label + 1, dtype=np.uint8)
+    n = cc_values.shape[0]
+    for i in range(n):
+        cc = int(masked_values[i])
+        if cc > 0 and cc <= max_label:
+            flags[cc] = np.uint8(1)
+    result = np.zeros(n, dtype=np.uint8)
+    for i in range(n):
+        cc = int(cc_values[i])
+        if cc > 0 and cc <= max_label:
+            result[i] = flags[cc]
+    return result
+
+
 def through(image1: object, image2: object) -> sitk.Image:
     img1 = _as_image(image1, "image1")
     img2 = _as_image(image2, "image2")
@@ -407,15 +430,20 @@ def through(image1: object, image2: object) -> sitk.Image:
     cc_values = _flatten_image(cc_image, np.uint32)
     masked_values = _flatten_image(masked, np.uint32)
     max_label = int(cc_values.max(initial=0))
-
-    flags = np.zeros(max_label + 1, dtype=np.uint8)
-    active = masked_values[masked_values > 0]
-    if active.size > 0:
-        flags[active] = 1
-
-    result_values = np.zeros_like(cc_values, dtype=np.uint8)
-    non_background = cc_values > 0
-    result_values[non_background] = flags[cc_values[non_background]]
+    if _HAS_NUMBA:
+        result_values = _through_mask_components_numba(
+            np.asarray(masked_values, dtype=np.uint32),
+            np.asarray(cc_values, dtype=np.uint32),
+            max_label,
+        )
+    else:
+        flags = np.zeros(max_label + 1, dtype=np.uint8)
+        active = masked_values[masked_values > 0]
+        if active.size > 0:
+            flags[active] = 1
+        result_values = np.zeros_like(cc_values, dtype=np.uint8)
+        non_background = cc_values > 0
+        result_values[non_background] = flags[cc_values[non_background]]
 
     shape = sitk.GetArrayViewFromImage(cc_image).shape
     return _make_image_from_flat(result_values, shape, cc_image, np.uint8)
@@ -465,6 +493,53 @@ def maxvol(image: object) -> sitk.Image:
     return _make_image_from_flat(result, shape, labels_image, np.uint8)
 
 
+@njit(cache=True)
+def _percentiles_numba(
+    img_values: np.ndarray,
+    mask_values: np.ndarray,
+    correction: float,
+) -> np.ndarray:
+    result_values = np.empty(img_values.shape[0], dtype=np.float32)
+    for i in range(result_values.shape[0]):
+        result_values[i] = np.float32(-1.0)
+
+    population_size = 0
+    for i in range(mask_values.shape[0]):
+        if mask_values[i] > 0:
+            population_size += 1
+    if population_size == 0:
+        return result_values
+
+    population = np.empty(population_size, dtype=np.int64)
+    population_values = np.empty(population_size, dtype=np.float32)
+    cursor = 0
+    for i in range(mask_values.shape[0]):
+        if mask_values[i] > 0:
+            population[cursor] = i
+            population_values[cursor] = img_values[i]
+            cursor += 1
+
+    sorted_order = np.argsort(population_values)
+    sorted_indices = population[sorted_order]
+    sorted_values = population_values[sorted_order]
+
+    vol = float(population_size)
+    curvol = 0
+    group_start = 0
+    while group_start < sorted_values.shape[0]:
+        group_end = group_start + 1
+        while group_end < sorted_values.shape[0] and sorted_values[group_end] == sorted_values[group_start]:
+            group_end += 1
+        group_size = group_end - group_start
+        value = ((float(curvol)) + (float(correction) * float(group_size))) / vol
+        value32 = np.float32(value)
+        for idx in range(group_start, group_end):
+            result_values[sorted_indices[idx]] = value32
+        curvol += group_size
+        group_start = group_end
+    return result_values
+
+
 def percentiles(image: object, mask_image: object, correction: float) -> sitk.Image:
     img = _as_image(image, "image")
     msk = _as_image(mask_image, "mask_image")
@@ -475,28 +550,35 @@ def percentiles(image: object, mask_image: object, correction: float) -> sitk.Im
     if img_values.shape[0] != mask_values.shape[0]:
         raise ValueError("percentiles requires images with the same number of voxels")
 
-    result_values = np.full(img_values.shape, -1.0, dtype=np.float32)
-    population = np.flatnonzero(mask_values > 0)
-    if population.size > 0:
-        population_values = img_values[population]
-        sorted_order = np.argsort(population_values, kind="mergesort")
-        sorted_indices = population[sorted_order]
-        sorted_values = population_values[sorted_order]
-        vol = float(population.size)
-        curvol = 0
-        group_start = 0
-        while group_start < sorted_values.size:
-            group_end = group_start + 1
-            while (
-                group_end < sorted_values.size
-                and sorted_values[group_end] == sorted_values[group_start]
-            ):
-                group_end += 1
-            group_size = group_end - group_start
-            value = ((float(curvol)) + (float(correction) * float(group_size))) / vol
-            result_values[sorted_indices[group_start:group_end]] = np.float32(value)
-            curvol += group_size
-            group_start = group_end
+    if _HAS_NUMBA:
+        result_values = _percentiles_numba(
+            np.asarray(img_values, dtype=np.float32),
+            np.asarray(mask_values, dtype=np.uint8),
+            float(correction),
+        )
+    else:
+        result_values = np.full(img_values.shape, -1.0, dtype=np.float32)
+        population = np.flatnonzero(mask_values > 0)
+        if population.size > 0:
+            population_values = img_values[population]
+            sorted_order = np.argsort(population_values, kind="mergesort")
+            sorted_indices = population[sorted_order]
+            sorted_values = population_values[sorted_order]
+            vol = float(population.size)
+            curvol = 0
+            group_start = 0
+            while group_start < sorted_values.size:
+                group_end = group_start + 1
+                while (
+                    group_end < sorted_values.size
+                    and sorted_values[group_end] == sorted_values[group_start]
+                ):
+                    group_end += 1
+                group_size = group_end - group_start
+                value = ((float(curvol)) + (float(correction) * float(group_size))) / vol
+                result_values[sorted_indices[group_start:group_end]] = np.float32(value)
+                curvol += group_size
+                group_start = group_end
 
     shape = sitk.GetArrayViewFromImage(_as_float_image(img)).shape
     return _make_image_from_flat(result_values, shape, img, np.float32)
@@ -766,6 +848,111 @@ def _hist_corr(h2: np.ndarray, h1: np.ndarray) -> float:
     return num / den
 
 
+def _box_sum_axis(values: np.ndarray, axis: int, radius: int) -> np.ndarray:
+    if radius <= 0:
+        return np.asarray(values, dtype=np.int64, order="C")
+    pad_width = [(0, 0)] * values.ndim
+    pad_width[axis] = (radius, radius)
+    padded = np.pad(values, pad_width, mode="constant", constant_values=0)
+    csum = np.cumsum(padded, axis=axis, dtype=np.int64)
+    zero_shape = list(csum.shape)
+    zero_shape[axis] = 1
+    csum = np.concatenate([np.zeros(zero_shape, dtype=np.int64), csum], axis=axis)
+
+    lo = [slice(None)] * values.ndim
+    hi = [slice(None)] * values.ndim
+    window = (2 * radius) + 1
+    lo[axis] = slice(0, csum.shape[axis] - window)
+    hi[axis] = slice(window, None)
+    return csum[tuple(hi)] - csum[tuple(lo)]
+
+
+def _hist_corr_vectorized(big_histogram: np.ndarray, local_histograms: np.ndarray) -> np.ndarray:
+    if local_histograms.size == 0:
+        return np.empty(0, dtype=np.float32)
+
+    h2 = np.asarray(big_histogram, dtype=np.float64)
+    avg2 = float(np.mean(h2))
+    centered2 = h2 - avg2
+    den2 = float(np.sum(centered2 * centered2, dtype=np.float64))
+    sqrt_den2 = math.sqrt(den2)
+
+    h1 = np.asarray(local_histograms, dtype=np.float64)
+    avg1 = np.mean(h1, axis=0)
+    centered1 = h1 - avg1
+    den1 = np.sum(centered1 * centered1, axis=0, dtype=np.float64)
+
+    result = np.zeros(h1.shape[1], dtype=np.float32)
+    both_zero = (den1 == 0.0) & (sqrt_den2 == 0.0)
+    result[both_zero] = np.float32(1.0)
+    if sqrt_den2 == 0.0:
+        return result
+
+    valid = den1 > 0.0
+    if np.any(valid):
+        num = np.sum(centered1[:, valid] * centered2[:, None], axis=0, dtype=np.float64)
+        den = np.sqrt(den1[valid]) * sqrt_den2
+        result[valid] = np.asarray(num / den, dtype=np.float32)
+    return result
+
+
+def _crosscorr_kernel_numpy(
+    outer_values: np.ndarray,
+    outer_shape: tuple[int, ...],
+    hidx: np.ndarray,
+    ball_radius: list[int],
+    big_histogram: np.ndarray,
+    m1: float,
+    m2: float,
+    delta: float,
+    nbins: int,
+    npixels: int,
+    nprocs: int,
+) -> np.ndarray:
+    temporary_values = np.array(outer_values, copy=True)
+    if nbins <= 0 or npixels <= 0:
+        return temporary_values
+
+    fragsize = npixels // nprocs
+    if fragsize <= 0:
+        fragsize = npixels
+        nprocs = 1
+
+    active = np.zeros(npixels, dtype=bool)
+    for procindex in range(nprocs):
+        fragstart = procindex * fragsize
+        if fragstart >= npixels:
+            break
+        target = min(fragstart + fragsize - 1, npixels - 1)
+        active[fragstart : target + 1] = True
+    if not np.any(active):
+        return temporary_values
+
+    active_hidx = np.asarray(hidx[active], dtype=np.int64)
+    outer_flat = np.asarray(outer_values, dtype=np.float32)
+
+    index_map = np.full(outer_flat.shape[0], -1, dtype=np.int16)
+    if delta != 0.0:
+        valid = np.logical_and(outer_flat >= m1, outer_flat < m2)
+        if np.any(valid):
+            raw = np.asarray((outer_flat[valid] - m1) / delta, dtype=np.int64)
+            valid_idx = np.logical_and(raw >= 0, raw < nbins)
+            valid_positions = np.flatnonzero(valid)
+            index_map[valid_positions[valid_idx]] = raw[valid_idx].astype(np.int16, copy=False)
+
+    index_map_nd = index_map.reshape(outer_shape)
+    radii = list(reversed(ball_radius))
+    bin_axis = np.arange(nbins, dtype=np.int16).reshape((nbins,) + (1,) * len(outer_shape))
+    counts = (index_map_nd[None, ...] == bin_axis).astype(np.int64, copy=False)
+    for axis, radius in enumerate(radii, start=1):
+        counts = _box_sum_axis(counts, axis, radius)
+    local_hist = counts.reshape(nbins, -1)[:, active_hidx]
+
+    corr = _hist_corr_vectorized(big_histogram, local_hist)
+    temporary_values[active_hidx] = corr
+    return temporary_values
+
+
 @njit(cache=True)
 def _bin_index_numba(m1: float, m2: float, delta: float, value: float, nbins: int) -> int:
     if value < m1 or value >= m2:
@@ -807,6 +994,24 @@ def _hist_corr_numba(h2: np.ndarray, h1: np.ndarray) -> float:
 
 
 @njit(cache=True)
+def _build_big_histogram_numba(
+    values: np.ndarray,
+    mask_values: np.ndarray,
+    m1: float,
+    m2: float,
+    delta: float,
+    nbins: int,
+) -> np.ndarray:
+    hist = np.zeros(nbins, dtype=np.int64)
+    for i in range(values.shape[0]):
+        if mask_values[i] > 0:
+            hist_idx = _bin_index_numba(m1, m2, delta, float(values[i]), nbins)
+            if hist_idx >= 0:
+                hist[hist_idx] += 1
+    return hist
+
+
+@njit(cache=True, parallel=True)
 def _crosscorr_kernel_numba(
     outer_values: np.ndarray,
     hidx: np.ndarray,
@@ -830,10 +1035,10 @@ def _crosscorr_kernel_numba(
         fragsize = npixels
         nprocs = 1
 
-    for procindex in range(nprocs):
+    for procindex in prange(nprocs):
         fragstart = procindex * fragsize
         if fragstart >= npixels:
-            break
+            continue
 
         start = int(hidx[fragstart])
         local_hist = np.zeros(nbins, dtype=np.int64)
@@ -909,33 +1114,49 @@ def crossCorrelation(
 
     outer_image = sitk.ConstantPad(a_image, ball_radius, ball_radius, float("inf"))
     size = [int(x) for x in a_image.GetSize()]
-    outer_size = [int(x) for x in outer_image.GetSize()]
-    indices, faces = _hyperrectangle(outer_size, ball_radius)
 
     nbins = int(k)
     delta = _mk_delta(float(m1), float(m2), nbins)
 
-    big_histogram = np.zeros(nbins, dtype=np.int64)
     b_values = _flatten_image(b_image, np.float32)
     fb_values = _flatten_image(fb_image, np.uint8)
-    for linear_coord in range(b_values.size):
-        if fb_values[linear_coord] > 0:
-            _bin(
-                float(m1),
-                float(m2),
-                delta,
-                1,
-                float(b_values[linear_coord]),
-                big_histogram,
-            )
+    if _HAS_NUMBA:
+        big_histogram = _build_big_histogram_numba(
+            np.asarray(b_values, dtype=np.float32),
+            np.asarray(fb_values, dtype=np.uint8),
+            float(m1),
+            float(m2),
+            float(delta),
+            int(nbins),
+        )
+    else:
+        big_histogram = np.zeros(nbins, dtype=np.int64)
+        for linear_coord in range(b_values.size):
+            if fb_values[linear_coord] > 0:
+                _bin(
+                    float(m1),
+                    float(m2),
+                    delta,
+                    1,
+                    float(b_values[linear_coord]),
+                    big_histogram,
+                )
 
     outer_array = sitk.GetArrayViewFromImage(outer_image)
     outer_values = outer_array.reshape(-1).astype(np.float32, copy=False)
     hidx, hdir = _snake(size, ball_radius)
     nprocs = os.cpu_count() or 1
     backend = _crosscorr_backend()
+    needs_faces = backend == "numba" or backend == "python"
+    indices: np.ndarray | None = None
+    faces: list[list[list[int]]] | None = None
+    if needs_faces:
+        outer_size = [int(x) for x in outer_image.GetSize()]
+        indices, faces = _hyperrectangle(outer_size, ball_radius)
 
     if backend == "numba" and _HAS_NUMBA:
+        assert faces is not None
+        assert indices is not None
         ndims = len(faces)
         max_len_minus = max((len(faces[dim][0]) for dim in range(ndims)), default=0)
         max_len_plus = max((len(faces[dim][1]) for dim in range(ndims)), default=0)
@@ -970,7 +1191,23 @@ def crossCorrelation(
             int(npixels),
             int(nprocs),
         )
+    elif backend == "numpy":
+        temporary_values = _crosscorr_kernel_numpy(
+            np.asarray(outer_values, dtype=np.float32),
+            tuple(int(v) for v in outer_array.shape),
+            np.asarray(hidx, dtype=np.int64),
+            ball_radius,
+            np.asarray(big_histogram, dtype=np.int64),
+            float(m1),
+            float(m2),
+            float(delta),
+            int(nbins),
+            int(npixels),
+            int(nprocs),
+        )
     else:
+        assert faces is not None
+        assert indices is not None
         temporary_values = np.array(outer_values, copy=True)
 
         def local_add(
