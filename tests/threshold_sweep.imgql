@@ -1,0 +1,12 @@
+import "simpleitk"
+
+let img = ReadImage("tests/chris_t1.nii.gz")
+let mm = MinimumMaximum(img)
+let lo = index(mm,0)
+let hi = index(mm,1)
+
+let thresholds = range(lo, hi+1)
+let mk_mask(th) = BinaryThreshold(img, th, hi, 1, 0)
+let masks = map(mk_mask, thresholds)
+
+print "n_thresholds" hi-lo+1

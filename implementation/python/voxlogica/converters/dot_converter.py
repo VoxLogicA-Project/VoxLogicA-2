@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Optional, Dict, Any
 
+from voxlogica.converters.common import coerce_plan, iter_sorted_nodes
+
 
 def _node_arguments(node: Any) -> list[str]:
     args = list(getattr(node, "args", ()))
@@ -13,10 +15,11 @@ def _node_arguments(node: Any) -> list[str]:
 
 def to_dot(work_plan: Any, buffer_assignment: Optional[Dict[str, int]] = None) -> str:
     """Convert WorkPlan to DOT format."""
+    plan = coerce_plan(work_plan)
 
     lines = ["digraph {"]
 
-    for node_id, node in work_plan.nodes.items():
+    for node_id, node in iter_sorted_nodes(plan):
         if node.kind == "primitive":
             label = node.operator
             if buffer_assignment and node_id in buffer_assignment:

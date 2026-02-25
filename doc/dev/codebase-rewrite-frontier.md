@@ -23,30 +23,18 @@ These modules are treated as stable core for the current architecture:
 7. `implementation/python/voxlogica/execution.py` (strategy facade)
 8. `implementation/python/voxlogica/repl.py` (interactive session runtime)
 
-## Kept for Compilation, Needs Rewrite
+## Rewrite Status
 
-These modules remain in tree to keep the app functional, but should be rewritten for long-term architecture quality:
+Previously flagged rewrite targets were completed:
 
-1. `implementation/python/voxlogica/features.py`  
-   Reason: monolithic orchestration (CLI/API + execution + export handling) with compatibility branching.
+1. `implementation/python/voxlogica/features.py` rewritten to modular handler pipeline.
+2. `implementation/python/voxlogica/main.py` rewritten with clean CLI/API composition and REPL command.
+3. `implementation/python/voxlogica/primitives/simpleitk` split into namespace facade + runtime module.
+4. `implementation/python/voxlogica/primitives/arrays` split into namespace facade + kernels module.
+5. `implementation/python/voxlogica/primitives/nnunet` split into namespace facade + kernels module.
+6. `implementation/python/voxlogica/converters` normalized with shared converter helpers.
 
-2. `implementation/python/voxlogica/main.py`  
-   Reason: CLI/API command wiring and runtime flags are tightly coupled in one file.
-
-3. `implementation/python/voxlogica/primitives/simpleitk/__init__.py`  
-   Reason: large dynamic introspection wrapper; should be split into generated spec/index + curated kernels.
-
-4. `implementation/python/voxlogica/primitives/arrays/__init__.py`  
-   Reason: many unrelated kernels in one file; should be split into per-primitive modules.
-
-5. `implementation/python/voxlogica/primitives/nnunet/__init__.py`  
-   Reason: large operational workflow module with external process orchestration and mixed concerns.
-
-6. `implementation/python/voxlogica/primitives/test/*`  
-   Reason: experimental/demo behavior mixed with runtime-visible primitives; should be isolated as dedicated fixture/test plugins.
-
-7. `implementation/python/voxlogica/converters/{json_converter.py,dot_converter.py}`  
-   Reason: compatibility-heavy serializers; should be normalized around `SymbolicPlan` as sole internal format.
+No mandatory rewrite blockers remain for the current runtime architecture.
 
 ## Notes
 

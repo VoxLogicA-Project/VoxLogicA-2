@@ -1,95 +1,120 @@
-# VoxLogicA 2.0.0a2
+# VoxLogicA
 
-⚠️ **Pre-Alpha Software**: This software is in pre-alpha stage and we constantly make breaking changes as there are no users yet.
+VoxLogicA is a symbolic, declarative computation language for building and executing dataflow plans (including large image-processing workloads) with pluggable execution strategies.
 
-This is the source code of the new iteration of the spatial model checker VoxLogicA. The current implementation includes:
-
-- VoxLogicA program parsing and analysis
-- Task graph generation and optimization
-- Multiple export formats (JSON, DOT)
-- Unified CLI and REST API interfaces
+Current runtime architecture:
+- Symbolic reducer (`AST -> SymbolicPlan`)
+- Pluggable execution strategies (`dask`, `strict`)
+- Stable primitive contract (`PrimitiveSpec`)
+- Modular results database API (`~/.voxlogica/results.db` by default)
+- Interactive REPL session runtime (CLI today, GUI-ready integration point)
 
 ## Quick Start
 
-There's a convenience script in the root directory to run VoxLogicA:
+Run from repo root:
 
 ```bash
-# Run VoxLogicA without manually activating the virtual environment
-./voxlogica run test.imgql
-
-# Show help for the main CLI
+# Show CLI help
 ./voxlogica --help
-
-# Show help for a subcommand (e.g., run)
-./voxlogica run --help
 
 # Show version
 ./voxlogica version
+
+# Run a program file
+./voxlogica run test.imgql
 
 # Start API server
 ./voxlogica serve
 ```
 
-This script automatically activates the virtual environment and runs the Python implementation.
+## Testing
+
+```bash
+# Full pytest suite
+./tests/run-tests.sh
+
+# Or direct
+pytest
+```
+
+## Interactive REPL
+
+```bash
+./voxlogica repl --execution-strategy dask
+```
+
+Useful REPL commands:
+- `:help`
+- `:load <file>`: load declarations/imports from file (no goal execution)
+- `:run <file>`: load file and execute goals
+- `:show`: print session context
+- `:reset`: clear context
+- `:quit`
+
+When you evaluate an expression in REPL, VoxLogicA computes it and stores the result (or a representation payload when not directly serializable) keyed by node hash.
+
+## Minimal Lazy Threshold Sweep Example
+
+The repository includes test image data at `tests/chris_t1.nii.gz`.
+
+This program computes the intensity range, builds a lazy symbolic sequence of all integer thresholds, and defines a lazy mapped sequence of thresholded masks:
+
+```imgql
+import "simpleitk"
+
+let img = ReadImage("tests/chris_t1.nii.gz")
+let mm = MinimumMaximum(img)
+let lo = index(mm,0)
+let hi = index(mm,1)
+
+let thresholds = range(lo, hi+1)
+let mk_mask(th) = BinaryThreshold(img, th, hi, 1, 0)
+let masks = map(mk_mask, thresholds)
+
+print "n_thresholds" hi-lo+1
+```
+
+Why this is lazy/symbolic:
+- `thresholds` and `masks` are represented as symbolic sequence computations in the plan.
+- Execution strategy decides when to materialize values (strict, paginated, streamed, etc.).
+
+### Inspect the plan without executing
+
+```bash
+./voxlogica run tests/threshold_sweep.imgql --no-execute --save-task-graph-as-json /tmp/thresholds-plan.json
+```
+
+### Explore interactively
+
+```bash
+./voxlogica repl --execution-strategy dask
+# then in the REPL:
+:load tests/threshold_sweep.imgql
+thresholds
+lo
+hi
+```
+
+The REPL previews sequence results and persists evaluated nodes in the results store.
 
 ## CLI Reference
 
-### Main Command
+Main commands:
+- `version`
+- `run <filename>`
+- `repl`
+- `list-primitives [namespace]`
+- `serve`
 
-```
-./voxlogica [OPTIONS] COMMAND [ARGS]...
-```
+For command-specific flags:
 
-- `--help` : Show the main help message and exit.
-
-#### Commands:
-- `version` : Show the VoxLogicA version
-- `run` : Run a VoxLogicA program
-- `serve` : Start the VoxLogicA API server
-
-### `run` Command
-
-```
-./voxlogica run [OPTIONS] FILENAME
+```bash
+./voxlogica <command> --help
 ```
 
-- `FILENAME` (required): VoxLogicA session file to run
+## Additional Documentation
 
-Options:
-- `--save-task-graph <file>`: Save the task graph
-- `--save-task-graph-as-dot <file>`: Save the task graph in .dot format and exit
-- `--save-task-graph-as-json <file>`: Save the task graph as JSON and exit
-- `--save-syntax <file>`: Save the AST in text format and exit
-- `--compute-memory-assignment`: Compute and display memory buffer assignments
-- `--execute` / `--no-execute`: Execute the workplan (default: --execute)
-- `--no-cache`: Force recomputation without reading or writing cache
-- `--debug`: Enable debug mode
-- `--help`: Show help for this command and exit
-
-### `serve` Command
-
-```
-./voxlogica serve [OPTIONS]
-```
-
-Options:
-- `--host <host>`: Host to bind the API server (default: 127.0.0.1)
-- `--port <port>`: Port to bind the API server (default: 8000)
-- `--debug`: Enable debug mode
-- `--help`: Show help for this command and exit
-
-### `version` Command
-
-```
-./voxlogica version [OPTIONS]
-```
-
-Options:
-- `--help`: Show help for this command and exit
-
----
-
-For detailed documentation, see:
-
-- Implementation documentation: `implementation/python/README.md`
-- API usage guide: `doc/user/api-usage.md`
+- Developer docs: `doc/dev/`
+- Module docs: `doc/dev/modules/`
+- Python package docs: `implementation/python/README.md`
+- API usage notes: `doc/user/api-usage.md`

@@ -1,90 +1,140 @@
-"""
-This module defines all VoxLogicA features using a unified registry system.
-This module serves as the single source of truth for all features.
-"""
+"""Feature registry and handlers for CLI/API orchestration."""
 
-from typing import (
-    Dict,
-    Any,
-    Callable,
-    Optional,
-    TypeVar,
-    Generic,
-)
+from __future__ import annotations
+
 from dataclasses import dataclass
-import tempfile
-import os
+from pathlib import Path
+from typing import Any, Callable, Dict, Generic, Optional, TypeVar
 import json
 import logging
 
-from voxlogica.parser import parse_program
-from voxlogica.reducer import reduce_program
-from voxlogica.converters import to_json, to_dot
+from voxlogica.converters import to_dot, to_json
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
+from voxlogica.execution import ExecutionEngine, execute_workplan
+from voxlogica.parser import parse_program, parse_program_content
+from voxlogica.reducer import reduce_program
+from voxlogica.storage import NoCacheStorageBackend
+
 
 logger = logging.getLogger("voxlogica.features")
-
 T = TypeVar("T")
 
 
-class OperationResult(Generic[T]):
-    """Wrapper for operation results with success/error handling"""
-
-    def __init__(
-        self, success: bool, data: Optional[T] = None, error: Optional[str] = None
-    ):
-        self.success = success
-        self.data = data
-        self.error = error
-
-
 @dataclass
+class OperationResult(Generic[T]):
+    """Wrapper for feature outcomes with explicit success/error payloads."""
+
+    success: bool
+    data: Optional[T] = None
+    error: Optional[str] = None
+
+    @classmethod
+    def ok(cls, data: Optional[T] = None) -> "OperationResult[T]":
+        return cls(success=True, data=data, error=None)
+
+    @classmethod
+    def fail(cls, error: str) -> "OperationResult[T]":
+        return cls(success=False, data=None, error=error)
+
+
+@dataclass(frozen=True)
 class Feature:
-    """Base class for all VoxLogicA features"""
+    """Feature definition for CLI/API discovery and execution."""
 
     name: str
     description: str
-    handler: Callable
+    handler: Callable[..., OperationResult[Any]]
     cli_options: Optional[Dict[str, Any]] = None
     api_endpoint: Optional[Dict[str, Any]] = None
 
 
 class FeatureRegistry:
-    """Registry for all VoxLogicA features"""
+    """In-memory feature registry."""
 
     _features: Dict[str, Feature] = {}
 
     @classmethod
     def register(cls, feature: Feature) -> Feature:
-        """Register a new feature"""
         cls._features[feature.name] = feature
         return feature
 
     @classmethod
     def get_feature(cls, name: str) -> Optional[Feature]:
-        """Get a feature by name"""
         return cls._features.get(name)
 
     @classmethod
     def get_all_features(cls) -> Dict[str, Feature]:
-        """Get all registered features"""
         return cls._features.copy()
 
 
-# ----------------- Feature Handlers -----------------
+def _json_safe(value: Any) -> Any:
+    """Convert payload to JSON-safe structure using project encoder."""
+    return json.loads(json.dumps(value, cls=WorkPlanJSONEncoder))
+
+
+def _load_syntax(program: Optional[str], filename: Optional[str]):
+    if program and program.strip():
+        return parse_program_content(program)
+
+    if filename:
+        return parse_program(filename)
+
+    raise ValueError("Either program content or filename must be provided")
+
+
+def _collect_exports(
+    *,
+    cli_mode: bool,
+    workplan: Any,
+    syntax: Any,
+    save_task_graph: Optional[str],
+    save_task_graph_as_dot: Optional[str],
+    save_task_graph_as_json: Optional[str],
+    save_syntax: Optional[str],
+) -> tuple[list[str], dict[str, Any]]:
+    messages: list[str] = []
+    saved_files: dict[str, Any] = {}
+
+    dot_target = save_task_graph or save_task_graph_as_dot
+    if dot_target:
+        dot_content = to_dot(workplan)
+        if cli_mode:
+            Path(dot_target).write_text(dot_content, encoding="utf-8")
+            messages.append(f"Task graph saved as DOT to {dot_target}")
+        else:
+            saved_files[dot_target] = dot_content
+
+    if save_task_graph_as_json:
+        json_payload = to_json(workplan)
+        if cli_mode:
+            Path(save_task_graph_as_json).write_text(
+                json.dumps(json_payload, indent=2, cls=WorkPlanJSONEncoder),
+                encoding="utf-8",
+            )
+            messages.append(f"Task graph saved as JSON to {save_task_graph_as_json}")
+        else:
+            saved_files[save_task_graph_as_json] = _json_safe(json_payload)
+
+    if save_syntax:
+        syntax_text = str(syntax)
+        if cli_mode:
+            Path(save_syntax).write_text(syntax_text, encoding="utf-8")
+            messages.append(f"Syntax saved to {save_syntax}")
+        else:
+            saved_files[save_syntax] = syntax_text
+
+    return messages, saved_files
 
 
 def handle_version(**kwargs) -> OperationResult[Dict[str, str]]:
-    """Handle version request"""
+    """Return current VoxLogicA version."""
     from voxlogica.version import get_version
 
-    return OperationResult[Dict[str, str]](
-        success=True, data={"version": get_version()}
-    )
+    return OperationResult.ok({"version": get_version()})
 
 
 def handle_run(
-    program: str,
+    program: Optional[str] = None,
     filename: Optional[str] = None,
     save_task_graph: Optional[str] = None,
     save_task_graph_as_dot: Optional[str] = None,
@@ -99,208 +149,97 @@ def handle_run(
     execution_strategy: str = "dask",
     **kwargs,
 ) -> OperationResult[Dict[str, Any]]:
-    """Handle the unified run command with all options"""
-    temp_filename = None
+    """Run parse/reduce/export/execute pipeline for a VoxLogicA program."""
     try:
-        # Write the program to a temporary file if needed
-        if program:
-            with tempfile.NamedTemporaryFile(suffix=".imgql", delete=False) as temp:
-                temp.write(program.encode())
-                temp_filename = temp.name
-            parse_filename = temp_filename
-        else:
-            parse_filename = filename
+        syntax = _load_syntax(program, filename)
+        workplan = reduce_program(syntax)
 
-        if not parse_filename:
-            return OperationResult[Dict[str, Any]](
-                success=False,
-                error="Either program content or filename must be provided",
-            )
-
-        # Parse and reduce the program
-        syntax = parse_program(parse_filename)
-        logger.info(f"Program parsed")
-        program_obj = reduce_program(syntax)
-        logger.info(f"Program reduced")
-
-        # Execute the workplan if requested
+        cli_mode = bool(filename)
         execution_result = None
         if execute:
-            logger.info("Starting computation...")
-            from voxlogica.execution import execute_workplan, ExecutionEngine, set_execution_engine, get_execution_engine
-            
-            try:
-                # Create a custom execution engine if no-cache is requested
-                if no_cache:
-                    from voxlogica.storage import NoCacheStorageBackend
-                    logger.info("No-cache mode enabled - all results will be recomputed")
-                    no_cache_storage = NoCacheStorageBackend()
-                    custom_engine = ExecutionEngine(storage_backend=no_cache_storage)
-                    # Temporarily set the global engine to our no-cache version
-                    original_engine = get_execution_engine()
-                    try:
-                        set_execution_engine(custom_engine)
-                        execution_result = execute_workplan(
-                            program_obj,
-                            dask_dashboard=dask_dashboard,
-                            strategy=execution_strategy,
-                        )
-                    finally:
-                        # Restore the original engine
-                        set_execution_engine(original_engine)
-                else:
-                    execution_result = execute_workplan(
-                        program_obj,
-                        dask_dashboard=dask_dashboard,
-                        strategy=execution_strategy,
-                    )
-                
-                if execution_result.success:
-                    if filename:  # CLI mode
-                        logger.info(f"Execution completed successfully!")
-                        logger.info(f"  Operations completed: {len(execution_result.completed_operations)}")
-                        logger.info(f"  Execution time: {execution_result.execution_time:.2f}s")
-                else:
-                    error_msg = f"Execution failed with {len(execution_result.failed_operations)} errors"
-                    if filename:  # CLI mode
-                        logger.error(error_msg)
-                        for op_id, error in execution_result.failed_operations.items():
-                            logger.error(f"  {op_id[:8]}...: {error}")
-                    else:
-                        return OperationResult[Dict[str, Any]](
-                            success=False,
-                            error=error_msg
-                        )
-            except Exception as e:
-                error_msg = f"Execution failed: {str(e)}"
-                if filename:  # CLI mode
-                    print(error_msg)
-                else:
-                    return OperationResult[Dict[str, Any]](
-                        success=False,
-                        error=error_msg
-                    )
-            finally:
-                logger.info("...done")                
+            if no_cache:
+                logger.info("No-cache mode enabled - results are not persisted")
+                engine = ExecutionEngine(storage_backend=NoCacheStorageBackend())
+                execution_result = engine.execute_workplan(
+                    workplan,
+                    dask_dashboard=dask_dashboard,
+                    strategy=execution_strategy,
+                )
+            else:
+                execution_result = execute_workplan(
+                    workplan,
+                    dask_dashboard=dask_dashboard,
+                    strategy=execution_strategy,
+                )
 
-        # Build the result
-        result = {
-            "operations": len(program_obj.operations),
-            "goals": len(program_obj.goals),
-            "task_graph": str(program_obj),
+            if not execution_result.success:
+                error_msg = (
+                    "Execution failed with "
+                    f"{len(execution_result.failed_operations)} errors"
+                )
+                if cli_mode:
+                    logger.error(error_msg)
+                    for node_id, message in execution_result.failed_operations.items():
+                        logger.error("  %s...: %s", node_id[:8], message)
+                else:
+                    return OperationResult.fail(error_msg)
+
+        result: dict[str, Any] = {
+            "operations": len(workplan.operations),
+            "goals": len(workplan.goals),
+            "task_graph": str(workplan),
             "syntax": str(syntax),
         }
 
-        # Add execution results if execution was performed
-        if execution_result:
+        if execution_result is not None:
             result["execution"] = {
                 "success": execution_result.success,
                 "completed_operations": len(execution_result.completed_operations),
                 "failed_operations": len(execution_result.failed_operations),
                 "execution_time": execution_result.execution_time,
-                "total_operations": execution_result.total_operations
+                "total_operations": execution_result.total_operations,
             }
             if execution_result.failed_operations:
                 result["execution"]["errors"] = execution_result.failed_operations
 
-        # Handle save options - CLI saves to files, API returns content with same keys
-        saved_files = {}
-        messages = []
-
-        if save_task_graph or save_task_graph_as_dot:
-            dot_content = to_dot(program_obj)
-            output_file = save_task_graph or save_task_graph_as_dot
-
-            if filename:  # CLI mode - save to file
-                if output_file:
-                    with open(output_file, "w") as f:
-                        f.write(dot_content)
-                    messages.append(f"Task graph saved as DOT to {output_file}")
-            else:  # API mode - include in response with specified key
-                if output_file:
-                    saved_files[output_file] = dot_content
-
-        if save_task_graph_as_json:
-            json_content = to_json(program_obj)
-
-            if filename:  # CLI mode - save to file
-                with open(save_task_graph_as_json, "w") as f:
-                    json.dump(json_content, f, indent=2, cls=WorkPlanJSONEncoder)
-                messages.append(
-                    f"Task graph saved as JSON to {save_task_graph_as_json}"
-                )
-            else:  # API mode - include in response with specified key
-                import json as _json
-                saved_files[save_task_graph_as_json] = _json.loads(_json.dumps(json_content, cls=WorkPlanJSONEncoder))
-
-        if save_syntax:
-            syntax_content = str(syntax)
-
-            if filename:  # CLI mode - save to file
-                with open(save_syntax, "w") as f:
-                    f.write(syntax_content)
-                messages.append(f"Syntax saved to {save_syntax}")
-            else:  # API mode - include in response with specified key
-                saved_files[save_syntax] = syntax_content
+        messages, saved_files = _collect_exports(
+            cli_mode=cli_mode,
+            workplan=workplan,
+            syntax=syntax,
+            save_task_graph=save_task_graph,
+            save_task_graph_as_dot=save_task_graph_as_dot,
+            save_task_graph_as_json=save_task_graph_as_json,
+            save_syntax=save_syntax,
+        )
 
         if messages:
             result["messages"] = messages
         if saved_files:
             result["saved_files"] = saved_files
 
-        # At the end of handle_run, before returning OperationResult, ensure result is JSON serializable
-        import json as _json
-        result = _json.loads(_json.dumps(result, cls=WorkPlanJSONEncoder))
-        return OperationResult[Dict[str, Any]](success=True, data=result)
+        return OperationResult.ok(_json_safe(result))
 
-    except Exception as e:
-        return OperationResult[Dict[str, Any]](
-            success=False, error=f"Unexpected error: {str(e)}"
-        )
-    finally:
-        # Clean up temporary file
-        if temp_filename and os.path.exists(temp_filename):
-            try:
-                os.unlink(temp_filename)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to clean up temporary file {temp_filename}: {str(e)}"
-                )
+    except Exception as exc:  # noqa: BLE001
+        return OperationResult.fail(f"Unexpected error: {exc}")
 
 
-def handle_list_primitives(
-    namespace: Optional[str] = None,
-    **kwargs
-) -> OperationResult[Dict[str, Any]]:
-    """Handle listing available primitives"""
+def handle_list_primitives(namespace: Optional[str] = None, **kwargs) -> OperationResult[Dict[str, Any]]:
+    """List available primitives, optionally filtered by namespace."""
     try:
         from voxlogica.execution import PrimitivesLoader
-        
+
         loader = PrimitivesLoader()
-        primitives = loader.list_primitives(namespace)
-        
-        # Also get list of available namespaces
-        namespaces = loader.list_namespaces()
-        
-        result = {
-            "primitives": primitives,
-            "namespaces": namespaces,
-            "namespace_filter": namespace
-        }
-        
-        return OperationResult[Dict[str, Any]](
-            success=True,
-            data=result
+        return OperationResult.ok(
+            {
+                "primitives": loader.list_primitives(namespace),
+                "namespaces": loader.list_namespaces(),
+                "namespace_filter": namespace,
+            }
         )
-        
-    except Exception as e:
-        return OperationResult[Dict[str, Any]](
-            success=False,
-            error=f"Failed to list primitives: {str(e)}"
-        )
+    except Exception as exc:  # noqa: BLE001
+        return OperationResult.fail(f"Failed to list primitives: {exc}")
 
 
-# Register all features
 version_feature = FeatureRegistry.register(
     Feature(
         name="version",
@@ -320,31 +259,11 @@ run_feature = FeatureRegistry.register(
         description="Run a VoxLogicA program with various output options",
         handler=handle_run,
         cli_options={
-            "filename": {
-                "type": str,
-                "required": True,
-                "help": "VoxLogicA session file",
-            },
-            "save_task_graph": {
-                "type": str,
-                "required": False,
-                "help": "Save the task graph in DOT format",
-            },
-            "save_task_graph_as_dot": {
-                "type": str,
-                "required": False,
-                "help": "Save the task graph in DOT format",
-            },
-            "save_task_graph_as_json": {
-                "type": str,
-                "required": False,
-                "help": "Save the task graph as JSON",
-            },
-            "save_syntax": {
-                "type": str,
-                "required": False,
-                "help": "Save the AST in text format",
-            },
+            "filename": {"type": str, "required": True, "help": "VoxLogicA session file"},
+            "save_task_graph": {"type": str, "required": False, "help": "Save task graph in DOT format"},
+            "save_task_graph_as_dot": {"type": str, "required": False, "help": "Save task graph in DOT format"},
+            "save_task_graph_as_json": {"type": str, "required": False, "help": "Save task graph as JSON"},
+            "save_syntax": {"type": str, "required": False, "help": "Save AST in text format"},
             "compute_memory_assignment": {
                 "type": bool,
                 "required": False,
@@ -357,17 +276,12 @@ run_feature = FeatureRegistry.register(
                 "default": True,
                 "help": "Execute the workplan (default: true)",
             },
-            "debug": {
-                "type": bool,
-                "required": False,
-                "default": False,
-                "help": "Enable debug mode",
-            },
+            "debug": {"type": bool, "required": False, "default": False, "help": "Enable debug mode"},
             "verbose": {
                 "type": bool,
                 "required": False,
                 "default": False,
-                "help": "Enable verbose logging (between info and debug)",
+                "help": "Enable verbose logging",
             },
             "execution_strategy": {
                 "type": str,
@@ -381,34 +295,16 @@ run_feature = FeatureRegistry.register(
             "methods": ["POST"],
             "request_model": {
                 "program": (str, "The VoxLogicA program content"),
-                "filename": (Optional[str], "Optional filename for error reporting"),
-                "save_task_graph": (
-                    Optional[str],
-                    "Save task graph as DOT to this file",
-                ),
-                "save_task_graph_as_dot": (
-                    Optional[str],
-                    "Save task graph as DOT to this file",
-                ),
-                "save_task_graph_as_json": (
-                    Optional[str],
-                    "Save task graph as JSON to this file",
-                ),
+                "filename": (Optional[str], "Optional filename for context"),
+                "save_task_graph": (Optional[str], "Save task graph as DOT to this file"),
+                "save_task_graph_as_dot": (Optional[str], "Save task graph as DOT to this file"),
+                "save_task_graph_as_json": (Optional[str], "Save task graph as JSON to this file"),
                 "save_syntax": (Optional[str], "Save syntax tree to this file"),
-                "compute_memory_assignment": (
-                    Optional[bool],
-                    "Compute and display memory buffer assignments",
-                ),
-                "execute": (
-                    Optional[bool],
-                    "Actually execute the workplan (not just analyze)",
-                ),
+                "compute_memory_assignment": (Optional[bool], "Compute memory buffer assignments"),
+                "execute": (Optional[bool], "Execute workplan"),
                 "debug": (Optional[bool], "Enable debug mode"),
-                "verbose": (Optional[bool], "Enable verbose logging (between info and debug)"),
-                "execution_strategy": (
-                    Optional[str],
-                    "Execution strategy to use (dask|strict)",
-                ),
+                "verbose": (Optional[bool], "Enable verbose logging"),
+                "execution_strategy": (Optional[str], "Execution strategy (dask|strict)"),
             },
             "response_model": Dict[str, Any],
         },
@@ -420,12 +316,16 @@ list_primitives_feature = FeatureRegistry.register(
         name="list_primitives",
         description="List available primitives",
         handler=handle_list_primitives,
+        cli_options={
+            "namespace": {
+                "type": Optional[str],
+                "required": False,
+                "help": "Namespace to filter primitives",
+            }
+        },
         api_endpoint={
-            "path": "/list-primitives",
+            "path": "/primitives",
             "methods": ["GET"],
-            "request_model": {
-                "namespace": (Optional[str], "Namespace to filter primitives"),
-            },
             "response_model": Dict[str, Any],
         },
     )

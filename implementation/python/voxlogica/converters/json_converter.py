@@ -6,6 +6,8 @@ from typing import Optional, Dict, Any
 import json
 import dataclasses
 
+from voxlogica.converters.common import coerce_plan, iter_sorted_nodes, node_arguments
+
 
 class WorkPlanJSONEncoder(json.JSONEncoder):
     def default(self, o):  # noqa: D401
@@ -24,31 +26,27 @@ class WorkPlanJSONEncoder(json.JSONEncoder):
         return value
 
 
-def _node_arguments(node: Any) -> dict[str, Any]:
-    arguments = {str(index): arg for index, arg in enumerate(getattr(node, "args", ()))}
-    arguments.update(dict(getattr(node, "kwargs", ())))
-    return arguments
-
-
 def to_json(work_plan: Any, buffer_assignment: Optional[Dict[str, int]] = None) -> dict:
     """Convert WorkPlan to JSON-ready dict."""
+    plan = coerce_plan(work_plan)
+    encoder = WorkPlanJSONEncoder()
 
     nodes_list = []
-    for node_id, node in work_plan.nodes.items():
+    for node_id, node in iter_sorted_nodes(plan):
         if node.kind == "primitive":
             node_dict = {
                 "id": node_id,
                 "type": "operation",
                 "operator": node.operator,
-                "arguments": _node_arguments(node),
-                "attrs": WorkPlanJSONEncoder()._unwrap(node.attrs),
+                "arguments": node_arguments(node),
+                "attrs": encoder._unwrap(node.attrs),
                 "output_kind": node.output_kind,
             }
         elif node.kind == "constant":
             node_dict = {
                 "id": node_id,
                 "type": "constant",
-                "value": WorkPlanJSONEncoder()._unwrap(node.attrs.get("value")),
+                "value": encoder._unwrap(node.attrs.get("value")),
                 "output_kind": node.output_kind,
             }
         elif node.kind == "closure":
@@ -56,8 +54,8 @@ def to_json(work_plan: Any, buffer_assignment: Optional[Dict[str, int]] = None) 
                 "id": node_id,
                 "type": "closure",
                 "operator": node.operator,
-                "arguments": _node_arguments(node),
-                "attrs": WorkPlanJSONEncoder()._unwrap(node.attrs),
+                "arguments": node_arguments(node),
+                "attrs": encoder._unwrap(node.attrs),
                 "output_kind": node.output_kind,
             }
         else:
@@ -74,7 +72,7 @@ def to_json(work_plan: Any, buffer_assignment: Optional[Dict[str, int]] = None) 
             "id": goal.id,
             "name": goal.name,
         }
-        for goal in work_plan.goals
+        for goal in plan.goals
     ]
 
     return {
