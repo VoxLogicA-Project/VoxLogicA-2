@@ -276,6 +276,45 @@ body {
   position: relative;
 }
 
+.editor-token-overlay {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0.8rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: transparent;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.83rem;
+  line-height: 1.5;
+}
+
+.editor-token-hit {
+  pointer-events: auto;
+  border: 1px solid rgba(47, 215, 185, 0.25);
+  border-radius: 0.32rem;
+  background: rgba(47, 215, 185, 0.16);
+  color: #9ff6e7;
+  padding: 0 0.1rem;
+  margin: 0;
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.editor-token-hit:hover,
+.editor-token-hit.is-active {
+  border-color: rgba(47, 215, 185, 0.7);
+  background: rgba(47, 215, 185, 0.3);
+  color: #d8fff7;
+  box-shadow: 0 0 0 1px rgba(47, 215, 185, 0.28);
+}
+
 .code-input.token-hover {
   cursor: pointer;
   border-color: rgba(38, 198, 169, 0.86);

@@ -7,14 +7,12 @@ import argparse
 from pathlib import Path
 import sys
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from tests._vox1_binary import LEGACY_BIN_ENV, resolve_legacy_binary_path
-
-
 def main() -> int:
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from tests._vox1_binary import LEGACY_BIN_ENV, resolve_legacy_binary_path
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quiet", action="store_true", help="Print only the resolved path")
     args = parser.parse_args()

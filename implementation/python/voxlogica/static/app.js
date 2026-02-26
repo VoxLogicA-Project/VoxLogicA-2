@@ -28,7 +28,6 @@
     hoverActiveToken: "",
     hoverPreviewToken: "",
     hoverPreviewSeq: 0,
-    suppressProgramClick: false,
   };
 
   const dom = {
@@ -37,6 +36,7 @@
     buildStamp: document.getElementById("buildStamp"),
     editorShell: document.getElementById("editorShell"),
     programInput: document.getElementById("programInput"),
+    programOverlay: null,
     executionStrategy: document.getElementById("executionStrategy"),
     noCache: document.getElementById("noCache"),
     programLibrarySelect: document.getElementById("programLibrarySelect"),
@@ -142,6 +142,13 @@
   const sanitize = (text) =>
     String(text)
       .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
+  const sanitizeAttr = (text) =>
+    String(text)
+      .replaceAll("&", "&amp;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;");
 
@@ -980,6 +987,7 @@
       state.precomputedSymbolTable = {};
       state.precomputedPrintTargets = [];
       state.currentProgramHash = null;
+      renderEditorTokenOverlay();
       await refreshPlaySelector({}, { keepViewer: true, preserveMeta: true });
       return;
     }
@@ -993,12 +1001,14 @@
       state.precomputedSymbolTable = payload.symbol_table || {};
       state.precomputedPrintTargets = payload.print_targets || [];
       state.currentProgramHash = payload.program_hash || null;
+      renderEditorTokenOverlay();
       await refreshPlaySelector({}, { keepViewer: true, preserveMeta: true });
     } catch (_err) {
       if (token !== state.symbolRefreshToken) return;
       state.precomputedSymbolTable = {};
       state.precomputedPrintTargets = [];
       state.currentProgramHash = null;
+      renderEditorTokenOverlay();
       await refreshPlaySelector({}, { keepViewer: true, preserveMeta: true });
     }
   };
@@ -1106,6 +1116,116 @@
     return state.precomputedSymbolTable[token] || state.latestSymbolTable[token] || "";
   };
 
+  const decodeTokenAttr = (value) => {
+    try {
+      return decodeURIComponent(String(value || ""));
+    } catch (_err) {
+      return String(value || "");
+    }
+  };
+
+  const setOverlayActiveToken = (token) => {
+    if (!dom.programOverlay) return;
+    const encoded = encodeURIComponent(String(token || ""));
+    dom.programOverlay.querySelectorAll(".editor-token-hit").forEach((el) => {
+      if (!(el instanceof HTMLElement)) return;
+      if (token && el.dataset.token === encoded) {
+        el.classList.add("is-active");
+      } else {
+        el.classList.remove("is-active");
+      }
+    });
+  };
+
+  const syncEditorOverlayScroll = () => {
+    if (!dom.programOverlay || !dom.programInput) return;
+    dom.programOverlay.scrollTop = dom.programInput.scrollTop;
+    dom.programOverlay.scrollLeft = dom.programInput.scrollLeft;
+  };
+
+  const renderEditorTokenOverlay = () => {
+    if (!dom.programOverlay || !dom.programInput) return;
+    const text = String(dom.programInput.value || "");
+    if (!text) {
+      dom.programOverlay.innerHTML = "";
+      syncEditorOverlayScroll();
+      return;
+    }
+    const out = [];
+    let idx = 0;
+    while (idx < text.length) {
+      const ch = text[idx];
+      if (/[A-Za-z_.$]/.test(ch)) {
+        let end = idx + 1;
+        while (end < text.length && /[A-Za-z0-9_.$]/.test(text[end])) end += 1;
+        const token = text.slice(idx, end);
+        if (resolveSymbolNode(token)) {
+          const encoded = encodeURIComponent(token);
+          out.push(
+            `<button type="button" class="editor-token-hit" data-token="${sanitizeAttr(encoded)}" tabindex="-1" title="Inspect ${sanitizeAttr(token)}">${sanitize(token)}</button>`,
+          );
+        } else {
+          out.push(sanitize(token));
+        }
+        idx = end;
+        continue;
+      }
+      out.push(sanitize(ch));
+      idx += 1;
+    }
+    dom.programOverlay.innerHTML = out.join("");
+    syncEditorOverlayScroll();
+    if (state.hoverActiveToken) {
+      setOverlayActiveToken(state.hoverActiveToken);
+    }
+  };
+
+  const ensureEditorTokenOverlay = () => {
+    if (dom.programOverlay || !dom.editorShell || !dom.programInput) return;
+    const overlay = document.createElement("pre");
+    overlay.className = "editor-token-overlay";
+    overlay.setAttribute("aria-hidden", "true");
+    dom.editorShell.appendChild(overlay);
+    dom.programOverlay = overlay;
+
+    overlay.addEventListener("mousedown", (event) => {
+      const tokenEl = event.target instanceof Element ? event.target.closest(".editor-token-hit") : null;
+      if (!tokenEl) return;
+      event.preventDefault();
+    });
+    overlay.addEventListener("mouseover", (event) => {
+      const tokenEl = event.target instanceof Element ? event.target.closest(".editor-token-hit") : null;
+      if (!tokenEl) return;
+      const token = decodeTokenAttr(tokenEl.getAttribute("data-token"));
+      if (!token) return;
+      state.lastHoverToken = token;
+      setHoverTokenState(token);
+      if (state.hoverPreviewToken !== token) {
+        state.hoverPreviewToken = token;
+        previewVariableHover(token);
+      }
+    });
+    overlay.addEventListener("mouseout", (event) => {
+      const fromToken = event.target instanceof Element ? event.target.closest(".editor-token-hit") : null;
+      if (!fromToken) return;
+      const toToken =
+        event.relatedTarget instanceof Element ? event.relatedTarget.closest(".editor-token-hit") : null;
+      if (toToken) return;
+      state.lastHoverToken = "";
+      clearHoverTokenState();
+    });
+    overlay.addEventListener("click", async (event) => {
+      const tokenEl = event.target instanceof Element ? event.target.closest(".editor-token-hit") : null;
+      if (!tokenEl) return;
+      event.preventDefault();
+      const token = decodeTokenAttr(tokenEl.getAttribute("data-token"));
+      if (!token) return;
+      await inspectTokenWithRefresh(token);
+      dom.programInput.focus({ preventScroll: true });
+    });
+    renderEditorTokenOverlay();
+  };
+
   const pickResolvableToken = (...candidates) => {
     for (const candidate of candidates) {
       const token = String(candidate || "").trim();
@@ -1118,23 +1238,13 @@
   const clearHoverTokenState = () => {
     state.hoverActiveToken = "";
     state.hoverPreviewToken = "";
-    if (dom.programInput) {
-      dom.programInput.classList.remove("token-hover");
-      dom.programInput.style.cursor = "text";
-    }
+    setOverlayActiveToken("");
     setEditorHoverPreview("Hover a variable to see cached value status, or hover an operator to inspect expression context.");
   };
 
   const setHoverTokenState = (token) => {
-    if (!dom.programInput) return;
     state.hoverActiveToken = token || "";
-    if (token) {
-      dom.programInput.classList.add("token-hover");
-      dom.programInput.style.cursor = "pointer";
-      return;
-    }
-    dom.programInput.classList.remove("token-hover");
-    dom.programInput.style.cursor = "text";
+    setOverlayActiveToken(token || "");
   };
 
   const summarizeDescriptor = (descriptor) => {
@@ -1249,15 +1359,6 @@
     }, 140);
   };
 
-  const resolveClickToken = (event) => {
-    let tokenByPoint = "";
-    const position = textIndexFromPoint(dom.programInput, event.clientX, event.clientY);
-    if (Number.isInteger(position)) {
-      tokenByPoint = extractTokenAt(dom.programInput.value || "", position);
-    }
-    return pickResolvableToken(tokenByPoint, extractTokenFromSelection(), state.hoverActiveToken);
-  };
-
   const inspectTokenWithRefresh = async (token) => {
     if (!token) return false;
     let resolved = pickResolvableToken(token);
@@ -1269,24 +1370,6 @@
     state.lastHoverToken = resolved;
     await inspectSymbolToken(resolved);
     return true;
-  };
-
-  const handleProgramMouseDown = async (event) => {
-    if (event.button !== 0) return;
-    const token = resolveClickToken(event);
-    if (!token) return;
-    event.preventDefault();
-    state.suppressProgramClick = true;
-    await inspectTokenWithRefresh(token);
-  };
-
-  const handleProgramClick = async (event) => {
-    if (state.suppressProgramClick) {
-      state.suppressProgramClick = false;
-      return;
-    }
-    const token = resolveClickToken(event) || extractTokenFromSelection() || state.lastHoverToken;
-    await inspectTokenWithRefresh(token);
   };
 
   const renderBarList = (container, items, valueField, labelField, formatter = (v) => `${v}`) => {
@@ -1465,6 +1548,7 @@
         if (!selected) return;
         dom.programInput.value = selected.code;
         if (selected.strategy) dom.executionStrategy.value = selected.strategy;
+        renderEditorTokenOverlay();
         await refreshProgramSymbols();
         activateTab("playground");
       });
@@ -1477,6 +1561,8 @@
         if (!selected) return;
         dom.programInput.value = selected.code;
         if (selected.strategy) dom.executionStrategy.value = selected.strategy;
+        renderEditorTokenOverlay();
+        await refreshProgramSymbols();
         activateTab("playground");
         await createPlaygroundJob();
       });
@@ -1801,6 +1887,7 @@
 
   const bindEvents = () => {
     let resultSearchDebounce = null;
+    ensureEditorTokenOverlay();
     dom.tabs.forEach((tab) => {
       tab.addEventListener("click", () => activateTab(tab.dataset.tab));
     });
@@ -1810,14 +1897,13 @@
     dom.killProgramBtn.addEventListener("click", killCurrentJob);
     dom.clearOutputBtn.addEventListener("click", clearOutput);
     dom.programInput.addEventListener("input", () => {
+      renderEditorTokenOverlay();
       scheduleProgramSymbolsRefresh();
       clearHoverTokenState();
     });
     dom.programInput.addEventListener("mousemove", handleProgramHover);
-    dom.programInput.addEventListener("mousedown", (event) => {
-      handleProgramMouseDown(event);
-    });
     dom.programInput.addEventListener("scroll", () => {
+      syncEditorOverlayScroll();
       clearHoverTokenState();
     });
     if (dom.editorShell) {
@@ -1830,7 +1916,6 @@
         }
       });
     }
-    dom.programInput.addEventListener("click", handleProgramClick);
     dom.programInput.addEventListener("mouseleave", () => {
       state.lastHoverToken = "";
       clearHoverTokenState();

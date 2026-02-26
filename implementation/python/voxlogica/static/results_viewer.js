@@ -375,17 +375,21 @@
           return;
         }
         debugLog("[vox-viewer] step 3: size canvas");
-        const width = Math.max(640, canvas.clientWidth || 0);
-        const height = Math.max(420, canvas.clientHeight || 0);
-        canvas.width = width;
-        canvas.height = height;
+        const rect = canvas.getBoundingClientRect();
+        const cssWidth = Math.max(1, Math.round(rect.width || canvas.clientWidth || 640));
+        const cssHeight = Math.max(1, Math.round(rect.height || canvas.clientHeight || 420));
+        const dpr = Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+        canvas.style.width = `${cssWidth}px`;
+        canvas.style.height = `${cssHeight}px`;
+        canvas.width = Math.max(1, Math.round(cssWidth * dpr));
+        canvas.height = Math.max(1, Math.round(cssHeight * dpr));
         debugLog("[vox-viewer] step 4: construct Niivue");
         const nv = new ns.Niivue({
           dragAndDropEnabled: false,
           isRuler: false,
           show3Dcrosshair: true,
           backColor: [0.02, 0.03, 0.05, 1.0],
-          isResizeCanvas: false,
+          isResizeCanvas: true,
         });
         nv.onWarn = (message) => debugLog("[vox-viewer] niivue warn", message);
         nv.onInfo = (message) => debugLog("[vox-viewer] niivue info", message);

@@ -176,9 +176,10 @@ def _build_program(prelude: str, case: BenchmarkCase) -> tuple[str, dict[str, ob
     }
     builder = workload_map[case.name]
     lines, metadata = builder()
+    joined_lines = "\n".join(lines)
     program = (
         f"{prelude}"
-        f"{'\n'.join(lines)}\n"
+        f"{joined_lines}\n"
         'print "res" avg(mask(r,ma),ma)\n'
     )
     return program, metadata
