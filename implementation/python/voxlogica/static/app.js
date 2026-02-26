@@ -905,6 +905,15 @@
     return state.precomputedSymbolTable[token] || state.latestSymbolTable[token] || "";
   };
 
+  const pickResolvableToken = (...candidates) => {
+    for (const candidate of candidates) {
+      const token = String(candidate || "").trim();
+      if (!token) continue;
+      if (resolveSymbolNode(token)) return token;
+    }
+    return "";
+  };
+
   const clearHoverTokenState = () => {
     state.hoverActiveToken = "";
     if (dom.programInput) {
@@ -948,15 +957,8 @@
       if (Number.isInteger(position)) {
         token = extractTokenAt(dom.programInput.value || "", position);
       }
+      token = pickResolvableToken(token, extractTokenFromSelection(), state.lastHoverToken);
       if (!token) {
-        token = extractTokenFromSelection();
-      }
-      if (!token) {
-        clearHoverTokenState();
-        return;
-      }
-      const nodeId = resolveSymbolNode(token);
-      if (!nodeId) {
         clearHoverTokenState();
         return;
       }
@@ -965,21 +967,39 @@
     }, 140);
   };
 
-  const handleProgramClick = async (event) => {
-    let token = extractTokenFromSelection();
-    if (!token) {
-      const position = textIndexFromPoint(dom.programInput, event.clientX, event.clientY);
-      if (Number.isInteger(position)) {
-        token = extractTokenAt(dom.programInput.value || "", position);
-      }
+  const resolveClickToken = (event) => {
+    let tokenByPoint = "";
+    const position = textIndexFromPoint(dom.programInput, event.clientX, event.clientY);
+    if (Number.isInteger(position)) {
+      tokenByPoint = extractTokenAt(dom.programInput.value || "", position);
     }
-    if (!token) return;
-    state.lastHoverToken = token;
-    if (!resolveSymbolNode(token)) {
+    return pickResolvableToken(tokenByPoint, extractTokenFromSelection(), state.hoverActiveToken);
+  };
+
+  const inspectTokenWithRefresh = async (token) => {
+    if (!token) return false;
+    let resolved = pickResolvableToken(token);
+    if (!resolved) {
       await refreshProgramSymbols();
+      resolved = pickResolvableToken(token, extractTokenFromSelection(), state.lastHoverToken);
     }
-    if (!resolveSymbolNode(token)) return;
-    await inspectSymbolToken(token);
+    if (!resolved) return false;
+    state.lastHoverToken = resolved;
+    await inspectSymbolToken(resolved);
+    return true;
+  };
+
+  const handleProgramMouseDown = async (event) => {
+    if (event.button !== 0) return;
+    const token = resolveClickToken(event);
+    if (!token) return;
+    event.preventDefault();
+    await inspectTokenWithRefresh(token);
+  };
+
+  const handleProgramClick = async (event) => {
+    const token = resolveClickToken(event) || extractTokenFromSelection() || state.lastHoverToken;
+    await inspectTokenWithRefresh(token);
   };
 
   const renderBarList = (container, items, valueField, labelField, formatter = (v) => `${v}`) => {
@@ -1479,6 +1499,9 @@
       clearHoverTokenState();
     });
     dom.programInput.addEventListener("mousemove", handleProgramHover);
+    dom.programInput.addEventListener("mousedown", (event) => {
+      handleProgramMouseDown(event);
+    });
     dom.programInput.addEventListener("scroll", () => {
       clearHoverTokenState();
     });
