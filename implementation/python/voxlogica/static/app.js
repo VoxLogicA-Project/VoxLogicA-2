@@ -25,7 +25,7 @@
     pendingValueRequest: null,
     hoverTimer: null,
     lastHoverToken: "",
-    hoveredToken: null,
+    hoverActiveToken: "",
   };
 
   const dom = {
@@ -34,7 +34,6 @@
     buildStamp: document.getElementById("buildStamp"),
     editorShell: document.getElementById("editorShell"),
     programInput: document.getElementById("programInput"),
-    inspectTokenBtn: document.getElementById("inspectTokenBtn"),
     executionStrategy: document.getElementById("executionStrategy"),
     noCache: document.getElementById("noCache"),
     programLibrarySelect: document.getElementById("programLibrarySelect"),
@@ -324,7 +323,7 @@
     state.latestGoalResults = [];
     state.latestSymbolTable = {};
     state.lastHoverToken = "";
-    hideTokenAction();
+    clearHoverTokenState();
     stopValuePolling();
     dom.playResultMeta.textContent = "Click inspect on a variable to resolve it on demand.";
     ensurePlayResultViewer();
@@ -895,42 +894,30 @@
     return state.precomputedSymbolTable[token] || state.latestSymbolTable[token] || "";
   };
 
-  const hideTokenAction = () => {
-    state.hoveredToken = null;
+  const clearHoverTokenState = () => {
+    state.hoverActiveToken = "";
     if (dom.programInput) {
+      dom.programInput.classList.remove("token-hover");
       dom.programInput.style.cursor = "text";
-    }
-    if (dom.inspectTokenBtn) {
-      dom.inspectTokenBtn.classList.add("hidden");
     }
   };
 
-  const showTokenAction = ({ token, nodeId, clientX, clientY }) => {
-    if (!dom.inspectTokenBtn || !dom.editorShell || !dom.programInput) return;
-    const shellRect = dom.editorShell.getBoundingClientRect();
-    const inputRect = dom.programInput.getBoundingClientRect();
-    const btn = dom.inspectTokenBtn;
-    btn.textContent = `Inspect ${token}`;
-    btn.dataset.token = token;
-    btn.dataset.nodeId = nodeId;
-    btn.classList.remove("hidden");
-
-    const localX = clientX - shellRect.left;
-    const localY = clientY - shellRect.top;
-    const targetLeft = Math.max(8, Math.min(localX + 12, inputRect.width - 18));
-    const targetTop = Math.max(8, Math.min(localY - 30, inputRect.height - 18));
-    btn.style.left = `${targetLeft}px`;
-    btn.style.top = `${targetTop}px`;
-    state.hoveredToken = { token, nodeId };
-    if (dom.programInput) {
+  const setHoverTokenState = (token) => {
+    if (!dom.programInput) return;
+    state.hoverActiveToken = token || "";
+    if (token) {
+      dom.programInput.classList.add("token-hover");
       dom.programInput.style.cursor = "pointer";
+      return;
     }
+    dom.programInput.classList.remove("token-hover");
+    dom.programInput.style.cursor = "text";
   };
 
   const inspectSymbolToken = async (token) => {
     const nodeId = resolveSymbolNode(token);
     if (!nodeId) return;
-    hideTokenAction();
+    clearHoverTokenState();
     const index = state.playSelectableTargets.findIndex((target) => target.kind === "variable" && target.label === token);
     if (index >= 0) {
       dom.playResultSelector.value = `${index}`;
@@ -947,48 +934,32 @@
     state.hoverTimer = setTimeout(() => {
       const position = textIndexFromPoint(dom.programInput, event.clientX, event.clientY);
       if (!Number.isInteger(position)) {
-        hideTokenAction();
+        clearHoverTokenState();
         return;
       }
       const token = extractTokenAt(dom.programInput.value || "", position);
       if (!token) {
-        hideTokenAction();
+        clearHoverTokenState();
         return;
       }
       const nodeId = resolveSymbolNode(token);
       if (!nodeId) {
-        hideTokenAction();
+        clearHoverTokenState();
         return;
       }
       state.lastHoverToken = token;
-      showTokenAction({
-        token,
-        nodeId,
-        clientX: event.clientX,
-        clientY: event.clientY,
-      });
+      setHoverTokenState(token);
     }, 140);
   };
 
-  const handleProgramDoubleClick = async () => {
-    const text = dom.programInput.value || "";
-    let token = text.slice(dom.programInput.selectionStart, dom.programInput.selectionEnd).trim();
-    if (!token) {
-      token = extractTokenAt(text, dom.programInput.selectionStart || 0);
-    }
+  const handleProgramClick = async (event) => {
+    const position = textIndexFromPoint(dom.programInput, event.clientX, event.clientY);
+    if (!Number.isInteger(position)) return;
+    const token = extractTokenAt(dom.programInput.value || "", position);
     if (!token) return;
     state.lastHoverToken = token;
-    const nodeId = resolveSymbolNode(token);
-    if (!nodeId) {
-      hideTokenAction();
-      return;
-    }
-    showTokenAction({
-      token,
-      nodeId,
-      clientX: dom.programInput.getBoundingClientRect().left + 18,
-      clientY: dom.programInput.getBoundingClientRect().top + 22,
-    });
+    if (!resolveSymbolNode(token)) return;
+    await inspectSymbolToken(token);
   };
 
   const renderBarList = (container, items, valueField, labelField, formatter = (v) => `${v}`) => {
@@ -1485,37 +1456,31 @@
     dom.clearOutputBtn.addEventListener("click", clearOutput);
     dom.programInput.addEventListener("input", () => {
       scheduleProgramSymbolsRefresh();
-      hideTokenAction();
+      clearHoverTokenState();
     });
     dom.programInput.addEventListener("mousemove", handleProgramHover);
     dom.programInput.addEventListener("scroll", () => {
-      hideTokenAction();
+      clearHoverTokenState();
     });
     if (dom.editorShell) {
       dom.editorShell.addEventListener("mouseleave", () => {
         state.lastHoverToken = "";
-        hideTokenAction();
+        clearHoverTokenState();
         if (state.hoverTimer) {
           clearTimeout(state.hoverTimer);
           state.hoverTimer = null;
         }
       });
     }
-    if (dom.inspectTokenBtn) {
-      dom.inspectTokenBtn.addEventListener("click", async () => {
-        const hovered = state.hoveredToken;
-        if (!hovered) return;
-        await inspectSymbolToken(hovered.token);
-      });
-    }
+    dom.programInput.addEventListener("click", handleProgramClick);
     dom.programInput.addEventListener("mouseleave", () => {
       state.lastHoverToken = "";
+      clearHoverTokenState();
       if (state.hoverTimer) {
         clearTimeout(state.hoverTimer);
         state.hoverTimer = null;
       }
     });
-    dom.programInput.addEventListener("dblclick", handleProgramDoubleClick);
     dom.loadProgramFileBtn.addEventListener("click", loadProgramFromLibrary);
     dom.playResultSelector.addEventListener("change", async () => {
       const idx = Number(dom.playResultSelector.value);
