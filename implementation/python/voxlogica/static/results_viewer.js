@@ -60,6 +60,7 @@
     constructor(root, options = {}) {
       this.root = root;
       this.onNavigate = options.onNavigate || (() => {});
+      this.onStatusClick = options.onStatusClick || (() => {});
       this.nv = null;
       this.carouselState = {};
       this.mountToken = 0;
@@ -97,7 +98,21 @@
       this.lastRecord = record;
       const header = create("div", "viewer-header");
       const title = create("h3", "", record.node_id || "result");
-      const badge = create("span", `chip ${record.status || "neutral"}`, record.status || "unknown");
+      const status = String(record.status || "unknown");
+      const badge = create("span", `chip ${status || "neutral"}`, status || "unknown");
+      if (status === "failed" || status === "killed") {
+        badge.classList.add("chip-clickable");
+        badge.setAttribute("role", "button");
+        badge.setAttribute("tabindex", "0");
+        badge.setAttribute("title", "Open failure diagnostics");
+        badge.addEventListener("click", () => this.onStatusClick(record));
+        badge.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            this.onStatusClick(record);
+          }
+        });
+      }
       header.append(title, badge);
       this.root.append(header);
       this.root.append(

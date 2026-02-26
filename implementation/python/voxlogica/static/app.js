@@ -355,6 +355,18 @@
           if (!state.currentResultNodeId) return;
           inspectStoreRecord(state.currentResultNodeId, path || "");
         },
+        onStatusClick: (record) => {
+          if (!record || (record.status !== "failed" && record.status !== "killed")) return;
+          const details = [
+            `node: ${record.node_id || "-"}`,
+            `path: ${record.path || "/"}`,
+            `status: ${record.status || "failed"}`,
+            record.error ? `error: ${record.error}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n");
+          state.resultViewer.setError(details);
+        },
       });
       return;
     }
@@ -535,6 +547,13 @@
           if (!target || !target.nodeId) return;
           inspectPlayTarget(target.nodeId, path || "");
         },
+        onStatusClick: (record) => {
+          if (!record || (record.status !== "failed" && record.status !== "killed")) return;
+          renderPlayFailureDiagnostics(record, {
+            nodeId: record.node_id || "",
+            path: record.path || "",
+          });
+        },
       });
       return;
     }
@@ -683,18 +702,152 @@
     });
   };
 
+  const normalizedExecutionErrors = (payload) => {
+    const direct = payload && typeof payload === "object" ? payload.execution_errors : null;
+    if (direct && typeof direct === "object") {
+      return direct;
+    }
+    const diagnostics = payload && typeof payload === "object" ? payload.diagnostics : null;
+    const nested = diagnostics && typeof diagnostics === "object" ? diagnostics.execution_errors : null;
+    if (nested && typeof nested === "object") {
+      return nested;
+    }
+    return {};
+  };
+
+  const formatExecutionErrors = (errors) => {
+    const entries = Object.entries(errors || {});
+    if (!entries.length) return "none";
+    return entries
+      .map(([node, message]) => `${String(node).slice(0, 12)}: ${String(message)}`)
+      .join("\n");
+  };
+
+  const buildFailureDetailsText = (payload, requestState) => {
+    const nodeId = String(payload.node_id || requestState.nodeId || "");
+    const path = payload.path || requestState.path || "";
+    const computeStatus = String(payload.compute_status || payload.status || "failed");
+    const lines = [
+      `node: ${nodeId || "-"}`,
+      `path: ${path || "/"}`,
+      `status: ${computeStatus}`,
+    ];
+
+    const storeStatus =
+      String(payload.store_status || ((payload.diagnostics && payload.diagnostics.store_status) || "missing"));
+    lines.push(`store: ${storeStatus}`);
+
+    if (payload.error) lines.push(`error: ${String(payload.error)}`);
+    if (payload.job_error) lines.push(`job_error: ${String(payload.job_error)}`);
+    if (payload.store_error) lines.push(`store_error: ${String(payload.store_error)}`);
+
+    const diagnostics = payload && typeof payload === "object" ? payload.diagnostics : null;
+    if (diagnostics && typeof diagnostics === "object") {
+      if (diagnostics.job_error && !payload.job_error) {
+        lines.push(`job_error: ${String(diagnostics.job_error)}`);
+      }
+      if (diagnostics.store_error && !payload.store_error) {
+        lines.push(`store_error: ${String(diagnostics.store_error)}`);
+      }
+    }
+
+    const executionErrors = normalizedExecutionErrors(payload);
+    if (Object.keys(executionErrors).length) {
+      lines.push("execution_errors:");
+      lines.push(formatExecutionErrors(executionErrors));
+    }
+
+    return lines.join("\n");
+  };
+
+  const renderPlayFailureDiagnostics = (payload, requestState) => {
+    const nodeId = String(payload.node_id || requestState.nodeId || "");
+    const path = payload.path || requestState.path || "";
+    const computeStatus = String(payload.compute_status || payload.status || "failed").toLowerCase();
+    const badgeStatus = computeStatus === "killed" ? "killed" : "failed";
+    const detailsText = buildFailureDetailsText(payload, requestState);
+    const primaryError = String(payload.error || "Value inspection failed.");
+
+    state.playResultViewer.renderRecord({
+      available: false,
+      node_id: nodeId,
+      status: badgeStatus,
+      runtime_version: payload.runtime_version || "runtime",
+      updated_at: payload.updated_at || new Date().toISOString(),
+      path,
+      error: primaryError,
+      log_tail: payload.log_tail || "",
+      execution_errors: normalizedExecutionErrors(payload),
+      descriptor: {
+        kind: "string",
+        length: detailsText.length,
+        preview: {
+          text: detailsText,
+          truncated: false,
+        },
+      },
+      diagnostics: payload.diagnostics || {},
+    });
+
+    dom.playResultMeta.textContent =
+      `Unable to inspect ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""}: ${primaryError}`;
+
+    const logTail = String(payload.log_tail || "");
+    if (logTail) {
+      renderPlayExecutionLog({
+        log_tail: logTail,
+        result: {
+          execution: {
+            cache_summary:
+              payload.cache_summary ||
+              (payload.diagnostics && payload.diagnostics.cache_summary) ||
+              {},
+          },
+        },
+      });
+      return;
+    }
+    if (dom.playExecRaw) {
+      dom.playExecRaw.textContent = "";
+    }
+    dom.playExecSummary.textContent = "No execution log available for this failure.";
+    dom.playExecLog.innerHTML = `<div class="muted">No job log was attached to this failed lookup.</div>`;
+  };
+
   const applyPlayValuePayload = (payload, requestState) => {
     const materialization = String(payload.materialization || "");
     const computeStatus = String(payload.compute_status || "");
+    const statusName = String(payload.status || "");
     const nodeId = String(payload.node_id || requestState.nodeId || "");
     const path = payload.path || requestState.path || "";
     const jobId = payload.job_id ? String(payload.job_id) : "";
-    if (materialization === "cached" || materialization === "computed" || payload.descriptor) {
+    const descriptorKind =
+      payload.descriptor && typeof payload.descriptor === "object"
+        ? String(payload.descriptor.kind || "")
+        : "";
+    const hasRenderableDescriptor =
+      payload.descriptor &&
+      typeof payload.descriptor === "object" &&
+      descriptorKind &&
+      descriptorKind !== "unavailable";
+    const isMaterialized = materialization === "cached" || materialization === "computed" || statusName === "materialized";
+    if (isMaterialized && hasRenderableDescriptor) {
       stopValuePolling();
       state.playResultViewer.renderRecord(payload);
       dom.playResultMeta.textContent =
         `Inspecting ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} | ` +
         `${materialization || "materialized"} | status=${computeStatus || "materialized"}`;
+      return;
+    }
+
+    if (
+      materialization === "failed" ||
+      computeStatus === "failed" ||
+      computeStatus === "killed" ||
+      statusName === "failed"
+    ) {
+      stopValuePolling();
+      renderPlayFailureDiagnostics(payload, requestState);
       return;
     }
 
@@ -740,9 +893,16 @@
       (materialization === "missing"
         ? "Value is not materialized yet."
         : `Unable to inspect value (${materialization || computeStatus || "unknown"}).`);
-    state.playResultViewer.setError(errorMessage);
-    dom.playResultMeta.textContent =
-      `Unable to inspect ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""}: ${errorMessage}`;
+    renderPlayFailureDiagnostics(
+      {
+        ...payload,
+        error: errorMessage,
+        compute_status: computeStatus || "failed",
+        materialization: materialization || "failed",
+        status: payload.status || "failed",
+      },
+      requestState,
+    );
   };
 
   const inspectPlayTarget = async (nodeId, path = "", options = {}) => {
@@ -1152,6 +1312,41 @@
     }
   };
 
+  const openPlayJob = async (jobId) => {
+    if (!jobId) return;
+    try {
+      const job = await api(`/api/v1/playground/jobs/${jobId}`);
+      state.currentJobId = jobId;
+      setJobStatus(job.status);
+      renderRuntimeMetrics(job);
+      await renderExecutionPayload(job);
+      if (job.status === "running") {
+        stopPollingCurrentJob();
+        state.pollTimer = setInterval(pollCurrentJob, 800);
+      }
+      const executionErrors =
+        job &&
+        job.result &&
+        job.result.execution &&
+        job.result.execution.errors &&
+        typeof job.result.execution.errors === "object"
+          ? job.result.execution.errors
+          : {};
+      if ((job.status === "failed" || job.status === "killed") && Object.keys(executionErrors).length) {
+        const combinedError = [job.error || "Execution failed", formatExecutionErrors(executionErrors)]
+          .filter(Boolean)
+          .join("\n");
+        setRunError(combinedError);
+        return;
+      }
+      if (job.error) {
+        setRunError(job.error);
+      }
+    } catch (err) {
+      setRunError(`Unable to open ${jobId}: ${err.message}`);
+    }
+  };
+
   const refreshJobList = async () => {
     try {
       const payload = await api("/api/v1/playground/jobs");
@@ -1164,11 +1359,14 @@
         .map((job) => {
           const wall = job.metrics ? fmtSeconds(Number(job.metrics.wall_time_s)) : "-";
           const canKill = job.status === "running";
+          const status = String(job.status || "unknown");
+          const isFailedBadge = status === "failed" || status === "killed";
+          const chipAttr = isFailedBadge ? `data-open-job-chip="${sanitize(job.job_id)}"` : "";
           return `
             <article class="job-item">
               <div class="job-row">
                 <strong>${sanitize(job.job_id.slice(0, 12))}</strong>
-                <span class="chip ${sanitize(job.status)}">${sanitize(job.status)}</span>
+                <span class="chip ${sanitize(status)} ${isFailedBadge ? "chip-clickable" : ""}" ${chipAttr}>${sanitize(status)}</span>
               </div>
               <div class="job-row">
                 <span>${sanitize(job.request.execution_strategy)}</span>
@@ -1188,23 +1386,13 @@
       dom.recentJobs.querySelectorAll("[data-open-job]").forEach((button) => {
         button.addEventListener("click", async () => {
           const jobId = button.getAttribute("data-open-job");
-          if (!jobId) return;
-          try {
-            const job = await api(`/api/v1/playground/jobs/${jobId}`);
-            state.currentJobId = jobId;
-            setJobStatus(job.status);
-            renderRuntimeMetrics(job);
-            await renderExecutionPayload(job);
-            if (job.status === "running") {
-              stopPollingCurrentJob();
-              state.pollTimer = setInterval(pollCurrentJob, 800);
-            }
-            if (job.error) {
-              setRunError(job.error);
-            }
-          } catch (err) {
-            setRunError(`Unable to open ${jobId}: ${err.message}`);
-          }
+          await openPlayJob(jobId);
+        });
+      });
+      dom.recentJobs.querySelectorAll("[data-open-job-chip]").forEach((chip) => {
+        chip.addEventListener("click", async () => {
+          const jobId = chip.getAttribute("data-open-job-chip");
+          await openPlayJob(jobId);
         });
       });
       dom.recentJobs.querySelectorAll("[data-kill-job]").forEach((button) => {

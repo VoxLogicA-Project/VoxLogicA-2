@@ -188,8 +188,45 @@ def handle_run(
                     logger.error(error_msg)
                     for node_id, message in execution_result.failed_operations.items():
                         logger.error("  %s...: %s", node_id[:8], message)
+                failure_payload: dict[str, Any] = {
+                    "operations": len(workplan.operations),
+                    "goals": len(workplan.goals),
+                    "task_graph": str(workplan),
+                    "syntax": str(syntax),
+                    "symbol_table": declaration_bindings,
+                    "print_targets": [
+                        {
+                            "name": goal.name,
+                            "node_id": goal.id,
+                        }
+                        for goal in workplan.goals
+                        if goal.operation == "print"
+                    ],
+                    "execution": {
+                        "success": execution_result.success,
+                        "completed_operations": len(execution_result.completed_operations),
+                        "failed_operations": len(execution_result.failed_operations),
+                        "execution_time": execution_result.execution_time,
+                        "total_operations": execution_result.total_operations,
+                        "cache_summary": execution_result.cache_summary,
+                        "errors": execution_result.failed_operations,
+                    },
+                }
+                if _include_execution_events:
+                    failure_payload["execution"]["node_events"] = execution_result.node_events
                 else:
-                    return OperationResult.fail(error_msg)
+                    failure_payload["execution"]["events_available"] = bool(execution_result.node_events)
+                    failure_payload["execution"]["events_total"] = int(
+                        (execution_result.cache_summary or {}).get(
+                            "events_total",
+                            len(execution_result.node_events),
+                        )
+                    )
+                return OperationResult(
+                    success=False,
+                    data=_json_safe(failure_payload),
+                    error=error_msg,
+                )
 
         result: dict[str, Any] = {
             "operations": len(workplan.operations),

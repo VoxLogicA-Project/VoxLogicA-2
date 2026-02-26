@@ -10,6 +10,7 @@ from voxlogica.serve_support import (
     PlaygroundJobManager,
     build_storage_stats_snapshot,
     build_test_dashboard_snapshot,
+    describe_runtime_value,
     inspect_store_result,
     list_playground_programs,
     list_store_results_snapshot,
@@ -230,3 +231,47 @@ def test_store_result_renderers_emit_png_and_nifti(tmp_path: Path) -> None:
 
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
     assert nii.startswith(b"\x1f\x8b")
+
+
+class _DuckSimpleITKImage:
+    def GetDimension(self) -> int:
+        return 3
+
+    def GetSize(self) -> tuple[int, int, int]:
+        return (8, 6, 4)
+
+    def GetSpacing(self) -> tuple[float, float, float]:
+        return (1.0, 1.0, 2.0)
+
+    def GetOrigin(self) -> tuple[float, float, float]:
+        return (0.0, 0.0, 0.0)
+
+    def GetDirection(self) -> tuple[float, ...]:
+        return (
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        )
+
+    def GetPixelIDTypeAsString(self) -> str:
+        return "32-bit float"
+
+
+@pytest.mark.unit
+def test_describe_runtime_value_detects_simpleitk_duck_typed_images() -> None:
+    payload = describe_runtime_value(
+        node_id="node-duck",
+        value={"image": _DuckSimpleITKImage()},
+        path="/image",
+    )
+    descriptor = payload["descriptor"]
+    assert descriptor["kind"] == "simpleitk-image"
+    assert descriptor["dimension"] == 3
+    assert descriptor["size"] == [8, 6, 4]
+    assert descriptor["render"]["kind"] == "medical-volume"

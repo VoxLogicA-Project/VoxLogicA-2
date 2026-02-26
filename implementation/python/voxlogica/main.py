@@ -672,6 +672,95 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             payload["variable"] = variable_name
         return payload
 
+    def _execution_errors_from_job(job_payload: dict[str, Any] | None) -> dict[str, str]:
+        if not isinstance(job_payload, dict):
+            return {}
+        result_payload = job_payload.get("result")
+        if not isinstance(result_payload, dict):
+            return {}
+        execution_payload = result_payload.get("execution")
+        if not isinstance(execution_payload, dict):
+            return {}
+        errors_payload = execution_payload.get("errors")
+        if not isinstance(errors_payload, dict):
+            return {}
+        out: dict[str, str] = {}
+        for key, value in errors_payload.items():
+            out[str(key)] = str(value)
+        return out
+
+    def _cache_summary_from_job(job_payload: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(job_payload, dict):
+            return {}
+        result_payload = job_payload.get("result")
+        if not isinstance(result_payload, dict):
+            return {}
+        execution_payload = result_payload.get("execution")
+        if not isinstance(execution_payload, dict):
+            return {}
+        summary = execution_payload.get("cache_summary")
+        if isinstance(summary, dict):
+            return dict(summary)
+        return {}
+
+    def _failure_payload(
+        *,
+        compute_status: str,
+        inspected_payload: dict[str, Any] | None,
+        tracked_job_payload: dict[str, Any] | None,
+        fallback_error: str,
+        request_enqueued: bool,
+    ) -> dict[str, Any]:
+        store_status = str(inspected_payload.get("status")) if inspected_payload is not None else "missing"
+        store_error = ""
+        if inspected_payload is not None and inspected_payload.get("error"):
+            store_error = str(inspected_payload.get("error"))
+
+        job_error = ""
+        log_tail = ""
+        job_id = ""
+        if isinstance(tracked_job_payload, dict):
+            if tracked_job_payload.get("error"):
+                job_error = str(tracked_job_payload.get("error"))
+            if tracked_job_payload.get("log_tail"):
+                log_tail = str(tracked_job_payload.get("log_tail"))
+            if tracked_job_payload.get("job_id"):
+                job_id = str(tracked_job_payload.get("job_id"))
+
+        execution_errors = _execution_errors_from_job(tracked_job_payload)
+        cache_summary = _cache_summary_from_job(tracked_job_payload)
+
+        error_message = job_error or store_error or fallback_error
+        payload: dict[str, Any] = {
+            "available": False,
+            "materialization": "failed",
+            "compute_status": compute_status,
+            "status": "failed",
+            "error": error_message,
+            "store_status": store_status,
+            "request_enqueued": request_enqueued,
+            "diagnostics": {
+                "store_status": store_status,
+                "store_error": store_error or None,
+                "job_error": job_error or None,
+                "execution_errors": execution_errors,
+                "cache_summary": cache_summary,
+            },
+        }
+        if store_error:
+            payload["store_error"] = store_error
+        if job_error:
+            payload["job_error"] = job_error
+        if execution_errors:
+            payload["execution_errors"] = execution_errors
+        if cache_summary:
+            payload["cache_summary"] = cache_summary
+        if log_tail:
+            payload["log_tail"] = log_tail
+        if job_id:
+            payload["job_id"] = job_id
+        return payload
+
     inspected: dict[str, Any] | None = None
     try:
         inspected = inspect_store_result(storage, node_id=node_id, path=view_path)
@@ -714,19 +803,37 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                     return _attach_common(inspected)
             except KeyError:
                 inspected = None
-        if job_status in {"completed", "failed", "killed"} and not request.enqueue:
+            if not request.enqueue:
+                return _attach_common(
+                    _failure_payload(
+                        compute_status="failed",
+                        inspected_payload=inspected,
+                        tracked_job_payload=tracked_job,
+                        fallback_error="Value job completed without a materialized result.",
+                        request_enqueued=False,
+                    )
+                )
+        if job_status in {"failed", "killed"}:
             return _attach_common(
-                {
-                    "available": False,
-                    "materialization": "failed",
-                    "compute_status": job_status,
-                    "job_id": tracked_job.get("job_id"),
-                    "error": tracked_job.get("error") or "Value not materialized.",
-                    "store_status": inspected.get("status") if inspected is not None else "missing",
-                    "log_tail": tracked_job.get("log_tail", ""),
-                    "request_enqueued": False,
-                }
+                _failure_payload(
+                    compute_status=job_status,
+                    inspected_payload=inspected,
+                    tracked_job_payload=tracked_job,
+                    fallback_error="Value not materialized.",
+                    request_enqueued=False,
+                )
             )
+
+    if inspected is not None and str(inspected.get("status")) == "failed":
+        return _attach_common(
+            _failure_payload(
+                compute_status="failed",
+                inspected_payload=inspected,
+                tracked_job_payload=tracked_job,
+                fallback_error="Store contains a failed value for this node.",
+                request_enqueued=False,
+            )
+        )
 
     if not request.enqueue:
         if inspected is not None:

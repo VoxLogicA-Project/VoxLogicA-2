@@ -259,6 +259,69 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
 
 
 @pytest.mark.unit
+def test_playground_value_failed_job_exposes_diagnostics(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    class FakeRegistry:
+        @staticmethod
+        def get_feature(name: str):
+            if name == "version":
+                return SimpleNamespace(handler=lambda: OperationResult.ok({"version": "2.0.0"}))
+            if name == "run":
+                return SimpleNamespace(handler=lambda **kwargs: OperationResult.ok({"ok": True, "args": kwargs}))
+            return None
+
+    monkeypatch.setattr(main_mod, "FeatureRegistry", FakeRegistry)
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            get_value_job=lambda **kwargs: {
+                "job_id": "value-failed-1",
+                "status": "failed",
+                "error": "Execution failed with 1 errors",
+                "log_tail": '{"event":"playground.node","status":"failed","node_id":"abc","error":"kernel boom"}',
+                "result": {
+                    "execution": {
+                        "errors": {"abc123deadbeef": "kernel boom"},
+                        "cache_summary": {"failed": 1, "events_total": 1, "events_stored": 1},
+                    }
+                },
+            },
+            ensure_value_job=lambda payload, **kwargs: {"job_id": "should-not-enqueue", "status": "running", "log_tail": ""},
+        ),
+    )
+
+    try:
+        with TestClient(main_mod.api_app) as client:
+            symbols_resp = client.post("/api/v1/playground/symbols", json={"program": "let x = 2 + 3"})
+            assert symbols_resp.status_code == 200
+            assert "x" in symbols_resp.json()["symbol_table"]
+
+            value_resp = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "let x = 2 + 3",
+                    "variable": "x",
+                    "execution_strategy": "strict",
+                },
+            )
+            assert value_resp.status_code == 200
+            payload = value_resp.json()
+            assert payload["materialization"] == "failed"
+            assert payload["compute_status"] == "failed"
+            assert payload["request_enqueued"] is False
+            assert payload["job_id"] == "value-failed-1"
+            assert "Execution failed with 1 errors" in str(payload["error"])
+            assert payload["execution_errors"]["abc123deadbeef"] == "kernel boom"
+            assert "playground.node" in str(payload.get("log_tail", ""))
+    finally:
+        fake_storage.close()
+
+
+@pytest.mark.unit
 def test_api_error_paths(monkeypatch: pytest.MonkeyPatch):
     class MissingRegistry:
         @staticmethod

@@ -801,6 +801,76 @@ def _import_simpleitk() -> Any | None:
         return None
 
 
+_SITK_IMAGE_REQUIRED_METHODS = (
+    "GetDimension",
+    "GetSize",
+    "GetSpacing",
+    "GetOrigin",
+    "GetDirection",
+    "GetPixelIDTypeAsString",
+)
+
+
+def _is_simpleitk_image_like(value: Any, sitk: Any | None) -> bool:
+    if sitk is not None:
+        try:
+            if isinstance(value, sitk.Image):
+                return True
+        except Exception:
+            pass
+    for method_name in _SITK_IMAGE_REQUIRED_METHODS:
+        method = getattr(value, method_name, None)
+        if not callable(method):
+            return False
+    return True
+
+
+def _simpleitk_image_metadata(value: Any) -> dict[str, Any] | None:
+    try:
+        dimension = int(value.GetDimension())
+        size = [int(v) for v in value.GetSize()]
+        spacing = [float(v) for v in value.GetSpacing()]
+        origin = [float(v) for v in value.GetOrigin()]
+        direction = [float(v) for v in value.GetDirection()]
+        pixel_id = str(value.GetPixelIDTypeAsString())
+    except Exception:
+        return None
+    return {
+        "dimension": dimension,
+        "size": size,
+        "spacing": spacing,
+        "origin": origin,
+        "direction": direction,
+        "pixel_id": pixel_id,
+    }
+
+
+def _coerce_simpleitk_image(value: Any, sitk: Any) -> Any:
+    try:
+        if isinstance(value, sitk.Image):
+            return value
+    except Exception:
+        pass
+
+    try:
+        coerced = sitk.Image(value)
+        if isinstance(coerced, sitk.Image):
+            return coerced
+    except Exception:
+        pass
+
+    try:
+        array = sitk.GetArrayFromImage(value)
+        coerced = sitk.GetImageFromArray(array)
+        try:
+            coerced.CopyInformation(value)
+        except Exception:
+            pass
+        return coerced
+    except Exception as exc:
+        raise ValueError(f"Unsupported SimpleITK image value: {type(value).__name__}") from exc
+
+
 def _build_render_url(node_id: str, render_kind: str, path: str) -> str:
     encoded_node = quote(node_id, safe="")
     suffix = ""
@@ -903,7 +973,7 @@ def _describe_value(
     tracked = isinstance(value, (list, tuple, dict))
     if np is not None and isinstance(value, np.ndarray):
         tracked = True
-    if sitk is not None and isinstance(value, sitk.Image):
+    if _is_simpleitk_image_like(value, sitk):
         tracked = True
 
     if tracked:
@@ -934,26 +1004,29 @@ def _describe_value(
             }
         return summary
 
-    if sitk is not None and isinstance(value, sitk.Image):
-        size = [int(v) for v in value.GetSize()]
-        spacing = [float(v) for v in value.GetSpacing()]
-        origin = [float(v) for v in value.GetOrigin()]
-        direction = [float(v) for v in value.GetDirection()]
+    if _is_simpleitk_image_like(value, sitk):
+        metadata = _simpleitk_image_metadata(value)
+        if metadata is None:
+            return {
+                "kind": "object",
+                "type": f"{type(value).__module__}.{type(value).__name__}",
+                "repr": repr(value)[:MAX_INLINE_STRING_CHARS],
+            }
         summary = {
             "kind": "simpleitk-image",
-            "dimension": int(value.GetDimension()),
-            "size": size,
-            "spacing": spacing,
-            "origin": origin,
-            "direction": direction,
-            "pixel_id": str(value.GetPixelIDTypeAsString()),
+            "dimension": metadata["dimension"],
+            "size": metadata["size"],
+            "spacing": metadata["spacing"],
+            "origin": metadata["origin"],
+            "direction": metadata["direction"],
+            "pixel_id": metadata["pixel_id"],
         }
-        if value.GetDimension() == 2:
+        if int(metadata["dimension"]) == 2:
             summary["render"] = {
                 "kind": "image2d",
                 "png_url": _build_render_url(node_id, "png", path),
             }
-        elif value.GetDimension() >= 3:
+        elif int(metadata["dimension"]) >= 3:
             summary["render"] = {
                 "kind": "medical-volume",
                 "nifti_url": _build_render_url(node_id, "nii.gz", path),
@@ -1130,10 +1203,13 @@ def _to_image2d(value: Any) -> Any:
     np = _import_numpy()
     if sitk is None:
         raise RuntimeError("SimpleITK is not available")
-    if isinstance(value, sitk.Image):
-        if value.GetDimension() != 2:
+    if _is_simpleitk_image_like(value, sitk):
+        metadata = _simpleitk_image_metadata(value)
+        if metadata is None:
+            raise ValueError(f"Unsupported value type for PNG rendering: {type(value).__name__}")
+        if int(metadata["dimension"]) != 2:
             raise ValueError("Only 2D images can be rendered as PNG")
-        return value
+        return _coerce_simpleitk_image(value, sitk)
     if np is not None and isinstance(value, np.ndarray):
         if value.ndim != 2:
             raise ValueError("Only 2D arrays can be rendered as PNG")
@@ -1153,10 +1229,13 @@ def _to_image3d(value: Any) -> Any:
     np = _import_numpy()
     if sitk is None:
         raise RuntimeError("SimpleITK is not available")
-    if isinstance(value, sitk.Image):
-        if value.GetDimension() != 3:
+    if _is_simpleitk_image_like(value, sitk):
+        metadata = _simpleitk_image_metadata(value)
+        if metadata is None:
+            raise ValueError(f"Unsupported value type for NIfTI rendering: {type(value).__name__}")
+        if int(metadata["dimension"]) != 3:
             raise ValueError("Only 3D images can be rendered as NIfTI")
-        return value
+        return _coerce_simpleitk_image(value, sitk)
     if np is not None and isinstance(value, np.ndarray):
         if value.ndim != 3:
             raise ValueError("Only 3D arrays can be rendered as NIfTI")
@@ -1271,12 +1350,47 @@ def _playground_worker(send_conn: Any, request_payload: dict[str, Any], log_path
                 }
             )
         else:
-            packet = {"ok": False, "error": run_result.error or "Execution failed"}
+            result_payload = run_result.data if isinstance(run_result.data, dict) else {}
+            execution_payload = result_payload.get("execution", {})
+            if not isinstance(execution_payload, dict):
+                execution_payload = {}
+                result_payload["execution"] = execution_payload
+            execution_summary = (
+                dict(execution_payload)
+                if isinstance(execution_payload, dict)
+                else {}
+            )
+            node_events = execution_payload.get("node_events", [])
+            if isinstance(node_events, list):
+                for index, node_event in enumerate(node_events):
+                    if not isinstance(node_event, dict):
+                        continue
+                    _append_log(
+                        {
+                            "event": "playground.node",
+                            "index": index + 1,
+                            **node_event,
+                        }
+                    )
+            execution_payload.pop("node_events", None)
+            execution_summary.pop("node_events", None)
+            packet = {
+                "ok": False,
+                "error": run_result.error or "Execution failed",
+                "result": result_payload,
+            }
             _append_log(
                 {
                     "event": "playground.run.completed",
                     "success": False,
                     "error": packet["error"],
+                    "result_summary": {
+                        "operations": result_payload.get("operations"),
+                        "goals": result_payload.get("goals"),
+                        "execution": execution_summary,
+                        "execution_cache_summary": execution_payload.get("cache_summary", {}),
+                        "execution_event_count": len(node_events) if isinstance(node_events, list) else 0,
+                    },
                 }
             )
     except Exception as exc:  # noqa: BLE001
@@ -1421,6 +1535,9 @@ class PlaygroundJobManager:
                 else:
                     job.status = "failed"
                     job.error = str(packet.get("error", "Execution failed"))
+                    result = packet.get("result")
+                    if isinstance(result, dict):
+                        job.result = result
             try:
                 recv_conn.close()
             except Exception:

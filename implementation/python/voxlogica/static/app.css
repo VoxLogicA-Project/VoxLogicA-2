@@ -110,6 +110,21 @@ body {
   border-color: transparent;
 }
 
+.chip.chip-clickable {
+  cursor: pointer;
+  transition: transform 100ms ease, box-shadow 100ms ease, filter 100ms ease;
+}
+
+.chip.chip-clickable:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 2px rgba(240, 93, 94, 0.24);
+}
+
+.chip.chip-clickable:focus-visible {
+  outline: 2px solid rgba(240, 93, 94, 0.5);
+  outline-offset: 2px;
+}
+
 .tabbar {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -379,6 +394,7 @@ body {
   border-radius: var(--radius-sm);
   padding: 0.55rem 0.7rem;
   font-size: 0.78rem;
+  white-space: pre-wrap;
 }
 
 .hidden {
