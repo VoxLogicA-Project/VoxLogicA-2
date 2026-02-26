@@ -65,25 +65,25 @@ def _apply_sequence_op(name: str, left: Any, right: Any, op: ScalarBinaryOp) -> 
     if _is_sequence(left):
         left_seq = _to_sequence(left)
 
-        def iterator_factory():
+        def left_iterator_factory():
             for value in left_seq.iter_values():
                 try:
                     yield op(value, right)
                 except Exception as exc:  # noqa: BLE001
                     raise ValueError(f"{name} failed: {exc}") from exc
 
-        return SequenceValue(iterator_factory, total_size=left_seq.total_size)
+        return SequenceValue(left_iterator_factory, total_size=left_seq.total_size)
 
     right_seq = _to_sequence(right)
 
-    def iterator_factory():
+    def right_iterator_factory():
         for value in right_seq.iter_values():
             try:
                 yield op(left, value)
             except Exception as exc:  # noqa: BLE001
                 raise ValueError(f"{name} failed: {exc}") from exc
 
-    return SequenceValue(iterator_factory, total_size=right_seq.total_size)
+    return SequenceValue(right_iterator_factory, total_size=right_seq.total_size)
 
 
 def _apply_dask_op(left: Any, right: Any, op: ScalarBinaryOp) -> db.Bag:

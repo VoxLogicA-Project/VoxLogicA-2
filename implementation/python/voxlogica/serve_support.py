@@ -157,7 +157,7 @@ def _load_junit_report(path: Path = JUNIT_REPORT_PATH) -> dict[str, Any]:
     errors = 0
     skipped = 0
     duration = 0.0
-    failed_cases: list[dict[str, str]] = []
+    failed_cases: list[dict[str, Any]] = []
     slow_cases: list[dict[str, Any]] = []
     test_cases: list[dict[str, Any]] = []
 
@@ -1467,7 +1467,7 @@ class PlaygroundJob:
     result: dict[str, Any] | None = None
     error: str | None = None
     metrics: dict[str, Any] = field(default_factory=dict)
-    process: mp.Process | None = None
+    process: Any = None
     recv_conn: Any = None
     log_path: Path | None = None
 

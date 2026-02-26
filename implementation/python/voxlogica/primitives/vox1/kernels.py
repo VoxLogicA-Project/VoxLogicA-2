@@ -6,6 +6,7 @@ from functools import lru_cache
 from threading import RLock
 import os
 import math
+from typing import Any, SupportsFloat, cast
 
 import numpy as np
 import SimpleITK as sitk
@@ -110,7 +111,7 @@ def _as_float_image(image: sitk.Image) -> sitk.Image:
     return sitk.Cast(image, sitk.sitkFloat32)
 
 
-def _flatten_image(image: sitk.Image, dtype: np.dtype | None = None) -> np.ndarray:
+def _flatten_image(image: sitk.Image, dtype: Any = None) -> np.ndarray:
     data = sitk.GetArrayFromImage(image).reshape(-1)
     if dtype is None:
         return np.asarray(data)
@@ -121,7 +122,7 @@ def _make_image_from_flat(
     flat: np.ndarray,
     shape: tuple[int, ...],
     reference: sitk.Image,
-    dtype: np.dtype,
+    dtype: Any,
 ) -> sitk.Image:
     array = np.asarray(flat, dtype=dtype).reshape(shape)
     image = sitk.GetImageFromArray(array, isVector=False)
@@ -279,28 +280,28 @@ def _add_values(left: object, right: object) -> object:
     if _is_image(left) or _is_image(right):
         _remember_base_from_values(left, right)
         return sitk.Add(left, right)
-    return float(left) + float(right)
+    return float(cast(SupportsFloat, left)) + float(cast(SupportsFloat, right))
 
 
 def _mul_values(left: object, right: object) -> object:
     if _is_image(left) or _is_image(right):
         _remember_base_from_values(left, right)
         return sitk.Multiply(left, right)
-    return float(left) * float(right)
+    return float(cast(SupportsFloat, left)) * float(cast(SupportsFloat, right))
 
 
 def _div_values(left: object, right: object) -> object:
     if _is_image(left) or _is_image(right):
         _remember_base_from_values(left, right)
         return sitk.Divide(left, right)
-    return float(left) / float(right)
+    return float(cast(SupportsFloat, left)) / float(cast(SupportsFloat, right))
 
 
 def _sub_values(left: object, right: object) -> object:
     if _is_image(left) or _is_image(right):
         _remember_base_from_values(left, right)
         return sitk.Subtract(left, right)
-    return float(left) - float(right)
+    return float(cast(SupportsFloat, left)) - float(cast(SupportsFloat, right))
 
 
 def add(left: object, right: object) -> object:
@@ -672,11 +673,11 @@ def border() -> sitk.Image:
     shape = tuple(reversed(size))
     result = np.zeros(shape, dtype=np.uint8)
     for axis in range(ndim):
-        low_slice = [slice(None)] * ndim
+        low_slice: list[slice | int] = [slice(None)] * ndim
         low_slice[axis] = 0
         result[tuple(low_slice)] = 1
 
-        high_slice = [slice(None)] * ndim
+        high_slice: list[slice | int] = [slice(None)] * ndim
         high_slice[axis] = -1
         result[tuple(high_slice)] = 1
 
@@ -927,7 +928,7 @@ def _hist_corr_vectorized(big_histogram: np.ndarray, local_histograms: np.ndarra
     h1 = np.asarray(local_histograms, dtype=np.float64)
     avg1 = np.mean(h1, axis=0)
     centered1 = h1 - avg1
-    den1 = np.sum(centered1 * centered1, axis=0, dtype=np.float64)
+    den1 = np.asarray(np.sum(centered1 * centered1, axis=0, dtype=np.float64), dtype=np.float64)
 
     result = np.zeros(h1.shape[1], dtype=np.float32)
     both_zero = (den1 == 0.0) & (sqrt_den2 == 0.0)

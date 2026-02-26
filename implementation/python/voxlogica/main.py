@@ -9,7 +9,7 @@ import json
 import logging
 from pathlib import Path
 import time
-from typing import Any, Optional, TypeVar, Generic
+from typing import Any, Optional, TypeVar, Generic, MutableMapping
 
 import dask
 import typer
@@ -548,7 +548,7 @@ api_app.add_middleware(
 class NoCacheStaticFiles(StaticFiles):
     """StaticFiles variant that disables browser caching for UI assets."""
 
-    async def get_response(self, path: str, scope: dict[str, Any]) -> Response:
+    async def get_response(self, path: str, scope: MutableMapping[str, Any]) -> Response:
         response = await super().get_response(path, scope)
         if response.status_code < 400:
             response.headers["Cache-Control"] = "no-store"
