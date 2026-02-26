@@ -162,17 +162,28 @@ def _resolve_requested_node(
     symbol_table: dict[str, str],
     node_id: str | None,
     variable: str | None,
+    allowed_nodes: set[str] | None = None,
 ) -> tuple[str, str]:
-    resolved_node = (node_id or "").strip()
     resolved_variable = (variable or "").strip()
-    if not resolved_node and resolved_variable:
+    resolved_node = ""
+    if resolved_variable:
         mapped = symbol_table.get(resolved_variable)
         if mapped:
             resolved_node = mapped
     if not resolved_node:
+        resolved_node = (node_id or "").strip()
+    if not resolved_node:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing node selection: provide `node_id` or a bound `variable`.",
+        )
+    if allowed_nodes is not None and resolved_node not in allowed_nodes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unknown node selection '{resolved_node[:12]}'. "
+                "This hash does not belong to the current program."
+            ),
         )
     return resolved_node, resolved_variable
 
@@ -647,6 +658,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
         symbol_table=symbol_table,
         node_id=request.node_id,
         variable=request.variable,
+        allowed_nodes=set(workplan.nodes.keys()),
     )
     strategy = (request.execution_strategy or "dask").strip() or "dask"
     view_path = request.path or ""

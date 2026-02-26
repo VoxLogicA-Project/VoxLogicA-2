@@ -256,6 +256,28 @@ body {
   line-height: 1.5;
 }
 
+.editor-shell {
+  position: relative;
+}
+
+.token-action {
+  position: absolute;
+  z-index: 6;
+  pointer-events: auto;
+  border: 1px solid rgba(38, 198, 169, 0.82);
+  border-radius: 999px;
+  color: #041f18;
+  background: linear-gradient(160deg, var(--accent), #88f1de);
+  box-shadow: 0 8px 24px rgba(2, 10, 18, 0.42);
+  font-weight: 800;
+  font-size: 0.72rem;
+  padding: 0.28rem 0.58rem;
+}
+
+.token-action:hover {
+  filter: brightness(1.04);
+}
+
 .btn {
   border: 1px solid transparent;
   border-radius: var(--radius-sm);

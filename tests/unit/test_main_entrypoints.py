@@ -178,6 +178,19 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             assert value_pending.json()["materialization"] == "pending"
             assert value_pending.json()["compute_status"] in {"queued", "running"}
 
+            # Variable lookup must win over stale/foreign node ids.
+            value_with_stale_node = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "let x = 2 + 3",
+                    "variable": "x",
+                    "node_id": "deadbeef",
+                    "execution_strategy": "strict",
+                },
+            )
+            assert value_with_stale_node.status_code == 200
+            assert value_with_stale_node.json()["node_id"] == node_id
+
             fake_storage.put_success(node_id, 5)
             value_cached = client.post(
                 "/api/v1/playground/value",
@@ -192,6 +205,17 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             assert value_cached.json()["materialization"] == "cached"
             assert value_cached.json()["descriptor"]["kind"] == "integer"
             assert value_cached.json()["descriptor"]["value"] == 5
+
+            invalid_node = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "let x = 2 + 3",
+                    "node_id": "deadbeef",
+                    "execution_strategy": "strict",
+                    "enqueue": False,
+                },
+            )
+            assert invalid_node.status_code == 400
 
             jobs_resp = client.get("/api/v1/playground/jobs")
             assert jobs_resp.status_code == 200

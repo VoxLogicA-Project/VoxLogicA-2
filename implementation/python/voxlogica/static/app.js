@@ -25,13 +25,16 @@
     pendingValueRequest: null,
     hoverTimer: null,
     lastHoverToken: "",
+    hoveredToken: null,
   };
 
   const dom = {
     tabs: Array.from(document.querySelectorAll(".tab")),
     panels: Array.from(document.querySelectorAll(".panel")),
     buildStamp: document.getElementById("buildStamp"),
+    editorShell: document.getElementById("editorShell"),
     programInput: document.getElementById("programInput"),
+    inspectTokenBtn: document.getElementById("inspectTokenBtn"),
     executionStrategy: document.getElementById("executionStrategy"),
     noCache: document.getElementById("noCache"),
     programLibrarySelect: document.getElementById("programLibrarySelect"),
@@ -190,10 +193,10 @@
   };
 
   const setBusy = (busy) => {
-    dom.runProgramBtn.disabled = busy;
-    dom.killProgramBtn.disabled = !busy;
-    dom.executionStrategy.disabled = busy;
-    dom.noCache.disabled = busy;
+    if (dom.runProgramBtn) dom.runProgramBtn.disabled = busy;
+    if (dom.killProgramBtn) dom.killProgramBtn.disabled = !busy;
+    if (dom.executionStrategy) dom.executionStrategy.disabled = busy;
+    if (dom.noCache) dom.noCache.disabled = busy;
   };
 
   const renderExecutionPayload = async (job) => {
@@ -268,9 +271,11 @@
     const payload = {
       program: dom.programInput.value,
       execute: true,
-      no_cache: dom.noCache.checked,
       execution_strategy: dom.executionStrategy.value,
     };
+    if (dom.noCache) {
+      payload.no_cache = Boolean(dom.noCache.checked);
+    }
     try {
       setBusy(true);
       setJobStatus("running");
@@ -319,8 +324,9 @@
     state.latestGoalResults = [];
     state.latestSymbolTable = {};
     state.lastHoverToken = "";
+    hideTokenAction();
     stopValuePolling();
-    dom.playResultMeta.textContent = "Choose or hover a variable to inspect lazily.";
+    dom.playResultMeta.textContent = "Click inspect on a variable to resolve it on demand.";
     ensurePlayResultViewer();
     state.playResultViewer.renderRecord(null);
     refreshPlaySelector({}, { keepViewer: true, preserveMeta: true });
@@ -652,17 +658,20 @@
   };
 
   const requestPlayValue = async ({ nodeId, variable = "", path = "", enqueue = true }) => {
+    const payload = {
+      program: dom.programInput.value,
+      execution_strategy: dom.executionStrategy.value,
+      variable,
+      path,
+      enqueue,
+    };
+    if (!variable && nodeId) {
+      payload.node_id = nodeId;
+    }
     return api("/api/v1/playground/value", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        program: dom.programInput.value,
-        execution_strategy: dom.executionStrategy.value,
-        node_id: nodeId,
-        variable,
-        path,
-        enqueue,
-      }),
+      body: JSON.stringify(payload),
     });
   };
 
@@ -886,9 +895,42 @@
     return state.precomputedSymbolTable[token] || state.latestSymbolTable[token] || "";
   };
 
+  const hideTokenAction = () => {
+    state.hoveredToken = null;
+    if (dom.programInput) {
+      dom.programInput.style.cursor = "text";
+    }
+    if (dom.inspectTokenBtn) {
+      dom.inspectTokenBtn.classList.add("hidden");
+    }
+  };
+
+  const showTokenAction = ({ token, nodeId, clientX, clientY }) => {
+    if (!dom.inspectTokenBtn || !dom.editorShell || !dom.programInput) return;
+    const shellRect = dom.editorShell.getBoundingClientRect();
+    const inputRect = dom.programInput.getBoundingClientRect();
+    const btn = dom.inspectTokenBtn;
+    btn.textContent = `Inspect ${token}`;
+    btn.dataset.token = token;
+    btn.dataset.nodeId = nodeId;
+    btn.classList.remove("hidden");
+
+    const localX = clientX - shellRect.left;
+    const localY = clientY - shellRect.top;
+    const targetLeft = Math.max(8, Math.min(localX + 12, inputRect.width - 18));
+    const targetTop = Math.max(8, Math.min(localY - 30, inputRect.height - 18));
+    btn.style.left = `${targetLeft}px`;
+    btn.style.top = `${targetTop}px`;
+    state.hoveredToken = { token, nodeId };
+    if (dom.programInput) {
+      dom.programInput.style.cursor = "pointer";
+    }
+  };
+
   const inspectSymbolToken = async (token) => {
     const nodeId = resolveSymbolNode(token);
     if (!nodeId) return;
+    hideTokenAction();
     const index = state.playSelectableTargets.findIndex((target) => target.kind === "variable" && target.label === token);
     if (index >= 0) {
       dom.playResultSelector.value = `${index}`;
@@ -902,15 +944,30 @@
       clearTimeout(state.hoverTimer);
       state.hoverTimer = null;
     }
-    state.hoverTimer = setTimeout(async () => {
+    state.hoverTimer = setTimeout(() => {
       const position = textIndexFromPoint(dom.programInput, event.clientX, event.clientY);
-      if (!Number.isInteger(position)) return;
+      if (!Number.isInteger(position)) {
+        hideTokenAction();
+        return;
+      }
       const token = extractTokenAt(dom.programInput.value || "", position);
-      if (!token || token === state.lastHoverToken) return;
+      if (!token) {
+        hideTokenAction();
+        return;
+      }
+      const nodeId = resolveSymbolNode(token);
+      if (!nodeId) {
+        hideTokenAction();
+        return;
+      }
       state.lastHoverToken = token;
-      if (!resolveSymbolNode(token)) return;
-      await inspectSymbolToken(token);
-    }, 260);
+      showTokenAction({
+        token,
+        nodeId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+    }, 140);
   };
 
   const handleProgramDoubleClick = async () => {
@@ -921,7 +978,17 @@
     }
     if (!token) return;
     state.lastHoverToken = token;
-    await inspectSymbolToken(token);
+    const nodeId = resolveSymbolNode(token);
+    if (!nodeId) {
+      hideTokenAction();
+      return;
+    }
+    showTokenAction({
+      token,
+      nodeId,
+      clientX: dom.programInput.getBoundingClientRect().left + 18,
+      clientY: dom.programInput.getBoundingClientRect().top + 22,
+    });
   };
 
   const renderBarList = (container, items, valueField, labelField, formatter = (v) => `${v}`) => {
@@ -1337,7 +1404,7 @@
         dom.playResultMeta.textContent = "Stored-value inspection unavailable on this backend.";
       }
       if (state.capabilities.playground_symbols === false || state.capabilities.playground_value_resolver === false) {
-        dom.playResultMeta.textContent = "Lazy hover inspector unavailable on this backend.";
+        dom.playResultMeta.textContent = "Lazy click-to-inspect is unavailable on this backend.";
       }
     } catch (err) {
       if (String(err.message).includes("404")) {
@@ -1411,13 +1478,36 @@
     dom.tabs.forEach((tab) => {
       tab.addEventListener("click", () => activateTab(tab.dataset.tab));
     });
-    dom.runProgramBtn.addEventListener("click", createPlaygroundJob);
+    if (dom.runProgramBtn) {
+      dom.runProgramBtn.classList.add("hidden");
+    }
     dom.killProgramBtn.addEventListener("click", killCurrentJob);
     dom.clearOutputBtn.addEventListener("click", clearOutput);
     dom.programInput.addEventListener("input", () => {
       scheduleProgramSymbolsRefresh();
+      hideTokenAction();
     });
     dom.programInput.addEventListener("mousemove", handleProgramHover);
+    dom.programInput.addEventListener("scroll", () => {
+      hideTokenAction();
+    });
+    if (dom.editorShell) {
+      dom.editorShell.addEventListener("mouseleave", () => {
+        state.lastHoverToken = "";
+        hideTokenAction();
+        if (state.hoverTimer) {
+          clearTimeout(state.hoverTimer);
+          state.hoverTimer = null;
+        }
+      });
+    }
+    if (dom.inspectTokenBtn) {
+      dom.inspectTokenBtn.addEventListener("click", async () => {
+        const hovered = state.hoveredToken;
+        if (!hovered) return;
+        await inspectSymbolToken(hovered.token);
+      });
+    }
     dom.programInput.addEventListener("mouseleave", () => {
       state.lastHoverToken = "";
       if (state.hoverTimer) {
@@ -1460,7 +1550,7 @@
     setTestingControlsBusy(false);
     setTestRunStatus("idle");
     dom.playResultSelector.disabled = true;
-    dom.playResultMeta.textContent = "Choose or hover a variable to inspect lazily.";
+    dom.playResultMeta.textContent = "Click inspect on a variable to resolve it on demand.";
     ensureResultViewer();
     ensurePlayResultViewer();
     await Promise.all([
