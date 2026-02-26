@@ -856,6 +856,17 @@
     return token.replace(/^[^A-Za-z0-9_.$+\-*/<>=!?~^%:&|]+|[^A-Za-z0-9_.$+\-*/<>=!?~^%:&|]+$/g, "");
   };
 
+  const extractTokenFromSelection = () => {
+    const text = dom.programInput.value || "";
+    const start = Number(dom.programInput.selectionStart || 0);
+    const end = Number(dom.programInput.selectionEnd || 0);
+    let token = text.slice(start, end).trim();
+    if (!token) {
+      token = extractTokenAt(text, start);
+    }
+    return token;
+  };
+
   const textIndexFromPoint = (textarea, clientX, clientY) => {
     const text = textarea.value || "";
     const rect = textarea.getBoundingClientRect();
@@ -933,11 +944,13 @@
     }
     state.hoverTimer = setTimeout(() => {
       const position = textIndexFromPoint(dom.programInput, event.clientX, event.clientY);
-      if (!Number.isInteger(position)) {
-        clearHoverTokenState();
-        return;
+      let token = "";
+      if (Number.isInteger(position)) {
+        token = extractTokenAt(dom.programInput.value || "", position);
       }
-      const token = extractTokenAt(dom.programInput.value || "", position);
+      if (!token) {
+        token = extractTokenFromSelection();
+      }
       if (!token) {
         clearHoverTokenState();
         return;
@@ -953,11 +966,18 @@
   };
 
   const handleProgramClick = async (event) => {
-    const position = textIndexFromPoint(dom.programInput, event.clientX, event.clientY);
-    if (!Number.isInteger(position)) return;
-    const token = extractTokenAt(dom.programInput.value || "", position);
+    let token = extractTokenFromSelection();
+    if (!token) {
+      const position = textIndexFromPoint(dom.programInput, event.clientX, event.clientY);
+      if (Number.isInteger(position)) {
+        token = extractTokenAt(dom.programInput.value || "", position);
+      }
+    }
     if (!token) return;
     state.lastHoverToken = token;
+    if (!resolveSymbolNode(token)) {
+      await refreshProgramSymbols();
+    }
     if (!resolveSymbolNode(token)) return;
     await inspectSymbolToken(token);
   };
