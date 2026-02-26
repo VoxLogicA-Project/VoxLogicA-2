@@ -268,6 +268,17 @@ body {
   background: rgba(5, 19, 29, 0.92);
 }
 
+.editor-hover-preview {
+  margin-top: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.48rem 0.62rem;
+  min-height: 2.25rem;
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
 .btn {
   border: 1px solid transparent;
   border-radius: var(--radius-sm);

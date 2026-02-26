@@ -26,6 +26,9 @@
     hoverTimer: null,
     lastHoverToken: "",
     hoverActiveToken: "",
+    hoverPreviewToken: "",
+    hoverPreviewSeq: 0,
+    suppressProgramClick: false,
   };
 
   const dom = {
@@ -39,6 +42,7 @@
     programLibrarySelect: document.getElementById("programLibrarySelect"),
     loadProgramFileBtn: document.getElementById("loadProgramFileBtn"),
     programLibraryMeta: document.getElementById("programLibraryMeta"),
+    editorHoverPreview: document.getElementById("editorHoverPreview"),
     runProgramBtn: document.getElementById("runProgramBtn"),
     killProgramBtn: document.getElementById("killProgramBtn"),
     clearOutputBtn: document.getElementById("clearOutputBtn"),
@@ -140,6 +144,11 @@
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;");
+
+  const setEditorHoverPreview = (message) => {
+    if (!dom.editorHoverPreview) return;
+    dom.editorHoverPreview.textContent = message || "";
+  };
 
   const median = (values) => {
     const nums = values.filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
@@ -856,6 +865,38 @@
     return token.replace(/^[^A-Za-z0-9_.$+\-*/<>=!?~^%:&|]+|[^A-Za-z0-9_.$+\-*/<>=!?~^%:&|]+$/g, "");
   };
 
+  const extractTokenInfoAt = (text, position) => {
+    if (!text || !Number.isInteger(position) || position < 0) return { token: "", start: 0, end: 0 };
+    const safePos = Math.max(0, Math.min(position, text.length));
+    let start = safePos;
+    let end = safePos;
+    while (start > 0 && tokenPattern.test(text[start - 1])) start -= 1;
+    while (end < text.length && tokenPattern.test(text[end])) end += 1;
+    const token = text
+      .slice(start, end)
+      .trim()
+      .replace(/^[^A-Za-z0-9_.$+\-*/<>=!?~^%:&|]+|[^A-Za-z0-9_.$+\-*/<>=!?~^%:&|]+$/g, "");
+    return { token, start, end };
+  };
+
+  const isOperatorToken = (token) => {
+    if (!token) return false;
+    if (/[A-Za-z0-9_$]/.test(token)) return false;
+    return true;
+  };
+
+  const expressionContextAt = (text, position) => {
+    const safePos = Math.max(0, Math.min(Number(position || 0), text.length));
+    let start = safePos;
+    let end = safePos;
+    while (start > 0 && text[start - 1] !== "\n") start -= 1;
+    while (end < text.length && text[end] !== "\n") end += 1;
+    const line = text.slice(start, end).trim();
+    if (!line) return "";
+    if (line.length <= 140) return line;
+    return `${line.slice(0, 137)}...`;
+  };
+
   const extractTokenFromSelection = () => {
     const text = dom.programInput.value || "";
     const start = Number(dom.programInput.selectionStart || 0);
@@ -916,10 +957,12 @@
 
   const clearHoverTokenState = () => {
     state.hoverActiveToken = "";
+    state.hoverPreviewToken = "";
     if (dom.programInput) {
       dom.programInput.classList.remove("token-hover");
       dom.programInput.style.cursor = "text";
     }
+    setEditorHoverPreview("Hover a variable to see cached value status, or hover an operator to inspect expression context.");
   };
 
   const setHoverTokenState = (token) => {
@@ -932,6 +975,69 @@
     }
     dom.programInput.classList.remove("token-hover");
     dom.programInput.style.cursor = "text";
+  };
+
+  const summarizeDescriptor = (descriptor) => {
+    if (!descriptor || typeof descriptor !== "object") return "value available";
+    const kind = String(descriptor.kind || "value");
+    if (kind === "integer" || kind === "number" || kind === "boolean") {
+      return `${kind}: ${descriptor.value}`;
+    }
+    if (kind === "string") {
+      const preview = descriptor.preview && descriptor.preview.text ? descriptor.preview.text : "";
+      return `string(${descriptor.length || 0}): ${preview}`;
+    }
+    if (kind === "ndarray") {
+      return `ndarray ${Array.isArray(descriptor.shape) ? descriptor.shape.join("x") : ""} ${descriptor.dtype || ""}`.trim();
+    }
+    if (kind === "simpleitk-image") {
+      return `image ${Array.isArray(descriptor.size) ? descriptor.size.join("x") : ""} ${descriptor.pixel_id || ""}`.trim();
+    }
+    if (kind === "sequence") {
+      return `sequence length=${descriptor.length || 0}`;
+    }
+    if (kind === "mapping") {
+      return `mapping length=${descriptor.length || 0}`;
+    }
+    return kind;
+  };
+
+  const previewVariableHover = async (token) => {
+    const seq = state.hoverPreviewSeq + 1;
+    state.hoverPreviewSeq = seq;
+    setEditorHoverPreview(`var ${token}: checking cache...`);
+    try {
+      const payload = await requestPlayValue({
+        nodeId: "",
+        variable: token,
+        path: "",
+        enqueue: false,
+      });
+      if (seq !== state.hoverPreviewSeq || state.hoverActiveToken !== token) return;
+      const materialization = String(payload.materialization || "");
+      if (payload.descriptor && (materialization === "cached" || materialization === "computed")) {
+        setEditorHoverPreview(`var ${token}: ${summarizeDescriptor(payload.descriptor)} (${materialization})`);
+        return;
+      }
+      if (materialization === "pending" || payload.compute_status === "running" || payload.compute_status === "queued") {
+        setEditorHoverPreview(`var ${token}: running (${payload.compute_status}). Click to focus/inspect.`);
+        return;
+      }
+      setEditorHoverPreview(`var ${token}: not materialized yet. Click to compute on demand.`);
+    } catch (_err) {
+      if (seq !== state.hoverPreviewSeq || state.hoverActiveToken !== token) return;
+      setEditorHoverPreview(`var ${token}: click to compute on demand.`);
+    }
+  };
+
+  const previewOperatorHover = (token, position) => {
+    const text = dom.programInput.value || "";
+    const context = expressionContextAt(text, position);
+    if (!context) {
+      setEditorHoverPreview(`operator '${token}'`);
+      return;
+    }
+    setEditorHoverPreview(`operator '${token}' in: ${context}`);
   };
 
   const inspectSymbolToken = async (token) => {
@@ -953,17 +1059,33 @@
     }
     state.hoverTimer = setTimeout(() => {
       const position = textIndexFromPoint(dom.programInput, event.clientX, event.clientY);
-      let token = "";
-      if (Number.isInteger(position)) {
-        token = extractTokenAt(dom.programInput.value || "", position);
+      if (!Number.isInteger(position)) {
+        clearHoverTokenState();
+        return;
       }
-      token = pickResolvableToken(token, extractTokenFromSelection(), state.lastHoverToken);
+      const tokenInfo = extractTokenInfoAt(dom.programInput.value || "", position);
+      const token = tokenInfo.token;
       if (!token) {
         clearHoverTokenState();
         return;
       }
+      const nodeId = resolveSymbolNode(token);
+      if (!nodeId && !isOperatorToken(token)) {
+        clearHoverTokenState();
+        return;
+      }
       state.lastHoverToken = token;
-      setHoverTokenState(token);
+      if (nodeId) {
+        setHoverTokenState(token);
+        if (state.hoverPreviewToken !== token) {
+          state.hoverPreviewToken = token;
+          previewVariableHover(token);
+        }
+        return;
+      }
+      setHoverTokenState("");
+      state.hoverPreviewToken = token;
+      previewOperatorHover(token, tokenInfo.start);
     }, 140);
   };
 
@@ -994,10 +1116,15 @@
     const token = resolveClickToken(event);
     if (!token) return;
     event.preventDefault();
+    state.suppressProgramClick = true;
     await inspectTokenWithRefresh(token);
   };
 
   const handleProgramClick = async (event) => {
+    if (state.suppressProgramClick) {
+      state.suppressProgramClick = false;
+      return;
+    }
     const token = resolveClickToken(event) || extractTokenFromSelection() || state.lastHoverToken;
     await inspectTokenWithRefresh(token);
   };
