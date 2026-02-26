@@ -650,6 +650,13 @@ body {
   justify-content: flex-end;
 }
 
+.viewer-load-status {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.38rem 0.5rem;
+  font-size: 0.72rem;
+}
+
 .viewer-niivue {
   width: 100%;
   min-height: 420px;

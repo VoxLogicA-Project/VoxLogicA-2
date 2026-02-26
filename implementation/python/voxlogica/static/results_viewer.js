@@ -56,6 +56,14 @@
     return svg;
   };
 
+  const debugLog = (...args) => {
+    try {
+      console.warn(...args);
+    } catch (_logErr) {
+      // Ignore console serialization issues.
+    }
+  };
+
   class ResultViewer {
     constructor(root, options = {}) {
       this.root = root;
@@ -68,10 +76,22 @@
 
     destroyNiivue() {
       this.mountToken += 1;
-      if (this.nv && typeof this.nv.destroy === "function") {
-        this.nv.destroy();
-      }
+      const prior = this.nv;
       this.nv = null;
+      if (prior && typeof prior.destroy === "function") {
+        // Avoid blocking the UI thread on teardown; some browser+GPU combos stall on synchronous destroy.
+        window.setTimeout(() => {
+          try {
+            prior.destroy();
+          } catch (error) {
+            try {
+              console.warn("[vox-viewer] niivue destroy failed", error);
+            } catch (_logErr) {
+              // Ignore console serialization issues.
+            }
+          }
+        }, 0);
+      }
     }
 
     setLoading(message) {
@@ -245,10 +265,22 @@
         const openAtPath = create("button", "btn btn-ghost btn-small", "Inspect This Value");
         openAtPath.addEventListener("click", () => this.onNavigate(path));
         toolbar.append(openAtPath);
+        const status = create("div", "viewer-load-status muted", "Initializing medical viewer...");
         const canvas = create("canvas", "viewer-niivue");
-        wrap.append(toolbar, canvas);
+        wrap.append(toolbar, status, canvas);
         card.append(wrap);
-        this._mountNiivue(canvas, this._withCacheBuster(render.nifti_url));
+        const mountWhenConnected = (attempt = 0) => {
+          if (canvas.isConnected) {
+            this._mountNiivue(canvas, this._withCacheBuster(render.nifti_url), status);
+            return;
+          }
+          if (attempt >= 40) {
+            status.textContent = "Viewer mount failed: canvas not connected.";
+            return;
+          }
+          window.requestAnimationFrame(() => mountWhenConnected(attempt + 1));
+        };
+        mountWhenConnected();
       }
     }
 
@@ -297,24 +329,57 @@
       return block;
     }
 
-    async _mountNiivue(canvas, url) {
+    async _mountNiivue(canvas, url, statusEl = null) {
+      const setStatus = (message) => {
+        if (!statusEl) return;
+        statusEl.textContent = message || "";
+      };
+      const clearStatus = () => {
+        if (!statusEl) return;
+        statusEl.textContent = "";
+      };
       const ns = window.niivue;
       if (!ns || typeof ns.Niivue !== "function") {
+        setStatus("Niivue library unavailable in browser.");
         const missing = create("div", "viewer-error");
         missing.textContent = "Niivue library unavailable in browser.";
         canvas.replaceWith(missing);
         return;
       }
+      const withTimeout = (promise, ms, label) =>
+        Promise.race([
+          promise,
+          new Promise((_, reject) => {
+            window.setTimeout(() => reject(new Error(`${label} timed out after ${ms} ms`)), ms);
+          }),
+        ]);
+      const sleep = (ms) =>
+        new Promise((resolve) => {
+          window.setTimeout(resolve, ms);
+        });
+      const candidateUrls = [url];
+      if (typeof url === "string" && url.includes("/render/nii?")) {
+        candidateUrls.push(url.replace("/render/nii?", "/render/nii.gz?"));
+      } else if (typeof url === "string" && url.endsWith("/render/nii")) {
+        candidateUrls.push(`${url}.gz`);
+      }
       try {
+        setStatus("Starting viewer...");
+        debugLog("[vox-viewer] niivue mount start", { url });
+        debugLog("[vox-viewer] step 1: destroy previous instance");
         this.destroyNiivue();
+        debugLog("[vox-viewer] step 2: create mount token");
         const token = ++this.mountToken;
         if (!canvas || !canvas.isConnected) {
+          debugLog("[vox-viewer] abort: canvas disconnected before mount");
           return;
         }
+        debugLog("[vox-viewer] step 3: size canvas");
         const width = Math.max(640, canvas.clientWidth || 0);
         const height = Math.max(420, canvas.clientHeight || 0);
         canvas.width = width;
         canvas.height = height;
+        debugLog("[vox-viewer] step 4: construct Niivue");
         const nv = new ns.Niivue({
           dragAndDropEnabled: false,
           isRuler: false,
@@ -322,27 +387,164 @@
           backColor: [0.02, 0.03, 0.05, 1.0],
           isResizeCanvas: false,
         });
+        nv.onWarn = (message) => debugLog("[vox-viewer] niivue warn", message);
+        nv.onInfo = (message) => debugLog("[vox-viewer] niivue info", message);
+        nv.onError = (message) => {
+          try {
+            console.error("[vox-viewer] niivue error", message);
+          } catch (_logErr) {
+            // Ignore console serialization issues.
+          }
+        };
         this.nv = nv;
-        await nv.attachToCanvas(canvas);
+        debugLog("[vox-viewer] step 5: probe WebGL2");
+        {
+          const probe = document.createElement("canvas");
+          const gl2 = probe.getContext("webgl2");
+          if (!gl2) {
+            throw new Error("WebGL2 is unavailable in this browser context.");
+          }
+        }
+        setStatus("Attaching WebGL canvas...");
+        let attached = false;
+        let attachError = null;
+        if (typeof nv.attachToCanvas === "function") {
+          try {
+            debugLog("[vox-viewer] step 6: attachToCanvas begin");
+            setStatus("Attaching viewer...");
+            await withTimeout(Promise.resolve(nv.attachToCanvas(canvas, false)), 7000, "Niivue attachToCanvas");
+            debugLog("[vox-viewer] step 6: attachToCanvas completed");
+            attached = true;
+          } catch (err) {
+            attachError = err;
+            debugLog("[vox-viewer] attachToCanvas failed, trying attachTo fallback", {
+              error: err && err.message ? err.message : String(err),
+            });
+          }
+        }
+        if (!attached && typeof nv.attachTo === "function") {
+          try {
+            debugLog("[vox-viewer] step 7: attachTo fallback begin");
+            setStatus("Retrying canvas attach...");
+            if (!canvas.id) {
+              canvas.id = `vox-niivue-${Math.random().toString(36).slice(2, 10)}`;
+            }
+            await withTimeout(Promise.resolve(nv.attachTo(canvas.id)), 5000, "Niivue attachTo");
+            debugLog("[vox-viewer] step 7: attachTo fallback completed");
+            attached = true;
+          } catch (err) {
+            attachError = err;
+            debugLog("[vox-viewer] attachTo fallback failed", {
+              error: err && err.message ? err.message : String(err),
+            });
+          }
+        }
+        if (!attached) {
+          throw attachError || new Error("Niivue failed to attach to the canvas.");
+        }
+        await sleep(60);
+        if (token !== this.mountToken || !canvas.isConnected) {
+          debugLog("[vox-viewer] abort: stale token or disconnected canvas after attach");
+          this.destroyNiivue();
+          return;
+        }
+        debugLog("[vox-viewer] step 8: load volumes");
+        let loaded = false;
+        let lastLoadError = null;
+        for (const candidateUrl of candidateUrls) {
+          try {
+            setStatus(`Loading volume (${candidateUrl.includes(".gz") ? "gz" : "nii"})...`);
+            debugLog("[vox-viewer] niivue load attempt", { candidateUrl });
+            await withTimeout(
+              Promise.resolve(
+                nv.loadVolumes([
+                  {
+                    url: candidateUrl,
+                    // Work around Niivue 0.64 edge-case with bare "nii.gz" URL basenames.
+                    name: candidateUrl.includes(".gz") ? "stored-volume.nii.gz" : "stored-volume.nii",
+                  },
+                ]),
+              ),
+              18000,
+              "Niivue loadVolumes",
+            );
+            loaded = true;
+            break;
+          } catch (loadErr) {
+            lastLoadError = loadErr;
+            debugLog("[vox-viewer] niivue load attempt failed", {
+              candidateUrl,
+              error: loadErr && loadErr.message ? loadErr.message : String(loadErr),
+            });
+          }
+        }
+        if (!loaded) {
+          throw lastLoadError || new Error("Niivue failed to load all candidate volume URLs.");
+        }
         if (token !== this.mountToken || !canvas.isConnected) {
           this.destroyNiivue();
           return;
         }
-        await nv.loadVolumes([
-          {
-            url,
-            // Work around Niivue 0.64 edge-case with bare "nii.gz" URL basenames.
-            name: "stored-volume.nii.gz",
-          },
-        ]);
-        if (token !== this.mountToken || !canvas.isConnected) {
-          this.destroyNiivue();
-          return;
+        if (!Array.isArray(nv.volumes) || nv.volumes.length === 0) {
+          throw new Error("Niivue loaded zero volumes for this result.");
+        }
+        const volume = nv.volumes[0];
+        debugLog("[vox-viewer] niivue volume loaded", {
+          url,
+          dims: volume && volume.dims ? volume.dims : null,
+          calMin: volume ? volume.cal_min : null,
+          calMax: volume ? volume.cal_max : null,
+          globalMin: volume ? volume.global_min : null,
+          globalMax: volume ? volume.global_max : null,
+        });
+        setStatus("Rendering volume...");
+        if (volume && Number.isFinite(volume.global_min) && Number.isFinite(volume.global_max)) {
+          if (!Number.isFinite(volume.cal_min) || !Number.isFinite(volume.cal_max) || volume.cal_max <= volume.cal_min) {
+            volume.cal_min = Number(volume.global_min);
+            volume.cal_max = Number(volume.global_max);
+          }
+          if (volume.cal_max <= volume.cal_min) {
+            volume.cal_max = volume.cal_min + 1.0;
+          }
+        }
+        if (volume && typeof nv.setOpacity === "function") {
+          try {
+            nv.setOpacity(0, 1.0);
+          } catch (_err) {
+            // Older Niivue signatures vary; continue with defaults.
+          }
+        }
+        if (volume && typeof nv.setColormap === "function") {
+          try {
+            nv.setColormap("gray", 0);
+          } catch (_err) {
+            try {
+              nv.setColormap(0, "gray");
+            } catch (_err2) {
+              // Colormap API varies between releases; continue with defaults.
+            }
+          }
         }
         if (ns.SLICE_TYPE && typeof nv.setSliceType === "function") {
           nv.setSliceType(ns.SLICE_TYPE.MULTIPLANAR);
         }
+        if (nv.scene && Array.isArray(nv.scene.crosshairPos)) {
+          nv.scene.crosshairPos = [0.5, 0.5, 0.5];
+        }
+        if (typeof nv.updateGLVolume === "function") {
+          nv.updateGLVolume();
+        }
+        if (typeof nv.drawScene === "function") {
+          nv.drawScene();
+        }
+        clearStatus();
       } catch (error) {
+        try {
+          console.error("[vox-viewer] niivue mount failed", error);
+        } catch (_logErr) {
+          // Ignore console serialization issues.
+        }
+        setStatus(`Viewer failed: ${error && error.message ? error.message : error}`);
         if (canvas && !canvas.isConnected) return;
         const failed = create("div", "viewer-error");
         failed.textContent = `Unable to open medical viewer: ${error && error.message ? error.message : error}`;

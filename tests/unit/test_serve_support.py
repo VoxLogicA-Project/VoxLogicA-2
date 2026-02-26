@@ -16,6 +16,7 @@ from voxlogica.serve_support import (
     list_store_results_snapshot,
     load_playground_program,
     parse_playground_examples,
+    render_store_result_nifti,
     render_store_result_nifti_gz,
     render_store_result_png,
 )
@@ -225,11 +226,14 @@ def test_store_result_renderers_emit_png_and_nifti(tmp_path: Path) -> None:
     db.put_success("node-nii", np.arange(125, dtype=np.float32).reshape(5, 5, 5))
     try:
         png = render_store_result_png(db, node_id="node-png")
+        nii_plain = render_store_result_nifti(db, node_id="node-nii")
         nii = render_store_result_nifti_gz(db, node_id="node-nii")
     finally:
         db.close()
 
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(nii_plain) > 352
+    assert nii_plain[:4] in {bytes([92, 1, 0, 0]), bytes([0, 0, 1, 92])}
     assert nii.startswith(b"\x1f\x8b")
 
 

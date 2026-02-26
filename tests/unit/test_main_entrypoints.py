@@ -254,6 +254,12 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
 
             root_resp = client.get("/")
             assert root_resp.status_code == 200
+            assert root_resp.headers.get("cache-control") == "no-store"
+            assert "__ASSET_REV__" not in root_resp.text
+            assert "/static/results_viewer.js?v=" in root_resp.text
+            static_js_resp = client.get("/static/results_viewer.js")
+            assert static_js_resp.status_code == 200
+            assert static_js_resp.headers.get("cache-control") == "no-store"
     finally:
         fake_storage.close()
 

@@ -16,7 +16,7 @@ import typer
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.routing import APIRouter
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -40,6 +40,7 @@ from voxlogica.serve_support import (
     list_store_results_snapshot,
     load_gallery_document,
     load_playground_program,
+    render_store_result_nifti,
     render_store_result_nifti_gz,
     render_store_result_png,
 )
@@ -543,9 +544,36 @@ api_app.add_middleware(
     allow_headers=["*"],
 )
 
+
+class NoCacheStaticFiles(StaticFiles):
+    """StaticFiles variant that disables browser caching for UI assets."""
+
+    async def get_response(self, path: str, scope: dict[str, Any]) -> Response:
+        response = await super().get_response(path, scope)
+        if response.status_code < 400:
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+
+_ASSET_REV_SENTINEL = "__ASSET_REV__"
+
+
+def _compute_static_asset_revision(static_dir: Path) -> str:
+    """Build a deterministic revision token from current static asset mtimes/sizes."""
+    parts: list[str] = []
+    for rel in ("index.html", "app.css", "app.js", "results_viewer.js"):
+        path = static_dir / rel
+        if not path.exists():
+            continue
+        stat = path.stat()
+        parts.append(f"{rel}:{stat.st_mtime_ns}:{stat.st_size}")
+    digest = hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
 static_path = Path(__file__).parent / "static"
 if static_path.exists():
-    api_app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+    api_app.mount("/static", NoCacheStaticFiles(directory=str(static_path)), name="static")
 
 api_router = APIRouter(prefix="/api/v1")
 playground_jobs = PlaygroundJobManager()
@@ -1059,13 +1087,39 @@ async def render_store_nifti_endpoint(
     return Response(content=payload, media_type="application/gzip", headers=headers)
 
 
+@api_router.get("/results/store/{node_id}/render/nii")
+async def render_store_nifti_uncompressed_endpoint(
+    node_id: str,
+    path: str | None = Query(default=None),
+) -> Response:
+    """Render one store record (or nested value) as uncompressed NIfTI."""
+    try:
+        payload = render_store_result_nifti(get_storage(), node_id=node_id, path=path or "")
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    headers = {
+        "Content-Disposition": f'inline; filename="{node_id}.nii"',
+        "Cache-Control": "no-store",
+    }
+    return Response(content=payload, media_type="application/octet-stream", headers=headers)
+
+
 @api_app.get("/")
-async def root() -> FileResponse:
-    """Serve interactive visualization static page."""
+async def root() -> HTMLResponse:
+    """Serve interactive visualization page with cache-busted asset references."""
     index_path = Path(__file__).parent / "static" / "index.html"
     if not index_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Visualization page not found")
-    return FileResponse(str(index_path))
+    try:
+        html = index_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Unable to read UI page: {exc}") from exc
+    html = html.replace(_ASSET_REV_SENTINEL, _compute_static_asset_revision(index_path.parent))
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
 
 
 @api_app.websocket("/livereload")

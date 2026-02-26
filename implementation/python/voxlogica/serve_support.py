@@ -1000,7 +1000,7 @@ def _describe_value(
         elif value.ndim == 3:
             summary["render"] = {
                 "kind": "medical-volume",
-                "nifti_url": _build_render_url(node_id, "nii.gz", path),
+                "nifti_url": _build_render_url(node_id, "nii", path),
             }
         return summary
 
@@ -1029,7 +1029,7 @@ def _describe_value(
         elif int(metadata["dimension"]) >= 3:
             summary["render"] = {
                 "kind": "medical-volume",
-                "nifti_url": _build_render_url(node_id, "nii.gz", path),
+                "nifti_url": _build_render_url(node_id, "nii", path),
             }
         return summary
 
@@ -1181,11 +1181,12 @@ def _image_to_png_bytes(image: Any) -> bytes:
             pass
 
 
-def _image_to_nifti_bytes(image: Any) -> bytes:
+def _image_to_nifti_bytes(image: Any, *, gzipped: bool = True) -> bytes:
     sitk = _import_simpleitk()
     if sitk is None:
         raise RuntimeError("SimpleITK is not available")
-    fd, tmp_name = tempfile.mkstemp(prefix="vox-result-", suffix=".nii.gz")
+    suffix = ".nii.gz" if gzipped else ".nii"
+    fd, tmp_name = tempfile.mkstemp(prefix="vox-result-", suffix=suffix)
     os.close(fd)
     path = Path(tmp_name)
     try:
@@ -1263,7 +1264,15 @@ def render_store_result_nifti_gz(storage: Any, *, node_id: str, path: str = "") 
     _row, value = _load_store_materialized_value(storage, node_id)
     target = _resolve_value_path(value, path)
     image = _to_image3d(target)
-    return _image_to_nifti_bytes(image)
+    return _image_to_nifti_bytes(image, gzipped=True)
+
+
+def render_store_result_nifti(storage: Any, *, node_id: str, path: str = "") -> bytes:
+    """Render one stored result (or sub-value) as uncompressed NIfTI bytes."""
+    _row, value = _load_store_materialized_value(storage, node_id)
+    target = _resolve_value_path(value, path)
+    image = _to_image3d(target)
+    return _image_to_nifti_bytes(image, gzipped=False)
 
 
 def _ru_maxrss_bytes() -> int:
