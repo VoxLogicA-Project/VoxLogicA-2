@@ -156,6 +156,7 @@ def handle_run(
     legacy: bool = False,
     serve_mode: bool = False,
     _include_execution_events: bool = False,
+    _include_goal_descriptors: bool = False,
     _goals: list[str] | None = None,
     **kwargs,
 ) -> OperationResult[Dict[str, Any]]:
@@ -300,6 +301,18 @@ def handle_run(
                             metadata = prepared_plan.materialization_store.metadata(goal.id)
                             goal_payload["status"] = "materialized"
                             goal_payload["metadata"] = metadata
+                            if _include_goal_descriptors:
+                                try:
+                                    from voxlogica.serve_support import describe_runtime_value
+
+                                    runtime_value = prepared_plan.materialization_store.get(goal.id)
+                                    goal_payload["runtime_descriptor"] = describe_runtime_value(
+                                        node_id=goal.id,
+                                        value=runtime_value,
+                                        path="",
+                                    )
+                                except Exception as exc:  # noqa: BLE001
+                                    goal_payload["runtime_descriptor_error"] = str(exc)
                         except Exception as exc:  # noqa: BLE001
                             goal_payload["status"] = "unavailable"
                             goal_payload["error"] = str(exc)

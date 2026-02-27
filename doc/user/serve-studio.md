@@ -21,6 +21,7 @@
   - selector built from print goals and declared variables
   - variable quick-inspection via editor double-click
   - per-query execution trace with `computed` vs `cached` node events
+  - when a value is computed but not persistable, inspector still shows a transient runtime descriptor (`computed-transient`)
 - Static diagnostics:
   - `/api/v1/playground/symbols` returns `available=false` with structured diagnostics when parse/static-policy checks fail
   - policy diagnostics can be returned with `available=true` when symbols are still resolvable

@@ -347,6 +347,74 @@ def test_playground_value_failed_job_exposes_diagnostics(monkeypatch: pytest.Mon
 
 
 @pytest.mark.unit
+def test_playground_value_uses_transient_runtime_descriptor_when_store_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    tracked_jobs: list[dict[str, object]] = []
+
+    def _job_payload(node_id: str) -> dict[str, object]:
+        return {
+            "job_id": "value-completed-transient",
+            "status": "completed",
+            "result": {
+                "goal_results": [
+                    {
+                        "node_id": node_id,
+                        "status": "materialized",
+                        "metadata": {"persisted": False, "persist_error": "Value not serializable"},
+                        "runtime_descriptor": {
+                            "available": True,
+                            "node_id": node_id,
+                            "status": "materialized",
+                            "runtime_version": "runtime",
+                            "path": "",
+                            "descriptor": {"kind": "sequence", "length": 3, "numeric_values": [1.0, 2.0, 3.0]},
+                        },
+                    }
+                ]
+            },
+            "log_tail": "",
+        }
+
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            get_value_job=lambda **kwargs: _job_payload(str(kwargs.get("node_id", ""))),
+            ensure_value_job=lambda payload, **kwargs: tracked_jobs.append(dict(payload)) or {"job_id": "unused", "status": "running", "log_tail": ""},
+        ),
+    )
+
+    try:
+        with TestClient(main_mod.api_app) as client:
+            symbols_resp = client.post("/api/v1/playground/symbols", json={"program": "let x = 2 + 3"})
+            assert symbols_resp.status_code == 200
+            node_id = symbols_resp.json()["symbol_table"]["x"]
+
+            value_resp = client.post(
+                "/api/v1/playground/value",
+                json={"program": "let x = 2 + 3", "variable": "x"},
+            )
+            assert value_resp.status_code == 200
+            payload = value_resp.json()
+            assert payload["available"] is True
+            assert payload["materialization"] == "computed-transient"
+            assert payload["transient"] is True
+            assert payload["descriptor"]["kind"] == "sequence"
+            assert payload["diagnostics"]["persist_error"] == "Value not serializable"
+            assert payload["node_id"] == node_id
+            assert tracked_jobs == []
+    finally:
+        fake_storage.close()
+
+
+@pytest.mark.unit
 def test_playground_symbols_reports_static_diagnostics(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
     monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)

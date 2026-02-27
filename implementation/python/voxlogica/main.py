@@ -792,6 +792,29 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             return dict(summary)
         return {}
 
+    def _runtime_descriptor_from_job(
+        job_payload: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        if not isinstance(job_payload, dict):
+            return None, {}
+        result_payload = job_payload.get("result")
+        if not isinstance(result_payload, dict):
+            return None, {}
+        goal_results = result_payload.get("goal_results")
+        if not isinstance(goal_results, list):
+            return None, {}
+        for goal_result in goal_results:
+            if not isinstance(goal_result, dict):
+                continue
+            if str(goal_result.get("node_id", "")) != node_id:
+                continue
+            descriptor = goal_result.get("runtime_descriptor")
+            metadata = goal_result.get("metadata")
+            if isinstance(descriptor, dict):
+                return descriptor, metadata if isinstance(metadata, dict) else {}
+            return None, metadata if isinstance(metadata, dict) else {}
+        return None, {}
+
     def _failure_payload(
         *,
         compute_status: str,
@@ -892,6 +915,24 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                     return _attach_common(inspected)
             except KeyError:
                 inspected = None
+            transient_descriptor, transient_metadata = _runtime_descriptor_from_job(tracked_job)
+            if transient_descriptor is not None and view_path in {"", "/"}:
+                transient_payload = dict(transient_descriptor)
+                transient_payload["materialization"] = "computed-transient"
+                transient_payload["compute_status"] = "completed"
+                transient_payload["job_id"] = tracked_job.get("job_id")
+                transient_payload["store_status"] = "missing"
+                transient_payload["request_enqueued"] = False
+                transient_payload["transient"] = True
+                if transient_metadata:
+                    transient_payload["metadata"] = transient_metadata
+                    persist_error = transient_metadata.get("persist_error")
+                    if persist_error:
+                        transient_payload["diagnostics"] = {
+                            "persist_error": str(persist_error),
+                            "store_status": "missing",
+                        }
+                return _attach_common(transient_payload)
             if not request.enqueue:
                 return _attach_common(
                     _failure_payload(
@@ -947,6 +988,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             "execution_strategy": "dask",
             "legacy": False,
             "serve_mode": True,
+            "_include_goal_descriptors": True,
             "_goals": [node_id],
             "_job_kind": "value-resolve",
             "_priority_node": node_id,
