@@ -365,9 +365,10 @@
             `;
           })
           .join("");
-        if (family === "mapping") {
+        if (family === "mapping" || family === "sequence") {
           list.querySelectorAll(".table-like-row").forEach((row, index) => {
             row.style.cursor = "pointer";
+            row.title = "Open this item";
             row.addEventListener("click", () => {
               const entry = items[index];
               if (!entry || !entry.path) return;

@@ -36,7 +36,7 @@ def test_parse_playground_examples_extracts_comment_directives():
     description: tiny sample
     -->
     ```imgql
-    print "hello" 1 + 2
+    answer = 1 + 2
     ```
     """
     examples = parse_playground_examples(markdown)
@@ -46,7 +46,7 @@ def test_parse_playground_examples_extracts_comment_directives():
     assert example["title"] == "Hello Example"
     assert example["module"] == "default"
     assert example["strategy"] == "dask"
-    assert 'print "hello" 1 + 2' in example["code"]
+    assert "answer = 1 + 2" in example["code"]
 
 
 @pytest.mark.unit
@@ -166,7 +166,7 @@ def test_playground_job_public_payload_omits_traceback() -> None:
 def test_playground_program_library_uses_fixed_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     load_dir = tmp_path / "playground-programs"
     load_dir.mkdir(parents=True)
-    (load_dir / "demo.imgql").write_text('print "hello" 1', encoding="utf-8")
+    (load_dir / "demo.imgql").write_text("answer = 1", encoding="utf-8")
     monkeypatch.setenv("VOXLOGICA_SERVE_LOAD_DIR", str(load_dir))
 
     listing = list_playground_programs(limit=20)
@@ -176,7 +176,7 @@ def test_playground_program_library_uses_fixed_directory(tmp_path: Path, monkeyp
 
     loaded = load_playground_program("demo.imgql")
     assert loaded["path"] == "demo.imgql"
-    assert loaded["content"].strip() == 'print "hello" 1'
+    assert loaded["content"].strip() == "answer = 1"
 
     with pytest.raises(ValueError):
         load_playground_program("../outside.imgql")
@@ -232,6 +232,35 @@ def test_store_result_renderers_emit_png_and_nifti(tmp_path: Path) -> None:
     assert len(nii_plain) > 352
     assert nii_plain[:4] in {bytes([92, 1, 0, 0]), bytes([0, 0, 1, 92])}
     assert nii.startswith(b"\x1f\x8b")
+
+
+@pytest.mark.unit
+def test_sequence_pages_preserve_non_json_items_for_descriptor_and_rendering(tmp_path: Path) -> None:
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("SimpleITK")
+    db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    sequence = [
+        np.arange(64, dtype=np.float32).reshape(4, 4, 4),
+        np.ones((4, 4, 4), dtype=np.float32),
+    ]
+    db.put_success("node-seq-vol", sequence)
+    try:
+        page_payload = inspect_store_result_page(db, node_id="node-seq-vol", offset=0, limit=2)
+        page_items = page_payload["page"]["items"]
+        assert len(page_items) == 2
+        assert page_items[0]["path"] == "/0"
+        assert page_items[0]["descriptor"]["vox_type"] == "ndarray"
+        assert page_items[0]["descriptor"]["render"]["kind"] == "medical-volume"
+
+        first_item = inspect_store_result(db, node_id="node-seq-vol", path="/0")
+        assert first_item["path"] == "/0"
+        assert first_item["descriptor"]["vox_type"] == "ndarray"
+        assert first_item["descriptor"]["render"]["kind"] == "medical-volume"
+
+        nii = render_store_result_nifti_gz(db, node_id="node-seq-vol", path="/0")
+        assert nii.startswith(b"\x1f\x8b")
+    finally:
+        db.close()
 
 
 class _DuckSimpleITKImage:

@@ -358,6 +358,9 @@ class VoxSequenceValue(VoxValue, ABC):
                 entry["value"] = adapted.to_json_native()
             except VoxValueError:
                 pass
+            # Keep the original value available for in-process persistence adapters
+            # that need richer serialization than JSON-native inline payloads.
+            entry["_raw"] = value
             items.append(entry)
         total = self._len()
         next_offset = safe_offset + len(items)

@@ -98,7 +98,7 @@ Run a VoxLogicA program with various output options. This endpoint mirrors the C
 
 ```json
 {
-  "program": "let a = 1\nlet b = 2\nlet c = a + b\nprint \"sum\" c",
+  "program": "a = 1\nb = 2\nc = a + b\nsum = c",
   "filename": "optional_filename.imgql",
   "save_task_graph": "output.dot",
   "save_task_graph_as_json": "output.json",
@@ -160,7 +160,7 @@ Example diagnostic response:
 curl -X POST http://localhost:8000/api/v1/run \
   -H "Content-Type: application/json" \
   -d '{
-    "program": "let a = 1\nlet b = 2\nlet c = a + b\nprint \"sum\" c"
+    "program": "a = 1\nb = 2\nc = a + b\nsum = c"
   }'
 ```
 
@@ -170,7 +170,7 @@ curl -X POST http://localhost:8000/api/v1/run \
 curl -X POST http://localhost:8000/api/v1/run \
   -H "Content-Type: application/json" \
   -d '{
-    "program": "let a = 1\nlet b = 2\nlet c = a + b\nprint \"sum\" c",
+    "program": "a = 1\nb = 2\nc = a + b\nsum = c",
     "save_task_graph_as_json": "result.json",
     "save_task_graph": "result.dot",
     "save_syntax": "result.txt",
@@ -182,21 +182,22 @@ curl -X POST http://localhost:8000/api/v1/run \
 
 ```json
 {
-  "operations": 3,
-  "goals": 1,
-  "task_graph": "goals: print(sum,2)\noperations:\n0 -> 1.0\n1 -> 2.0\n2 -> +(0,1)",
-  "syntax": "let a=1.0\nlet b=2.0\nlet c=+(a,b)\nprint \"sum\" c",
+  "operations": 4,
+  "goals": 0,
+  "task_graph": "goals:\noperations:\n0 -> 1.0\n1 -> 2.0\n2 -> +(0,1)\n3 -> id(2)",
+  "syntax": "a=1.0\nb=2.0\nc=+(a,b)\nsum=id(c)",
   "saved_files": {
-    "result.dot": "digraph {\n  0 [label=\"[0] 1.0\"]\n  1 [label=\"[1] 2.0\"]\n  2 [label=\"[2] +(0,1)\"]\n  0 -> 2;\n  1 -> 2;\n}\n",
+    "result.dot": "digraph {\n  0 [label=\"[0] 1.0\"]\n  1 [label=\"[1] 2.0\"]\n  2 [label=\"[2] +(0,1)\"]\n  3 [label=\"[3] id(2)\"]\n  0 -> 2;\n  1 -> 2;\n  2 -> 3;\n}\n",
     "result.json": {
       "operations": [
         { "operator": 1.0, "arguments": [] },
         { "operator": 2.0, "arguments": [] },
-        { "operator": "+", "arguments": [0, 1] }
+        { "operator": "+", "arguments": [0, 1] },
+        { "operator": "id", "arguments": [2] }
       ],
-      "goals": [{ "operation_id": 2 }]
+      "goals": []
     },
-    "result.txt": "let a=1.0\nlet b=2.0\nlet c=+(a,b)\nprint \"sum\" c"
+    "result.txt": "a=1.0\nb=2.0\nc=+(a,b)\nsum=id(c)"
   }
 }
 ```
@@ -219,13 +220,7 @@ curl -X POST http://localhost:8000/api/v1/run \
       "arguments": [0, 1]
     }
   ],
-  "goals": [
-    {
-      "type": "print",
-      "name": "sum",
-      "operation_id": 2
-    }
-  ]
+  "goals": []
 }
 ```
 
@@ -302,7 +297,7 @@ print(f"Version: {response.json()['version']}")
 
 # Analyze a program
 program_data = {
-    "program": "let x = 5\nlet y = x * 2\nprint \"result\" y",
+    "program": "x = 5\ny = x * 2\nresult = y",
     "filename": "example.imgql"
 }
 
@@ -317,7 +312,7 @@ else:
 
 # Analyze with exports
 export_data = {
-    "program": "let a = 1\nlet b = 2\nprint \"sum\" (a + b)",
+    "program": "a = 1\nb = 2\nsum = a + b",
     "save_task_graph_as_json": "output.json",
     "save_task_graph": "output.dot"
 }
@@ -354,7 +349,7 @@ async function getVersion() {
 // Analyze a program
 async function analyzeProgram() {
   const programData = {
-    program: 'let x = 5\nlet y = x * 2\nprint "result" y',
+    program: 'x = 5\ny = x * 2\nresult = y',
     filename: "example.imgql",
   };
 
@@ -380,7 +375,7 @@ async function analyzeProgram() {
 // Save task graph as JSON
 async function saveTaskGraph() {
   const saveData = {
-    program: "let a = 1\nlet b = 2\nprint a + b",
+    program: "a = 1\nb = 2\nsum = a + b",
     filename: "output.json",
   };
 
@@ -411,17 +406,17 @@ curl http://localhost:8000/api/v1/version
 # Analyze a program
 curl -X POST http://localhost:8000/api/v1/program \
   -H "Content-Type: application/json" \
-  -d '{"program": "let x = 5\nprint x"}'
+  -d '{"program": "x = 5\nresult = x"}'
 
 # Save task graph as DOT
 curl -X POST http://localhost:8000/api/v1/save-task-graph \
   -H "Content-Type: application/json" \
-  -d '{"program": "let x = 5\nprint x", "filename": "graph.dot"}'
+  -d '{"program": "x = 5\nresult = x", "filename": "graph.dot"}'
 
 # Save task graph as JSON
 curl -X POST http://localhost:8000/api/v1/save-task-graph-json \
   -H "Content-Type: application/json" \
-  -d '{"program": "let x = 5\nprint x", "filename": "graph.json"}'
+  -d '{"program": "x = 5\nresult = x", "filename": "graph.json"}'
 ```
 
 ## Interactive Documentation

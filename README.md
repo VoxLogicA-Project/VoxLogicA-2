@@ -34,6 +34,9 @@ python3 bootstrap.py --with-test
 
 # Start API server
 ./voxlogica serve
+
+# Start modern dev mode (backend + Vite frontend, one command)
+./voxlogica dev
 ```
 
 ## Safety Defaults
@@ -83,7 +86,7 @@ Useful REPL commands:
 - `:help`
 - `:load <file>`: load declarations/imports from file (no goal execution)
 - `:run <file>`: load file and execute goals
-- `:show`: print session context
+- `:show`: display session context
 - `:reset`: clear context
 - `:quit`
 
@@ -98,16 +101,15 @@ This program computes the intensity range, builds a lazy symbolic sequence of al
 ```imgql
 import "simpleitk"
 
-let img = ReadImage("tests/data/chris_t1.nii.gz")
-let mm = MinimumMaximum(img)
-let lo = index(mm,0)
-let hi = index(mm,1)
+img = ReadImage("tests/data/chris_t1.nii.gz")
+mm = MinimumMaximum(img)
+lo = index(mm,0)
+hi = index(mm,1)
 
-let thresholds = range(lo, hi+1)
-let mk_mask(th) = BinaryThreshold(img, th, hi, 1, 0)
-let masks = map(mk_mask, thresholds)
-
-print "n_thresholds" hi-lo+1
+thresholds = range(lo, hi+1)
+mk_mask(th) = BinaryThreshold(img, th, hi, 1, 0)
+masks = map(mk_mask, thresholds)
+n_thresholds = hi-lo+1
 ```
 
 Why this is lazy/symbolic:

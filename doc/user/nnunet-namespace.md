@@ -55,8 +55,8 @@ Dictionary containing:
 
 **Example:**
 ```voxlogica
-let result = nnunet.train(images, labels, ["T1", "T2"], "/tmp/nnunet_work", 1, "MyDataset", "3d_fullres", 5)
-let model_path = result["model_path"]
+result = nnunet.train(images, labels, ["T1", "T2"], "/tmp/nnunet_work", 1, "MyDataset", "3d_fullres", 5)
+model_path = result["model_path"]
 ```
 
 ### nnunet.predict
@@ -87,21 +87,21 @@ Dictionary containing:
 
 **Example:**
 ```voxlogica
-let result = nnunet.predict(test_images, model_path, "/tmp/predictions", "3d_fullres", [0, 1, 2], true)
-let output_path = result["output_path"]
+result = nnunet.predict(test_images, model_path, "/tmp/predictions", "3d_fullres", [0, 1, 2], true)
+output_path = result["output_path"]
 ```
 
 ## Complete Workflow Example
 
 ```voxlogica
 # Prepare data
-let training_images = my_training_data_bag  # format: (case_id, modality, array)
-let training_labels = my_training_labels_bag  # format: (case_id, array)
-let test_images = my_test_data_bag
-let modalities = ["T1", "T2", "FLAIR"]
+training_images = my_training_data_bag  # format: (case_id, modality, array)
+training_labels = my_training_labels_bag  # format: (case_id, array)
+test_images = my_test_data_bag
+modalities = ["T1", "T2", "FLAIR"]
 
 # Train model
-let training_result = nnunet.train(
+training_result = nnunet.train(
     training_images, 
     training_labels, 
     modalities, 
@@ -112,11 +112,11 @@ let training_result = nnunet.train(
     5
 )
 
-print "Training status: " training_result["status"]
-print "Model saved at: " training_result["model_path"]
+training_status = training_result["status"]
+trained_model_path = training_result["model_path"]
 
 # Run prediction
-let prediction_result = nnunet.predict(
+prediction_result = nnunet.predict(
     test_images,
     training_result["model_path"],
     "/tmp/predictions",
@@ -125,7 +125,7 @@ let prediction_result = nnunet.predict(
     true  # Save probability maps
 )
 
-print "Predictions saved at: " prediction_result["output_path"]
+prediction_output_path = prediction_result["output_path"]
 ```
 
 ## Resume Functionality

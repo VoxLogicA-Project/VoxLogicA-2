@@ -24,6 +24,23 @@ def test_parser_supports_dotted_operators_and_symbol_identifiers():
 
 
 @pytest.mark.unit
+def test_parser_accepts_declarations_without_let_keyword():
+    program = parse_program_content(
+        """
+        B+(a)=a
+        x = 1 .<= 2
+        y = B+(3)
+        """
+    )
+    assert len(program.commands) == 3
+    for cmd in program.commands:
+        assert isinstance(cmd, Declaration)
+    assert program.commands[0].identifier == "B+"
+    assert program.commands[1].identifier == "x"
+    assert program.commands[2].identifier == "y"
+
+
+@pytest.mark.unit
 def test_parser_keeps_qualified_identifiers_with_operator_support():
     program = parse_program_content(
         """

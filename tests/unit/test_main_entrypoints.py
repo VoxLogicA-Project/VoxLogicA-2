@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -94,6 +95,37 @@ def test_list_primitives_and_repl_and_serve(capsys: pytest.CaptureFixture[str], 
 
 
 @pytest.mark.unit
+def test_dev_supervisor_prefixes_repo_pythonpath(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main_mod.shutil, "which", lambda _name: "/usr/bin/npm")
+    monkeypatch.setattr(main_mod, "setup_logging", lambda debug, verbose: None)
+    monkeypatch.setattr(main_mod, "_terminate_child_process", lambda proc, name: None)
+    monkeypatch.setattr(main_mod.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(main_mod.subprocess, "run", lambda *args, **kwargs: None)
+
+    captured_envs: list[dict[str, str]] = []
+
+    class _FakeProc:
+        def poll(self):
+            return 0
+
+    def _fake_popen(cmd, cwd=None, env=None, **kwargs):  # noqa: ANN001
+        captured_envs.append(dict(env or {}))
+        return _FakeProc()
+
+    monkeypatch.setattr(main_mod.subprocess, "Popen", _fake_popen)
+
+    with pytest.raises(typer.Exit):
+        main_mod.dev()
+
+    assert captured_envs
+    backend_env = captured_envs[0]
+    expected_prefix = str((Path(main_mod.__file__).resolve().parents[3] / "implementation" / "python").resolve())
+    pythonpath = backend_env.get("PYTHONPATH", "")
+    assert pythonpath
+    assert pythonpath.split(os.pathsep)[0] == expected_prefix
+
+
+@pytest.mark.unit
 def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     library = tmp_path / "playground-library"
     library.mkdir(parents=True)
@@ -174,16 +206,17 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             blocked_run = client.post("/api/v1/run", json={"program": 'print "x" 1', "save_task_graph": "/tmp/x.dot"})
             assert blocked_run.status_code == 400
 
-            symbols_resp = client.post("/api/v1/playground/symbols", json={"program": "let x = 2 + 3"})
+            symbols_resp = client.post("/api/v1/playground/symbols", json={"program": "x = 2 + 3"})
             assert symbols_resp.status_code == 200
             symbol_payload = symbols_resp.json()
             assert symbol_payload["available"] is True
             assert "x" in symbol_payload["symbol_table"]
+            assert symbol_payload["print_targets"] == []
             node_id = symbol_payload["symbol_table"]["x"]
 
             value_pending = client.post(
                 "/api/v1/playground/value",
-                json={"program": "let x = 2 + 3", "variable": "x", "execution_strategy": "strict"},
+                json={"program": "x = 2 + 3", "variable": "x", "execution_strategy": "strict"},
             )
             assert value_pending.status_code == 200
             assert value_pending.json()["materialization"] == "pending"
@@ -194,7 +227,7 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             value_with_stale_node = client.post(
                 "/api/v1/playground/value",
                 json={
-                    "program": "let x = 2 + 3",
+                    "program": "x = 2 + 3",
                     "variable": "x",
                     "node_id": "deadbeef",
                     "execution_strategy": "strict",
@@ -207,7 +240,7 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             value_cached = client.post(
                 "/api/v1/playground/value",
                 json={
-                    "program": "let x = 2 + 3",
+                    "program": "x = 2 + 3",
                     "variable": "x",
                     "execution_strategy": "strict",
                     "enqueue": False,
@@ -221,7 +254,7 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             page_cached = client.post(
                 "/api/v1/playground/value/page",
                 json={
-                    "program": "let x = 2 + 3",
+                    "program": "x = 2 + 3",
                     "variable": "x",
                     "offset": 0,
                     "limit": 8,
@@ -230,14 +263,14 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             )
             assert page_cached.status_code == 400
 
-            symbols_seq = client.post("/api/v1/playground/symbols", json={"program": "let xs = range(0,5)"})
+            symbols_seq = client.post("/api/v1/playground/symbols", json={"program": "xs = range(0,5)"})
             assert symbols_seq.status_code == 200
             xs_node = symbols_seq.json()["symbol_table"]["xs"]
             fake_storage.put_success(xs_node, [0, 1, 2, 3, 4])
             page_seq = client.post(
                 "/api/v1/playground/value/page",
                 json={
-                    "program": "let xs = range(0,5)",
+                    "program": "xs = range(0,5)",
                     "variable": "xs",
                     "offset": 1,
                     "limit": 2,
@@ -253,7 +286,7 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             invalid_node = client.post(
                 "/api/v1/playground/value",
                 json={
-                    "program": "let x = 2 + 3",
+                    "program": "x = 2 + 3",
                     "node_id": "deadbeef",
                     "execution_strategy": "strict",
                     "enqueue": False,

@@ -8,7 +8,11 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import time
 from typing import Any, Optional, TypeVar, Generic, MutableMapping
 
@@ -621,6 +625,89 @@ def _compute_static_asset_revision(static_dir: Path) -> str:
 static_path = Path(__file__).parent / "static"
 if static_path.exists():
     api_app.mount("/static", NoCacheStaticFiles(directory=str(static_path)), name="static")
+
+
+def _iter_ui_source_files(ui_dir: Path) -> list[Path]:
+    """Return source files that should trigger a UI rebuild when changed."""
+    files: list[Path] = []
+    for rel in ("package.json", "package-lock.json", "vite.config.js", "index.html"):
+        path = ui_dir / rel
+        if path.exists():
+            files.append(path)
+    src_dir = ui_dir / "src"
+    if src_dir.exists():
+        files.extend(path for path in src_dir.rglob("*") if path.is_file())
+    return files
+
+
+def _ui_assets_up_to_date(ui_dir: Path, static_dir: Path) -> bool:
+    """Return True when built UI assets are newer than all relevant UI sources."""
+    outputs = [static_dir / "app.js", static_dir / "app.css"]
+    if not all(path.exists() for path in outputs):
+        return False
+    source_files = _iter_ui_source_files(ui_dir)
+    if not source_files:
+        return True
+    latest_source_mtime = max(path.stat().st_mtime_ns for path in source_files)
+    earliest_output_mtime = min(path.stat().st_mtime_ns for path in outputs)
+    return earliest_output_mtime >= latest_source_mtime
+
+
+def _build_ui_assets_if_needed(*, build_enabled: bool, force_build: bool = False) -> None:
+    """Build Svelte UI assets when serve starts, unless disabled or already fresh."""
+    if not build_enabled:
+        logger.info("UI auto-build disabled via --no-build-ui.")
+        return
+
+    repo_root = Path(__file__).resolve().parents[3]
+    ui_dir = repo_root / "implementation" / "ui"
+    static_dir = Path(__file__).parent / "static"
+
+    if not ui_dir.exists():
+        logger.debug("UI workspace not found at %s; skipping UI build.", ui_dir)
+        return
+    if not force_build and _ui_assets_up_to_date(ui_dir, static_dir):
+        logger.debug("UI assets are up to date; skipping UI build.")
+        return
+
+    npm_bin = shutil.which("npm")
+    if npm_bin is None:
+        outputs = [static_dir / "app.js", static_dir / "app.css"]
+        if all(path.exists() for path in outputs):
+            logger.warning("npm is not available; serving existing built UI assets.")
+            return
+        raise RuntimeError("UI assets are missing/stale and npm is not installed. Install Node.js/npm or use --no-build-ui.")
+
+    logger.info("Building UI assets from %s", ui_dir)
+    node_modules = ui_dir / "node_modules"
+    install_cmd = [npm_bin, "install", "--no-audit", "--no-fund"]
+    build_cmd = [npm_bin, "run", "build"]
+    env = dict(os.environ)
+
+    try:
+        if not node_modules.exists():
+            logger.info("Installing UI dependencies...")
+            subprocess.run(install_cmd, cwd=ui_dir, check=True, env=env)
+        subprocess.run(build_cmd, cwd=ui_dir, check=True, env=env)
+    except subprocess.CalledProcessError as exc:  # pragma: no cover - exercised via integration/manual runs
+        raise RuntimeError(f"UI build failed (command: {' '.join(exc.cmd)}).") from exc
+
+
+def _terminate_child_process(process: subprocess.Popen[str] | None, *, name: str, timeout_s: float = 8.0) -> None:
+    """Terminate a child process gracefully, then force kill if needed."""
+    if process is None:
+        return
+    if process.poll() is not None:
+        return
+    logger.info("Stopping %s process (pid=%s)...", name, process.pid)
+    process.terminate()
+    try:
+        process.wait(timeout=timeout_s)
+        return
+    except subprocess.TimeoutExpired:
+        logger.warning("%s process did not exit in %.1fs; killing.", name, timeout_s)
+    process.kill()
+    process.wait(timeout=3.0)
 
 api_router = APIRouter(prefix="/api/v1")
 playground_jobs = PlaygroundJobManager()
@@ -1517,14 +1604,124 @@ api_app.include_router(api_router)
 
 
 @app.command()
+def dev(
+    backend_host: str = typer.Option("127.0.0.1", help="Backend host"),
+    backend_port: int = typer.Option(8000, help="Backend port"),
+    frontend_host: str = typer.Option("127.0.0.1", help="Vite frontend host"),
+    frontend_port: int = typer.Option(5173, help="Vite frontend port"),
+    debug: bool = typer.Option(False, "--debug", help="Enable verbose backend logging"),
+) -> None:
+    """Run backend API and Vite frontend together with one supervisor process."""
+
+    setup_logging(debug=debug, verbose=False)
+    repo_root = Path(__file__).resolve().parents[3]
+    ui_dir = repo_root / "implementation" / "ui"
+    if not ui_dir.exists():
+        logger.error("UI workspace not found at %s", ui_dir)
+        raise typer.Exit(code=1)
+
+    npm_bin = shutil.which("npm")
+    if npm_bin is None:
+        logger.error("npm is required for dev mode but was not found in PATH.")
+        raise typer.Exit(code=1)
+
+    env = dict(os.environ)
+    backend_origin = f"http://{backend_host}:{backend_port}"
+    frontend_origin = f"http://{frontend_host}:{frontend_port}"
+    env["VOXLOGICA_DEV_BACKEND_URL"] = backend_origin
+    local_python_root = str((repo_root / "implementation" / "python").resolve())
+    existing_pythonpath = str(env.get("PYTHONPATH", "")).strip()
+    if existing_pythonpath:
+        python_entries = existing_pythonpath.split(os.pathsep)
+        if local_python_root not in python_entries:
+            env["PYTHONPATH"] = os.pathsep.join([local_python_root, existing_pythonpath])
+    else:
+        env["PYTHONPATH"] = local_python_root
+
+    node_modules = ui_dir / "node_modules"
+    if not node_modules.exists():
+        logger.info("Installing UI dependencies in %s", ui_dir)
+        try:
+            subprocess.run([npm_bin, "install", "--no-audit", "--no-fund"], cwd=ui_dir, check=True, env=env)
+        except subprocess.CalledProcessError as exc:
+            logger.error("Failed to install UI dependencies (exit=%s).", exc.returncode)
+            raise typer.Exit(code=1) from exc
+
+    backend_cmd = [
+        sys.executable,
+        "-m",
+        "voxlogica.main",
+        "serve",
+        "--host",
+        backend_host,
+        "--port",
+        str(backend_port),
+        "--no-build-ui",
+    ]
+    if debug:
+        backend_cmd.append("--debug")
+
+    frontend_cmd = [
+        npm_bin,
+        "run",
+        "dev",
+        "--",
+        "--host",
+        frontend_host,
+        "--port",
+        str(frontend_port),
+        "--strictPort",
+    ]
+
+    logger.info("Starting backend at %s", backend_origin)
+    logger.info("Starting Vite frontend at %s", frontend_origin)
+    backend_proc: subprocess.Popen[str] | None = None
+    frontend_proc: subprocess.Popen[str] | None = None
+    exit_code = 0
+    try:
+        backend_proc = subprocess.Popen(backend_cmd, cwd=repo_root, env=env)
+        frontend_proc = subprocess.Popen(frontend_cmd, cwd=ui_dir, env=env)
+        logger.info("Dev mode ready: open %s", frontend_origin)
+        logger.info("Press Ctrl+C to stop both backend and frontend.")
+        while True:
+            backend_status = backend_proc.poll()
+            frontend_status = frontend_proc.poll()
+            if backend_status is not None:
+                logger.error("Backend process exited unexpectedly with code %s.", backend_status)
+                exit_code = backend_status if backend_status != 0 else 1
+                break
+            if frontend_status is not None:
+                logger.error("Frontend process exited unexpectedly with code %s.", frontend_status)
+                exit_code = frontend_status if frontend_status != 0 else 1
+                break
+            time.sleep(0.4)
+    except KeyboardInterrupt:
+        logger.info("Stopping dev mode...")
+        exit_code = 0
+    finally:
+        _terminate_child_process(frontend_proc, name="frontend")
+        _terminate_child_process(backend_proc, name="backend")
+
+    if exit_code != 0:
+        raise typer.Exit(code=exit_code)
+
+
+@app.command()
 def serve(
     host: str = typer.Option("127.0.0.1", help="Host to bind the API server"),
     port: int = typer.Option(8000, help="Port to bind the API server"),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
+    build_ui: bool = typer.Option(True, "--build-ui/--no-build-ui", help="Build Svelte UI assets before starting server"),
+    force_ui_build: bool = typer.Option(False, "--force-ui-build", help="Force a UI rebuild even when assets appear fresh"),
 ) -> None:
     """Start VoxLogicA API server."""
 
     setup_logging(debug=debug, verbose=False)
+    try:
+        _build_ui_assets_if_needed(build_enabled=build_ui, force_build=force_ui_build)
+    except RuntimeError as exc:
+        logger.error("Unable to prepare UI assets: %s", exc)
+        raise typer.Exit(code=1) from exc
     logger.info("Starting VoxLogicA API server version %s on %s:%s", get_version(), host, port)
     logger.info("Interactive graph visualizer at http://%s:%s/", host, port)
     logger.info("API docs available at http://%s:%s/docs", host, port)

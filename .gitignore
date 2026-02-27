@@ -47,3 +47,7 @@ coverage.xml
 tests/reports/*
 !tests/reports/.gitignore
 /.cache/vox1/
+
+# Frontend workspace artifacts
+implementation/ui/node_modules/
+implementation/ui/.vite/

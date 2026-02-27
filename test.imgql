@@ -3,8 +3,7 @@
 
 import "test"
 
-let a = 
+a = 
       timewaste(20,20)
     + timewaste(20,20)
-print "time wasted" a
-
+time_wasted = a

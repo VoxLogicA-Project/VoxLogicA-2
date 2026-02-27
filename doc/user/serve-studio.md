@@ -3,7 +3,7 @@
 `./voxlogica serve` now exposes a multi-page studio at `/` with:
 
 - Playground with async execution jobs
-- Human-oriented side-by-side query/result lens (print-label selector + variable double-click)
+- Human-oriented side-by-side query/result lens (target selector + variable double-click)
 - Results Explorer for persisted store artifacts (medical Niivue viewer, 2D image preview, structured values)
 - Progressive markdown-driven example gallery
 - Test/coverage/performance dashboard
@@ -18,7 +18,7 @@
 - Execution strategy is pinned to `dask` in serve mode.
 - Always-on telemetry: wall time, CPU time, CPU utilization, Python heap peak, RSS delta
 - Result lens:
-  - selector built from print goals and declared variables
+  - selector built from declared variables and explicit goals
   - variable quick-inspection via editor double-click
   - per-query execution trace with `computed` vs `cached` node events
   - paginated inspection endpoint for composite values: `POST /api/v1/playground/value/page`
@@ -89,7 +89,7 @@ strategy: dask
 description: Short card description.
 -->
 ```imgql
-print "answer" 2 + 2
+answer = 2 + 2
 ```
 ```
 

@@ -204,9 +204,10 @@ class Program:
 grammar = r"""
     program: command*
     
-    command: let_cmd | save_cmd | print_cmd | import_cmd
+    command: let_cmd | assignment_cmd | save_cmd | print_cmd | import_cmd
     
     let_cmd: "let" variable_name formal_args? "=" expression
+    assignment_cmd: variable_name formal_args? "=" expression
     save_cmd: "save" string expression
     print_cmd: "print" string expression
     import_cmd: "import" string
@@ -274,6 +275,12 @@ class VoxLogicATransformer(Transformer):
 
     @v_args(inline=True)
     def let_cmd(self, variable_name, *args):
+        if len(args) == 1:  # No formal args, just the expression
+            return Declaration(variable_name, [], args[0])
+        return Declaration(variable_name, args[0], args[1])
+
+    @v_args(inline=True)
+    def assignment_cmd(self, variable_name, *args):
         if len(args) == 1:  # No formal args, just the expression
             return Declaration(variable_name, [], args[0])
         return Declaration(variable_name, args[0], args[1])

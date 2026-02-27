@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+import base64
 import json
 import math
 
@@ -126,6 +127,24 @@ def _image_payload(image_value: VoxImageValue) -> tuple[str, dict[str, Any], byt
 
 
 def _encode_sequence_pages(sequence: VoxSequenceValue, *, page_size: int) -> tuple[dict[str, Any], list[EncodedPage]]:
+    def _encode_embedded_item(raw_value: Any, descriptor: dict[str, Any]) -> dict[str, Any]:
+        encoded = encode_for_storage(raw_value, page_size=page_size)
+        if encoded.pages:
+            raise UnsupportedVoxValueError(
+                descriptor,
+                "Nested pageable sequence values are not supported in sequence page items.",
+            )
+        embedded: dict[str, Any] = {
+            "encoding": "embedded-voxpod-v1",
+            "format_version": encoded.format_version,
+            "vox_type": encoded.vox_type,
+            "descriptor": encoded.descriptor,
+            "payload_json": encoded.payload_json,
+        }
+        if encoded.payload_bin is not None:
+            embedded["payload_bin_b64"] = base64.b64encode(encoded.payload_bin).decode("ascii")
+        return {"__vox_page_item__": embedded}
+
     pages: list[EncodedPage] = []
     offset = 0
     total = 0
@@ -134,15 +153,22 @@ def _encode_sequence_pages(sequence: VoxSequenceValue, *, page_size: int) -> tup
         page = sequence.page(offset=offset, limit=page_size)
         raw_items: list[Any] = []
         for index, item in enumerate(page.items):
-            value = item.get("value")
-            if _is_json_native(value):
+            descriptor = item.get("descriptor", {})
+            if "value" in item:
+                value = item.get("value")
+                if not _is_json_native(value):
+                    raise UnsupportedVoxValueError(
+                        descriptor,
+                        f"Sequence item {offset + index} is not persistable as JSON-native voxpod data.",
+                    )
                 raw_items.append(value)
                 continue
-            descriptor = item.get("descriptor", {})
-            raise UnsupportedVoxValueError(
-                descriptor,
-                f"Sequence item {offset + index} is not persistable as JSON-native voxpod data.",
-            )
+            if "_raw" not in item:
+                raise UnsupportedVoxValueError(
+                    descriptor,
+                    f"Sequence item {offset + index} is missing persistence payload.",
+                )
+            raw_items.append(_encode_embedded_item(item["_raw"], descriptor))
         has_more = bool(page.has_more)
         pages.append(
             EncodedPage(

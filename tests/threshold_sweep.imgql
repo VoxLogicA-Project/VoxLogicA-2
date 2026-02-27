@@ -1,31 +1,18 @@
 import "simpleitk"
-import "strings"
 
-let img = ReadImage("tests/data/chris_t1.nii.gz")
-let mm = MinimumMaximum(img)
-let lo = index(mm,0)
-let hi = index(mm,1)
+img = ReadImage("tests/data/chris_t1.nii.gz")
+mm = MinimumMaximum(img)
+lo = index(mm,0)
+hi = index(mm,1)
 
 // Build 100 fractional thresholds linearly spaced between lo and hi (inclusive).
-let idxs = range(0,100)
-let thresholds = lo + (hi-lo) * (idxs / 99)
+idxs = range(0,100)
+thresholds = lo + (hi-lo) * (idxs / 99)
 
 // BinaryThreshold semantics:
 // keep voxel if lower <= intensity <= upper
 // Here upper=hi, so increasing lower keeps only brighter voxels.
-let mk_mask(th) = BinaryThreshold(img, th, hi, 255, 0)
+mk_mask(th) = BinaryThreshold(img, th, hi, 255, 0)
 
-// Build clean output filenames.
-let fname(th) = concat(
-  "tests/output/threshold_sweep/mask_t_",
-  format_string("{:.6f}", th),
-  ".nii.gz"
-)
-
-// Write each thresholded image to disk.
-let save_mask(th) = WriteImage(mk_mask(th), fname(th))
-let writes = map(save_mask, thresholds)
-
-// Force evaluation/materialization.
-print "n_thresholds" 100
-print "writes" writes
+// Keep the sweep symbolic and side-effect free.
+masks = map(mk_mask, thresholds)

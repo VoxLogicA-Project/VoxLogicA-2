@@ -10,37 +10,37 @@ Playground cards are declared with markdown comments in this format:
 ```markdown
 <!-- vox:playground
 id: intro-hello
-title: Minimal print
+title: Minimal expression
 module: default
 level: intro
 strategy: strict
 description: Short text shown in the gallery card.
 -->
 ```imgql
-print "hello" 1 + 2
+answer = 1 + 2
 ```
 ```
 
 ## 1. Core Syntax and Execution Model
 
-### Declarations, expressions, and goals
+### Declarations and expressions
 
-`let` introduces named expressions or functions. `print` and `save` are goals.
+Top-level declarations can use either `let` or bare assignment. This gallery uses bare assignment.
 
 <!-- vox:playground
 id: intro-arithmetic
-title: Scalar arithmetic with print goals
+title: Scalar arithmetic declarations
 module: default
 level: intro
 strategy: strict
 description: Basic scalar evaluation and named outputs.
 -->
 ```imgql
-let a = 7
-let b = 5
-let c = a * b - 3
-print "a_times_b_minus_3" c
-print "is_gt_20" c > 20
+a = 7
+b = 5
+c = a * b - 3
+a_times_b_minus_3 = c
+is_gt_20 = c > 20
 ```
 
 ### Local binding with `let ... in ...`
@@ -54,8 +54,8 @@ strategy: strict
 description: Local substitutions with deterministic expression nesting.
 -->
 ```imgql
-let normalized(x,minv,maxv) = let span = maxv - minv in (x - minv) / span
-print "scaled" normalized(42,10,50)
+normalized(x,minv,maxv) = let span = maxv - minv in (x - minv) / span
+scaled = normalized(42,10,50)
 ```
 
 ### Function declarations and infix operator names
@@ -71,10 +71,10 @@ strategy: strict
 description: Demonstrates custom infix operators and uppercase identifiers.
 -->
 ```imgql
-let SUM(a,b) = a + b
-let +?(a,b) = a * b + 1
-print "sum_case" 4 SUM 9
-print "symbol_case" 5 +? 8
+SUM(a,b) = a + b
++?(a,b) = a * b + 1
+sum_case = 4 SUM 9
+symbol_case = 5 +? 8
 ```
 
 ### Unary prefix calls
@@ -88,8 +88,8 @@ strategy: strict
 description: One-argument prefix call form.
 -->
 ```imgql
-let NEG(x) = 0 - x
-print "negated" NEG 11
+NEG(x) = 0 - x
+negated = NEG 11
 ```
 
 ## 2. Lazy Sequences (Default Module)
@@ -105,11 +105,10 @@ strategy: dask
 description: Range and map produce lazy symbolic sequence plans.
 -->
 ```imgql
-let values = range(0,20)
-let square(x) = x * x
-let squares = map(square, values)
-print "count" 20
-print "squares" squares
+values = range(0,20)
+square(x) = x * x
+squares = map(square, values)
+count = 20
 ```
 
 ### Indexed access from tuples/lists
@@ -124,10 +123,10 @@ description: Extracting values from fixed-order structures.
 -->
 ```imgql
 import "simpleitk"
-let img = ReadImage("tests/data/chris_t1.nii.gz")
-let mm = MinimumMaximum(img)
-print "min" index(mm,0)
-print "max" index(mm,1)
+img = ReadImage("tests/data/chris_t1.nii.gz")
+mm = MinimumMaximum(img)
+min_value = index(mm,0)
+max_value = index(mm,1)
 ```
 
 ## 3. SimpleITK Image Primitives
@@ -144,31 +143,29 @@ description: Read image, threshold, and inspect summary statistics.
 -->
 ```imgql
 import "simpleitk"
-let img = ReadImage("tests/data/chris_t1.nii.gz")
-let mm = MinimumMaximum(img)
-let lo = index(mm,0)
-let hi = index(mm,1)
-let thr = BinaryThreshold(img, lo + (hi-lo)/3, hi, 255, 0)
-let stats = Statistics(thr)
-print "threshold_stats" stats
+img = ReadImage("tests/data/chris_t1.nii.gz")
+mm = MinimumMaximum(img)
+lo = index(mm,0)
+hi = index(mm,1)
+thr = BinaryThreshold(img, lo + (hi-lo)/3, hi, 255, 0)
+threshold_stats = Statistics(thr)
 ```
 
-### Save derived outputs
+### Derived output path and smoothing
 
 <!-- vox:playground
-id: sitk-save
-title: Save derived NIfTI output
+id: sitk-smooth
+title: CurvatureFlow smoothing output
 module: simpleitk
 level: core
 strategy: strict
-description: Demonstrates deterministic save goals.
+description: Computes a smoothed volume and a deterministic output path.
 -->
 ```imgql
 import "simpleitk"
-let img = ReadImage("tests/data/chris_t1.nii.gz")
-let smooth = CurvatureFlow(img, 0.15, 4)
-save "tests/output/smoothed_chris_t1.nii.gz" smooth
-print "saved" "tests/output/smoothed_chris_t1.nii.gz"
+img = ReadImage("tests/data/chris_t1.nii.gz")
+smooth = CurvatureFlow(img, 0.15, 4)
+output_path = "tests/output/smoothed_chris_t1.nii.gz"
 ```
 
 ## 4. `vox1` Compatibility Module
@@ -186,14 +183,14 @@ description: Uses vox1 .+/.*/./ variants and overloaded +/* forms.
 ```imgql
 import "simpleitk"
 import "vox1"
-let m = ReadImage("tests/data/chris_t1.nii.gz")
-let i = intensity(m)
-let a = i +. 4
-let b = 4 .+ i
-let c = (a *. 2) /. 3
-print "vox1_overload_a" avg(a,tt)
-print "vox1_overload_b" avg(b,tt)
-print "vox1_overload_c" avg(c,tt)
+m = ReadImage("tests/data/chris_t1.nii.gz")
+i = intensity(m)
+a = i +. 4
+b = 4 .+ i
+c = (a *. 2) /. 3
+vox1_overload_a = avg(a,tt)
+vox1_overload_b = avg(b,tt)
+vox1_overload_c = avg(c,tt)
 ```
 
 ### Vox1 cross-correlation workflow
@@ -209,13 +206,13 @@ description: Legacy-equivalent crossCorrelation and percentiles usage.
 ```imgql
 import "simpleitk"
 import "vox1"
-let m1 = ReadImage("tests/data/chris_t1.nii.gz")
-let m2 = ReadImage("tests/data/chris_t1.nii.gz")
-let a = intensity(m1)
-let b = intensity(m2)
-let c = crossCorrelation(2,a,b,tt,min(b),max(b),16)
-let p = percentiles(c,40 .<= a,0.5)
-print "vox1_corr_avg" avg(p,tt)
+m1 = ReadImage("tests/data/chris_t1.nii.gz")
+m2 = ReadImage("tests/data/chris_t1.nii.gz")
+a = intensity(m1)
+b = intensity(m2)
+c = crossCorrelation(2,a,b,tt,min(b),max(b),16)
+p = percentiles(c,40 .<= a,0.5)
+vox1_corr_avg = avg(p,tt)
 ```
 
 ## 5. Strings Module
@@ -232,12 +229,10 @@ description: Use strings primitives to build labels or output paths.
 -->
 ```imgql
 import "strings"
-let patient = "P-1024"
-let score = 0.8732
-let label = concat("patient=", patient)
-let pretty = format_string("{:.2%}", score)
-print "label" label
-print "pretty_score" pretty
+patient = "P-1024"
+score = 0.8732
+label = concat("patient=", patient)
+pretty_score = format_string("{:.2%}", score)
 ```
 
 ## 6. Arrays Module
@@ -255,12 +250,12 @@ description: Pixel accuracy and overlap metrics using arrays namespace.
 ```imgql
 import "simpleitk"
 import "arrays"
-let img = ReadImage("tests/data/chris_t1.nii.gz")
-let pred = BinaryThreshold(img,40,180,1,0)
-let truth = BinaryThreshold(img,55,170,1,0)
-print "pixel_accuracy" arrays.pixel_accuracy(pred,truth)
-print "dice" arrays.dice_score(pred,truth,1)
-print "jaccard" arrays.jaccard_index(pred,truth,1)
+img = ReadImage("tests/data/chris_t1.nii.gz")
+pred = BinaryThreshold(img,40,180,1,0)
+truth = BinaryThreshold(img,55,170,1,0)
+pixel_accuracy = arrays.pixel_accuracy(pred,truth)
+dice = arrays.dice_score(pred,truth,1)
+jaccard = arrays.jaccard_index(pred,truth,1)
 ```
 
 ## 7. nnUNet Module
@@ -277,7 +272,7 @@ description: Sanity check that nnUNet and torch runtime are available.
 -->
 ```imgql
 import "nnunet"
-print "nnunet_env" nnunet.env_check()
+nnunet_env = nnunet.env_check()
 ```
 
 ### Directory-based training invocation
@@ -292,10 +287,10 @@ description: Skeleton for nnUNet training from directory datasets.
 -->
 ```imgql
 import "nnunet"
-let images = "/data/my_dataset/imagesTr"
-let labels = "/data/my_dataset/labelsTr"
-let out = "/data/work/nnunet"
-print "train_job" nnunet.train_directory(images,labels,out,1,"Dataset999","3d_fullres",5)
+images = "/data/my_dataset/imagesTr"
+labels = "/data/my_dataset/labelsTr"
+out = "/data/work/nnunet"
+train_job = nnunet.train_directory(images,labels,out,1,"Dataset999","3d_fullres",5)
 ```
 
 ## 8. Test Module (Synthetic and Workflow Primitives)
@@ -312,7 +307,7 @@ description: Test namespace primitive returning nested structured data.
 -->
 ```imgql
 import "test"
-print "demo_payload" test.demo_data()
+demo_payload = test.demo_data()
 ```
 
 ### Workflow enqueue primitives
@@ -327,7 +322,7 @@ description: Generate enqueue instructions used by workflow tests.
 -->
 ```imgql
 import "test"
-print "enqueue_plan" test.enqueue("segment", "patient-42")
+enqueue_plan = test.enqueue("segment", "patient-42")
 ```
 
 ## 9. End-to-End Progressive Example
@@ -346,11 +341,10 @@ description: Imports multiple modules and combines image ops, formatting, and vo
 import "simpleitk"
 import "strings"
 import "vox1"
-let img = ReadImage("tests/data/chris_t1.nii.gz")
-let i = intensity(img)
-let mask = 60 .<= i
-let corr = crossCorrelation(2,i,i,tt,min(i),max(i),16)
-let avgCorr = avg(corr,mask)
-let msg = concat("avgCorr=", format_string("{:.4f}", avgCorr))
-print "summary" msg
+img = ReadImage("tests/data/chris_t1.nii.gz")
+i = intensity(img)
+mask = 60 .<= i
+corr = crossCorrelation(2,i,i,tt,min(i),max(i),16)
+avgCorr = avg(corr,mask)
+summary = concat("avgCorr=", format_string("{:.4f}", avgCorr))
 ```
