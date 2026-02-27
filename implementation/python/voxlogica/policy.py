@@ -24,7 +24,7 @@ _SIMPLEITK_EFFECT_PREFIXES = (
     "ImageViewer_SetGlobalDefault",
     "ProcessObject_SetGlobal",
 )
-_READ_OPERATOR_NAMES = {"ReadImage", "ReadTransform", "load"}
+_READ_OPERATOR_NAMES = {"ReadImage", "ReadTransform", "load", "dir"}
 
 
 @dataclass(frozen=True)

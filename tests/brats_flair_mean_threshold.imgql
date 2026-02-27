@@ -1,0 +1,17 @@
+import "simpleitk"
+
+dataset_root = "tests/data/datasets/BraTS_2019_HGG"
+
+// Recursively discover all BRaTS FLAIR volumes.
+flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
+
+// Threshold each image at the midpoint between its min and max intensity.
+mk_mask(path) =
+  let img = ReadImage(path) in
+  let mm = MinimumMaximum(img) in
+  let lo = index(mm, 0) in
+  let hi = index(mm, 1) in
+  BinaryThreshold(img, (lo + hi) / 2, hi, 255, 0)
+
+// Sequence of binary masks, one per discovered FLAIR image.
+masks = map(mk_mask, flair_paths)

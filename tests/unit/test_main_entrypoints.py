@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 import typer
 
 from voxlogica.features import OperationResult
+from voxlogica.lazy.hash import hash_sequence_item
 from voxlogica import main as main_mod
 from voxlogica.storage import SQLiteResultsDatabase
 
@@ -440,7 +441,8 @@ def test_playground_value_completed_pending_persistence_status(monkeypatch: pyte
     monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
 
     pending_finished_at = datetime.now(timezone.utc).isoformat()
-    stale_finished_at = (datetime.now(timezone.utc) - timedelta(seconds=8)).isoformat()
+    stale_finished_at = (datetime.now(timezone.utc) - timedelta(seconds=12)).isoformat()
+    enqueued_payloads: list[dict[str, object]] = []
 
     def _make_completed_job(finished_at: str):
         def _get_value_job(**kwargs):
@@ -503,7 +505,8 @@ def test_playground_value_completed_pending_persistence_status(monkeypatch: pyte
                 "playground_jobs",
                 SimpleNamespace(
                     get_value_job=_make_completed_job(stale_finished_at),
-                    ensure_value_job=lambda payload, **kwargs: {"job_id": "unused", "status": "running", "log_tail": ""},
+                    ensure_value_job=lambda payload, **kwargs: enqueued_payloads.append(dict(payload))
+                    or {"job_id": "requeued-job", "status": "running", "log_tail": ""},
                 ),
             )
             failed_resp = client.post(
@@ -516,9 +519,140 @@ def test_playground_value_completed_pending_persistence_status(monkeypatch: pyte
             )
             assert failed_resp.status_code == 200
             failed_payload = failed_resp.json()
-            assert failed_payload["materialization"] == "failed"
-            assert failed_payload["compute_status"] == "failed"
-            assert "persistence did not finish" in str(failed_payload["error"])
+            assert failed_payload["materialization"] == "pending"
+            assert failed_payload["compute_status"] == "persisting"
+            diagnostics = failed_payload.get("diagnostics", {})
+            assert isinstance(diagnostics, dict)
+            assert diagnostics.get("store_status") == "missing"
+            assert isinstance(diagnostics.get("persistence_elapsed_s"), (int, float))
+            assert enqueued_payloads == []
+
+            requeued_resp = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "let x = range(1,19)",
+                    "variable": "x",
+                },
+            )
+            assert requeued_resp.status_code == 200
+            requeued_payload = requeued_resp.json()
+            assert requeued_payload["materialization"] == "pending"
+            assert requeued_payload["compute_status"] == "running"
+            assert requeued_payload["request_enqueued"] is True
+            assert requeued_payload["job_id"] == "requeued-job"
+            assert len(enqueued_payloads) == 1
+    finally:
+        fake_storage.close()
+
+
+@pytest.mark.unit
+def test_playground_value_paging_works_while_sequence_is_persisting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeRegistry:
+        @staticmethod
+        def get_feature(name: str):
+            if name == "version":
+                return SimpleNamespace(handler=lambda: OperationResult.ok({"version": "2.0.0"}))
+            if name == "run":
+                return SimpleNamespace(handler=lambda **kwargs: OperationResult.ok({"ok": True, "args": kwargs}))
+            return None
+
+    monkeypatch.setattr(main_mod, "FeatureRegistry", FakeRegistry)
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    def _job_payload(node_id: str) -> dict[str, object]:
+        return {
+            "job_id": "value-persisting-seq",
+            "status": "completed",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "result": {
+                "goal_results": [
+                    {
+                        "node_id": node_id,
+                        "status": "materialized",
+                        "metadata": {"persisted": "pending"},
+                        "runtime_descriptor": {
+                            "available": True,
+                            "node_id": node_id,
+                            "status": "materialized",
+                            "runtime_version": "runtime",
+                            "path": "",
+                            "descriptor": {
+                                "vox_type": "sequence",
+                                "format_version": "voxpod/1",
+                                "summary": {"length": 5},
+                                "navigation": {
+                                    "path": "",
+                                    "pageable": True,
+                                    "can_descend": True,
+                                    "default_page_size": 64,
+                                    "max_page_size": 512,
+                                },
+                            },
+                        },
+                    }
+                ]
+            },
+            "log_tail": "",
+        }
+
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            get_value_job=lambda **kwargs: _job_payload(str(kwargs.get("node_id", ""))),
+            ensure_value_job=lambda payload, **kwargs: {"job_id": "unused", "status": "running", "log_tail": ""},
+        ),
+    )
+
+    try:
+        with TestClient(main_mod.api_app) as client:
+            symbols = client.post("/api/v1/playground/symbols", json={"program": "xs = range(0,5)"})
+            assert symbols.status_code == 200
+            node_id = symbols.json()["symbol_table"]["xs"]
+
+            fake_storage.put_success(hash_sequence_item(node_id, 0), 11)
+            fake_storage.put_success(hash_sequence_item(node_id, 1), 22)
+
+            page_resp = client.post(
+                "/api/v1/playground/value/page",
+                json={
+                    "program": "xs = range(0,5)",
+                    "variable": "xs",
+                    "offset": 0,
+                    "limit": 4,
+                    "enqueue": False,
+                },
+            )
+            assert page_resp.status_code == 200
+            page_payload = page_resp.json()
+            assert page_payload["compute_status"] == "persisting"
+            assert page_payload["descriptor"]["vox_type"] == "sequence"
+            assert len(page_payload["page"]["items"]) == 2
+            assert page_payload["page"]["items"][0]["node_id"] == hash_sequence_item(node_id, 0)
+            assert page_payload["page"]["items"][0]["path"] == "/0"
+            assert page_payload["page"]["has_more"] is True
+
+            item_resp = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "xs = range(0,5)",
+                    "variable": "xs",
+                    "path": "/0",
+                    "enqueue": False,
+                },
+            )
+            assert item_resp.status_code == 200
+            item_payload = item_resp.json()
+            assert item_payload["compute_status"] == "persisting"
+            assert item_payload["materialization"] == "computed"
+            assert item_payload["descriptor"]["vox_type"] == "integer"
+            assert item_payload["path"] == "/0"
     finally:
         fake_storage.close()
 

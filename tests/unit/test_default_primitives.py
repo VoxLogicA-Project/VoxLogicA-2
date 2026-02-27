@@ -8,6 +8,7 @@ import pytest
 from voxlogica.execution_strategy.results import SequenceValue
 from voxlogica.primitives.default import (
     addition,
+    dir as dir_primitive,
     dask_map,
     division,
     for_loop,
@@ -97,6 +98,29 @@ def test_load_primitive(tmp_path: Path):
 
     with pytest.raises(ValueError):
         load.execute(**{"0": str(tmp_path / "missing.txt")})
+
+
+@pytest.mark.unit
+def test_dir_primitive(tmp_path: Path):
+    root = tmp_path / "dataset"
+    case_a = root / "caseA"
+    case_b = root / "caseB"
+    case_a.mkdir(parents=True)
+    case_b.mkdir(parents=True)
+    (case_a / "caseA_flair.nii.gz").write_text("x", encoding="utf-8")
+    (case_a / "caseA_t1.nii.gz").write_text("x", encoding="utf-8")
+    (case_b / "caseB_flair.nii.gz").write_text("x", encoding="utf-8")
+
+    assert sorted(dir_primitive.execute(**{"0": str(root)})) == ["caseA", "caseB"]
+    assert sorted(dir_primitive.execute(**{"0": str(root), "1": "*_flair.nii.gz", "2": True})) == [
+        "caseA/caseA_flair.nii.gz",
+        "caseB/caseB_flair.nii.gz",
+    ]
+    full = dir_primitive.execute(**{"0": str(root), "1": "*_flair.nii.gz", "2": True, "3": True})
+    assert all(Path(item).is_absolute() for item in full)
+
+    with pytest.raises(ValueError):
+        dir_primitive.execute(**{"0": str(root / "missing")})
 
 
 @pytest.mark.unit

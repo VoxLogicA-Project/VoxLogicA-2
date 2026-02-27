@@ -33,12 +33,25 @@
 
   export let active = false;
   export let capabilities = {};
-  const DEFAULT_LIBRARY_PROGRAM_NAME = "threshold_sweep.imgql";
+  const DEFAULT_LIBRARY_PROGRAM_NAME = "brats_flair_mean_threshold.imgql";
 
-  const INITIAL_PROGRAM = `// Paste or load an example.
-import "simpleitk"
-x = 2 + 3
-y = x * 4`;
+  const INITIAL_PROGRAM = `import "simpleitk"
+
+dataset_root = "tests/data/datasets/BraTS_2019_HGG"
+
+// Recursively discover all BRaTS FLAIR volumes.
+flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
+
+// Threshold each image at the midpoint between its min and max intensity.
+mk_mask(path) =
+  let img = ReadImage(path) in
+  let mm = MinimumMaximum(img) in
+  let lo = index(mm, 0) in
+  let hi = index(mm, 1) in
+  BinaryThreshold(img, (lo + hi) / 2, hi, 255, 0)
+
+// Sequence of binary masks, one per discovered FLAIR image.
+masks = map(mk_mask, flair_paths)`;
 
   let programText = INITIAL_PROGRAM;
 
@@ -46,6 +59,7 @@ y = x * 4`;
   let selectedProgramPath = "";
   let programLibraryMeta = "";
   let autoLoadedLibraryProgram = false;
+  let initialLibrarySelectionApplied = false;
 
   let symbolDiagnostics = [];
   let precomputedSymbolTable = {};
@@ -301,15 +315,20 @@ y = x * 4`;
       programFiles = payload.files || [];
       if (!programFiles.length) {
         selectedProgramPath = "";
+        initialLibrarySelectionApplied = true;
         programLibraryMeta = `${payload.load_dir} | 0 files`;
         return;
       }
 
-      if (!selectedProgramPath || !programFiles.some((entry) => entry.path === selectedProgramPath)) {
-        const preferred = programFiles.find((entry) => {
-          const candidate = String(entry?.path || "");
-          return candidate === DEFAULT_LIBRARY_PROGRAM_NAME || candidate.endsWith(`/${DEFAULT_LIBRARY_PROGRAM_NAME}`);
-        });
+      const preferred = programFiles.find((entry) => {
+        const candidate = String(entry?.path || "");
+        return candidate === DEFAULT_LIBRARY_PROGRAM_NAME || candidate.endsWith(`/${DEFAULT_LIBRARY_PROGRAM_NAME}`);
+      });
+
+      if (!initialLibrarySelectionApplied) {
+        selectedProgramPath = preferred?.path || programFiles[0].path;
+        initialLibrarySelectionApplied = true;
+      } else if (!selectedProgramPath || !programFiles.some((entry) => entry.path === selectedProgramPath)) {
         selectedProgramPath = preferred?.path || programFiles[0].path;
       }
       programLibraryMeta = `${payload.load_dir} | ${programFiles.length} file(s)`;
@@ -467,8 +486,21 @@ y = x * 4`;
     }
 
     if (materialization === "pending" || computeStatus === "queued" || computeStatus === "running" || computeStatus === "persisting") {
-      playResultViewer.setLoading(`Value ${nodeId.slice(0, 12)} ${path || ""} is ${computeStatus || "pending"}...`);
-      playResultMeta = `Waiting for ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} | ${computeStatus || "pending"}${jobId ? ` | job ${jobId.slice(0, 12)}` : ""}`;
+      if (hasRenderableDescriptor && (computeStatus === "persisting" || materialization === "pending")) {
+        playResultViewer.renderRecord({
+          ...payload,
+          available: true,
+          node_id: nodeId,
+          status: payload.status || "materialized",
+          runtime_version: payload.runtime_version || "runtime",
+          updated_at: payload.updated_at || new Date().toISOString(),
+          path,
+        });
+        playResultMeta = `Live preview ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} | ${computeStatus || "pending"}${jobId ? ` | job ${jobId.slice(0, 12)}` : ""}`;
+      } else {
+        playResultViewer.setLoading(`Value ${nodeId.slice(0, 12)} ${path || ""} is ${computeStatus || "pending"}...`);
+        playResultMeta = `Waiting for ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} | ${computeStatus || "pending"}${jobId ? ` | job ${jobId.slice(0, 12)}` : ""}`;
+      }
 
       if (!valuePollTimer) {
         pendingValueRequest = { nodeId, variable: requestState.variable || "", path };
@@ -479,7 +511,7 @@ y = x * 4`;
               nodeId: pendingValueRequest.nodeId,
               variable: pendingValueRequest.variable,
               path: pendingValueRequest.path,
-              enqueue: false,
+              enqueue: true,
             });
             applyPlayValuePayload(polled, pendingValueRequest);
           } catch (error) {

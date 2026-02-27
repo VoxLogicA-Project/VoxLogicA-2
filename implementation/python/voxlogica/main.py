@@ -30,6 +30,7 @@ from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver
 
 from voxlogica.features import FeatureRegistry, OperationResult, handle_list_primitives
+from voxlogica.lazy.hash import hash_sequence_item
 from voxlogica.parser import parse_program_content
 from voxlogica.policy import (
     diagnostics_payload,
@@ -228,6 +229,111 @@ def _resolve_requested_node(
             ),
         )
     return resolved_node, resolved_variable
+
+
+def _split_sequence_item_path(path: str | None) -> tuple[int, str] | None:
+    raw = str(path or "").strip()
+    if raw in {"", "/"}:
+        return None
+    tokens = [token for token in raw.split("/") if token]
+    if not tokens:
+        return None
+    try:
+        index = int(tokens[0])
+    except ValueError:
+        return None
+    if index < 0:
+        return None
+    remainder = "/" + "/".join(tokens[1:]) if len(tokens) > 1 else ""
+    return index, remainder
+
+
+def _transient_sequence_page_from_store(
+    *,
+    storage: Any,
+    parent_node_id: str,
+    descriptor: dict[str, Any] | None,
+    path: str,
+    offset: int,
+    limit: int,
+) -> dict[str, Any] | None:
+    if path not in {"", "/"}:
+        return None
+    if not isinstance(descriptor, dict):
+        return None
+    if str(descriptor.get("vox_type", "")) != "sequence":
+        return None
+
+    summary = descriptor.get("summary")
+    summary_dict = summary if isinstance(summary, dict) else {}
+    total: int | None = None
+    raw_length = summary_dict.get("length")
+    try:
+        if raw_length is not None:
+            parsed_length = int(raw_length)
+            if parsed_length >= 0:
+                total = parsed_length
+    except Exception:
+        total = None
+
+    safe_offset = max(0, int(offset))
+    safe_limit = max(1, int(limit))
+    if total is not None and safe_offset >= total:
+        return {
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "items": [],
+            "next_offset": None,
+            "has_more": False,
+            "total": total,
+        }
+
+    upper_bound = safe_offset + safe_limit
+    if total is not None:
+        upper_bound = min(upper_bound, total)
+
+    items_out: list[dict[str, Any]] = []
+    cursor = safe_offset
+    while cursor < upper_bound:
+        item_node_id = hash_sequence_item(parent_node_id, cursor)
+        try:
+            item_payload = inspect_store_result(storage, node_id=item_node_id, path="")
+        except KeyError:
+            break
+        except UnsupportedVoxValueError:
+            break
+        if str(item_payload.get("status", "")) != "materialized":
+            break
+        item_descriptor = item_payload.get("descriptor")
+        if not isinstance(item_descriptor, dict):
+            break
+
+        item_path = f"/{cursor}"
+        items_out.append(
+            {
+                "index": cursor,
+                "label": f"[{cursor}]",
+                "path": item_path,
+                "descriptor": item_descriptor,
+                "node_id": item_node_id,
+            }
+        )
+        cursor += 1
+
+    if total is not None:
+        has_more = cursor < total
+    else:
+        has_more = len(items_out) >= safe_limit
+    next_offset = cursor if has_more else None
+
+    return {
+        "offset": safe_offset,
+        "limit": safe_limit,
+        "items": items_out,
+        "next_offset": next_offset,
+        "has_more": bool(has_more),
+        "total": total,
+    }
 
 
 class ElapsedMsFormatter(logging.Formatter):
@@ -1087,6 +1193,63 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             except KeyError:
                 inspected = None
             transient_descriptor, transient_metadata = _runtime_descriptor_from_job(tracked_job)
+            if transient_descriptor is not None and view_path not in {"", "/"}:
+                root_descriptor = transient_descriptor.get("descriptor") if isinstance(transient_descriptor, dict) else None
+                persisted_state = transient_metadata.get("persisted") if isinstance(transient_metadata, dict) else None
+                if persisted_state == "pending":
+                    if isinstance(root_descriptor, dict) and str(root_descriptor.get("vox_type", "")) == "sequence":
+                        item_path = _split_sequence_item_path(view_path)
+                        if item_path is not None:
+                            item_index, item_remainder = item_path
+                            item_node_id = hash_sequence_item(node_id, item_index)
+                            try:
+                                item_payload = inspect_store_result(storage, node_id=item_node_id, path=item_remainder)
+                                if str(item_payload.get("status", "")) == "materialized":
+                                    item_payload["materialization"] = "computed"
+                                    item_payload["compute_status"] = "persisting"
+                                    item_payload["store_status"] = "materialized"
+                                    item_payload["request_enqueued"] = False
+                                    item_payload["sequence_item_node_id"] = item_node_id
+                                    item_payload["sequence_index"] = item_index
+                                    return _attach_common(item_payload)
+                            except KeyError:
+                                pass
+                            except UnsupportedVoxValueError as exc:
+                                return _attach_common(
+                                    {
+                                        "available": False,
+                                        "materialization": "failed",
+                                        "compute_status": "failed",
+                                        "status": "failed",
+                                        "error": str(exc),
+                                        "job_id": tracked_job.get("job_id"),
+                                        "request_enqueued": False,
+                                        "diagnostics": {
+                                            "code": exc.code,
+                                            "message": str(exc),
+                                            "node_id": node_id,
+                                            "path": view_path or "/",
+                                        },
+                                    }
+                                )
+                    finished_at = _parse_iso_utc(tracked_job.get("finished_at"))
+                    elapsed_s = (time.time() - finished_at) if finished_at is not None else None
+                    return _attach_common(
+                        {
+                            "available": False,
+                            "materialization": "pending",
+                            "compute_status": "persisting",
+                            "job_id": tracked_job.get("job_id"),
+                            "store_status": "missing",
+                            "request_enqueued": False,
+                            "descriptor": root_descriptor if isinstance(root_descriptor, dict) else None,
+                            "diagnostics": {
+                                "store_status": "missing",
+                                "message": "Result computed; waiting for async persistence.",
+                                "persistence_elapsed_s": elapsed_s,
+                            },
+                        }
+                    )
             if transient_descriptor is not None and view_path in {"", "/"}:
                 persisted_state = transient_metadata.get("persisted") if isinstance(transient_metadata, dict) else None
                 persist_warning = transient_metadata.get("persist_warning") if isinstance(transient_metadata, dict) else None
@@ -1118,31 +1281,69 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                     )
                 if persisted_state == "pending":
                     finished_at = _parse_iso_utc(tracked_job.get("finished_at"))
-                    if finished_at is not None and (time.time() - finished_at) > 4.0:
+                    elapsed_s = (time.time() - finished_at) if finished_at is not None else None
+                    if request.enqueue and elapsed_s is not None and elapsed_s > 10.0:
+                        request_payload: dict[str, Any] = {
+                            "program": request.program,
+                            "execution_strategy": strategy,
+                            "execute": True,
+                            "legacy": False,
+                            "serve_mode": True,
+                            "no_cache": False,
+                            "debug": False,
+                            "verbose": False,
+                            "dask_dashboard": False,
+                        }
+                        request_payload.update(
+                            {
+                                "_job_kind": "value-resolve",
+                                "_include_goal_descriptors": True,
+                                "_goals": [node_id],
+                                "_priority_node": node_id,
+                                "_program_hash": program_hash,
+                            }
+                        )
+                        requeued_job = playground_jobs.ensure_value_job(
+                            request_payload,
+                            program_hash=program_hash,
+                            node_id=node_id,
+                            execution_strategy=strategy,
+                        )
+                        requeued_status = str(requeued_job.get("status", "queued"))
                         return _attach_common(
-                            _failure_payload(
-                                compute_status="failed",
-                                inspected_payload=inspected,
-                                tracked_job_payload=tracked_job,
-                                fallback_error=(
-                                    "Value computation completed, but persistence did not finish "
-                                    "within the expected window."
-                                ),
-                                request_enqueued=False,
-                            )
+                            {
+                                "available": False,
+                                "materialization": "pending",
+                                "compute_status": "running" if requeued_status == "running" else requeued_status,
+                                "job_id": requeued_job.get("job_id"),
+                                "store_status": "missing",
+                                "request_enqueued": True,
+                                "descriptor": transient_descriptor.get("descriptor")
+                                if isinstance(transient_descriptor.get("descriptor"), dict)
+                                else None,
+                                "diagnostics": {
+                                    "store_status": "missing",
+                                    "message": "Persistence appears stalled; re-enqueued value computation.",
+                                    "persistence_elapsed_s": elapsed_s,
+                                },
+                            }
                         )
                     return _attach_common(
-                        {
-                            "available": False,
-                            "materialization": "pending",
-                            "compute_status": "persisting",
-                            "job_id": tracked_job.get("job_id"),
-                            "store_status": "missing",
-                            "request_enqueued": False,
-                            "diagnostics": {
+                            {
+                                "available": False,
+                                "materialization": "pending",
+                                "compute_status": "persisting",
+                                "job_id": tracked_job.get("job_id"),
                                 "store_status": "missing",
-                                "message": "Result computed; waiting for async persistence.",
-                            },
+                                "request_enqueued": False,
+                                "descriptor": transient_descriptor.get("descriptor")
+                                if isinstance(transient_descriptor.get("descriptor"), dict)
+                                else None,
+                                "diagnostics": {
+                                    "store_status": "missing",
+                                    "message": "Result computed; waiting for async persistence.",
+                                    "persistence_elapsed_s": elapsed_s,
+                                },
                         }
                     )
             if not request.enqueue:
@@ -1242,7 +1443,33 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
 
     materialization = str(value_payload.get("materialization", "missing"))
     compute_status = str(value_payload.get("compute_status", "missing"))
+    node_id = str(value_payload.get("node_id") or request.node_id or "")
+    if not node_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to page value: node id could not be resolved.",
+        )
+    path = str(value_payload.get("path") or request.path or "")
+
+    if materialization in {"failed"} or compute_status in {"failed", "killed"}:
+        return value_payload
+
     if materialization in {"pending", "missing"} or compute_status in {"queued", "running", "persisting", "missing"}:
+        transient_page = _transient_sequence_page_from_store(
+            storage=get_storage(),
+            parent_node_id=node_id,
+            descriptor=value_payload.get("descriptor") if isinstance(value_payload.get("descriptor"), dict) else None,
+            path=path,
+            offset=request.offset,
+            limit=request.limit,
+        )
+        if transient_page is not None:
+            return {
+                **value_payload,
+                "path": path,
+                "page": transient_page,
+                "available": bool(transient_page.get("items")),
+            }
         return {
             **value_payload,
             "page": {
@@ -1253,16 +1480,7 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
                 "has_more": False,
             },
         }
-    if materialization in {"failed"} or compute_status in {"failed", "killed"}:
-        return value_payload
 
-    node_id = str(value_payload.get("node_id") or request.node_id or "")
-    if not node_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unable to page value: node id could not be resolved.",
-        )
-    path = request.path or ""
     try:
         paged = inspect_store_result_page(
             get_storage(),

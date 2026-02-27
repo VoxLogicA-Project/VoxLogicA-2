@@ -98,6 +98,40 @@ def test_serve_read_root_policy_allows_inside_and_blocks_outside(
 
 
 @pytest.mark.unit
+def test_serve_read_root_policy_applies_to_dir_primitive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir(parents=True)
+    outside_root = tmp_path / "outside"
+    outside_root.mkdir(parents=True)
+
+    monkeypatch.setenv("VOXLOGICA_SERVE_DATA_DIR", str(allowed_root))
+    monkeypatch.delenv("VOXLOGICA_SERVE_EXTRA_READ_ROOTS", raising=False)
+
+    allowed_plan = _reduce(
+        '\n'.join(
+            [
+                f'let entries = dir("{allowed_root}")',
+            ]
+        )
+    )
+    allowed_diags = validate_workplan_policy(allowed_plan, legacy=False, serve_mode=True)
+    assert not any(diag.code == "E_READ_ROOT_POLICY" for diag in allowed_diags)
+
+    blocked_plan = _reduce(
+        '\n'.join(
+            [
+                f'let entries = dir("{outside_root}")',
+            ]
+        )
+    )
+    blocked_diags = validate_workplan_policy(blocked_plan, legacy=False, serve_mode=True)
+    assert any(diag.code == "E_READ_ROOT_POLICY" for diag in blocked_diags)
+
+
+@pytest.mark.unit
 def test_handle_run_legacy_flag_controls_effect_policy() -> None:
     program = '\n'.join(
         [
