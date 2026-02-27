@@ -35,6 +35,8 @@ Once started, the API will be available at:
 | `serve playground`                   | `POST /api/v1/playground/jobs` | Start async playground execution |
 | `serve playground`                   | `GET /api/v1/playground/jobs/{job_id}` | Poll playground job status |
 | `serve playground`                   | `DELETE /api/v1/playground/jobs/{job_id}` | Kill running/stale playground job |
+| `serve playground`                   | `POST /api/v1/playground/symbols` | Parse/static resolution + diagnostics for editor |
+| `serve playground`                   | `POST /api/v1/playground/value` | On-demand value materialization/inspection |
 | `serve gallery`                      | `GET /api/v1/docs/gallery` | Return markdown + parsed playground examples |
 | `serve quality dashboard`            | `GET /api/v1/testing/report` | JUnit + coverage + perf report snapshot |
 | `serve quality dashboard`            | `GET /api/v1/testing/performance/chart` | Latest vox1-vs-vox2 perf SVG |
@@ -45,6 +47,15 @@ Once started, the API will be available at:
 | `serve storage dashboard`            | `GET /api/v1/storage/stats` | Cache/storage statistics |
 
 ## Available Endpoints
+
+## Serve Policy Defaults
+
+- Serve/API always runs with non-legacy policy (`legacy=false`).
+- Playground execution strategy is forced to `dask` for `/playground/jobs` and `/playground/value`.
+- Read primitives are restricted to configured roots:
+  - `VOXLOGICA_SERVE_DATA_DIR` (primary root)
+  - `VOXLOGICA_SERVE_EXTRA_READ_ROOTS` (optional comma-separated roots)
+- Unknown callable names fail during static resolution (before execution).
 
 ### 1. Get Version
 
@@ -86,6 +97,40 @@ Run a VoxLogicA program with various output options. This endpoint mirrors the C
   "save_task_graph_as_json": "output.json",
   "save_syntax": "syntax.txt",
   "debug": false
+}
+```
+
+### Playground Symbols Diagnostics Schema
+
+`POST /api/v1/playground/symbols`
+
+- Success payload:
+  - `available: true`
+  - `program_hash`
+  - `symbol_table`
+  - `print_targets`
+  - `diagnostics: []`
+- Static failure payload:
+  - `available: false`
+  - `diagnostics: [{code, message, location?, symbol?}]`
+
+Example diagnostic response:
+
+```json
+{
+  "available": false,
+  "program_hash": "8b4f0a...",
+  "operations": 0,
+  "goals": 0,
+  "symbol_table": {},
+  "print_targets": [],
+  "diagnostics": [
+    {
+      "code": "E_UNKNOWN_CALLABLE",
+      "message": "Unknown callable: UnknownCallable",
+      "symbol": "UnknownCallable"
+    }
+  ]
 }
 ```
 

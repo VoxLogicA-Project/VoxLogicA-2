@@ -29,6 +29,7 @@ Required fields:
 - Planner receives a `PrimitiveCall` and returns a `NodeSpec`.
 - Planner must not perform I/O or execution.
 - Planner must be deterministic for equal symbolic inputs.
+- Unknown callable names are a static error during reduction. Reducer must fail deterministically (no unresolved-call fallback nodes).
 
 ## Registry Contract
 `PrimitiveRegistry` provides:
@@ -40,6 +41,19 @@ Required fields:
 - Optional namespace runtime reset hook (`reset_runtime_state()`) executed at strategy run start.
 
 No set-order behavior is allowed in primitive resolution.
+
+## Static Policy Contract
+
+- Default runtime mode is non-legacy.
+- Non-legacy blocks side effects by static policy:
+  - all primitives with `kind="effect"`
+  - conservative SimpleITK mutable/global APIs:
+    - `Write*`
+    - `ImageViewer_SetGlobalDefault*`
+    - `ProcessObject_SetGlobal*`
+- Serve mode additionally enforces read-root policy for `ReadImage`, `ReadTransform`, and `load(path)`:
+  - allowed roots from `VOXLOGICA_SERVE_DATA_DIR` plus `VOXLOGICA_SERVE_EXTRA_READ_ROOTS`
+  - out-of-root reads are rejected with deterministic diagnostics/runtime errors.
 
 ## Migration Rules
 Legacy primitive modules (`execute(**kwargs)` / `register_primitives()`) are supported via adapter with deprecation warning.

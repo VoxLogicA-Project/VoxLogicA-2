@@ -19,6 +19,7 @@ from voxlogica.execution_strategy.results import (
 )
 from voxlogica.lazy.ir import NodeId, NodeSpec, SymbolicPlan
 from voxlogica.parser import EBool, ECall, EFor, ELet, ENumber, EString, Expression, parse_expression_content
+from voxlogica.policy import enforce_runtime_read_path_policy
 from voxlogica.primitives.registry import PrimitiveRegistry
 from voxlogica.storage import MATERIALIZED_STATUS, DefinitionStore, MaterializationStore, ResultsDatabase
 
@@ -358,6 +359,7 @@ class StrictExecutionStrategy(ExecutionStrategy):
             return self._evaluate_load(args, kwargs)
 
         kernel = self.registry.load_kernel(node.operator)
+        enforce_runtime_read_path_policy(node.operator, args)
         return self._invoke_kernel(kernel, args, kwargs)
 
     def _evaluate_map(self, args: list[Any], kwargs: dict[str, Any]) -> SequenceValue:
@@ -403,6 +405,7 @@ class StrictExecutionStrategy(ExecutionStrategy):
             raise ValueError("load requires one dataset argument")
 
         source = args[0]
+        enforce_runtime_read_path_policy("load", [source])
         if isinstance(source, SequenceValue):
             return source
 
@@ -444,6 +447,7 @@ class StrictExecutionStrategy(ExecutionStrategy):
                 if expression.identifier in env:
                     return env[expression.identifier]
                 kernel = self.registry.load_kernel(expression.identifier)
+                enforce_runtime_read_path_policy(expression.identifier, [])
                 return self._invoke_kernel(kernel, [], {})
 
             arg_values = [self._evaluate_runtime_expression(arg, env) for arg in expression.arguments]
@@ -461,6 +465,7 @@ class StrictExecutionStrategy(ExecutionStrategy):
                 return self._evaluate_load(arg_values, {})
 
             kernel = self.registry.load_kernel(expression.identifier)
+            enforce_runtime_read_path_policy(expression.identifier, arg_values)
             return self._invoke_kernel(kernel, arg_values, {})
 
         if isinstance(expression, ELet):

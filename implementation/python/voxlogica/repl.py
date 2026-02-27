@@ -16,6 +16,7 @@ from voxlogica.parser import (
     parse_expression_content,
     parse_program_content,
 )
+from voxlogica.policy import enforce_workplan_policy_or_raise
 from voxlogica.reducer import reduce_program
 from voxlogica.storage import (
     MATERIALIZED_STATUS,
@@ -49,11 +50,13 @@ class ReplSession:
     def __init__(
         self,
         strategy: str = "dask",
+        legacy: bool = False,
         engine: ExecutionEngine | None = None,
         storage: ResultsDatabase | None = None,
         sequence_preview_limit: int = 20,
     ):
         self.strategy = strategy
+        self.legacy = bool(legacy)
         self.storage = storage or get_storage()
         self.engine = engine or ExecutionEngine(storage_backend=self.storage)
         self.sequence_preview_limit = max(1, sequence_preview_limit)
@@ -156,7 +159,13 @@ class ReplSession:
             full_program = f"{full_program}\n{command}"
         else:
             full_program = command
-        return reduce_program(parse_program_content(full_program))
+        workplan = reduce_program(parse_program_content(full_program))
+        enforce_workplan_policy_or_raise(
+            workplan,
+            legacy=self.legacy,
+            serve_mode=False,
+        )
+        return workplan
 
     def _execute_goal_with_context(self, command: str) -> None:
         workplan = self._reduce_with_context(command)
@@ -204,9 +213,9 @@ class ReplSession:
                 return False, True
 
 
-def run_interactive_repl(strategy: str = "dask") -> int:
+def run_interactive_repl(strategy: str = "dask", legacy: bool = False) -> int:
     """Run an interactive terminal REPL session."""
-    session = ReplSession(strategy=strategy)
+    session = ReplSession(strategy=strategy, legacy=legacy)
 
     print(f"VoxLogicA REPL [{strategy}]")
     print("Commands: :help | :load <file> | :run <file> | :show | :reset | :quit")

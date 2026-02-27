@@ -8,6 +8,7 @@ import json
 
 import dask.bag as db
 
+from voxlogica.policy import enforce_runtime_read_path_policy
 from voxlogica.execution_strategy.results import SequenceValue
 from voxlogica.execution_strategy.strict import StrictExecutionStrategy
 
@@ -37,6 +38,7 @@ class DaskExecutionStrategy(StrictExecutionStrategy):
             raise ValueError("load requires one dataset argument")
 
         source = args[0]
+        enforce_runtime_read_path_policy("load", [source])
         if isinstance(source, db.Bag):
             return source
 

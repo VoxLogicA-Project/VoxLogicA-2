@@ -32,9 +32,21 @@ python3 bootstrap.py --with-test
 # Run with strict strategy shortcut (parity/debug)
 ./voxlogica run --strict test.imgql
 
+# Run with legacy side-effect policy enabled (CLI only)
+./voxlogica run --legacy test.imgql
+
 # Start API server
 ./voxlogica serve
 ```
+
+## Safety Defaults
+
+- Static resolution is strict: unknown callable names fail before execution.
+- Non-legacy mode is default; side-effectful primitives are blocked unless CLI `--legacy` is set.
+- `serve` always runs non-legacy policy and disables server-side save/export fields.
+- Serve-mode read primitives are constrained to allowed roots:
+  - `VOXLOGICA_SERVE_DATA_DIR` (primary root)
+  - `VOXLOGICA_SERVE_EXTRA_READ_ROOTS` (optional comma-separated extras)
 
 ## Testing
 
@@ -64,6 +76,8 @@ Python version policy:
 
 ```bash
 ./voxlogica repl --execution-strategy dask
+# optional legacy mode:
+./voxlogica repl --legacy
 ```
 
 Useful REPL commands:

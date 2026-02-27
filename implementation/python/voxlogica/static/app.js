@@ -28,6 +28,7 @@
     hoverActiveToken: "",
     hoverPreviewToken: "",
     hoverPreviewSeq: 0,
+    symbolDiagnostics: [],
   };
 
   const dom = {
@@ -43,6 +44,7 @@
     loadProgramFileBtn: document.getElementById("loadProgramFileBtn"),
     programLibraryMeta: document.getElementById("programLibraryMeta"),
     editorHoverPreview: document.getElementById("editorHoverPreview"),
+    programDiagnostics: document.getElementById("programDiagnostics"),
     runProgramBtn: document.getElementById("runProgramBtn"),
     killProgramBtn: document.getElementById("killProgramBtn"),
     clearOutputBtn: document.getElementById("clearOutputBtn"),
@@ -197,6 +199,32 @@
     dom.runError.classList.remove("hidden");
   };
 
+  const formatDiagnostics = (diagnostics) => {
+    const rows = Array.isArray(diagnostics) ? diagnostics : [];
+    if (!rows.length) return "";
+    return rows
+      .map((diag) => {
+        const code = diag && diag.code ? `[${diag.code}] ` : "";
+        const message = diag && diag.message ? String(diag.message) : "Static error";
+        const symbol = diag && diag.symbol ? ` (symbol: ${diag.symbol})` : "";
+        const location = diag && diag.location ? ` @ ${diag.location}` : "";
+        return `${code}${message}${symbol}${location}`;
+      })
+      .join("\n");
+  };
+
+  const setProgramDiagnostics = (diagnostics) => {
+    state.symbolDiagnostics = Array.isArray(diagnostics) ? diagnostics : [];
+    if (!dom.programDiagnostics) return;
+    if (!state.symbolDiagnostics.length) {
+      dom.programDiagnostics.textContent = "";
+      dom.programDiagnostics.classList.add("hidden");
+      return;
+    }
+    dom.programDiagnostics.textContent = formatDiagnostics(state.symbolDiagnostics);
+    dom.programDiagnostics.classList.remove("hidden");
+  };
+
   const renderRuntimeMetrics = (job) => {
     const metrics = (job && job.metrics) || {};
     dom.metricWall.textContent = fmtSeconds(Number(metrics.wall_time_s));
@@ -210,7 +238,10 @@
   const setBusy = (busy) => {
     if (dom.runProgramBtn) dom.runProgramBtn.disabled = busy;
     if (dom.killProgramBtn) dom.killProgramBtn.disabled = !busy;
-    if (dom.executionStrategy) dom.executionStrategy.disabled = busy;
+    if (dom.executionStrategy) {
+      dom.executionStrategy.value = "dask";
+      dom.executionStrategy.disabled = true;
+    }
     if (dom.noCache) dom.noCache.disabled = busy;
   };
 
@@ -283,10 +314,14 @@
   const createPlaygroundJob = async () => {
     setRunError("");
     await refreshProgramSymbols();
+    if (state.symbolDiagnostics.length) {
+      setRunError("Static diagnostics must be fixed before execution can start.");
+      return;
+    }
     const payload = {
       program: dom.programInput.value,
       execute: true,
-      execution_strategy: dom.executionStrategy.value,
+      execution_strategy: "dask",
     };
     if (dom.noCache) {
       payload.no_cache = Boolean(dom.noCache.checked);
@@ -694,7 +729,7 @@
   const requestPlayValue = async ({ nodeId, variable = "", path = "", enqueue = true }) => {
     const payload = {
       program: dom.programInput.value,
-      execution_strategy: dom.executionStrategy.value,
+      execution_strategy: "dask",
       variable,
       path,
       enqueue,
@@ -987,6 +1022,7 @@
       state.precomputedSymbolTable = {};
       state.precomputedPrintTargets = [];
       state.currentProgramHash = null;
+      setProgramDiagnostics([]);
       renderEditorTokenOverlay();
       await refreshPlaySelector({}, { keepViewer: true, preserveMeta: true });
       return;
@@ -998,16 +1034,24 @@
         body: JSON.stringify({ program }),
       });
       if (token !== state.symbolRefreshToken) return;
-      state.precomputedSymbolTable = payload.symbol_table || {};
-      state.precomputedPrintTargets = payload.print_targets || [];
+      const available = payload && payload.available !== false;
+      state.precomputedSymbolTable = available ? payload.symbol_table || {} : {};
+      state.precomputedPrintTargets = available ? payload.print_targets || [] : [];
       state.currentProgramHash = payload.program_hash || null;
+      setProgramDiagnostics(payload && payload.diagnostics ? payload.diagnostics : []);
       renderEditorTokenOverlay();
       await refreshPlaySelector({}, { keepViewer: true, preserveMeta: true });
-    } catch (_err) {
+    } catch (err) {
       if (token !== state.symbolRefreshToken) return;
       state.precomputedSymbolTable = {};
       state.precomputedPrintTargets = [];
       state.currentProgramHash = null;
+      setProgramDiagnostics([
+        {
+          code: "E_SYMBOLS",
+          message: `Unable to refresh symbols: ${err.message}`,
+        },
+      ]);
       renderEditorTokenOverlay();
       await refreshPlaySelector({}, { keepViewer: true, preserveMeta: true });
     }
@@ -1547,7 +1591,7 @@
         const selected = state.examples.find((item) => item.id === exampleId);
         if (!selected) return;
         dom.programInput.value = selected.code;
-        if (selected.strategy) dom.executionStrategy.value = selected.strategy;
+        if (dom.executionStrategy) dom.executionStrategy.value = "dask";
         renderEditorTokenOverlay();
         await refreshProgramSymbols();
         activateTab("playground");
@@ -1560,7 +1604,7 @@
         const selected = state.examples.find((item) => item.id === exampleId);
         if (!selected) return;
         dom.programInput.value = selected.code;
-        if (selected.strategy) dom.executionStrategy.value = selected.strategy;
+        if (dom.executionStrategy) dom.executionStrategy.value = "dask";
         renderEditorTokenOverlay();
         await refreshProgramSymbols();
         activateTab("playground");

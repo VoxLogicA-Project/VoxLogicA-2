@@ -15,15 +15,23 @@
 - Submit programs asynchronously (`POST /api/v1/playground/jobs`)
 - Poll status/results (`GET /api/v1/playground/jobs/{job_id}`)
 - Kill stale/running computations (`DELETE /api/v1/playground/jobs/{job_id}`)
+- Execution strategy is pinned to `dask` in serve mode.
 - Always-on telemetry: wall time, CPU time, CPU utilization, Python heap peak, RSS delta
 - Result lens:
   - selector built from print goals and declared variables
   - variable quick-inspection via editor double-click
   - per-query execution trace with `computed` vs `cached` node events
+- Static diagnostics:
+  - `/api/v1/playground/symbols` returns `available=false` with structured diagnostics when parse/static-policy checks fail
+  - editor shows diagnostics inline and only overlays clickable variable tokens when symbol resolution succeeds
 - Program library (fixed load directory only):
   - `GET /api/v1/playground/files`
   - `GET /api/v1/playground/files/{relative_path}`
   - directory controlled by `VOXLOGICA_SERVE_LOAD_DIR` (defaults to `tests/`)
+- Serve read policy:
+  - read primitives (`ReadImage`, `ReadTransform`, `load(path)`) are restricted to:
+    - `VOXLOGICA_SERVE_DATA_DIR` (primary root)
+    - `VOXLOGICA_SERVE_EXTRA_READ_ROOTS` (optional comma-separated roots)
 
 2. **Results Explorer**
 - Store-only inspection APIs:
@@ -37,6 +45,7 @@
   - compositional structured values (numbers, strings, arrays, mappings)
 - Safety model:
   - no server-side save/export is allowed in serve mode
+  - non-legacy runtime policy is always active in serve mode
   - inspection is limited to persisted results in the store
 
 3. **Example Gallery**
@@ -86,7 +95,7 @@ Supported keys:
 - `title`: gallery card title
 - `module`: namespace tag (used for filtering)
 - `level`: progression tag
-- `strategy`: default run strategy (`strict` or `dask`)
+- `strategy`: preserved as metadata; serve playground executes with `dask`
 - `description`: card description
 
 ## Report Artifacts

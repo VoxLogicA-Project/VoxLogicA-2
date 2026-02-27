@@ -29,6 +29,7 @@ from voxlogica.parser import (
 )
 from voxlogica.primitives.api import PrimitiveCall
 from voxlogica.primitives.registry import PrimitiveRegistry
+from voxlogica.policy import StaticAnalysisError, StaticDiagnostic
 
 logger = logging.getLogger(__name__)
 
@@ -315,23 +316,40 @@ def _plan_primitive_call(
     kwargs: tuple[tuple[str, NodeId], ...] = (),
     attrs: Optional[dict[str, Any]] = None,
     output_kind: OutputKind = "scalar",
+    position: str | None = None,
 ) -> NodeId:
     attrs = dict(attrs or {})
     call = PrimitiveCall(args=args, kwargs=kwargs, attrs=attrs)
 
     try:
         spec = work_plan.registry.get_spec(identifier)
+    except KeyError as exc:
+        raise StaticAnalysisError(
+            [
+                StaticDiagnostic(
+                    code="E_UNKNOWN_CALLABLE",
+                    message=f"Unknown callable: {identifier}",
+                    location=position,
+                    symbol=identifier,
+                )
+            ]
+        ) from exc
+
+    try:
         spec.arity.validate(len(args) + len(kwargs))
-        node = spec.planner(call)
-    except Exception:
-        node = NodeSpec(
-            kind="primitive",
-            operator=identifier,
-            args=args,
-            kwargs=kwargs,
-            attrs=attrs,
-            output_kind=output_kind,
-        )
+    except Exception as exc:  # noqa: BLE001
+        raise StaticAnalysisError(
+            [
+                StaticDiagnostic(
+                    code="E_ARITY",
+                    message=f"Invalid arity for '{identifier}': {exc}",
+                    location=position,
+                    symbol=identifier,
+                )
+            ]
+        ) from exc
+
+    node = spec.planner(call)
 
     if output_kind != "unknown" and node.output_kind != output_kind:
         node = NodeSpec(
@@ -383,6 +401,7 @@ def _reduce_map_call(
         identifier=call_expr.identifier,
         args=(sequence_id, closure_id),
         output_kind="sequence",
+        position=call_expr.position,
     )
 
 
@@ -414,6 +433,7 @@ def reduce_expression(
                     work_plan,
                     identifier=expr.identifier,
                     args=(),
+                    position=expr.position,
                 )
             if isinstance(val, OperationVal):
                 return val.operation_id
@@ -454,6 +474,7 @@ def reduce_expression(
                 identifier=expr.identifier,
                 args=args_ids,
                 output_kind=inferred_kind,
+                position=expr.position,
             )
 
         if isinstance(val, OperationVal):
@@ -483,6 +504,7 @@ def reduce_expression(
             identifier="for_loop",
             args=(iterable_id, closure_id),
             output_kind="sequence",
+            position=expr.position,
         )
 
     if isinstance(expr, ELet):

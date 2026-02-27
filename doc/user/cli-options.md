@@ -43,6 +43,9 @@ python -m voxlogica.main run <filename> [OPTIONS]
 | `--save-syntax <file>`             | str  | Save the AST in text format and exit                        |
 | `--compute-memory-assignment`      | flag | Compute and display memory buffer assignments               |
 | `--execute` / `--no-execute`       | flag | Execute the workplan (default: --execute)                   |
+| `--execution-strategy <name>`      | str  | Execution strategy (`dask` or `strict`)                     |
+| `--strict`                         | flag | Shortcut for `--execution-strategy strict`                  |
+| `--legacy`                         | flag | Enable legacy mode (allows effectful primitives)            |
 | `--debug`                          | flag | Enable debug mode (more verbose logging)                    |
 | `--verbose`                        | flag | Enable verbose logging (between info and debug)             |
 
@@ -85,6 +88,18 @@ Or equivalently:
 ```sh
 python -m voxlogica.main serve --host 0.0.0.0 --port 8080 --debug
 ```
+
+#### `repl`
+
+Start interactive REPL.
+
+| Option                        | Type | Description                                           |
+| ----------------------------- | ---- | ----------------------------------------------------- |
+| `--execution-strategy <name>` | str  | Execution strategy (`dask` or `strict`)              |
+| `--strict`                    | flag | Shortcut for `--execution-strategy strict`            |
+| `--legacy`                    | flag | Enable legacy mode (allows effectful primitives)      |
+| `--debug`                     | flag | Enable debug logging                                  |
+| `--verbose`                   | flag | Enable verbose logging                                |
 
 #### `version`
 
@@ -131,5 +146,7 @@ VoxLogicA.exe --save-task-graph graph.txt --save-task-graph-as-dot graph.dot exa
 - For both ports, the session file (`<filename>`) is required unless using the `version` command.
 - Output files will be overwritten if they already exist.
 - Debug mode provides additional logging for troubleshooting.
+- Non-legacy policy is default for CLI and REPL; use `--legacy` only when effectful primitives are required.
+- `serve` has no legacy mode and always applies non-legacy policy.
 
 For further help, use the `--help` flag with any command.

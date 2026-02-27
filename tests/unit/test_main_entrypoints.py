@@ -46,10 +46,15 @@ def test_run_command_success_and_file_not_found(tmp_path: Path, monkeypatch: pyt
     assert captured["filename"] == str(src)
     assert captured["execute"] is False
     assert captured["execution_strategy"] == "strict"
+    assert captured["legacy"] is False
 
     captured.clear()
     main_mod.run(str(src), execute=False, execution_strategy="dask", strict=True)
     assert captured["execution_strategy"] == "strict"
+
+    captured.clear()
+    main_mod.run(str(src), execute=False, execution_strategy="dask", legacy=True)
+    assert captured["legacy"] is True
 
     with pytest.raises(typer.Exit):
         main_mod.run(str(tmp_path / "missing.imgql"))
@@ -73,7 +78,7 @@ def test_list_primitives_and_repl_and_serve(capsys: pytest.CaptureFixture[str], 
     assert "All available primitives" in out
     assert "default.addition" in out
 
-    monkeypatch.setattr(main_mod, "run_interactive_repl", lambda strategy: 7)
+    monkeypatch.setattr(main_mod, "run_interactive_repl", lambda strategy, legacy=False: 7)
     with pytest.raises(typer.Exit):
         main_mod.repl(execution_strategy="strict")
 
@@ -108,11 +113,13 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
     monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
     monkeypatch.setattr(main_mod, "handle_list_primitives", lambda namespace=None: OperationResult.ok({"n": namespace}))
+    created_job_payloads: list[dict[str, object]] = []
+
     monkeypatch.setattr(
         main_mod,
         "playground_jobs",
         SimpleNamespace(
-            create_job=lambda payload: {"job_id": "p1", "status": "running"},
+            create_job=lambda payload: (created_job_payloads.append(dict(payload)), {"job_id": "p1", "status": "running"})[1],
             list_jobs=lambda: {"jobs": [], "total_jobs": 0, "generated_at": "-"},
             get_job=lambda job_id: {"job_id": job_id, "status": "completed", "result": {}, "log_tail": ""},
             kill_job=lambda job_id: {"job_id": job_id, "status": "killed", "log_tail": ""},
@@ -142,6 +149,10 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             run_resp = client.post("/api/v1/run", json={"program": 'print "x" 1'})
             assert run_resp.status_code == 200
             assert run_resp.json()["ok"] is True
+            run_args = run_resp.json()["args"]
+            assert run_args["execution_strategy"] == "dask"
+            assert run_args["legacy"] is False
+            assert run_args["serve_mode"] is True
 
             primitives_resp = client.get("/api/v1/primitives", params={"namespace": "default"})
             assert primitives_resp.status_code == 200
@@ -177,6 +188,7 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             assert value_pending.status_code == 200
             assert value_pending.json()["materialization"] == "pending"
             assert value_pending.json()["compute_status"] in {"queued", "running"}
+            assert value_pending.json()["execution_strategy"] == "dask"
 
             # Variable lookup must win over stale/foreign node ids.
             value_with_stale_node = client.post(
@@ -220,6 +232,13 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             jobs_resp = client.get("/api/v1/playground/jobs")
             assert jobs_resp.status_code == 200
             assert "jobs" in jobs_resp.json()
+            created = client.post("/api/v1/playground/jobs", json={"program": 'print "x" 1'})
+            assert created.status_code == 200
+            assert created.json()["status"] == "running"
+            assert created_job_payloads
+            assert created_job_payloads[-1]["execution_strategy"] == "dask"
+            assert created_job_payloads[-1]["legacy"] is False
+            assert created_job_payloads[-1]["serve_mode"] is True
             blocked_job = client.post(
                 "/api/v1/playground/jobs",
                 json={"program": 'print "x" 1', "save_syntax": "/tmp/syntax.txt"},
@@ -325,6 +344,67 @@ def test_playground_value_failed_job_exposes_diagnostics(monkeypatch: pytest.Mon
             assert "playground.node" in str(payload.get("log_tail", ""))
     finally:
         fake_storage.close()
+
+
+@pytest.mark.unit
+def test_playground_symbols_reports_static_diagnostics(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    with TestClient(main_mod.api_app) as client:
+        unknown_resp = client.post(
+            "/api/v1/playground/symbols",
+            json={"program": 'let x = UnknownCallable(1)'},
+        )
+        assert unknown_resp.status_code == 200
+        unknown_payload = unknown_resp.json()
+        assert unknown_payload["available"] is False
+        assert any(item.get("code") == "E_UNKNOWN_CALLABLE" for item in unknown_payload.get("diagnostics", []))
+
+        effect_resp = client.post(
+            "/api/v1/playground/symbols",
+            json={
+                "program": '\n'.join(
+                    [
+                        'import "simpleitk"',
+                        'let out = WriteImage(0, "tests/output/blocked.nii.gz")',
+                    ]
+                )
+            },
+        )
+        assert effect_resp.status_code == 200
+        effect_payload = effect_resp.json()
+        assert effect_payload["available"] is False
+        assert any(item.get("code") == "E_EFFECT_BLOCKED" for item in effect_payload.get("diagnostics", []))
+
+
+@pytest.mark.unit
+def test_playground_symbols_enforces_read_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir(parents=True)
+    monkeypatch.setenv("VOXLOGICA_SERVE_DATA_DIR", str(allowed))
+    monkeypatch.delenv("VOXLOGICA_SERVE_EXTRA_READ_ROOTS", raising=False)
+
+    outside = tmp_path / "outside.nii.gz"
+    with TestClient(main_mod.api_app) as client:
+        resp = client.post(
+            "/api/v1/playground/symbols",
+            json={
+                "program": '\n'.join(
+                    [
+                        'import "simpleitk"',
+                        f'let img = ReadImage("{outside}")',
+                    ]
+                )
+            },
+        )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["available"] is False
+        assert any(item.get("code") == "E_READ_ROOT_POLICY" for item in payload.get("diagnostics", []))
 
 
 @pytest.mark.unit

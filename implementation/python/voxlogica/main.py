@@ -26,6 +26,7 @@ from watchdog.observers.api import BaseObserver
 
 from voxlogica.features import FeatureRegistry, OperationResult, handle_list_primitives
 from voxlogica.parser import parse_program_content
+from voxlogica.policy import diagnostics_from_exception, enforce_workplan_policy_or_raise
 from voxlogica.reducer import reduce_program_with_bindings
 from voxlogica.repl import run_interactive_repl
 from voxlogica.serve_support import (
@@ -131,6 +132,9 @@ def _validate_no_server_save(request: RunRequest) -> None:
 def _prepare_serve_run_payload(request: RunRequest) -> dict[str, Any]:
     _validate_no_server_save(request)
     payload = request.model_dump()
+    payload["legacy"] = False
+    payload["serve_mode"] = True
+    payload["execution_strategy"] = "dask"
     filename = (request.filename or "").strip()
     if filename:
         try:
@@ -143,9 +147,19 @@ def _prepare_serve_run_payload(request: RunRequest) -> dict[str, Any]:
     return payload
 
 
-def _program_introspection(program_text: str) -> tuple[Any, dict[str, str], list[dict[str, str]]]:
+def _program_introspection(
+    program_text: str,
+    *,
+    legacy: bool = False,
+    serve_mode: bool = False,
+) -> tuple[Any, dict[str, str], list[dict[str, str]]]:
     syntax = parse_program_content(program_text)
     workplan, symbol_table = reduce_program_with_bindings(syntax)
+    enforce_workplan_policy_or_raise(
+        workplan,
+        legacy=legacy,
+        serve_mode=serve_mode,
+    )
     print_targets = [
         {"name": goal.name, "node_id": goal.id}
         for goal in workplan.goals
@@ -360,6 +374,11 @@ def run(
         "--strict",
         help="Shortcut for --execution-strategy strict (useful for parity/debug tests)",
     ),
+    legacy: bool = typer.Option(
+        False,
+        "--legacy",
+        help="Enable legacy mode (allows effectful primitives).",
+    ),
 ) -> None:
     """Run a VoxLogicA program."""
 
@@ -376,6 +395,7 @@ def run(
         raise typer.Exit(code=1)
 
     chosen_strategy = "strict" if strict else execution_strategy
+    legacy_enabled = legacy if isinstance(legacy, bool) else False
     feature = _feature_or_exit("run")
     result = feature.handler(
         program=program,
@@ -391,6 +411,8 @@ def run(
         verbose=verbose,
         dask_dashboard=dask_dashboard,
         execution_strategy=chosen_strategy,
+        legacy=legacy_enabled,
+        serve_mode=False,
     )
 
     _handle_cli_result("run", result)
@@ -443,6 +465,11 @@ def repl(
         "--strict",
         help="Shortcut for --execution-strategy strict (useful for parity/debug tests)",
     ),
+    legacy: bool = typer.Option(
+        False,
+        "--legacy",
+        help="Enable legacy mode (allows effectful primitives in REPL).",
+    ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging"),
 ) -> None:
@@ -450,7 +477,8 @@ def repl(
 
     setup_logging(debug, verbose)
     chosen_strategy = "strict" if strict else execution_strategy
-    exit_code = run_interactive_repl(strategy=chosen_strategy)
+    legacy_enabled = legacy if isinstance(legacy, bool) else False
+    exit_code = run_interactive_repl(strategy=chosen_strategy, legacy=legacy_enabled)
     raise typer.Exit(code=exit_code)
 
 
@@ -661,9 +689,21 @@ async def get_playground_file_endpoint(relative_path: str) -> dict[str, Any]:
 async def playground_symbols_endpoint(request: PlaygroundSymbolsRequest) -> dict[str, Any]:
     """Parse-only endpoint used by editor hover/selector to pre-compute node hashes."""
     try:
-        workplan, symbol_table, print_targets = _program_introspection(request.program)
+        workplan, symbol_table, print_targets = _program_introspection(
+            request.program,
+            legacy=False,
+            serve_mode=True,
+        )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unable to parse program: {exc}") from exc
+        return {
+            "available": False,
+            "program_hash": _program_hash(request.program),
+            "operations": 0,
+            "goals": 0,
+            "symbol_table": {},
+            "print_targets": [],
+            "diagnostics": diagnostics_from_exception(exc),
+        }
     return {
         "available": True,
         "program_hash": _program_hash(request.program),
@@ -671,6 +711,7 @@ async def playground_symbols_endpoint(request: PlaygroundSymbolsRequest) -> dict
         "goals": len(workplan.goals),
         "symbol_table": symbol_table,
         "print_targets": print_targets,
+        "diagnostics": [],
     }
 
 
@@ -678,9 +719,15 @@ async def playground_symbols_endpoint(request: PlaygroundSymbolsRequest) -> dict
 async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str, Any]:
     """Resolve one node lazily with cache-first lookup and prioritized on-demand execution."""
     try:
-        workplan, symbol_table, _print_targets = _program_introspection(request.program)
+        workplan, symbol_table, _print_targets = _program_introspection(
+            request.program,
+            legacy=False,
+            serve_mode=True,
+        )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unable to parse program: {exc}") from exc
+        diagnostics = diagnostics_from_exception(exc)
+        detail = diagnostics[0]["message"] if diagnostics else f"Unable to parse program: {exc}"
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc
 
     node_id, variable_name = _resolve_requested_node(
         symbol_table=symbol_table,
@@ -688,7 +735,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
         variable=request.variable,
         allowed_nodes=set(workplan.nodes.keys()),
     )
-    strategy = (request.execution_strategy or "dask").strip() or "dask"
+    strategy = "dask"
     view_path = request.path or ""
     storage = get_storage()
 
@@ -883,7 +930,9 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             "program": request.program,
             "execute": True,
             "no_cache": False,
-            "execution_strategy": strategy,
+            "execution_strategy": "dask",
+            "legacy": False,
+            "serve_mode": True,
             "_goals": [node_id],
             "_job_kind": "value-resolve",
             "_priority_node": node_id,
@@ -891,7 +940,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
         },
         program_hash=program_hash,
         node_id=node_id,
-        execution_strategy=strategy,
+        execution_strategy="dask",
     )
     return _attach_common(
         {
@@ -910,6 +959,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
 async def create_playground_job_endpoint(request: RunRequest) -> dict[str, Any]:
     """Start an asynchronous playground execution job."""
     payload = _prepare_serve_run_payload(request)
+    payload["execution_strategy"] = "dask"
     return playground_jobs.create_job(payload)
 
 

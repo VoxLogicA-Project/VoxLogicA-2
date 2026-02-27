@@ -12,6 +12,12 @@ from voxlogica.converters import to_dot, to_json
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 from voxlogica.execution import ExecutionEngine
 from voxlogica.parser import parse_program, parse_program_content
+from voxlogica.policy import (
+    StaticPolicyError,
+    diagnostics_payload,
+    enforce_workplan_policy_or_raise,
+    runtime_policy_scope,
+)
 from voxlogica.reducer import reduce_program_with_bindings
 from voxlogica.storage import NoCacheStorageBackend
 
@@ -147,6 +153,8 @@ def handle_run(
     no_cache: bool = False,
     dask_dashboard: bool = False,
     execution_strategy: str = "dask",
+    legacy: bool = False,
+    serve_mode: bool = False,
     _include_execution_events: bool = False,
     _goals: list[str] | None = None,
     **kwargs,
@@ -155,6 +163,11 @@ def handle_run(
     try:
         syntax = _load_syntax(program, filename)
         workplan, declaration_bindings = reduce_program_with_bindings(syntax)
+        enforce_workplan_policy_or_raise(
+            workplan,
+            legacy=bool(legacy),
+            serve_mode=bool(serve_mode),
+        )
 
         cli_mode = bool(filename)
         execution_result = None
@@ -164,20 +177,22 @@ def handle_run(
             if no_cache:
                 logger.info("No-cache mode enabled - results are not persisted")
                 engine = ExecutionEngine(storage_backend=NoCacheStorageBackend())
-                execution_result, prepared_plan = engine.execute_with_prepared(
-                    workplan,
-                    dask_dashboard=dask_dashboard,
-                    strategy=execution_strategy,
-                    goals=_goals,
-                )
+                with runtime_policy_scope(serve_mode=bool(serve_mode)):
+                    execution_result, prepared_plan = engine.execute_with_prepared(
+                        workplan,
+                        dask_dashboard=dask_dashboard,
+                        strategy=execution_strategy,
+                        goals=_goals,
+                    )
             else:
                 engine = ExecutionEngine()
-                execution_result, prepared_plan = engine.execute_with_prepared(
-                    workplan,
-                    dask_dashboard=dask_dashboard,
-                    strategy=execution_strategy,
-                    goals=_goals,
-                )
+                with runtime_policy_scope(serve_mode=bool(serve_mode)):
+                    execution_result, prepared_plan = engine.execute_with_prepared(
+                        workplan,
+                        dask_dashboard=dask_dashboard,
+                        strategy=execution_strategy,
+                        goals=_goals,
+                    )
 
             if not execution_result.success:
                 error_msg = (
@@ -306,6 +321,13 @@ def handle_run(
 
         return OperationResult.ok(_json_safe(result))
 
+    except StaticPolicyError as exc:
+        message = exc.diagnostics[0].message if exc.diagnostics else "Static policy violation"
+        return OperationResult(
+            success=False,
+            data={"diagnostics": diagnostics_payload(exc.diagnostics)},
+            error=message,
+        )
     except Exception as exc:  # noqa: BLE001
         return OperationResult.fail(f"Unexpected error: {exc}")
 
@@ -376,6 +398,12 @@ run_feature = FeatureRegistry.register(
                 "default": "dask",
                 "help": "Execution strategy to use (dask|strict)",
             },
+            "legacy": {
+                "type": bool,
+                "required": False,
+                "default": False,
+                "help": "Enable legacy mode (allow effectful primitives)",
+            },
         },
         api_endpoint={
             "path": "/run",
@@ -392,6 +420,7 @@ run_feature = FeatureRegistry.register(
                 "debug": (Optional[bool], "Enable debug mode"),
                 "verbose": (Optional[bool], "Enable verbose logging"),
                 "execution_strategy": (Optional[str], "Execution strategy (dask|strict)"),
+                "legacy": (Optional[bool], "Enable legacy mode (allow effectful primitives)"),
             },
             "response_model": Dict[str, Any],
         },
