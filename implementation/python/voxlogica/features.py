@@ -234,6 +234,23 @@ def handle_run(
                         goals=_goals,
                     )
 
+            # Playground/value jobs need persisted pages to become immediately inspectable.
+            # Keep non-blocking semantics for normal runs, but wait briefly in serve
+            # scoped value-resolution paths so the UI does not get stuck in "queued".
+            if (
+                prepared_plan is not None
+                and bool(serve_mode)
+                and (_include_goal_descriptors or bool(_goals))
+            ):
+                try:
+                    flushed = prepared_plan.materialization_store.flush(timeout_s=2.5)
+                    if not flushed:
+                        logger.warning(
+                            "Persistence queue did not fully flush before returning serve payload"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Unable to flush persistence queue: %s", exc)
+
             if not execution_result.success:
                 error_msg = (
                     "Execution failed with "

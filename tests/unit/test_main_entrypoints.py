@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -384,6 +385,107 @@ def test_playground_value_failed_job_exposes_diagnostics(monkeypatch: pytest.Mon
             assert payload["execution_errors"]["abc123deadbeef"] == "kernel boom"
             assert payload["execution_error_details"]["abc123deadbeef"]["operator"] == "default.load"
             assert "playground.node" in str(payload.get("log_tail", ""))
+    finally:
+        fake_storage.close()
+
+
+@pytest.mark.unit
+def test_playground_value_completed_pending_persistence_status(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    class FakeRegistry:
+        @staticmethod
+        def get_feature(name: str):
+            if name == "version":
+                return SimpleNamespace(handler=lambda: OperationResult.ok({"version": "2.0.0"}))
+            if name == "run":
+                return SimpleNamespace(handler=lambda **kwargs: OperationResult.ok({"ok": True, "args": kwargs}))
+            return None
+
+    monkeypatch.setattr(main_mod, "FeatureRegistry", FakeRegistry)
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    pending_finished_at = datetime.now(timezone.utc).isoformat()
+    stale_finished_at = (datetime.now(timezone.utc) - timedelta(seconds=8)).isoformat()
+
+    def _make_completed_job(finished_at: str):
+        def _get_value_job(**kwargs):
+            node_id = str(kwargs.get("node_id", "unknown"))
+            return {
+                "job_id": "value-completed-1",
+                "status": "completed",
+                "finished_at": finished_at,
+                "log_tail": "",
+                "result": {
+                    "goal_results": [
+                        {
+                            "node_id": node_id,
+                            "runtime_descriptor": {
+                                "vox_type": "sequence",
+                                "format_version": "voxpod/1",
+                                "summary": {"length": 18},
+                                "navigation": {
+                                    "path": "",
+                                    "pageable": True,
+                                    "can_descend": True,
+                                    "default_page_size": 64,
+                                    "max_page_size": 512,
+                                },
+                            },
+                            "metadata": {"persisted": "pending"},
+                        }
+                    ]
+                },
+            }
+
+        return _get_value_job
+
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            get_value_job=_make_completed_job(pending_finished_at),
+            ensure_value_job=lambda payload, **kwargs: {"job_id": "unused", "status": "running", "log_tail": ""},
+        ),
+    )
+
+    try:
+        with TestClient(main_mod.api_app) as client:
+            pending_resp = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "let x = range(1,19)",
+                    "variable": "x",
+                    "enqueue": False,
+                },
+            )
+            assert pending_resp.status_code == 200
+            pending_payload = pending_resp.json()
+            assert pending_payload["materialization"] == "pending"
+            assert pending_payload["compute_status"] == "persisting"
+
+            monkeypatch.setattr(
+                main_mod,
+                "playground_jobs",
+                SimpleNamespace(
+                    get_value_job=_make_completed_job(stale_finished_at),
+                    ensure_value_job=lambda payload, **kwargs: {"job_id": "unused", "status": "running", "log_tail": ""},
+                ),
+            )
+            failed_resp = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "let x = range(1,19)",
+                    "variable": "x",
+                    "enqueue": False,
+                },
+            )
+            assert failed_resp.status_code == 200
+            failed_payload = failed_resp.json()
+            assert failed_payload["materialization"] == "failed"
+            assert failed_payload["compute_status"] == "failed"
+            assert "persistence did not finish" in str(failed_payload["error"])
     finally:
         fake_storage.close()
 

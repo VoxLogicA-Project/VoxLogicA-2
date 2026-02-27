@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import datetime, timezone
 import hashlib
 import json
 import logging
@@ -824,6 +825,18 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             return dict(summary)
         return {}
 
+    def _parse_iso_utc(value: Any) -> float | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            normalized = value.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return float(parsed.timestamp())
+        except Exception:
+            return None
+
     def _runtime_descriptor_from_job(
         job_payload: dict[str, Any] | None,
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -1017,14 +1030,32 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                         }
                     )
                 if persisted_state == "pending":
+                    finished_at = _parse_iso_utc(tracked_job.get("finished_at"))
+                    if finished_at is not None and (time.time() - finished_at) > 4.0:
+                        return _attach_common(
+                            _failure_payload(
+                                compute_status="failed",
+                                inspected_payload=inspected,
+                                tracked_job_payload=tracked_job,
+                                fallback_error=(
+                                    "Value computation completed, but persistence did not finish "
+                                    "within the expected window."
+                                ),
+                                request_enqueued=False,
+                            )
+                        )
                     return _attach_common(
                         {
                             "available": False,
                             "materialization": "pending",
-                            "compute_status": "queued",
+                            "compute_status": "persisting",
                             "job_id": tracked_job.get("job_id"),
                             "store_status": "missing",
                             "request_enqueued": False,
+                            "diagnostics": {
+                                "store_status": "missing",
+                                "message": "Result computed; waiting for async persistence.",
+                            },
                         }
                     )
             if not request.enqueue:
@@ -1124,7 +1155,7 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
 
     materialization = str(value_payload.get("materialization", "missing"))
     compute_status = str(value_payload.get("compute_status", "missing"))
-    if materialization in {"pending", "missing"} or compute_status in {"queued", "running", "missing"}:
+    if materialization in {"pending", "missing"} or compute_status in {"queued", "running", "persisting", "missing"}:
         return {
             **value_payload,
             "page": {

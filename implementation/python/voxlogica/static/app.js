@@ -29,6 +29,9 @@
     hoverPreviewToken: "",
     hoverPreviewSeq: 0,
     symbolDiagnostics: [],
+    latestPlayJobs: [],
+    currentPlayJob: null,
+    queueVisualizer: null,
   };
 
   const dom = {
@@ -66,6 +69,7 @@
     playExecSummary: document.getElementById("playExecSummary"),
     playExecLog: document.getElementById("playExecLog"),
     playExecRaw: document.getElementById("playExecRaw"),
+    daskQueueViz: document.getElementById("daskQueueViz"),
     moduleFilter: document.getElementById("moduleFilter"),
     galleryCards: document.getElementById("galleryCards"),
     refreshQualityBtn: document.getElementById("refreshQualityBtn"),
@@ -280,6 +284,7 @@
   };
 
   const onJobTerminal = async (job) => {
+    state.currentPlayJob = job || null;
     setBusy(false);
     setJobStatus(job.status);
     renderRuntimeMetrics(job);
@@ -299,10 +304,12 @@
     if (!state.currentJobId) return;
     try {
       const job = await api(`/api/v1/playground/jobs/${state.currentJobId}`);
+      state.currentPlayJob = job || null;
       setJobStatus(job.status);
       renderPlayExecutionLog(job);
       if (job.status === "running") {
         renderRuntimeMetrics(job);
+        renderQueueVisualizer();
         return;
       }
       stopPollingCurrentJob();
@@ -377,6 +384,7 @@
     if (dom.playExecRaw) dom.playExecRaw.textContent = "";
     state.latestGoalResults = [];
     state.latestSymbolTable = {};
+    state.currentPlayJob = null;
     state.lastHoverToken = "";
     clearHoverTokenState();
     stopValuePolling();
@@ -384,6 +392,7 @@
     ensurePlayResultViewer();
     state.playResultViewer.renderRecord(null);
     refreshPlaySelector({}, { keepViewer: true, preserveMeta: true });
+    renderQueueVisualizer();
   };
 
   const encodePath = (path) =>
@@ -658,6 +667,87 @@
     return out;
   };
 
+  const ensureQueueVisualizer = () => {
+    if (state.queueVisualizer || !dom.daskQueueViz) return;
+    const ctor = window.VoxDaskQueueViz && window.VoxDaskQueueViz.DaskQueueVisualizer;
+    if (typeof ctor === "function") {
+      state.queueVisualizer = new ctor(dom.daskQueueViz);
+      return;
+    }
+    state.queueVisualizer = {
+      render: (snapshot) => {
+        const counts = (snapshot && snapshot.counts) || {};
+        dom.daskQueueViz.innerHTML = `
+          <div class="muted">
+            queue: queued ${Number(counts.queued || 0)} | running ${Number(counts.running || 0)} |
+            completed ${Number(counts.completed || 0)} | failed ${Number(counts.failed || 0)}
+          </div>
+        `;
+      },
+    };
+  };
+
+  const buildQueueSnapshot = (jobs, currentJob) => {
+    const safeJobs = Array.isArray(jobs) ? jobs : [];
+    const counts = {
+      queued: 0,
+      running: 0,
+      completed: 0,
+      failed: 0,
+      killed: 0,
+      other: 0,
+      total: safeJobs.length,
+    };
+    for (const job of safeJobs) {
+      const status = String((job && job.status) || "").toLowerCase();
+      if (status in counts) {
+        counts[status] += 1;
+      } else if (status === "success") {
+        counts.completed += 1;
+      } else {
+        counts.other += 1;
+      }
+    }
+
+    const logEntries = parseLogTail(currentJob && currentJob.log_tail ? currentJob.log_tail : "");
+    const nodeEvents = logEntries
+      .filter((entry) => entry && entry.event === "playground.node")
+      .slice(-360)
+      .map((entry) => ({
+        status: String(entry.status || "unknown"),
+        cache_source: String(entry.cache_source || "-"),
+        duration_s: Number(entry.duration_s || 0),
+        operator: String(entry.operator || "-"),
+        node_id: String(entry.node_id || ""),
+      }));
+
+    const displayJobs = safeJobs.slice(0, 36).map((job) => ({
+      id: String(job.job_id || ""),
+      status: String(job.status || "unknown"),
+      created_at: String(job.created_at || ""),
+      started_at: String(job.started_at || ""),
+      finished_at: String(job.finished_at || ""),
+      wall_time_s: Number(job.metrics && job.metrics.wall_time_s ? job.metrics.wall_time_s : 0),
+      strategy: String((job.request && job.request.execution_strategy) || "dask"),
+      kind: String((job.request && job.request.job_kind) || "run"),
+    }));
+
+    return {
+      generated_at: Date.now(),
+      counts,
+      jobs: displayJobs,
+      node_events: nodeEvents,
+      active_job_id: currentJob && currentJob.job_id ? String(currentJob.job_id) : "",
+    };
+  };
+
+  const renderQueueVisualizer = () => {
+    ensureQueueVisualizer();
+    if (!state.queueVisualizer) return;
+    const snapshot = buildQueueSnapshot(state.latestPlayJobs, state.currentPlayJob);
+    state.queueVisualizer.render(snapshot);
+  };
+
   const renderPlayExecutionLog = (job) => {
     const result = (job && job.result) || {};
     const execution = (result && result.execution) || {};
@@ -677,6 +767,7 @@
       `events ${Number(summary.events_stored || nodeEvents.length)}/${Number(summary.events_total || nodeEvents.length)}`;
     if (!displayedEvents.length) {
       dom.playExecLog.innerHTML = `<div class="muted">No node events available yet. Raw log is shown below.</div>`;
+      renderQueueVisualizer();
       return;
     }
     const rows = displayedEvents.slice(-220).reverse();
@@ -710,6 +801,7 @@
         `;
       })
       .join("");
+    renderQueueVisualizer();
   };
 
   const buildPlayTargets = () => {
@@ -1017,7 +1109,12 @@
       return;
     }
 
-    if (materialization === "pending" || computeStatus === "queued" || computeStatus === "running") {
+    if (
+      materialization === "pending" ||
+      computeStatus === "queued" ||
+      computeStatus === "running" ||
+      computeStatus === "persisting"
+    ) {
       state.playResultViewer.setLoading(
         `Value ${nodeId.slice(0, 12)} ${path || ""} is ${computeStatus || "pending"}...`,
       );
@@ -1458,7 +1555,12 @@
         setEditorHoverPreview(`var ${token}: ${summarizeDescriptor(payload.descriptor)} (${materialization})`);
         return;
       }
-      if (materialization === "pending" || payload.compute_status === "running" || payload.compute_status === "queued") {
+      if (
+        materialization === "pending" ||
+        payload.compute_status === "running" ||
+        payload.compute_status === "queued" ||
+        payload.compute_status === "persisting"
+      ) {
         setEditorHoverPreview(`var ${token}: running (${payload.compute_status}). Click to focus/inspect.`);
         return;
       }
@@ -1569,6 +1671,7 @@
     try {
       const job = await api(`/api/v1/playground/jobs/${jobId}`);
       state.currentJobId = jobId;
+      state.currentPlayJob = job || null;
       setJobStatus(job.status);
       renderRuntimeMetrics(job);
       await renderExecutionPayload(job);
@@ -1603,6 +1706,11 @@
     try {
       const payload = await api("/api/v1/playground/jobs");
       const jobs = payload.jobs || [];
+      state.latestPlayJobs = jobs;
+      if (!state.currentPlayJob && jobs.length) {
+        state.currentPlayJob = jobs[0];
+      }
+      renderQueueVisualizer();
       if (!jobs.length) {
         dom.recentJobs.innerHTML = `<div class="muted">No jobs executed yet.</div>`;
         return;
@@ -1665,6 +1773,7 @@
         });
       });
     } catch (err) {
+      renderQueueVisualizer();
       dom.recentJobs.innerHTML = `<div class="muted">Failed to load jobs: ${sanitize(err.message)}</div>`;
     }
   };
@@ -2132,6 +2241,8 @@
     dom.playResultMeta.textContent = "Click inspect on a variable to resolve it on demand.";
     ensureResultViewer();
     ensurePlayResultViewer();
+    ensureQueueVisualizer();
+    renderQueueVisualizer();
     await Promise.all([
       loadCapabilities(),
       loadVersionStamp(),
