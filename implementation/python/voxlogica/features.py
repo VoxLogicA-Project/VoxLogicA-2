@@ -132,6 +132,37 @@ def _collect_exports(
     return messages, saved_files
 
 
+def _failed_operation_details(workplan: Any, failed_operations: dict[str, str]) -> dict[str, dict[str, Any]]:
+    details: dict[str, dict[str, Any]] = {}
+    nodes = getattr(workplan, "nodes", {}) if workplan is not None else {}
+    if not isinstance(nodes, dict):
+        return details
+
+    for node_id in failed_operations.keys():
+        node = nodes.get(node_id)
+        if node is None:
+            continue
+        raw_kwargs = getattr(node, "kwargs", ())
+        kwargs_pairs: list[tuple[str, str]] = []
+        if isinstance(raw_kwargs, dict):
+            kwargs_pairs = [(str(key), str(value)) for key, value in raw_kwargs.items()]
+        else:
+            try:
+                kwargs_pairs = [(str(key), str(value)) for key, value in raw_kwargs]
+            except Exception:
+                kwargs_pairs = []
+
+        details[str(node_id)] = {
+            "operator": str(getattr(node, "operator", "")),
+            "kind": str(getattr(node, "kind", "")),
+            "output_kind": str(getattr(node, "output_kind", "")),
+            "args": [str(arg) for arg in getattr(node, "args", ())],
+            "kwargs": dict(kwargs_pairs),
+            "attrs": dict(getattr(node, "attrs", {})),
+        }
+    return details
+
+
 def handle_version(**kwargs) -> OperationResult[Dict[str, str]]:
     """Return current VoxLogicA version."""
     from voxlogica.version import get_version
@@ -228,6 +259,10 @@ def handle_run(
                         "total_operations": execution_result.total_operations,
                         "cache_summary": execution_result.cache_summary,
                         "errors": execution_result.failed_operations,
+                        "error_details": _failed_operation_details(
+                            workplan,
+                            execution_result.failed_operations,
+                        ),
                     },
                 }
                 if _include_execution_events:
@@ -284,6 +319,10 @@ def handle_run(
             result["execution"] = execution_payload
             if execution_result.failed_operations:
                 result["execution"]["errors"] = execution_result.failed_operations
+                result["execution"]["error_details"] = _failed_operation_details(
+                    workplan,
+                    execution_result.failed_operations,
+                )
 
             goal_results: list[dict[str, Any]] = []
             if prepared_plan is not None:

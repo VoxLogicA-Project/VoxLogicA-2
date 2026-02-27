@@ -760,11 +760,58 @@
     return {};
   };
 
+  const normalizedExecutionErrorDetails = (payload) => {
+    const direct = payload && typeof payload === "object" ? payload.execution_error_details : null;
+    if (direct && typeof direct === "object") {
+      return direct;
+    }
+    const diagnostics = payload && typeof payload === "object" ? payload.diagnostics : null;
+    const nested = diagnostics && typeof diagnostics === "object" ? diagnostics.execution_error_details : null;
+    if (nested && typeof nested === "object") {
+      return nested;
+    }
+    return {};
+  };
+
   const formatExecutionErrors = (errors) => {
     const entries = Object.entries(errors || {});
     if (!entries.length) return "none";
     return entries
       .map(([node, message]) => `${String(node).slice(0, 12)}: ${String(message)}`)
+      .join("\n");
+  };
+
+  const formatExecutionErrorDetails = (details, executionErrors) => {
+    const entries = Object.entries(details || {});
+    if (!entries.length) return "";
+    const summarize = (value, maxLen = 120) => {
+      const text = String(value ?? "");
+      if (text.length <= maxLen) return text;
+      return `${text.slice(0, maxLen)}...`;
+    };
+    return entries
+      .map(([node, detail]) => {
+        const op = detail && detail.operator ? String(detail.operator) : "unknown";
+        const args = Array.isArray(detail && detail.args) ? detail.args.map((v) => summarize(v)).join(", ") : "";
+        const kwargs =
+          detail && typeof detail.kwargs === "object" && detail.kwargs
+            ? Object.entries(detail.kwargs)
+                .map(([k, v]) => `${String(k)}=${summarize(v)}`)
+                .join(", ")
+            : "";
+        const attrs =
+          detail && typeof detail.attrs === "object" && detail.attrs
+            ? summarize(JSON.stringify(detail.attrs))
+            : "";
+        const kind = detail && detail.kind ? ` kind=${String(detail.kind)}` : "";
+        const outputKind = detail && detail.output_kind ? ` output=${String(detail.output_kind)}` : "";
+        const message = executionErrors && executionErrors[node] ? String(executionErrors[node]) : "";
+        const signature = kwargs ? `${op}(${args}${args ? ", " : ""}${kwargs})` : `${op}(${args})`;
+        const attrsPart = attrs && attrs !== "{}" ? ` attrs=${attrs}` : "";
+        const kindPart = `${kind}${outputKind}`;
+        const errPart = message ? ` error=${message}` : "";
+        return `${String(node).slice(0, 12)}: ${signature}${attrsPart}${kindPart}${errPart}`;
+      })
       .join("\n");
   };
 
@@ -800,6 +847,12 @@
     if (Object.keys(executionErrors).length) {
       lines.push("execution_errors:");
       lines.push(formatExecutionErrors(executionErrors));
+    }
+    const executionErrorDetails = normalizedExecutionErrorDetails(payload);
+    const detailsText = formatExecutionErrorDetails(executionErrorDetails, executionErrors);
+    if (detailsText) {
+      lines.push("failed_operations:");
+      lines.push(detailsText);
     }
 
     return lines.join("\n");

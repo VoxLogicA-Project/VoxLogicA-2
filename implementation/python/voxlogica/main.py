@@ -778,6 +778,25 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             out[str(key)] = str(value)
         return out
 
+    def _execution_error_details_from_job(job_payload: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+        if not isinstance(job_payload, dict):
+            return {}
+        result_payload = job_payload.get("result")
+        if not isinstance(result_payload, dict):
+            return {}
+        execution_payload = result_payload.get("execution")
+        if not isinstance(execution_payload, dict):
+            return {}
+        details_payload = execution_payload.get("error_details")
+        if not isinstance(details_payload, dict):
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for key, value in details_payload.items():
+            if not isinstance(value, dict):
+                continue
+            out[str(key)] = dict(value)
+        return out
+
     def _cache_summary_from_job(job_payload: dict[str, Any] | None) -> dict[str, Any]:
         if not isinstance(job_payload, dict):
             return {}
@@ -840,6 +859,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                 job_id = str(tracked_job_payload.get("job_id"))
 
         execution_errors = _execution_errors_from_job(tracked_job_payload)
+        execution_error_details = _execution_error_details_from_job(tracked_job_payload)
         cache_summary = _cache_summary_from_job(tracked_job_payload)
 
         error_message = job_error or store_error or fallback_error
@@ -856,6 +876,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                 "store_error": store_error or None,
                 "job_error": job_error or None,
                 "execution_errors": execution_errors,
+                "execution_error_details": execution_error_details,
                 "cache_summary": cache_summary,
             },
         }
@@ -865,6 +886,8 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             payload["job_error"] = job_error
         if execution_errors:
             payload["execution_errors"] = execution_errors
+        if execution_error_details:
+            payload["execution_error_details"] = execution_error_details
         if cache_summary:
             payload["cache_summary"] = cache_summary
         if log_tail:

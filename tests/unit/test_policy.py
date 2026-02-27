@@ -155,6 +155,9 @@ def test_handle_run_runtime_read_policy_blocks_dynamic_paths(
     execution = ((result.data or {}).get("execution") if isinstance(result.data, dict) else {}) or {}
     errors = execution.get("errors") if isinstance(execution, dict) else {}
     assert any("Serve read policy blocked" in str(message) for message in dict(errors or {}).values())
+    error_details = execution.get("error_details") if isinstance(execution, dict) else {}
+    assert isinstance(error_details, dict)
+    assert any("load" in str((detail or {}).get("operator", "")).lower() for detail in error_details.values())
 
 
 @pytest.mark.unit

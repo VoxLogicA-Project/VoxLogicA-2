@@ -56,6 +56,9 @@ Once started, the API will be available at:
   - `VOXLOGICA_SERVE_DATA_DIR` (primary root)
   - `VOXLOGICA_SERVE_EXTRA_READ_ROOTS` (optional comma-separated roots)
 - Unknown callable names fail during static resolution (before execution).
+- Execution failures include structured failed-operation metadata:
+  - `execution.errors`: node -> error message
+  - `execution.error_details`: node -> `{operator, args, kwargs, attrs, output_kind, kind}`
 
 ### 1. Get Version
 

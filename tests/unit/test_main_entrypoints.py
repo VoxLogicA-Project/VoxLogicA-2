@@ -311,6 +311,14 @@ def test_playground_value_failed_job_exposes_diagnostics(monkeypatch: pytest.Mon
                 "result": {
                     "execution": {
                         "errors": {"abc123deadbeef": "kernel boom"},
+                        "error_details": {
+                            "abc123deadbeef": {
+                                "operator": "default.load",
+                                "args": ["source_node_1"],
+                                "kwargs": {},
+                                "attrs": {},
+                            }
+                        },
                         "cache_summary": {"failed": 1, "events_total": 1, "events_stored": 1},
                     }
                 },
@@ -341,6 +349,7 @@ def test_playground_value_failed_job_exposes_diagnostics(monkeypatch: pytest.Mon
             assert payload["job_id"] == "value-failed-1"
             assert "Execution failed with 1 errors" in str(payload["error"])
             assert payload["execution_errors"]["abc123deadbeef"] == "kernel boom"
+            assert payload["execution_error_details"]["abc123deadbeef"]["operator"] == "default.load"
             assert "playground.node" in str(payload.get("log_tail", ""))
     finally:
         fake_storage.close()
