@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Generic, Optional, TypeVar
 import json
 import logging
+import os
 
 from voxlogica.converters import to_dot, to_json
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
@@ -24,6 +25,8 @@ from voxlogica.storage import NoCacheStorageBackend
 
 logger = logging.getLogger("voxlogica.features")
 T = TypeVar("T")
+_VALUE_RESOLVE_PERSIST_WAIT_ENV = "VOXLOGICA_VALUE_RESOLVE_PERSIST_TIMEOUT_S"
+_DEFAULT_VALUE_RESOLVE_PERSIST_TIMEOUT_S = 900.0
 
 
 @dataclass
@@ -86,6 +89,23 @@ def _load_syntax(program: Optional[str], filename: Optional[str]):
         return parse_program(filename)
 
     raise ValueError("Either program content or filename must be provided")
+
+
+def _resolve_persistence_flush_timeout_s(*, job_kind: str) -> float:
+    """Resolve persistence flush timeout for serve-mode execution payloads."""
+    normalized = str(job_kind or "").strip().lower()
+    if normalized != "value-resolve":
+        return 2.5
+    raw = os.environ.get(_VALUE_RESOLVE_PERSIST_WAIT_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_VALUE_RESOLVE_PERSIST_TIMEOUT_S
+    try:
+        parsed = float(raw)
+    except Exception:
+        return _DEFAULT_VALUE_RESOLVE_PERSIST_TIMEOUT_S
+    if parsed <= 0:
+        return _DEFAULT_VALUE_RESOLVE_PERSIST_TIMEOUT_S
+    return parsed
 
 
 def _collect_exports(
@@ -243,10 +263,16 @@ def handle_run(
                 and (_include_goal_descriptors or bool(_goals))
             ):
                 try:
-                    flushed = prepared_plan.materialization_store.flush(timeout_s=2.5)
+                    persist_timeout_s = _resolve_persistence_flush_timeout_s(
+                        job_kind=str(kwargs.get("_job_kind", "")),
+                    )
+                    flushed = prepared_plan.materialization_store.flush(timeout_s=persist_timeout_s)
                     if not flushed:
                         logger.warning(
-                            "Persistence queue did not fully flush before returning serve payload"
+                            "Persistence queue did not fully flush before returning serve payload "
+                            "(job_kind=%s, timeout_s=%.1f)",
+                            str(kwargs.get("_job_kind", "")),
+                            persist_timeout_s,
                         )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Unable to flush persistence queue: %s", exc)

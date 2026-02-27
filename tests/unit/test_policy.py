@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import voxlogica.features as features_mod
 from voxlogica.features import handle_run
 from voxlogica.parser import parse_program_content
 from voxlogica.policy import validate_workplan_policy
@@ -244,3 +246,103 @@ def test_handle_run_emits_runtime_descriptor_for_requested_non_goal_node() -> No
     assert target_entry is not None
     assert target_entry.get("operation") == "inspect"
     assert isinstance(target_entry.get("runtime_descriptor"), dict)
+
+
+@pytest.mark.unit
+def test_handle_run_uses_longer_flush_timeout_for_value_resolve_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flush_calls: list[float] = []
+
+    class _FakeStore:
+        def flush(self, timeout_s: float) -> bool:
+            flush_calls.append(float(timeout_s))
+            return True
+
+        def metadata(self, node_id: str) -> dict[str, object]:
+            return {"persisted": True}
+
+        def get(self, node_id: str) -> int:
+            return 1
+
+    fake_execution = SimpleNamespace(
+        success=True,
+        completed_operations=set(),
+        failed_operations={},
+        execution_time=0.01,
+        total_operations=1,
+        cache_summary={},
+        node_events=[],
+    )
+    fake_prepared = SimpleNamespace(materialization_store=_FakeStore())
+
+    class _FakeEngine:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        def execute_with_prepared(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return fake_execution, fake_prepared
+
+    monkeypatch.setattr(features_mod, "ExecutionEngine", _FakeEngine)
+
+    result = handle_run(
+        program="x = 1",
+        execute=True,
+        execution_strategy="dask",
+        serve_mode=True,
+        _include_goal_descriptors=True,
+        _job_kind="value-resolve",
+    )
+    assert result.success is True
+    assert flush_calls
+    assert flush_calls[0] == pytest.approx(900.0, abs=0.001)
+
+
+@pytest.mark.unit
+def test_handle_run_keeps_short_flush_timeout_for_non_value_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flush_calls: list[float] = []
+
+    class _FakeStore:
+        def flush(self, timeout_s: float) -> bool:
+            flush_calls.append(float(timeout_s))
+            return True
+
+        def metadata(self, node_id: str) -> dict[str, object]:
+            return {"persisted": True}
+
+        def get(self, node_id: str) -> int:
+            return 1
+
+    fake_execution = SimpleNamespace(
+        success=True,
+        completed_operations=set(),
+        failed_operations={},
+        execution_time=0.01,
+        total_operations=1,
+        cache_summary={},
+        node_events=[],
+    )
+    fake_prepared = SimpleNamespace(materialization_store=_FakeStore())
+
+    class _FakeEngine:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        def execute_with_prepared(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return fake_execution, fake_prepared
+
+    monkeypatch.setattr(features_mod, "ExecutionEngine", _FakeEngine)
+
+    result = handle_run(
+        program="x = 1",
+        execute=True,
+        execution_strategy="dask",
+        serve_mode=True,
+        _include_goal_descriptors=True,
+        _job_kind="run",
+    )
+    assert result.success is True
+    assert flush_calls
+    assert flush_calls[0] == pytest.approx(2.5, abs=0.001)
