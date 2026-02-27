@@ -53,3 +53,33 @@ def test_strict_strategy_reports_runtime_cache_hits(tmp_path: Path) -> None:
     assert second.cache_summary["cached_local"] > 0
     assert isinstance(second.node_events, list)
     assert any(event.get("status") == "cached" for event in second.node_events)
+
+
+@pytest.mark.unit
+def test_map_primitive_callable_persists_without_reparse_errors(tmp_path: Path) -> None:
+    source = parse_program_content(
+        """
+        let mapped = map(range, range(2,5))
+        """
+    )
+    workplan, bindings = reduce_program_with_bindings(source)
+    mapped_id = bindings["mapped"]
+    plan = workplan.to_symbolic_plan()
+
+    db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    try:
+        strategy = StrictExecutionStrategy(results_database=db)
+        prepared = strategy.compile(plan)
+        result = strategy.run(prepared, goals=[mapped_id])
+        assert result.success is True
+
+        assert prepared.materialization_store.flush(timeout_s=5.0) is True
+        meta = prepared.materialization_store.metadata(mapped_id)
+        assert meta.get("persisted") is True
+        assert "persist_error" not in meta
+
+        value = prepared.materialization_store.get(mapped_id)
+        rows = [list(item.iter_values()) for item in value.iter_values()]
+        assert rows == [[0, 1], [0, 1, 2], [0, 1, 2, 3]]
+    finally:
+        db.close()

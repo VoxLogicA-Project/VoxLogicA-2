@@ -4,6 +4,7 @@ dataset_root = "tests/data/datasets/BraTS_2019_HGG"
 
 // Recursively discover all BRaTS FLAIR volumes.
 flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
+flairs = map(ReadImage,flair_paths)
 
 // Threshold each image at the midpoint between its min and max intensity.
 mk_mask(path) =

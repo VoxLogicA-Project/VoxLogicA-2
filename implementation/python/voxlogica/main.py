@@ -65,6 +65,8 @@ from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 
 T = TypeVar("T")
 logger = logging.getLogger("voxlogica.main")
+_MAIN_LOG_ENV = "VOXLOGICA_MAIN_LOG_PATH"
+_DEFAULT_MAIN_LOG_RELATIVE = ("tests", "reports", "serve", "voxlogica-main.log")
 
 
 class SuccessResponse(BaseModel, Generic[T]):
@@ -133,6 +135,24 @@ class PlaygroundValuePageRequest(BaseModel):
     offset: int = 0
     limit: int = 64
     enqueue: bool = True
+
+
+class ClientLogEvent(BaseModel):
+    """One browser-originated log event."""
+
+    level: str = "info"
+    message: str = ""
+    source: str | None = None
+    url: str | None = None
+    ts: str | None = None
+    payload: dict[str, Any] | None = None
+    user_agent: str | None = None
+
+
+class ClientLogBatchRequest(BaseModel):
+    """Batch payload for browser-originated log events."""
+
+    events: list[ClientLogEvent]
 
 
 def _validate_no_server_save(request: RunRequest) -> None:
@@ -231,34 +251,108 @@ def _resolve_requested_node(
     return resolved_node, resolved_variable
 
 
-def _split_sequence_item_path(path: str | None) -> tuple[int, str] | None:
-    raw = str(path or "").strip()
-    if raw in {"", "/"}:
-        return None
-    tokens = [token for token in raw.split("/") if token]
+def _path_tokens(path: str | None) -> list[str]:
+    return [token for token in str(path or "").strip().split("/") if token]
+
+
+def _append_sequence_index_path(base_path: str, index: int) -> str:
+    base = str(base_path or "").strip()
+    if base in {"", "/"}:
+        return f"/{index}"
+    return f"{base.rstrip('/')}/{index}"
+
+
+def _pending_descriptor(*, path: str, reason: str) -> dict[str, Any]:
+    return {
+        "vox_type": "unavailable",
+        "format_version": "voxpod/1",
+        "summary": {"reason": reason},
+        "navigation": {
+            "path": path,
+            "pageable": False,
+            "can_descend": False,
+            "default_page_size": 64,
+            "max_page_size": 512,
+        },
+    }
+
+
+def _in_progress_descriptor(*, output_kind: str, path: str, status: str) -> dict[str, Any]:
+    normalized_path = str(path or "").strip()
+    if output_kind == "sequence":
+        return {
+            "vox_type": "sequence",
+            "format_version": "voxpod/1",
+            "summary": {"length": None},
+            "navigation": {
+                "path": normalized_path,
+                "pageable": True,
+                "can_descend": True,
+                "default_page_size": 64,
+                "max_page_size": 512,
+            },
+        }
+    if output_kind == "mapping":
+        return {
+            "vox_type": "mapping",
+            "format_version": "voxpod/1",
+            "summary": {"length": None},
+            "navigation": {
+                "path": normalized_path,
+                "pageable": True,
+                "can_descend": True,
+                "default_page_size": 64,
+                "max_page_size": 512,
+            },
+        }
+    return _pending_descriptor(path=normalized_path, reason=f"status={status}")
+
+
+def _sequence_reference_for_path(root_node_id: str, path: str | None) -> tuple[str, str] | None:
+    tokens = _path_tokens(path)
     if not tokens:
         return None
-    try:
-        index = int(tokens[0])
-    except ValueError:
+    current_node = str(root_node_id)
+    consumed = 0
+    for token in tokens:
+        try:
+            index = int(token)
+        except ValueError:
+            break
+        if index < 0:
+            break
+        current_node = hash_sequence_item(current_node, index)
+        consumed += 1
+    if consumed == 0:
         return None
-    if index < 0:
-        return None
-    remainder = "/" + "/".join(tokens[1:]) if len(tokens) > 1 else ""
-    return index, remainder
+    remaining_tokens = tokens[consumed:]
+    remainder = "/" + "/".join(remaining_tokens) if remaining_tokens else ""
+    return current_node, remainder
+
+
+def _sequence_container_node_for_path(root_node_id: str, path: str | None) -> str | None:
+    tokens = _path_tokens(path)
+    current_node = str(root_node_id)
+    for token in tokens:
+        try:
+            index = int(token)
+        except ValueError:
+            return None
+        if index < 0:
+            return None
+        current_node = hash_sequence_item(current_node, index)
+    return current_node
 
 
 def _transient_sequence_page_from_store(
     *,
     storage: Any,
-    parent_node_id: str,
+    container_node_id: str,
     descriptor: dict[str, Any] | None,
-    path: str,
+    base_path: str,
     offset: int,
     limit: int,
 ) -> dict[str, Any] | None:
-    if path not in {"", "/"}:
-        return None
     if not isinstance(descriptor, dict):
         return None
     if str(descriptor.get("vox_type", "")) != "sequence":
@@ -293,22 +387,86 @@ def _transient_sequence_page_from_store(
         upper_bound = min(upper_bound, total)
 
     items_out: list[dict[str, Any]] = []
-    cursor = safe_offset
-    while cursor < upper_bound:
-        item_node_id = hash_sequence_item(parent_node_id, cursor)
+    if total is None:
+        unknown_upper_bound = safe_offset + safe_limit
+        for cursor in range(safe_offset, unknown_upper_bound):
+            item_node_id = hash_sequence_item(container_node_id, cursor)
+            item_path = _append_sequence_index_path(base_path, cursor)
+            try:
+                item_payload = inspect_store_result(storage, node_id=item_node_id, path="")
+            except KeyError:
+                item_payload = None
+            except UnsupportedVoxValueError:
+                item_payload = None
+
+            item_status = "pending"
+            item_descriptor: dict[str, Any]
+            if isinstance(item_payload, dict):
+                item_status = str(item_payload.get("status", "unknown"))
+                descriptor_candidate = item_payload.get("descriptor")
+                if isinstance(descriptor_candidate, dict):
+                    item_descriptor = descriptor_candidate
+                else:
+                    item_descriptor = _pending_descriptor(path=item_path, reason=f"status={item_status}")
+            else:
+                item_descriptor = _pending_descriptor(path=item_path, reason="status=pending")
+            items_out.append(
+                {
+                    "index": cursor,
+                    "label": f"[{cursor}]",
+                    "path": item_path,
+                    "descriptor": item_descriptor,
+                    "node_id": item_node_id,
+                    "status": item_status,
+                }
+            )
+        has_more = True
+        next_offset = safe_offset + len(items_out)
+        return {
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "items": items_out,
+            "next_offset": next_offset,
+            "has_more": bool(has_more),
+            "total": None,
+        }
+
+    for cursor in range(safe_offset, upper_bound):
+        item_node_id = hash_sequence_item(container_node_id, cursor)
+        item_path = _append_sequence_index_path(base_path, cursor)
+        item_payload: dict[str, Any] | None
         try:
             item_payload = inspect_store_result(storage, node_id=item_node_id, path="")
         except KeyError:
-            break
+            item_payload = None
         except UnsupportedVoxValueError:
-            break
-        if str(item_payload.get("status", "")) != "materialized":
-            break
-        item_descriptor = item_payload.get("descriptor")
-        if not isinstance(item_descriptor, dict):
-            break
+            item_payload = None
 
-        item_path = f"/{cursor}"
+        item_status = "pending"
+        item_descriptor: dict[str, Any]
+        if isinstance(item_payload, dict):
+            payload_status = str(item_payload.get("status", "pending"))
+            if payload_status == "materialized":
+                item_descriptor_raw = item_payload.get("descriptor")
+                if isinstance(item_descriptor_raw, dict):
+                    item_descriptor = item_descriptor_raw
+                    item_status = "materialized"
+                else:
+                    item_descriptor = _pending_descriptor(path=item_path, reason="status=materialized")
+                    item_status = "materialized"
+            elif payload_status == "failed":
+                item_descriptor_raw = item_payload.get("descriptor")
+                if isinstance(item_descriptor_raw, dict):
+                    item_descriptor = item_descriptor_raw
+                else:
+                    item_descriptor = _pending_descriptor(path=item_path, reason="status=failed")
+                item_status = "failed"
+            else:
+                item_descriptor = _pending_descriptor(path=item_path, reason=f"status={payload_status}")
+                item_status = payload_status
+        else:
+            item_descriptor = _pending_descriptor(path=item_path, reason="status=pending")
+
         items_out.append(
             {
                 "index": cursor,
@@ -316,15 +474,15 @@ def _transient_sequence_page_from_store(
                 "path": item_path,
                 "descriptor": item_descriptor,
                 "node_id": item_node_id,
+                "status": item_status,
             }
         )
-        cursor += 1
 
     if total is not None:
-        has_more = cursor < total
+        has_more = upper_bound < total
     else:
         has_more = len(items_out) >= safe_limit
-    next_offset = cursor if has_more else None
+    next_offset = safe_offset + len(items_out) if has_more else None
 
     return {
         "offset": safe_offset,
@@ -334,6 +492,19 @@ def _transient_sequence_page_from_store(
         "has_more": bool(has_more),
         "total": total,
     }
+
+
+def _is_terminal_value_payload(payload: dict[str, Any]) -> bool:
+    materialization = str(payload.get("materialization", "missing")).lower()
+    compute_status = str(payload.get("compute_status", "missing")).lower()
+    status_name = str(payload.get("status", "")).lower()
+    if materialization == "failed" or compute_status in {"failed", "killed"} or status_name == "failed":
+        return True
+    if materialization in {"cached", "computed"}:
+        return True
+    if status_name == "materialized":
+        return True
+    return False
 
 
 class ElapsedMsFormatter(logging.Formatter):
@@ -375,12 +546,27 @@ def setup_logging(debug: bool = False, verbose: bool = False) -> None:
     else:
         log_level = logging.INFO
 
-    handler = logging.StreamHandler()
-    handler.setFormatter(ElapsedMsFormatter("%(elapsed)s %(message)s"))
+    def _resolve_main_log_path() -> Path:
+        configured = os.environ.get(_MAIN_LOG_ENV, "").strip()
+        if configured:
+            target = Path(configured).expanduser().resolve()
+        else:
+            repo_root = Path(__file__).resolve().parents[3]
+            target = (repo_root / Path(*_DEFAULT_MAIN_LOG_RELATIVE)).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return target
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(ElapsedMsFormatter("%(elapsed)s %(message)s"))
+    file_handler = logging.FileHandler(_resolve_main_log_path(), encoding="utf-8")
+    file_handler.setFormatter(
+        ElapsedMsFormatter("%(asctime)s %(levelname)s %(name)s %(elapsed)s %(message)s")
+    )
 
     root = logging.getLogger()
     root.handlers = []
-    root.addHandler(handler)
+    root.addHandler(stream_handler)
+    root.addHandler(file_handler)
     root.setLevel(log_level)
 
     dask.config.set({"distributed.worker.redirect_stdouts": True})
@@ -843,12 +1029,53 @@ async def capabilities_endpoint() -> dict[str, Any]:
         "playground_symbols": True,
         "playground_value_resolver": True,
         "playground_value_paging": True,
+        "client_logging": True,
         "testing_jobs": True,
         "testing_report": True,
         "storage_stats": True,
         "store_results_viewer": True,
         "store_results_paging": True,
         "gallery": True,
+    }
+
+
+@api_router.post("/log/client")
+async def client_log_endpoint(request: ClientLogBatchRequest) -> dict[str, Any]:
+    """Ingest browser log events and mirror them into the unified server log file."""
+    client_logger = logging.getLogger("voxlogica.client")
+    accepted = 0
+    truncated = False
+    max_events = 200
+    for event in list(request.events)[:max_events]:
+        accepted += 1
+        level_name = str(event.level or "info").strip().lower()
+        level_value = {
+            "debug": logging.DEBUG,
+            "info": logging.INFO,
+            "warn": logging.WARNING,
+            "warning": logging.WARNING,
+            "error": logging.ERROR,
+            "critical": logging.CRITICAL,
+        }.get(level_name, logging.INFO)
+        event_payload = {
+            "source": event.source,
+            "url": event.url,
+            "ts": event.ts,
+            "user_agent": event.user_agent,
+            "payload": event.payload,
+        }
+        client_logger.log(
+            level_value,
+            "[browser] %s | %s",
+            str(event.message or ""),
+            json.dumps(event_payload, sort_keys=True, default=str),
+        )
+    if len(request.events) > max_events:
+        truncated = True
+    return {
+        "ok": True,
+        "accepted": accepted,
+        "truncated": truncated,
     }
 
 
@@ -956,6 +1183,8 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
         variable=request.variable,
         allowed_nodes=set(workplan.nodes.keys()),
     )
+    selected_node = workplan.nodes.get(node_id)
+    node_output_kind = str(getattr(selected_node, "output_kind", "unknown")) if selected_node is not None else "unknown"
     strategy = "dask"
     view_path = request.path or ""
     storage = get_storage()
@@ -1052,6 +1281,77 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                 return descriptor, metadata if isinstance(metadata, dict) else {}
             return None, metadata if isinstance(metadata, dict) else {}
         return None, {}
+
+    def _inspect_sequence_reference_from_store(
+        *,
+        root_descriptor: dict[str, Any] | None,
+        compute_status: str,
+        job_payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if view_path in {"", "/"}:
+            return None
+        if not isinstance(root_descriptor, dict):
+            return None
+        if str(root_descriptor.get("vox_type", "")) != "sequence":
+            return None
+        referenced = _sequence_reference_for_path(node_id, view_path)
+        if referenced is None:
+            return None
+        referenced_node_id, referenced_remainder = referenced
+        try:
+            item_payload = inspect_store_result(
+                storage,
+                node_id=referenced_node_id,
+                path=referenced_remainder,
+            )
+        except KeyError:
+            return None
+        except UnsupportedVoxValueError as exc:
+            return _attach_common(
+                {
+                    "available": False,
+                    "materialization": "failed",
+                    "compute_status": "failed",
+                    "status": "failed",
+                    "error": str(exc),
+                    "job_id": job_payload.get("job_id"),
+                    "request_enqueued": False,
+                    "diagnostics": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "node_id": node_id,
+                        "path": view_path or "/",
+                    },
+                }
+            )
+
+        item_status = str(item_payload.get("status", "unknown"))
+        if item_status == "materialized":
+            item_payload["materialization"] = "computed"
+            item_payload["compute_status"] = compute_status
+            item_payload["store_status"] = "materialized"
+            item_payload["request_enqueued"] = False
+            item_payload["resolved_store_node_id"] = referenced_node_id
+            item_payload["resolved_store_path"] = referenced_remainder
+            return _attach_common(item_payload)
+        if item_status == "failed":
+            return _attach_common(
+                {
+                    "available": False,
+                    "materialization": "failed",
+                    "compute_status": "failed",
+                    "status": "failed",
+                    "error": str(item_payload.get("error") or "Referenced sequence item failed."),
+                    "job_id": job_payload.get("job_id"),
+                    "request_enqueued": False,
+                    "diagnostics": {
+                        "node_id": node_id,
+                        "path": view_path or "/",
+                        "store_status": item_status,
+                    },
+                }
+            )
+        return None
 
     def _failure_payload(
         *,
@@ -1153,6 +1453,18 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
     if tracked_job is not None:
         job_status = str(tracked_job.get("status", "unknown"))
         if job_status in {"queued", "running"}:
+            progress_descriptor = _in_progress_descriptor(
+                output_kind=node_output_kind,
+                path=view_path,
+                status=job_status,
+            )
+            reference_payload = _inspect_sequence_reference_from_store(
+                root_descriptor=progress_descriptor if str(progress_descriptor.get("vox_type", "")) == "sequence" else None,
+                compute_status=job_status,
+                job_payload=tracked_job,
+            )
+            if reference_payload is not None:
+                return reference_payload
             return _attach_common(
                 {
                     "available": False,
@@ -1162,6 +1474,9 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                     "log_tail": tracked_job.get("log_tail", ""),
                     "store_status": inspected.get("status") if inspected is not None else "missing",
                     "request_enqueued": False,
+                    "descriptor": progress_descriptor,
+                    "resolved_store_node_id": node_id,
+                    "resolved_store_path": "",
                 }
             )
         if job_status == "completed":
@@ -1197,41 +1512,13 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                 root_descriptor = transient_descriptor.get("descriptor") if isinstance(transient_descriptor, dict) else None
                 persisted_state = transient_metadata.get("persisted") if isinstance(transient_metadata, dict) else None
                 if persisted_state == "pending":
-                    if isinstance(root_descriptor, dict) and str(root_descriptor.get("vox_type", "")) == "sequence":
-                        item_path = _split_sequence_item_path(view_path)
-                        if item_path is not None:
-                            item_index, item_remainder = item_path
-                            item_node_id = hash_sequence_item(node_id, item_index)
-                            try:
-                                item_payload = inspect_store_result(storage, node_id=item_node_id, path=item_remainder)
-                                if str(item_payload.get("status", "")) == "materialized":
-                                    item_payload["materialization"] = "computed"
-                                    item_payload["compute_status"] = "persisting"
-                                    item_payload["store_status"] = "materialized"
-                                    item_payload["request_enqueued"] = False
-                                    item_payload["sequence_item_node_id"] = item_node_id
-                                    item_payload["sequence_index"] = item_index
-                                    return _attach_common(item_payload)
-                            except KeyError:
-                                pass
-                            except UnsupportedVoxValueError as exc:
-                                return _attach_common(
-                                    {
-                                        "available": False,
-                                        "materialization": "failed",
-                                        "compute_status": "failed",
-                                        "status": "failed",
-                                        "error": str(exc),
-                                        "job_id": tracked_job.get("job_id"),
-                                        "request_enqueued": False,
-                                        "diagnostics": {
-                                            "code": exc.code,
-                                            "message": str(exc),
-                                            "node_id": node_id,
-                                            "path": view_path or "/",
-                                        },
-                                    }
-                                )
+                    reference_payload = _inspect_sequence_reference_from_store(
+                        root_descriptor=root_descriptor if isinstance(root_descriptor, dict) else None,
+                        compute_status="persisting",
+                        job_payload=tracked_job,
+                    )
+                    if reference_payload is not None:
+                        return reference_payload
                     finished_at = _parse_iso_utc(tracked_job.get("finished_at"))
                     elapsed_s = (time.time() - finished_at) if finished_at is not None else None
                     return _attach_common(
@@ -1243,6 +1530,8 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                             "store_status": "missing",
                             "request_enqueued": False,
                             "descriptor": root_descriptor if isinstance(root_descriptor, dict) else None,
+                            "resolved_store_node_id": node_id,
+                            "resolved_store_path": "",
                             "diagnostics": {
                                 "store_status": "missing",
                                 "message": "Result computed; waiting for async persistence.",
@@ -1321,6 +1610,8 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                                 "descriptor": transient_descriptor.get("descriptor")
                                 if isinstance(transient_descriptor.get("descriptor"), dict)
                                 else None,
+                                "resolved_store_node_id": node_id,
+                                "resolved_store_path": "",
                                 "diagnostics": {
                                     "store_status": "missing",
                                     "message": "Persistence appears stalled; re-enqueued value computation.",
@@ -1339,6 +1630,8 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                                 "descriptor": transient_descriptor.get("descriptor")
                                 if isinstance(transient_descriptor.get("descriptor"), dict)
                                 else None,
+                                "resolved_store_node_id": node_id,
+                                "resolved_store_path": "",
                                 "diagnostics": {
                                     "store_status": "missing",
                                     "message": "Result computed; waiting for async persistence.",
@@ -1386,13 +1679,22 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             inspected["materialization"] = "store-status"
             inspected["compute_status"] = str(inspected.get("status", "unknown"))
             return _attach_common(inspected)
+        descriptor = _in_progress_descriptor(
+            output_kind=node_output_kind,
+            path=view_path,
+            status="missing",
+        )
+        descriptor_vox_type = str(descriptor.get("vox_type", "unavailable"))
         return _attach_common(
             {
                 "available": False,
-                "materialization": "missing",
-                "compute_status": "missing",
+                "materialization": "pending" if descriptor_vox_type in {"sequence", "mapping"} else "missing",
+                "compute_status": "running" if descriptor_vox_type in {"sequence", "mapping"} else "missing",
                 "store_status": "missing",
                 "request_enqueued": False,
+                "descriptor": descriptor,
+                "resolved_store_node_id": node_id,
+                "resolved_store_path": "",
             }
         )
 
@@ -1455,11 +1757,22 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
         return value_payload
 
     if materialization in {"pending", "missing"} or compute_status in {"queued", "running", "persisting", "missing"}:
+        descriptor_payload = value_payload.get("descriptor") if isinstance(value_payload.get("descriptor"), dict) else None
+        container_node_id: str | None = None
+        if isinstance(descriptor_payload, dict) and str(descriptor_payload.get("vox_type", "")) == "sequence":
+            resolved_node_raw = value_payload.get("resolved_store_node_id")
+            resolved_path_raw = value_payload.get("resolved_store_path")
+            if isinstance(resolved_node_raw, str) and resolved_node_raw.strip():
+                normalized_resolved_path = str(resolved_path_raw or "").strip()
+                if normalized_resolved_path in {"", "/"}:
+                    container_node_id = resolved_node_raw.strip()
+            if container_node_id is None:
+                container_node_id = _sequence_container_node_for_path(node_id, path)
         transient_page = _transient_sequence_page_from_store(
             storage=get_storage(),
-            parent_node_id=node_id,
-            descriptor=value_payload.get("descriptor") if isinstance(value_payload.get("descriptor"), dict) else None,
-            path=path,
+            container_node_id=container_node_id or node_id,
+            descriptor=descriptor_payload,
+            base_path=path,
             offset=request.offset,
             limit=request.limit,
         )
@@ -1789,6 +2102,162 @@ async def root() -> HTMLResponse:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Unable to read UI page: {exc}") from exc
     html = html.replace(_ASSET_REV_SENTINEL, _compute_static_asset_revision(index_path.parent))
     return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+
+
+@api_app.websocket("/ws/playground/value")
+async def playground_value_stream_endpoint(websocket: WebSocket) -> None:
+    """Push focused value snapshots over WebSocket with subscription updates."""
+    await websocket.accept()
+    stream_logger = logging.getLogger("voxlogica.ws.value")
+
+    active_request: PlaygroundValueRequest | None = None
+    first_tick = True
+    last_signature = ""
+
+    def _parse_subscribe_payload(raw_message: str) -> PlaygroundValueRequest | None:
+        try:
+            payload = json.loads(raw_message)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        message_type = str(payload.get("type", "subscribe")).strip().lower()
+        if message_type not in {"subscribe", "sub"}:
+            return None
+        request_payload = payload.get("request", payload)
+        if not isinstance(request_payload, dict):
+            return None
+        try:
+            return PlaygroundValueRequest(**request_payload)
+        except Exception:
+            return None
+
+    try:
+        while True:
+            if active_request is None:
+                subscribe_message = await websocket.receive_text()
+                request = _parse_subscribe_payload(subscribe_message)
+                if request is None:
+                    await websocket.send_json({"type": "error", "message": "Invalid subscribe payload."})
+                    continue
+                active_request = request
+                first_tick = True
+                last_signature = ""
+                await websocket.send_json({"type": "subscribed"})
+                continue
+
+            enqueue_now = bool(active_request.enqueue) if first_tick else False
+            first_tick = False
+            payload = await playground_value_endpoint(
+                PlaygroundValueRequest(
+                    program=active_request.program,
+                    execution_strategy="dask",
+                    node_id=active_request.node_id,
+                    variable=active_request.variable,
+                    path=active_request.path,
+                    enqueue=enqueue_now,
+                )
+            )
+            signature = hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+            if signature != last_signature:
+                await websocket.send_json({"type": "value", "payload": payload})
+                last_signature = signature
+            if _is_terminal_value_payload(payload):
+                await websocket.send_json({"type": "terminal", "payload": payload})
+                active_request = None
+                first_tick = True
+                last_signature = ""
+
+            try:
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=0.8)
+                request = _parse_subscribe_payload(message)
+                if request is not None:
+                    active_request = request
+                    first_tick = True
+                    last_signature = ""
+                    await websocket.send_json({"type": "subscribed"})
+            except TimeoutError:
+                continue
+            except asyncio.TimeoutError:
+                continue
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:  # noqa: BLE001
+        stream_logger.error("playground value ws failed: %s", exc)
+        with contextlib.suppress(Exception):
+            await websocket.close(code=1011, reason="playground value ws failed")
+
+
+@api_app.websocket("/ws/playground/jobs")
+async def playground_job_stream_endpoint(websocket: WebSocket) -> None:
+    """Push playground job status snapshots over WebSocket with auto-resubscribe support."""
+    await websocket.accept()
+    stream_logger = logging.getLogger("voxlogica.ws.jobs")
+
+    job_id = ""
+    last_signature = ""
+
+    def _parse_job_subscribe(raw_message: str) -> str:
+        try:
+            payload = json.loads(raw_message)
+        except json.JSONDecodeError:
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        message_type = str(payload.get("type", "subscribe")).strip().lower()
+        if message_type not in {"subscribe", "sub"}:
+            return ""
+        raw_job_id = payload.get("job_id")
+        return str(raw_job_id or "").strip()
+
+    try:
+        while True:
+            if not job_id:
+                subscribe_message = await websocket.receive_text()
+                selected_job = _parse_job_subscribe(subscribe_message)
+                if not selected_job:
+                    await websocket.send_json({"type": "error", "message": "Invalid job subscribe payload."})
+                    continue
+                job_id = selected_job
+                last_signature = ""
+                await websocket.send_json({"type": "subscribed", "job_id": job_id})
+                continue
+
+            payload = playground_jobs.get_job(job_id)
+            if payload is None:
+                await websocket.send_json({"type": "error", "job_id": job_id, "message": "Unknown playground job."})
+                job_id = ""
+                last_signature = ""
+                continue
+
+            signature = hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+            if signature != last_signature:
+                await websocket.send_json({"type": "job", "job_id": job_id, "payload": payload})
+                last_signature = signature
+
+            status_name = str(payload.get("status", "")).lower()
+            if status_name in {"completed", "failed", "killed"}:
+                await websocket.send_json({"type": "terminal", "job_id": job_id, "payload": payload})
+                job_id = ""
+                last_signature = ""
+
+            try:
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=0.8)
+                selected_job = _parse_job_subscribe(message)
+                if selected_job:
+                    job_id = selected_job
+                    last_signature = ""
+                    await websocket.send_json({"type": "subscribed", "job_id": job_id})
+            except TimeoutError:
+                continue
+            except asyncio.TimeoutError:
+                continue
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:  # noqa: BLE001
+        stream_logger.error("playground job ws failed: %s", exc)
+        with contextlib.suppress(Exception):
+            await websocket.close(code=1011, reason="playground job ws failed")
 
 
 @api_app.websocket("/livereload")

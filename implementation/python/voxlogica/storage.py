@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Iterable, Iterator, Optional, Union
 import json
 import logging
 import queue
@@ -276,6 +276,55 @@ class SQLiteResultsDatabase(ResultsDatabase):
                 now=now,
             )
 
+    def _iter_sequence_values_for_persistence(self, sequence: VoxSequenceValue) -> Iterator[Any] | None:
+        raw = getattr(sequence, "raw", None)
+        iter_values = getattr(raw, "iter_values", None)
+        if callable(iter_values):
+            return iter(iter_values())
+        if isinstance(raw, (list, tuple, range)):
+            return iter(raw)
+        to_delayed = getattr(raw, "to_delayed", None)
+        if callable(to_delayed):
+            def _iter_dask_partitions() -> Iterator[Any]:
+                for delayed_partition in to_delayed():
+                    partition_items = delayed_partition.compute()
+                    for item in partition_items:
+                        yield item
+
+            return _iter_dask_partitions()
+        return None
+
+    def _persist_sequence_child_locked(
+        self,
+        *,
+        parent_node_id: str,
+        index: int,
+        value: Any,
+        descriptor: dict[str, Any],
+        metadata: Dict[str, Any],
+        now: float,
+        page_size: int,
+    ) -> dict[str, Any]:
+        item_node_id = hash_sequence_item(parent_node_id, index)
+        child_metadata = dict(metadata)
+        child_metadata.update(
+            {
+                "sequence_parent_node_id": str(parent_node_id),
+                "sequence_index": int(index),
+            }
+        )
+        child_encoded = encode_for_storage(value, page_size=page_size)
+        self._persist_encoded_success_locked(
+            node_id=item_node_id,
+            encoded=child_encoded,
+            metadata_json=self._encode_metadata(child_metadata),
+            now=now,
+        )
+        ref_payload: dict[str, Any] = {"node_id": item_node_id}
+        if isinstance(descriptor, dict):
+            ref_payload["descriptor"] = descriptor
+        return {"__vox_ref__": ref_payload}
+
     def _persist_sequence_with_refs_locked(
         self,
         *,
@@ -286,65 +335,95 @@ class SQLiteResultsDatabase(ResultsDatabase):
         now: float,
     ) -> None:
         page_size = PERSIST_PAGE_SIZE
-        offset = 0
         total = 0
-        has_more = True
-        pages: list[EncodedPage] = []
+        raw_pages: list[tuple[int, int, list[dict[str, Any]]]] = []
 
-        while has_more:
-            page = sequence.page(offset=offset, limit=page_size)
-            page_items: list[dict[str, Any]] = []
-            for local_index, item in enumerate(page.items):
-                absolute_index = offset + local_index
-                item_node_id = hash_sequence_item(node_id, absolute_index)
-                if "_raw" in item:
-                    item_value = item["_raw"]
-                elif "value" in item:
-                    item_value = item["value"]
-                else:
-                    raise UnsupportedVoxValueError(
-                        item,
-                        f"Sequence item {absolute_index} is missing persistence payload.",
-                    )
-
+        streamed_values = self._iter_sequence_values_for_persistence(sequence)
+        if streamed_values is not None:
+            current_offset = 0
+            current_items: list[dict[str, Any]] = []
+            for absolute_index, item_value in enumerate(streamed_values):
+                descriptor = adapt_runtime_value(item_value).describe(path=f"/{absolute_index}")
                 try:
-                    child_encoded = encode_for_storage(item_value, page_size=page_size)
+                    ref_item = self._persist_sequence_child_locked(
+                        parent_node_id=node_id,
+                        index=absolute_index,
+                        value=item_value,
+                        descriptor=descriptor,
+                        metadata=metadata,
+                        now=now,
+                        page_size=page_size,
+                    )
                 except UnsupportedVoxValueError as exc:
                     raise UnsupportedVoxValueError(
                         item_value,
                         f"Sequence item {absolute_index} cannot be persisted: {exc}",
                     ) from exc
+                current_items.append(ref_item)
+                total += 1
+                if len(current_items) >= page_size:
+                    raw_pages.append((current_offset, page_size, current_items))
+                    current_offset += len(current_items)
+                    current_items = []
 
-                child_metadata = dict(metadata)
-                child_metadata.update(
-                    {
-                        "sequence_parent_node_id": str(node_id),
-                        "sequence_index": int(absolute_index),
-                    }
-                )
-                self._persist_encoded_success_locked(
-                    node_id=item_node_id,
-                    encoded=child_encoded,
-                    metadata_json=self._encode_metadata(child_metadata),
-                    now=now,
-                )
+            if current_items or total == 0:
+                raw_pages.append((current_offset, len(current_items) if current_items else page_size, current_items))
+        else:
+            offset = 0
+            has_more = True
+            while has_more:
+                page = sequence.page(offset=offset, limit=page_size)
+                page_items: list[dict[str, Any]] = []
+                for local_index, item in enumerate(page.items):
+                    absolute_index = offset + local_index
+                    if "_raw" in item:
+                        item_value = item["_raw"]
+                    elif "value" in item:
+                        item_value = item["value"]
+                    else:
+                        raise UnsupportedVoxValueError(
+                            item,
+                            f"Sequence item {absolute_index} is missing persistence payload.",
+                        )
 
-                descriptor = item.get("descriptor")
-                ref_payload: dict[str, Any] = {"node_id": item_node_id}
-                if isinstance(descriptor, dict):
-                    ref_payload["descriptor"] = descriptor
-                page_items.append({"__vox_ref__": ref_payload})
+                    descriptor = item.get("descriptor")
+                    descriptor_dict = descriptor if isinstance(descriptor, dict) else adapt_runtime_value(item_value).describe(path=f"/{absolute_index}")
+                    try:
+                        ref_item = self._persist_sequence_child_locked(
+                            parent_node_id=node_id,
+                            index=absolute_index,
+                            value=item_value,
+                            descriptor=descriptor_dict,
+                            metadata=metadata,
+                            now=now,
+                            page_size=page_size,
+                        )
+                    except UnsupportedVoxValueError as exc:
+                        raise UnsupportedVoxValueError(
+                            item_value,
+                            f"Sequence item {absolute_index} cannot be persisted: {exc}",
+                        ) from exc
+                    page_items.append(ref_item)
 
-            has_more = bool(page.has_more)
+                has_more = bool(page.has_more)
+                raw_pages.append((offset, page.limit, page_items))
+                offset += len(page_items)
+                total += len(page_items)
+                if len(page_items) == 0:
+                    break
+
+        pages: list[EncodedPage] = []
+        for idx, (page_offset, page_limit, page_items) in enumerate(raw_pages):
+            page_has_more = idx < len(raw_pages) - 1
             pages.append(
                 EncodedPage(
                     path="",
-                    offset=offset,
-                    limit=page.limit,
+                    offset=int(page_offset),
+                    limit=int(page_limit),
                     descriptor={
                         "vox_type": "sequence-page",
                         "format_version": VOX_FORMAT_VERSION,
-                        "summary": {"offset": offset, "limit": page.limit, "count": len(page_items)},
+                        "summary": {"offset": int(page_offset), "limit": int(page_limit), "count": len(page_items)},
                         "navigation": {
                             "path": "",
                             "pageable": False,
@@ -353,13 +432,9 @@ class SQLiteResultsDatabase(ResultsDatabase):
                             "max_page_size": page_size,
                         },
                     },
-                    payload_json={"items": page_items, "has_more": has_more},
+                    payload_json={"items": page_items, "has_more": bool(page_has_more)},
                 )
             )
-            offset += len(page_items)
-            total += len(page_items)
-            if len(page_items) == 0:
-                break
 
         root_descriptor = dict(sequence.describe(path=""))
         root_summary = root_descriptor.get("summary")
@@ -974,6 +1049,7 @@ class MaterializationStore:
                         record.metadata["persisted"] = True
                         record.metadata.pop("persist_error", None)
             except Exception as exc:  # noqa: BLE001
+                logger.exception("Async persistence failed for node %s (%s)", node_id, kind)
                 with self._lock:
                     record = self._records.get(node_id)
                     if record is not None:

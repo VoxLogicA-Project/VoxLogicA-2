@@ -379,22 +379,50 @@ def _reduce_map_call(
         raise RuntimeError("map first argument must be a function identifier")
 
     binding = env.try_find(function_expr.identifier)
-    if not isinstance(binding, FunctionVal):
+    if isinstance(binding, FunctionVal):
+        if len(binding.parameters) != 1:
+            raise RuntimeError(
+                f"map function '{function_expr.identifier}' must accept exactly one argument"
+            )
+
+        closure_id = _create_closure_node(
+            variable=binding.parameters[0],
+            expression=binding.expression,
+            environment=binding.environment,
+            work_plan=work_plan,
+        )
+    elif binding is not None:
         raise RuntimeError(
             f"map first argument '{function_expr.identifier}' must reference a function"
         )
+    else:
+        try:
+            work_plan.registry.get_spec(function_expr.identifier)
+        except KeyError as exc:
+            raise StaticAnalysisError(
+                [
+                    StaticDiagnostic(
+                        code="E_UNKNOWN_CALLABLE",
+                        message=f"Unknown callable: {function_expr.identifier}",
+                        location=call_expr.position,
+                        symbol=function_expr.identifier,
+                    )
+                ]
+            ) from exc
 
-    if len(binding.parameters) != 1:
-        raise RuntimeError(
-            f"map function '{function_expr.identifier}' must accept exactly one argument"
+        # Must start with a letter to avoid parser tokenizing it as OPERATOR
+        # when closure bodies are reparsed at runtime/persistence time.
+        map_parameter = "map_item_arg"
+        closure_id = _create_closure_node(
+            variable=map_parameter,
+            expression=ECall(
+                "pos",
+                function_expr.identifier,
+                [ECall("pos", map_parameter, [])],
+            ),
+            environment=env,
+            work_plan=work_plan,
         )
-
-    closure_id = _create_closure_node(
-        variable=binding.parameters[0],
-        expression=binding.expression,
-        environment=binding.environment,
-        work_plan=work_plan,
-    )
 
     return _plan_primitive_call(
         work_plan,

@@ -22,6 +22,12 @@ export const apiRequest = async (path, init = {}) => {
 
 export const getCapabilities = () => apiRequest("/api/v1/capabilities");
 export const getVersion = () => apiRequest("/api/v1/version");
+export const sendClientLogBatch = (events = []) =>
+  apiRequest("/api/v1/log/client", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ events: Array.isArray(events) ? events : [] }),
+  });
 
 export const listProgramFiles = () => apiRequest("/api/v1/playground/files");
 export const loadProgramFile = (relativePath) =>

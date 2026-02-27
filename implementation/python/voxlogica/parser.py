@@ -215,25 +215,24 @@ grammar = r"""
     formal_args: "(" identifier ("," identifier)* ")"
     actual_args: "(" expression ("," expression)* ")"
     
-    expression: simple_expr | call_id_expr | call_op_expr | call_upper_expr | prefix_expr | op_expr | paren_expr | for_expr | let_expr
+    expression: simple_expr | call_id_expr | call_op_expr | prefix_expr | op_expr | paren_expr | for_expr | let_expr
     
     simple_expr: number | boolean | string
     call_id_expr: identifier actual_args?
     call_op_expr: OPERATOR actual_args
-    call_upper_expr: UPPER_IDENTIFIER actual_args
     op_expr: expression infix_operator expression
     prefix_expr: prefix_operator expression
     paren_expr: "(" expression ")"
     for_expr: "for" identifier "in" expression "do" expression
     let_expr: "let" identifier "=" expression "in" expression
     
-    variable_name: identifier | OPERATOR | UPPER_IDENTIFIER
-    infix_operator: OPERATOR | UPPER_IDENTIFIER
-    prefix_operator: OPERATOR | UPPER_IDENTIFIER
-    identifier: IDENTIFIER
+    variable_name: identifier | OPERATOR
+    infix_operator: OPERATOR
+    prefix_operator: OPERATOR
+    identifier: IDENTIFIER | UPPER_IDENTIFIER
 
     IDENTIFIER: /[a-z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?/
-    UPPER_IDENTIFIER: /[A-Z][a-zA-Z0-9_]*/
+    UPPER_IDENTIFIER: /[A-Z][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?/
     OPERATOR: /(?!\/{2})(?:[#;:_'\.|!$%&\/^=*\-+<>?@~\\]+|[A-Z][A-Z0-9]*[#;:_'\.|!$%&\/^=*\-+<>?@~\\][A-Z0-9#;:_'\.|!$%&\/^=*\-+<>?@~\\]*)/
     number: SIGNED_NUMBER -> float
     boolean: "true" -> true
@@ -317,10 +316,6 @@ class VoxLogicATransformer(Transformer):
 
     @v_args(inline=True)
     def call_op_expr(self, function_name, args):
-        return ECall("pos", str(function_name), args)
-
-    @v_args(inline=True)
-    def call_upper_expr(self, function_name, args):
         return ECall("pos", str(function_name), args)
 
     @v_args(inline=True)

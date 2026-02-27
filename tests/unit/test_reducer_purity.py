@@ -36,6 +36,22 @@ print "mapped" map(double, range(0,4))
 
 
 @pytest.mark.unit
+def test_map_reduction_accepts_imported_uppercase_primitive_callable(reduce_from_text):
+    program = """
+import "simpleitk"
+inputs = range(0,2)
+mapped = map(ReadImage, inputs)
+"""
+    workplan = reduce_from_text(program)
+
+    primitive_operators = [node.operator for node in workplan.nodes.values() if node.kind == "primitive"]
+    assert any(op.endswith("map") for op in primitive_operators)
+    closure_nodes = [node for node in workplan.nodes.values() if node.kind == "closure"]
+    assert closure_nodes
+    assert str(closure_nodes[0].attrs.get("body", "")).startswith("ReadImage(")
+
+
+@pytest.mark.unit
 def test_unknown_primitive_fails_static_resolution(reduce_from_text):
     with pytest.raises(StaticAnalysisError) as exc_info:
         reduce_from_text('print "x" UnknownCallable(1)')

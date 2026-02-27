@@ -113,7 +113,16 @@ masks = map(mk_mask, flair_paths)`;
   let pollTimer = null;
   let valuePollTimer = null;
   let pendingValueRequest = null;
+  let activeInProgressViewKey = "";
   let activeRefreshTimer = null;
+  let valueWs = null;
+  let valueWsReconnectTimer = null;
+  let valueWsAttempts = 0;
+  let activeValueSubscription = null;
+  let jobWs = null;
+  let jobWsReconnectTimer = null;
+  let jobWsAttempts = 0;
+  let activeJobSubscription = "";
 
   const formatDiagnostics = (diagnostics) => {
     const rows = Array.isArray(diagnostics) ? diagnostics : [];
@@ -149,11 +158,192 @@ masks = map(mk_mask, flair_paths)`;
     runError = "";
   };
 
+  const wsBaseUrl = () => `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`;
+  const wsReconnectDelayMs = (attempt) => {
+    const capped = Math.min(8, Math.max(0, Number(attempt || 0)));
+    const base = Math.min(5000, 250 * 2 ** capped);
+    const jitter = Math.floor(Math.random() * 180);
+    return base + jitter;
+  };
+
+  const stopValueSocket = () => {
+    if (valueWsReconnectTimer) {
+      clearTimeout(valueWsReconnectTimer);
+      valueWsReconnectTimer = null;
+    }
+    const socket = valueWs;
+    valueWs = null;
+    if (socket) {
+      try {
+        socket.close();
+      } catch {
+        // ignore close errors
+      }
+    }
+  };
+
+  const stopJobSocket = () => {
+    if (jobWsReconnectTimer) {
+      clearTimeout(jobWsReconnectTimer);
+      jobWsReconnectTimer = null;
+    }
+    const socket = jobWs;
+    jobWs = null;
+    if (socket) {
+      try {
+        socket.close();
+      } catch {
+        // ignore close errors
+      }
+    }
+  };
+
+  const ensureValueSocket = () => {
+    if (valueWs && (valueWs.readyState === WebSocket.OPEN || valueWs.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    stopValueSocket();
+    valueWs = new WebSocket(`${wsBaseUrl()}/ws/playground/value`);
+    valueWs.onopen = () => {
+      valueWsAttempts = 0;
+      if (!activeValueSubscription) return;
+      valueWs.send(
+        JSON.stringify({
+          type: "subscribe",
+          request: {
+            program: programText,
+            execution_strategy: "dask",
+            node_id: activeValueSubscription.nodeId,
+            variable: activeValueSubscription.variable || "",
+            path: activeValueSubscription.path || "",
+            enqueue: activeValueSubscription.enqueue !== false,
+          },
+        }),
+      );
+    };
+    valueWs.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(String(event.data || "{}"));
+        if (payload?.type === "value" && payload?.payload && activeValueSubscription) {
+          applyPlayValuePayload(payload.payload, activeValueSubscription);
+        }
+      } catch {
+        // Ignore malformed ws payloads
+      }
+    };
+    valueWs.onclose = () => {
+      valueWs = null;
+      if (!activeValueSubscription) return;
+      valueWsAttempts += 1;
+      const delay = wsReconnectDelayMs(valueWsAttempts);
+      if (valueWsReconnectTimer) clearTimeout(valueWsReconnectTimer);
+      valueWsReconnectTimer = setTimeout(() => {
+        ensureValueSocket();
+      }, delay);
+    };
+    valueWs.onerror = () => {
+      // close triggers reconnect handler
+      try {
+        valueWs?.close();
+      } catch {
+        // ignore
+      }
+    };
+  };
+
+  const subscribeValueSocket = ({ nodeId = "", variable = "", path = "", enqueue = true } = {}) => {
+    if (!("WebSocket" in window)) return false;
+    activeValueSubscription = { nodeId, variable, path, enqueue };
+    ensureValueSocket();
+    if (valueWs && valueWs.readyState === WebSocket.OPEN) {
+      valueWs.send(
+        JSON.stringify({
+          type: "subscribe",
+          request: {
+            program: programText,
+            execution_strategy: "dask",
+            node_id: nodeId,
+            variable,
+            path,
+            enqueue,
+          },
+        }),
+      );
+    }
+    return true;
+  };
+
+  const ensureJobSocket = () => {
+    if (jobWs && (jobWs.readyState === WebSocket.OPEN || jobWs.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    stopJobSocket();
+    jobWs = new WebSocket(`${wsBaseUrl()}/ws/playground/jobs`);
+    jobWs.onopen = () => {
+      jobWsAttempts = 0;
+      if (!activeJobSubscription) return;
+      jobWs.send(JSON.stringify({ type: "subscribe", job_id: activeJobSubscription }));
+    };
+    jobWs.onmessage = async (event) => {
+      try {
+        const message = JSON.parse(String(event.data || "{}"));
+        if (message?.type !== "job" && message?.type !== "terminal") return;
+        const payload = message?.payload || null;
+        if (!payload) return;
+        currentPlayJob = payload || null;
+        setJobStatus(payload.status);
+        applyRuntimeMetrics(payload);
+
+        const { raw, summaryText, rows } = buildExecutionLogRows(payload);
+        playExecRaw = raw;
+        playExecSummary = summaryText;
+        playExecRows = rows;
+        renderQueueVisualizer();
+
+        if (message.type === "terminal") {
+          activeJobSubscription = "";
+          await onJobTerminal(payload);
+        }
+      } catch {
+        // ignore malformed ws payloads
+      }
+    };
+    jobWs.onclose = () => {
+      jobWs = null;
+      if (!activeJobSubscription) return;
+      jobWsAttempts += 1;
+      const delay = wsReconnectDelayMs(jobWsAttempts);
+      if (jobWsReconnectTimer) clearTimeout(jobWsReconnectTimer);
+      jobWsReconnectTimer = setTimeout(() => {
+        ensureJobSocket();
+      }, delay);
+    };
+    jobWs.onerror = () => {
+      try {
+        jobWs?.close();
+      } catch {
+        // ignore
+      }
+    };
+  };
+
+  const subscribeJobSocket = (jobId = "") => {
+    if (!jobId || !("WebSocket" in window)) return false;
+    activeJobSubscription = String(jobId);
+    ensureJobSocket();
+    if (jobWs && jobWs.readyState === WebSocket.OPEN) {
+      jobWs.send(JSON.stringify({ type: "subscribe", job_id: activeJobSubscription }));
+    }
+    return true;
+  };
+
   const stopJobPolling = () => {
     if (pollTimer) {
       clearInterval(pollTimer);
       pollTimer = null;
     }
+    activeJobSubscription = "";
+    stopJobSocket();
   };
 
   const stopValuePolling = () => {
@@ -162,6 +352,8 @@ masks = map(mk_mask, flair_paths)`;
       valuePollTimer = null;
     }
     pendingValueRequest = null;
+    activeValueSubscription = null;
+    stopValueSocket();
   };
 
   const parseSelectableTargets = () => {
@@ -474,6 +666,7 @@ masks = map(mk_mask, flair_paths)`;
 
     if (isMaterialized && hasRenderableDescriptor) {
       stopValuePolling();
+      activeInProgressViewKey = "";
       playResultViewer.renderRecord(payload);
       playResultMeta = `Inspecting ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} | ${materialization || "materialized"} | status=${computeStatus || "materialized"}`;
       return;
@@ -481,45 +674,59 @@ masks = map(mk_mask, flair_paths)`;
 
     if (materialization === "failed" || computeStatus === "failed" || computeStatus === "killed" || statusName === "failed") {
       stopValuePolling();
+      activeInProgressViewKey = "";
       renderPlayFailureDiagnostics(payload, requestState);
       return;
     }
 
-    if (materialization === "pending" || computeStatus === "queued" || computeStatus === "running" || computeStatus === "persisting") {
-      if (hasRenderableDescriptor && (computeStatus === "persisting" || materialization === "pending")) {
-        playResultViewer.renderRecord({
-          ...payload,
-          available: true,
-          node_id: nodeId,
-          status: payload.status || "materialized",
-          runtime_version: payload.runtime_version || "runtime",
-          updated_at: payload.updated_at || new Date().toISOString(),
-          path,
-        });
-        playResultMeta = `Live preview ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} | ${computeStatus || "pending"}${jobId ? ` | job ${jobId.slice(0, 12)}` : ""}`;
-      } else {
-        playResultViewer.setLoading(`Value ${nodeId.slice(0, 12)} ${path || ""} is ${computeStatus || "pending"}...`);
-        playResultMeta = `Waiting for ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} | ${computeStatus || "pending"}${jobId ? ` | job ${jobId.slice(0, 12)}` : ""}`;
-      }
+    if (
+      materialization === "pending" ||
+      materialization === "missing" ||
+      computeStatus === "queued" ||
+      computeStatus === "running" ||
+      computeStatus === "persisting"
+    ) {
+      const inProgressKey = `${nodeId}|${path || ""}`;
+      const showCompoundDescriptor = descriptorKind === "sequence" || descriptorKind === "mapping";
+      const descriptor =
+        showCompoundDescriptor && payload?.descriptor && typeof payload.descriptor === "object"
+          ? payload.descriptor
+          : {
+              vox_type: "unavailable",
+              format_version: "voxpod/1",
+              summary: { reason: `status=${computeStatus || "pending"}` },
+              navigation: {
+                path: path || "",
+                pageable: false,
+                can_descend: false,
+                default_page_size: 64,
+                max_page_size: 512,
+              },
+            };
+      const inProgressRecord = {
+        ...payload,
+        available: false,
+        node_id: nodeId,
+        status: computeStatus || "running",
+        runtime_version: payload.runtime_version || "runtime",
+        updated_at: payload.updated_at || new Date().toISOString(),
+        path,
+        descriptor,
+      };
 
-      if (!valuePollTimer) {
-        pendingValueRequest = { nodeId, variable: requestState.variable || "", path };
-        valuePollTimer = setInterval(async () => {
-          if (!pendingValueRequest) return;
-          try {
-            const polled = await requestPlayValue({
-              nodeId: pendingValueRequest.nodeId,
-              variable: pendingValueRequest.variable,
-              path: pendingValueRequest.path,
-              enqueue: true,
-            });
-            applyPlayValuePayload(polled, pendingValueRequest);
-          } catch (error) {
-            playResultViewer.setError(`Polling value failed: ${error.message}`);
-            stopValuePolling();
-          }
-        }, 900);
+      if (activeInProgressViewKey === inProgressKey && typeof playResultViewer.refreshPage === "function") {
+        playResultViewer.refreshPage(nodeId, path);
+      } else {
+        playResultViewer.renderRecord(inProgressRecord);
+        activeInProgressViewKey = inProgressKey;
       }
+      playResultMeta = `In progress ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} | ${computeStatus || "pending"}${jobId ? ` | job ${jobId.slice(0, 12)}` : ""}`;
+      subscribeValueSocket({
+        nodeId,
+        variable: requestState.variable || "",
+        path,
+        enqueue: false,
+      });
       return;
     }
 
@@ -546,7 +753,7 @@ masks = map(mk_mask, flair_paths)`;
     stopValuePolling();
 
     const variable = String(options.variable || "");
-    playResultViewer.setLoading(`Loading value for ${nodeId} ...`);
+    playResultMeta = `Resolving ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""}...`;
 
     try {
       const payload = await requestPlayValue({
@@ -642,8 +849,10 @@ masks = map(mk_mask, flair_paths)`;
       metricJobId = String(payload.job_id || "").slice(0, 12);
 
       stopJobPolling();
-      pollTimer = setInterval(pollCurrentJob, 800);
-      await pollCurrentJob();
+      if (!subscribeJobSocket(String(currentJobId || ""))) {
+        pollTimer = setInterval(pollCurrentJob, 800);
+        await pollCurrentJob();
+      }
     } catch (error) {
       setJobStatus("failed");
       runError = error.message;
@@ -665,6 +874,7 @@ masks = map(mk_mask, flair_paths)`;
     currentPlayJob = null;
 
     stopValuePolling();
+    activeInProgressViewKey = "";
     playResultMeta = "Click inspect on a variable to resolve it on demand.";
     ensurePlayResultViewer();
     playResultViewer.renderRecord(null);
@@ -699,7 +909,9 @@ masks = map(mk_mask, flair_paths)`;
 
       if (payload.status === "running") {
         stopJobPolling();
-        pollTimer = setInterval(pollCurrentJob, 800);
+        if (!subscribeJobSocket(String(jobId || ""))) {
+          pollTimer = setInterval(pollCurrentJob, 800);
+        }
       }
 
       const executionErrors = payload?.result?.execution?.errors;
@@ -972,7 +1184,6 @@ masks = map(mk_mask, flair_paths)`;
       if (!active) return;
       refreshJobList();
       refreshProgramSymbols();
-      pollCurrentJob();
     }, 15000);
   };
 

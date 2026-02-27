@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from lark.exceptions import UnexpectedInput
 
 from voxlogica.parser import Declaration, ECall, parse_program_content
 from voxlogica.reducer import reduce_program
@@ -74,11 +75,11 @@ def test_namespace_imgql_exports_are_applied_on_namespace_import():
 
 
 @pytest.mark.unit
-def test_uppercase_identifier_can_be_used_infix():
+def test_uppercase_identifier_uses_regular_call_syntax():
     program = parse_program_content(
         """
         let SUM(a,b) = a + b
-        print "res" 4 SUM 5
+        print "res" SUM(4,5)
         """
     )
     work_plan = reduce_program(program)
@@ -108,11 +109,34 @@ def test_symbol_identifier_can_be_used_infix():
 
 
 @pytest.mark.unit
-def test_symbolic_operator_can_be_used_prefix_for_unary_call():
+def test_uppercase_identifier_is_not_treated_as_prefix_operator():
+    with pytest.raises(UnexpectedInput):
+        parse_program_content(
+            """
+            let NEG(x) = 0 - x
+            print "res" NEG 7
+            """
+        )
+
+
+@pytest.mark.unit
+def test_uppercase_identifier_is_not_treated_as_infix_operator():
+    with pytest.raises(UnexpectedInput):
+        parse_program_content(
+            """
+            let SUM(a,b) = a + b
+            print "res" 4 SUM 5
+            """
+        )
+
+
+@pytest.mark.unit
+def test_map_accepts_uppercase_function_identifier():
     program = parse_program_content(
         """
-        let NEG(x) = 0 - x
-        print "res" NEG 7
+        let F(x) = x + 1
+        let ys = map(F, range(0,3))
+        print "res" ys
         """
     )
     work_plan = reduce_program(program)
@@ -121,4 +145,5 @@ def test_symbolic_operator_can_be_used_prefix_for_unary_call():
     result = strategy.run(prepared)
     assert result.success
     res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
-    assert prepared.materialization_store.get(res_goal.id) == -7.0
+    value = prepared.materialization_store.get(res_goal.id)
+    assert [float(item) for item in value.iter_values()] == [1.0, 2.0, 3.0]

@@ -13,6 +13,21 @@
     return `${value}`;
   };
 
+  const normalizePath = (path) => {
+    const raw = typeof path === "string" ? path.trim() : "";
+    if (!raw || raw === "/") return "";
+    const tokens = raw.split("/").filter(Boolean);
+    return tokens.length ? `/${tokens.join("/")}` : "";
+  };
+
+  const parentPath = (path) => {
+    const normalized = normalizePath(path);
+    if (!normalized) return "";
+    const tokens = normalized.split("/").filter(Boolean);
+    if (tokens.length <= 1) return "";
+    return `/${tokens.slice(0, -1).join("/")}`;
+  };
+
   const keyValueGrid = (pairs) => {
     const grid = create("div", "viewer-kv");
     for (const [label, value] of pairs) {
@@ -73,6 +88,7 @@
       this.nv = null;
       this.carouselState = {};
       this.mountToken = 0;
+      this.activePageKey = null;
     }
 
     destroyNiivue() {
@@ -112,6 +128,7 @@
     renderRecord(record) {
       this.destroyNiivue();
       this.root.innerHTML = "";
+      this.activePageKey = null;
       if (!record) {
         this.root.append(create("div", "muted", "Select a result from the list."));
         return;
@@ -155,6 +172,17 @@
       const navigation = descriptor && typeof descriptor.navigation === "object" ? descriptor.navigation : {};
       const kind = create("div", "viewer-kind", voxType || "unknown");
       card.append(kind);
+      const navRow = create("div", "row gap-s");
+      const currentPath = normalizePath(path);
+      const rootBtn = create("button", "btn btn-ghost btn-small", "Root");
+      const upBtn = create("button", "btn btn-ghost btn-small", "Up");
+      const pathBadge = create("span", "muted", `path ${currentPath || "/"}`);
+      rootBtn.disabled = !currentPath;
+      upBtn.disabled = !currentPath;
+      rootBtn.addEventListener("click", () => this.onNavigate(""));
+      upBtn.addEventListener("click", () => this.onNavigate(parentPath(currentPath)));
+      navRow.append(rootBtn, upBtn, pathBadge);
+      card.append(navRow);
 
       if (voxType === "string") {
         const pre = create("pre", "viewer-code");
@@ -308,7 +336,9 @@
         block.append(create("div", "muted", "This value is not pageable."));
         return block;
       }
-      const stateKey = `${this.lastRecord && this.lastRecord.node_id ? this.lastRecord.node_id : "node"}:${path || "/"}`;
+      const normalizedPath = normalizePath(path);
+      const stateKey = `${this.lastRecord && this.lastRecord.node_id ? this.lastRecord.node_id : "node"}:${normalizedPath || "/"}`;
+      this.activePageKey = stateKey;
       if (!this.carouselState[stateKey]) {
         this.carouselState[stateKey] = {
           offset: 0,
@@ -331,7 +361,7 @@
       const list = create("div", "table-like muted");
       block.append(list);
 
-      inspectCurrent.addEventListener("click", () => this.onNavigate(path || ""));
+      inspectCurrent.addEventListener("click", () => this.onNavigate(normalizedPath || ""));
       const renderItems = (pagePayload) => {
         const page = pagePayload && typeof pagePayload === "object" ? pagePayload : {};
         const items = Array.isArray(page.items) ? page.items : [];
@@ -355,12 +385,14 @@
             const label = entry && entry.label ? String(entry.label) : "item";
             const entryPath = entry && entry.path ? String(entry.path) : "";
             const descriptor = entry && entry.descriptor ? entry.descriptor : {};
+            const itemStatus = entry && entry.status ? String(entry.status) : "";
             const preview = this._descriptorPreviewText(descriptor);
             return `
               <article class="table-like-row">
                 <div class="name">${label}</div>
                 <div class="detail">${preview}</div>
                 <div class="detail">${entryPath || "/"}</div>
+                <div class="detail">${itemStatus || "-"}</div>
               </article>
             `;
           })
@@ -384,7 +416,7 @@
         try {
           const payload = await this.fetchPage({
             nodeId: this.lastRecord && this.lastRecord.node_id ? this.lastRecord.node_id : "",
-            path: path || "",
+            path: normalizedPath || "",
             offset: Math.max(0, Number(offset || 0)),
             limit: pager.limit,
           });
@@ -403,8 +435,20 @@
         if (pager.nextOffset === null || pager.nextOffset === undefined) return;
         loadPage(pager.nextOffset);
       });
+      pager.reload = () => {
+        loadPage(pager.offset || 0);
+      };
       loadPage(pager.offset || 0);
       return block;
+    }
+
+    refreshPage(nodeId = "", path = "") {
+      const key = `${nodeId || (this.lastRecord && this.lastRecord.node_id ? this.lastRecord.node_id : "node")}:${normalizePath(path) || "/"}`;
+      const pager = this.carouselState[key];
+      if (!pager || typeof pager.reload !== "function") {
+        return;
+      }
+      pager.reload();
     }
 
     async _mountNiivue(canvas, url, statusEl = null) {
