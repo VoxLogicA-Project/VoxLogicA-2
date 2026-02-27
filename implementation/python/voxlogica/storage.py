@@ -14,6 +14,8 @@ import threading
 import time
 
 from voxlogica.pod_codec import (
+    EncodedPage,
+    EncodedRecord,
     can_serialize_value,
     decode_page_payload,
     decode_runtime_value,
@@ -21,7 +23,8 @@ from voxlogica.pod_codec import (
     encode_for_storage,
     loads_json,
 )
-from voxlogica.value_model import VOX_FORMAT_VERSION, UnsupportedVoxValueError, adapt_runtime_value
+from voxlogica.lazy.hash import hash_sequence_item
+from voxlogica.value_model import VOX_FORMAT_VERSION, UnsupportedVoxValueError, VoxSequenceValue, adapt_runtime_value
 
 
 MATERIALIZED_STATUS = "materialized"
@@ -250,71 +253,205 @@ class SQLiteResultsDatabase(ResultsDatabase):
         value: Any,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        encoded = encode_for_storage(value, page_size=PERSIST_PAGE_SIZE)
         now = time.time()
-        metadata_json = self._encode_metadata(metadata)
-        descriptor_json = dumps_json(encoded.descriptor)
-        payload_json = dumps_json(encoded.payload_json)
+        metadata_dict = dict(metadata or {})
+        metadata_json = self._encode_metadata(metadata_dict)
+        adapted = adapt_runtime_value(value)
 
         with self._lock:
+            if isinstance(adapted, VoxSequenceValue):
+                self._persist_sequence_with_refs_locked(
+                    node_id=node_id,
+                    sequence=adapted,
+                    metadata=metadata_dict,
+                    metadata_json=metadata_json,
+                    now=now,
+                )
+                return
+            encoded = encode_for_storage(value, page_size=PERSIST_PAGE_SIZE)
+            self._persist_encoded_success_locked(
+                node_id=node_id,
+                encoded=encoded,
+                metadata_json=metadata_json,
+                now=now,
+            )
+
+    def _persist_sequence_with_refs_locked(
+        self,
+        *,
+        node_id: str,
+        sequence: VoxSequenceValue,
+        metadata: Dict[str, Any],
+        metadata_json: str,
+        now: float,
+    ) -> None:
+        page_size = PERSIST_PAGE_SIZE
+        offset = 0
+        total = 0
+        has_more = True
+        pages: list[EncodedPage] = []
+
+        while has_more:
+            page = sequence.page(offset=offset, limit=page_size)
+            page_items: list[dict[str, Any]] = []
+            for local_index, item in enumerate(page.items):
+                absolute_index = offset + local_index
+                item_node_id = hash_sequence_item(node_id, absolute_index)
+                if "_raw" in item:
+                    item_value = item["_raw"]
+                elif "value" in item:
+                    item_value = item["value"]
+                else:
+                    raise UnsupportedVoxValueError(
+                        item,
+                        f"Sequence item {absolute_index} is missing persistence payload.",
+                    )
+
+                try:
+                    child_encoded = encode_for_storage(item_value, page_size=page_size)
+                except UnsupportedVoxValueError as exc:
+                    raise UnsupportedVoxValueError(
+                        item_value,
+                        f"Sequence item {absolute_index} cannot be persisted: {exc}",
+                    ) from exc
+
+                child_metadata = dict(metadata)
+                child_metadata.update(
+                    {
+                        "sequence_parent_node_id": str(node_id),
+                        "sequence_index": int(absolute_index),
+                    }
+                )
+                self._persist_encoded_success_locked(
+                    node_id=item_node_id,
+                    encoded=child_encoded,
+                    metadata_json=self._encode_metadata(child_metadata),
+                    now=now,
+                )
+
+                descriptor = item.get("descriptor")
+                ref_payload: dict[str, Any] = {"node_id": item_node_id}
+                if isinstance(descriptor, dict):
+                    ref_payload["descriptor"] = descriptor
+                page_items.append({"__vox_ref__": ref_payload})
+
+            has_more = bool(page.has_more)
+            pages.append(
+                EncodedPage(
+                    path="",
+                    offset=offset,
+                    limit=page.limit,
+                    descriptor={
+                        "vox_type": "sequence-page",
+                        "format_version": VOX_FORMAT_VERSION,
+                        "summary": {"offset": offset, "limit": page.limit, "count": len(page_items)},
+                        "navigation": {
+                            "path": "",
+                            "pageable": False,
+                            "can_descend": False,
+                            "default_page_size": page_size,
+                            "max_page_size": page_size,
+                        },
+                    },
+                    payload_json={"items": page_items, "has_more": has_more},
+                )
+            )
+            offset += len(page_items)
+            total += len(page_items)
+            if len(page_items) == 0:
+                break
+
+        root_descriptor = dict(sequence.describe(path=""))
+        root_summary = root_descriptor.get("summary")
+        if not isinstance(root_summary, dict):
+            root_summary = {}
+        root_summary = dict(root_summary)
+        root_summary["length"] = total
+        root_summary["page_size"] = page_size
+        root_descriptor["summary"] = root_summary
+        root_encoded = EncodedRecord(
+            format_version=VOX_FORMAT_VERSION,
+            vox_type="sequence",
+            descriptor=root_descriptor,
+            payload_json={"encoding": "sequence-node-refs-v1", "length": total, "page_size": page_size},
+            payload_bin=None,
+            pages=pages,
+        )
+        self._persist_encoded_success_locked(
+            node_id=node_id,
+            encoded=root_encoded,
+            metadata_json=metadata_json,
+            now=now,
+        )
+
+    def _persist_encoded_success_locked(
+        self,
+        *,
+        node_id: str,
+        encoded: EncodedRecord,
+        metadata_json: str,
+        now: float,
+    ) -> None:
+        descriptor_json = dumps_json(encoded.descriptor)
+        payload_json = dumps_json(encoded.payload_json)
+        self._connection.execute(
+            """
+            INSERT INTO results (
+                node_id, status, format_version, vox_type, descriptor_json,
+                payload_json, payload_bin, error, metadata_json, runtime_version, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(node_id) DO UPDATE SET
+                status = excluded.status,
+                format_version = excluded.format_version,
+                vox_type = excluded.vox_type,
+                descriptor_json = excluded.descriptor_json,
+                payload_json = excluded.payload_json,
+                payload_bin = excluded.payload_bin,
+                error = excluded.error,
+                metadata_json = excluded.metadata_json,
+                runtime_version = excluded.runtime_version,
+                updated_at = excluded.updated_at
+            """,
+            (
+                node_id,
+                MATERIALIZED_STATUS,
+                encoded.format_version,
+                encoded.vox_type,
+                descriptor_json,
+                payload_json,
+                encoded.payload_bin,
+                None,
+                metadata_json,
+                self.runtime_version,
+                now,
+                now,
+            ),
+        )
+        self._connection.execute(
+            "DELETE FROM result_pages WHERE node_id = ? AND runtime_version = ?",
+            (node_id, self.runtime_version),
+        )
+        for page in encoded.pages:
             self._connection.execute(
                 """
-                INSERT INTO results (
-                    node_id, status, format_version, vox_type, descriptor_json,
-                    payload_json, payload_bin, error, metadata_json, runtime_version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(node_id) DO UPDATE SET
-                    status = excluded.status,
-                    format_version = excluded.format_version,
-                    vox_type = excluded.vox_type,
-                    descriptor_json = excluded.descriptor_json,
-                    payload_json = excluded.payload_json,
-                    payload_bin = excluded.payload_bin,
-                    error = excluded.error,
-                    metadata_json = excluded.metadata_json,
-                    runtime_version = excluded.runtime_version,
-                    updated_at = excluded.updated_at
+                INSERT INTO result_pages (
+                    node_id, path, offset, page_limit, descriptor_json, payload_json, payload_bin,
+                    runtime_version, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     node_id,
-                    MATERIALIZED_STATUS,
-                    encoded.format_version,
-                    encoded.vox_type,
-                    descriptor_json,
-                    payload_json,
-                    encoded.payload_bin,
-                    None,
-                    metadata_json,
+                    page.path,
+                    int(page.offset),
+                    int(page.limit),
+                    dumps_json(page.descriptor),
+                    dumps_json(page.payload_json),
+                    page.payload_bin,
                     self.runtime_version,
                     now,
                     now,
                 ),
             )
-            self._connection.execute(
-                "DELETE FROM result_pages WHERE node_id = ? AND runtime_version = ?",
-                (node_id, self.runtime_version),
-            )
-            for page in encoded.pages:
-                self._connection.execute(
-                    """
-                    INSERT INTO result_pages (
-                        node_id, path, offset, page_limit, descriptor_json, payload_json, payload_bin,
-                        runtime_version, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        node_id,
-                        page.path,
-                        int(page.offset),
-                        int(page.limit),
-                        dumps_json(page.descriptor),
-                        dumps_json(page.payload_json),
-                        page.payload_bin,
-                        self.runtime_version,
-                        now,
-                        now,
-                    ),
-                )
 
     def put_failure(
         self,

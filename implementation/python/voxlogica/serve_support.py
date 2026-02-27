@@ -786,8 +786,18 @@ def _split_first_path_token(path: str) -> tuple[str | None, str]:
     return head, tail
 
 
-def _decode_sequence_page_item(raw_item: Any) -> tuple[Any, dict[str, Any] | None]:
+def _decode_sequence_page_item(raw_item: Any) -> tuple[Any, dict[str, Any] | None, str | None]:
     if isinstance(raw_item, dict):
+        reference = raw_item.get("__vox_ref__")
+        if isinstance(reference, dict):
+            ref_node_id = str(reference.get("node_id", "")).strip()
+            if not ref_node_id:
+                raise UnsupportedVoxValueError(
+                    raw_item,
+                    "Malformed sequence reference item payload.",
+                )
+            descriptor = reference.get("descriptor")
+            return None, descriptor if isinstance(descriptor, dict) else None, ref_node_id
         embedded = raw_item.get("__vox_page_item__")
         if isinstance(embedded, dict) and str(embedded.get("encoding", "")) == "embedded-voxpod-v1":
             vox_type = str(embedded.get("vox_type", "")).strip()
@@ -809,11 +819,13 @@ def _decode_sequence_page_item(raw_item: Any) -> tuple[Any, dict[str, Any] | Non
                     ) from exc
             value = decode_runtime_value(vox_type, payload_json, payload_bin)
             descriptor = embedded.get("descriptor")
-            return value, descriptor if isinstance(descriptor, dict) else None
-    return raw_item, None
+            return value, descriptor if isinstance(descriptor, dict) else None, None
+    return raw_item, None, None
 
 
-def _sequence_item_from_pages(storage: Any, *, node_id: str, index: int) -> tuple[Any, dict[str, Any] | None]:
+def _sequence_item_from_pages(
+    storage: Any, *, node_id: str, index: int
+) -> tuple[Any, dict[str, Any] | None, str | None]:
     getter_containing = getattr(storage, "get_page_containing_index", None)
     if not callable(getter_containing):
         raise UnsupportedVoxValueError(
@@ -831,41 +843,61 @@ def _sequence_item_from_pages(storage: Any, *, node_id: str, index: int) -> tupl
     return _decode_sequence_page_item(items[local_index])
 
 
-def _resolve_sequence_path(storage: Any, *, node_id: str, path: str) -> tuple[Any, dict[str, Any], str]:
-    token, remainder = _split_first_path_token(path)
-    if token is None:
-        raise ValueError("Sequence path requires an index (for example '/0').")
-    try:
-        index = int(token)
-    except ValueError as exc:
-        raise ValueError(f"Invalid sequence index '{token}' in path '{path}'.") from exc
-    if index < 0:
-        raise ValueError(f"Invalid negative sequence index '{index}' in path '{path}'.")
+def _resolve_store_value_path(
+    storage: Any, *, node_id: str, path: str
+) -> tuple[Any, dict[str, Any], str]:
+    record = _record_from_storage(storage, node_id)
+    if str(record.status) != "materialized":
+        raise ValueError(f"Store result '{node_id}' has status '{record.status}', not materialized")
 
-    item_value, stored_descriptor = _sequence_item_from_pages(storage, node_id=node_id, index=index)
-    item_path = _append_path("", str(index))
+    normalized_path = _normalize_result_path(path)
+    if not normalized_path:
+        return record.value, dict(record.descriptor or {}), ""
 
-    if remainder:
-        resolved = adapt_runtime_value(item_value).resolve(path=remainder)
-        resolved_path = f"{item_path}{remainder}"
-        return resolved.raw, resolved.describe(path=resolved_path), resolved_path
+    if str(record.vox_type or "") == "sequence":
+        token, remainder = _split_first_path_token(normalized_path)
+        if token is None:
+            raise ValueError("Sequence path requires an index (for example '/0').")
+        try:
+            index = int(token)
+        except ValueError as exc:
+            raise ValueError(f"Invalid sequence index '{token}' in path '{path}'.") from exc
+        if index < 0:
+            raise ValueError(f"Invalid negative sequence index '{index}' in path '{path}'.")
 
-    if isinstance(stored_descriptor, dict):
-        return item_value, stored_descriptor, item_path
-    return item_value, adapt_runtime_value(item_value).describe(path=item_path), item_path
+        item_value, stored_descriptor, ref_node_id = _sequence_item_from_pages(
+            storage,
+            node_id=node_id,
+            index=index,
+        )
+        item_path = _append_path("", str(index))
 
+        if ref_node_id:
+            target_path = remainder or ""
+            child_value, child_descriptor, child_path = _resolve_store_value_path(
+                storage,
+                node_id=ref_node_id,
+                path=target_path,
+            )
+            resolved_path = item_path if not child_path else f"{item_path}{child_path}"
+            return child_value, child_descriptor, resolved_path
 
-def _resolve_value_path(value: Any, path: str) -> Any:
-    normalized = _normalize_result_path(path)
-    if not normalized:
-        return value
-    try:
-        resolved = adapt_runtime_value(value).resolve(path=normalized)
-    except UnsupportedVoxValueError as exc:
-        raise KeyError(str(exc)) from exc
-    except Exception as exc:
-        raise KeyError(str(exc)) from exc
-    return resolved.raw
+        if remainder:
+            resolved = adapt_runtime_value(item_value).resolve(path=remainder)
+            resolved_path = f"{item_path}{remainder}"
+            return resolved.raw, resolved.describe(path=resolved_path), resolved_path
+
+        if isinstance(stored_descriptor, dict):
+            return item_value, stored_descriptor, item_path
+        return item_value, adapt_runtime_value(item_value).describe(path=item_path), item_path
+
+    if record.value is None:
+        raise UnsupportedVoxValueError(
+            record,
+            "E_UNSPECIFIED_VALUE_TYPE: value exists in runtime but is not representable by voxpod/1.",
+        )
+    resolved = adapt_runtime_value(record.value).resolve(path=normalized_path)
+    return resolved.raw, resolved.describe(path=normalized_path), normalized_path
 
 
 def _import_numpy() -> Any | None:
@@ -1054,18 +1086,6 @@ def _materialized_payload_base(record: ResultRecord, *, path: str) -> dict[str, 
     }
 
 
-def _load_store_materialized_value(storage: Any, node_id: str) -> tuple[ResultRecord, Any]:
-    record = _record_from_storage(storage, node_id)
-    if str(record.status) != "materialized":
-        raise ValueError(f"Store result '{node_id}' has status '{record.status}', not materialized")
-    if record.value is None:
-        raise UnsupportedVoxValueError(
-            record,
-            "E_UNSPECIFIED_VALUE_TYPE: materialized record has no inspectable voxpod payload.",
-        )
-    return record, record.value
-
-
 def inspect_store_result(storage: Any, *, node_id: str, path: str = "") -> dict[str, Any]:
     """Inspect one stored result value (or one sub-path inside it)."""
     record = _record_from_storage(storage, node_id)
@@ -1101,30 +1121,16 @@ def inspect_store_result(storage: Any, *, node_id: str, path: str = "") -> dict[
         )
         return payload
 
-    if str(record.vox_type or "") == "sequence":
-        _resolved_value, resolved_descriptor, resolved_path = _resolve_sequence_path(
-            storage,
-            node_id=node_id,
-            path=normalized_path,
-        )
-        payload["path"] = resolved_path
-        payload["descriptor"] = _canonical_descriptor(
-            resolved_descriptor,
-            node_id=node_id,
-            path=resolved_path,
-        )
-        return payload
-
-    if record.value is None:
-        raise UnsupportedVoxValueError(
-            record,
-            "E_UNSPECIFIED_VALUE_TYPE: value exists in runtime but is not representable by voxpod/1.",
-        )
-    resolved = adapt_runtime_value(record.value).resolve(path=normalized_path)
-    payload["descriptor"] = _canonical_descriptor(
-        resolved.describe(path=normalized_path),
+    _resolved_value, resolved_descriptor, resolved_path = _resolve_store_value_path(
+        storage,
         node_id=node_id,
         path=normalized_path,
+    )
+    payload["path"] = resolved_path
+    payload["descriptor"] = _canonical_descriptor(
+        resolved_descriptor,
+        node_id=node_id,
+        path=resolved_path,
     )
     return payload
 
@@ -1189,25 +1195,28 @@ def inspect_store_result_page(
         for index, raw_item in enumerate(items_raw):
             absolute = safe_offset + index
             item_path = append_path(normalized_path, str(absolute))
-            item_value, stored_descriptor = _decode_sequence_page_item(raw_item)
-            descriptor_source = (
-                stored_descriptor
-                if isinstance(stored_descriptor, dict)
-                else adapt_runtime_value(item_value).describe(path=item_path)
-            )
+            item_value, stored_descriptor, item_node_id = _decode_sequence_page_item(raw_item)
+            descriptor_source: dict[str, Any]
+            if isinstance(stored_descriptor, dict):
+                descriptor_source = stored_descriptor
+            elif item_node_id:
+                descriptor_source = dict(_record_from_storage(storage, item_node_id).descriptor or {})
+            else:
+                descriptor_source = adapt_runtime_value(item_value).describe(path=item_path)
             item_descriptor = _canonical_descriptor(
                 descriptor_source,
                 node_id=node_id,
                 path=item_path,
             )
-            items_out.append(
-                {
-                    "index": absolute,
-                    "label": f"[{absolute}]",
-                    "path": item_path,
-                    "descriptor": item_descriptor,
-                }
-            )
+            item_payload = {
+                "index": absolute,
+                "label": f"[{absolute}]",
+                "path": item_path,
+                "descriptor": item_descriptor,
+            }
+            if item_node_id:
+                item_payload["node_id"] = item_node_id
+            items_out.append(item_payload)
         payload["descriptor"] = _canonical_descriptor(record.descriptor, node_id=node_id, path=normalized_path)
         payload["page"] = {
             "offset": safe_offset,
@@ -1383,45 +1392,33 @@ def _to_image3d(value: Any) -> Any:
 
 def render_store_result_png(storage: Any, *, node_id: str, path: str = "") -> bytes:
     """Render one stored result (or sub-value) as PNG bytes."""
-    row, value = _load_store_materialized_value(storage, node_id)
-    if str(row.vox_type or "") == "sequence":
-        target, _descriptor, _resolved_path = _resolve_sequence_path(
-            storage,
-            node_id=node_id,
-            path=path,
-        )
-    else:
-        target = _resolve_value_path(value, path)
+    target, _descriptor, _resolved_path = _resolve_store_value_path(
+        storage,
+        node_id=node_id,
+        path=path,
+    )
     image = _to_image2d(target)
     return _image_to_png_bytes(image)
 
 
 def render_store_result_nifti_gz(storage: Any, *, node_id: str, path: str = "") -> bytes:
     """Render one stored result (or sub-value) as gzipped NIfTI bytes."""
-    row, value = _load_store_materialized_value(storage, node_id)
-    if str(row.vox_type or "") == "sequence":
-        target, _descriptor, _resolved_path = _resolve_sequence_path(
-            storage,
-            node_id=node_id,
-            path=path,
-        )
-    else:
-        target = _resolve_value_path(value, path)
+    target, _descriptor, _resolved_path = _resolve_store_value_path(
+        storage,
+        node_id=node_id,
+        path=path,
+    )
     image = _to_image3d(target)
     return _image_to_nifti_bytes(image, gzipped=True)
 
 
 def render_store_result_nifti(storage: Any, *, node_id: str, path: str = "") -> bytes:
     """Render one stored result (or sub-value) as uncompressed NIfTI bytes."""
-    row, value = _load_store_materialized_value(storage, node_id)
-    if str(row.vox_type or "") == "sequence":
-        target, _descriptor, _resolved_path = _resolve_sequence_path(
-            storage,
-            node_id=node_id,
-            path=path,
-        )
-    else:
-        target = _resolve_value_path(value, path)
+    target, _descriptor, _resolved_path = _resolve_store_value_path(
+        storage,
+        node_id=node_id,
+        path=path,
+    )
     image = _to_image3d(target)
     return _image_to_nifti_bytes(image, gzipped=False)
 

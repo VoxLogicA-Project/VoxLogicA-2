@@ -61,6 +61,13 @@ Persisted root result rows store:
 ## 5. Paging and Path Navigation
 Paths use `/`-separated tokens with JSON Pointer token escaping (`~0`, `~1`).
 
+Sequence persistence under `voxpod/1` uses pointer-style pages:
+
+- root payload uses `payload_json.encoding=sequence-node-refs-v1`
+- each page item is a reference object carrying a deterministic child `node_id`
+- child values are persisted as regular `results` rows under those child node ids
+- page payloads do not inline large binary-capable values (for example 3D volumes)
+
 Page APIs:
 
 - `POST /api/v1/playground/value/page`

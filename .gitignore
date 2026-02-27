@@ -51,3 +51,4 @@ tests/reports/*
 # Frontend workspace artifacts
 implementation/ui/node_modules/
 implementation/ui/.vite/
+tests/data/datasets

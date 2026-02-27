@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from voxlogica.lazy.hash import hash_sequence_item
 from voxlogica.serve_support import (
     PlaygroundJob,
     PlaygroundJobManager,
@@ -245,12 +246,27 @@ def test_sequence_pages_preserve_non_json_items_for_descriptor_and_rendering(tmp
     ]
     db.put_success("node-seq-vol", sequence)
     try:
+        root_record = db.get_record("node-seq-vol")
+        assert root_record is not None
+        assert root_record.payload_json.get("encoding") == "sequence-node-refs-v1"
+
         page_payload = inspect_store_result_page(db, node_id="node-seq-vol", offset=0, limit=2)
         page_items = page_payload["page"]["items"]
         assert len(page_items) == 2
         assert page_items[0]["path"] == "/0"
+        assert page_items[0]["node_id"] == hash_sequence_item("node-seq-vol", 0)
         assert page_items[0]["descriptor"]["vox_type"] == "ndarray"
         assert page_items[0]["descriptor"]["render"]["kind"] == "medical-volume"
+
+        chunk = db.get_page_containing_index("node-seq-vol", "", 0)
+        assert isinstance(chunk, dict)
+        first_raw = chunk["items"][0]
+        first_ref = first_raw.get("__vox_ref__", {}) if isinstance(first_raw, dict) else {}
+        assert first_ref.get("node_id") == hash_sequence_item("node-seq-vol", 0)
+
+        child_record = db.get_record(hash_sequence_item("node-seq-vol", 0))
+        assert child_record is not None
+        assert child_record.vox_type == "ndarray"
 
         first_item = inspect_store_result(db, node_id="node-seq-vol", path="/0")
         assert first_item["path"] == "/0"

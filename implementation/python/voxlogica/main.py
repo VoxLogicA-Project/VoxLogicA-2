@@ -1090,14 +1090,14 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             if transient_descriptor is not None and view_path in {"", "/"}:
                 persisted_state = transient_metadata.get("persisted") if isinstance(transient_metadata, dict) else None
                 persist_warning = transient_metadata.get("persist_warning") if isinstance(transient_metadata, dict) else None
+                persist_error = transient_metadata.get("persist_error") if isinstance(transient_metadata, dict) else None
                 if persisted_state is False or isinstance(persist_warning, dict):
                     warning_payload = persist_warning if isinstance(persist_warning, dict) else {}
-                    message = str(
-                        warning_payload.get(
-                            "message",
-                            "E_UNSPECIFIED_VALUE_TYPE: value cannot be inspected because it is not representable by voxpod/1.",
-                        )
-                    )
+                    default_message = "E_UNSPECIFIED_VALUE_TYPE: value cannot be inspected because it is not representable by voxpod/1."
+                    if isinstance(persist_error, str) and persist_error.strip():
+                        default_message = f"Persistence failed: {persist_error.strip()}"
+                    message = str(warning_payload.get("message", default_message))
+                    code = str(warning_payload.get("code", "E_PERSISTENCE_FAILED" if default_message.startswith("Persistence failed:") else "E_UNSPECIFIED_VALUE_TYPE"))
                     return _attach_common(
                         {
                             "available": False,
@@ -1109,7 +1109,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                             "store_status": "missing",
                             "request_enqueued": False,
                             "diagnostics": {
-                                "code": str(warning_payload.get("code", "E_UNSPECIFIED_VALUE_TYPE")),
+                                "code": code,
                                 "message": message,
                                 "node_id": node_id,
                                 "path": view_path or "/",

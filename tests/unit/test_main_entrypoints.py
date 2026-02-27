@@ -583,8 +583,8 @@ def test_playground_value_reports_spec_error_when_value_is_not_persistable(
             assert payload["available"] is False
             assert payload["materialization"] == "failed"
             assert payload["compute_status"] == "failed"
-            assert "E_UNSPECIFIED_VALUE_TYPE" in str(payload["error"])
-            assert payload["diagnostics"]["code"] == "E_UNSPECIFIED_VALUE_TYPE"
+            assert "Value not serializable" in str(payload["error"])
+            assert payload["diagnostics"]["code"] in {"E_UNSPECIFIED_VALUE_TYPE", "E_PERSISTENCE_FAILED"}
             assert payload["node_id"] == node_id
             assert tracked_jobs == []
 

@@ -42,3 +42,14 @@ def hash_node(node: NodeSpec) -> NodeId:
     payload = node_payload(node)
     canonical = canonicaljson.encode_canonical_json(payload)
     return hashlib.sha256(canonical).hexdigest()
+
+
+def hash_sequence_item(parent_node_id: str, index: int) -> NodeId:
+    """Deterministically derive a child node id for one sequence element."""
+    payload = {
+        "kind": "sequence-item-ref",
+        "parent_node_id": str(parent_node_id),
+        "index": int(index),
+    }
+    canonical = canonicaljson.encode_canonical_json(payload)
+    return hashlib.sha256(canonical).hexdigest()
