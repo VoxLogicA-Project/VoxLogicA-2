@@ -42,6 +42,7 @@ from voxlogica.serve_support import (
     build_storage_stats_snapshot,
     build_test_dashboard_snapshot,
     inspect_store_result,
+    inspect_store_result_page,
     list_playground_programs,
     list_store_results_snapshot,
     load_gallery_document,
@@ -51,6 +52,7 @@ from voxlogica.serve_support import (
     render_store_result_png,
 )
 from voxlogica.storage import get_storage
+from voxlogica.value_model import UnsupportedVoxValueError
 from voxlogica.version import get_version
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 
@@ -111,6 +113,19 @@ class PlaygroundValueRequest(BaseModel):
     node_id: str | None = None
     variable: str | None = None
     path: str | None = None
+    enqueue: bool = True
+
+
+class PlaygroundValuePageRequest(BaseModel):
+    """Payload to lazily resolve one pageable value slice for viewer interactions."""
+
+    program: str
+    execution_strategy: str = "dask"
+    node_id: str | None = None
+    variable: str | None = None
+    path: str | None = None
+    offset: int = 0
+    limit: int = 64
     enqueue: bool = True
 
 
@@ -374,12 +389,7 @@ def run(
     execution_strategy: str = typer.Option(
         "dask",
         "--execution-strategy",
-        help="Execution strategy to use (dask|strict)",
-    ),
-    strict: bool = typer.Option(
-        False,
-        "--strict",
-        help="Shortcut for --execution-strategy strict (useful for parity/debug tests)",
+        help="Execution strategy to use (only dask is supported).",
     ),
     legacy: bool = typer.Option(
         False,
@@ -401,7 +411,10 @@ def run(
         logger.error("Error reading file %s: %s", filename, exc)
         raise typer.Exit(code=1)
 
-    chosen_strategy = "strict" if strict else execution_strategy
+    chosen_strategy = "dask"
+    if str(execution_strategy).strip().lower() not in {"", "dask"}:
+        logger.error("Only dask execution strategy is supported.")
+        raise typer.Exit(code=2)
     legacy_enabled = legacy if isinstance(legacy, bool) else False
     feature = _feature_or_exit("run")
     result = feature.handler(
@@ -465,12 +478,7 @@ def repl(
     execution_strategy: str = typer.Option(
         "dask",
         "--execution-strategy",
-        help="Execution strategy to use (dask|strict)",
-    ),
-    strict: bool = typer.Option(
-        False,
-        "--strict",
-        help="Shortcut for --execution-strategy strict (useful for parity/debug tests)",
+        help="Execution strategy to use (only dask is supported).",
     ),
     legacy: bool = typer.Option(
         False,
@@ -483,7 +491,10 @@ def repl(
     """Start interactive VoxLogicA REPL."""
 
     setup_logging(debug, verbose)
-    chosen_strategy = "strict" if strict else execution_strategy
+    chosen_strategy = "dask"
+    if str(execution_strategy).strip().lower() not in {"", "dask"}:
+        logger.error("Only dask execution strategy is supported in REPL.")
+        raise typer.Exit(code=2)
     legacy_enabled = legacy if isinstance(legacy, bool) else False
     exit_code = run_interactive_repl(strategy=chosen_strategy, legacy=legacy_enabled)
     raise typer.Exit(code=exit_code)
@@ -637,10 +648,12 @@ async def capabilities_endpoint() -> dict[str, Any]:
         "playground_program_library": True,
         "playground_symbols": True,
         "playground_value_resolver": True,
+        "playground_value_paging": True,
         "testing_jobs": True,
         "testing_report": True,
         "storage_stats": True,
         "store_results_viewer": True,
+        "store_results_paging": True,
         "gallery": True,
     }
 
@@ -899,6 +912,23 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
     inspected: dict[str, Any] | None = None
     try:
         inspected = inspect_store_result(storage, node_id=node_id, path=view_path)
+    except UnsupportedVoxValueError as exc:
+        return _attach_common(
+            {
+                "available": False,
+                "materialization": "failed",
+                "compute_status": "failed",
+                "status": "failed",
+                "error": str(exc),
+                "request_enqueued": False,
+                "diagnostics": {
+                    "code": exc.code,
+                    "message": str(exc),
+                    "node_id": node_id,
+                    "path": view_path or "/",
+                },
+            }
+        )
     except KeyError:
         inspected = None
 
@@ -936,26 +966,67 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                     inspected["compute_status"] = "completed"
                     inspected["job_id"] = tracked_job.get("job_id")
                     return _attach_common(inspected)
+            except UnsupportedVoxValueError as exc:
+                return _attach_common(
+                    {
+                        "available": False,
+                        "materialization": "failed",
+                        "compute_status": "failed",
+                        "status": "failed",
+                        "error": str(exc),
+                        "job_id": tracked_job.get("job_id"),
+                        "request_enqueued": False,
+                        "diagnostics": {
+                            "code": exc.code,
+                            "message": str(exc),
+                            "node_id": node_id,
+                            "path": view_path or "/",
+                        },
+                    }
+                )
             except KeyError:
                 inspected = None
             transient_descriptor, transient_metadata = _runtime_descriptor_from_job(tracked_job)
             if transient_descriptor is not None and view_path in {"", "/"}:
-                transient_payload = dict(transient_descriptor)
-                transient_payload["materialization"] = "computed-transient"
-                transient_payload["compute_status"] = "completed"
-                transient_payload["job_id"] = tracked_job.get("job_id")
-                transient_payload["store_status"] = "missing"
-                transient_payload["request_enqueued"] = False
-                transient_payload["transient"] = True
-                if transient_metadata:
-                    transient_payload["metadata"] = transient_metadata
-                    persist_error = transient_metadata.get("persist_error")
-                    if persist_error:
-                        transient_payload["diagnostics"] = {
-                            "persist_error": str(persist_error),
+                persisted_state = transient_metadata.get("persisted") if isinstance(transient_metadata, dict) else None
+                persist_warning = transient_metadata.get("persist_warning") if isinstance(transient_metadata, dict) else None
+                if persisted_state is False or isinstance(persist_warning, dict):
+                    warning_payload = persist_warning if isinstance(persist_warning, dict) else {}
+                    message = str(
+                        warning_payload.get(
+                            "message",
+                            "E_UNSPECIFIED_VALUE_TYPE: value cannot be inspected because it is not representable by voxpod/1.",
+                        )
+                    )
+                    return _attach_common(
+                        {
+                            "available": False,
+                            "materialization": "failed",
+                            "compute_status": "failed",
+                            "status": "failed",
+                            "error": message,
+                            "job_id": tracked_job.get("job_id"),
                             "store_status": "missing",
+                            "request_enqueued": False,
+                            "diagnostics": {
+                                "code": str(warning_payload.get("code", "E_UNSPECIFIED_VALUE_TYPE")),
+                                "message": message,
+                                "node_id": node_id,
+                                "path": view_path or "/",
+                            },
                         }
-                return _attach_common(transient_payload)
+                    )
+                if persisted_state == "pending":
+                    return _attach_common(
+                        {
+                            "available": False,
+                            "materialization": "pending",
+                            "compute_status": "queued",
+                            "job_id": tracked_job.get("job_id"),
+                            "store_status": "missing",
+                            "request_enqueued": False,
+                        }
+                    )
             if not request.enqueue:
                 return _attach_common(
                     _failure_payload(
@@ -1035,6 +1106,79 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             "request_enqueued": True,
         }
     )
+
+
+@api_router.post("/playground/value/page")
+async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) -> dict[str, Any]:
+    """Resolve one pageable value lazily and return one page slice."""
+    value_payload = await playground_value_endpoint(
+        PlaygroundValueRequest(
+            program=request.program,
+            execution_strategy="dask",
+            node_id=request.node_id,
+            variable=request.variable,
+            path=request.path,
+            enqueue=bool(request.enqueue),
+        )
+    )
+
+    materialization = str(value_payload.get("materialization", "missing"))
+    compute_status = str(value_payload.get("compute_status", "missing"))
+    if materialization in {"pending", "missing"} or compute_status in {"queued", "running", "missing"}:
+        return {
+            **value_payload,
+            "page": {
+                "offset": int(max(0, request.offset)),
+                "limit": int(max(1, request.limit)),
+                "items": [],
+                "next_offset": None,
+                "has_more": False,
+            },
+        }
+    if materialization in {"failed"} or compute_status in {"failed", "killed"}:
+        return value_payload
+
+    node_id = str(value_payload.get("node_id") or request.node_id or "")
+    if not node_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to page value: node id could not be resolved.",
+        )
+    path = request.path or ""
+    try:
+        paged = inspect_store_result_page(
+            get_storage(),
+            node_id=node_id,
+            path=path,
+            offset=request.offset,
+            limit=request.limit,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except UnsupportedVoxValueError as exc:
+        return {
+            **value_payload,
+            "available": False,
+            "materialization": "failed",
+            "compute_status": "failed",
+            "error": str(exc),
+            "diagnostics": {
+                "code": exc.code,
+                "message": str(exc),
+                "node_id": node_id,
+                "path": path or "/",
+            },
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return {
+        **value_payload,
+        "descriptor": paged.get("descriptor"),
+        "page": paged.get("page"),
+        "path": paged.get("path", value_payload.get("path", path)),
+        "available": True,
+    }
 
 
 @api_router.post("/playground/jobs")
@@ -1177,6 +1321,48 @@ async def inspect_store_result_endpoint(
         return inspect_store_result(get_storage(), node_id=node_id, path=path or "")
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except UnsupportedVoxValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+                "node_id": node_id,
+                "path": path or "/",
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@api_router.get("/results/store/{node_id}/page")
+async def inspect_store_result_page_endpoint(
+    node_id: str,
+    path: str | None = Query(default=None),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=64, ge=1, le=512),
+) -> dict[str, Any]:
+    """Inspect a pageable stored result record using lazy page access."""
+    try:
+        return inspect_store_result_page(
+            get_storage(),
+            node_id=node_id,
+            path=path or "",
+            offset=offset,
+            limit=limit,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except UnsupportedVoxValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+                "node_id": node_id,
+                "path": path or "/",
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -1191,6 +1377,11 @@ async def render_store_png_endpoint(
         payload = render_store_result_png(get_storage(), node_id=node_id, path=path or "")
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except UnsupportedVoxValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": exc.code, "message": str(exc), "node_id": node_id, "path": path or "/"},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1208,6 +1399,11 @@ async def render_store_nifti_endpoint(
         payload = render_store_result_nifti_gz(get_storage(), node_id=node_id, path=path or "")
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except UnsupportedVoxValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": exc.code, "message": str(exc), "node_id": node_id, "path": path or "/"},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1229,6 +1425,11 @@ async def render_store_nifti_uncompressed_endpoint(
         payload = render_store_result_nifti(get_storage(), node_id=node_id, path=path or "")
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except UnsupportedVoxValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": exc.code, "message": str(exc), "node_id": node_id, "path": path or "/"},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except RuntimeError as exc:

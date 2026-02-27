@@ -16,8 +16,8 @@ print "result" result
     goal_id = plan.goals[0].id
 
     engine = ExecutionEngine()
-    prepared = engine.compile_plan(workplan, strategy="strict")
-    page = engine.page(prepared, goal_id, offset=0, limit=1, strategy="strict")
+    prepared = engine.compile_plan(workplan, strategy="dask")
+    page = engine.page(prepared, goal_id, offset=0, limit=1, strategy="dask")
 
     assert page.items == [16.0]
 
@@ -35,7 +35,7 @@ print "final" final
     goal_id = plan.goals[0].id
 
     engine = ExecutionEngine()
-    prepared = engine.compile_plan(workplan, strategy="strict")
-    page = engine.page(prepared, goal_id, offset=0, limit=1, strategy="strict")
+    prepared = engine.compile_plan(workplan, strategy="dask")
+    page = engine.page(prepared, goal_id, offset=0, limit=1, strategy="dask")
 
     assert page.items == [13.0]

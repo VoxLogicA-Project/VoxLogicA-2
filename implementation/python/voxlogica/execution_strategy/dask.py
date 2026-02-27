@@ -75,6 +75,10 @@ class DaskExecutionStrategy(StrictExecutionStrategy):
             raise ValueError("map/for_loop requires closure argument")
 
         if isinstance(sequence, db.Bag):
+            # Runtime closures capture evaluator state that is not safely picklable for
+            # Dask task transport; use strict iterator semantics in that case.
+            if hasattr(closure, "evaluator"):
+                return super()._evaluate_map(args, kwargs)
             if hasattr(closure, "apply") and callable(closure.apply):
                 return sequence.map(closure.apply)
             if callable(closure):

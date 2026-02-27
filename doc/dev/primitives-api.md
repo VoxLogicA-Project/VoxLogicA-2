@@ -75,11 +75,11 @@ Migration target:
 
 `map(f, seq)`:
 - Planner emits a sequence node referencing symbolic `f` and `seq`.
-- Runtime decides strict, paginated, or streamed materialization.
+- Runtime decides dask materialization timing and paginated inspection behavior.
 
 `for_loop`:
 - Planner lowers to symbolic map/loop node.
-- Runtime strategy defines when/where iterations are computed.
+- Runtime execution defines when/where iterations are computed.
 
 `save(path, value)` and `print(label, value)`:
 - Planner emits effect nodes/goals.

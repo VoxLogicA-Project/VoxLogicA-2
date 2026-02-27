@@ -28,7 +28,7 @@ def test_reduce_program_with_bindings_tracks_let_nodes() -> None:
 
 
 @pytest.mark.unit
-def test_strict_strategy_reports_store_cache_hits(tmp_path: Path) -> None:
+def test_strict_strategy_reports_runtime_cache_hits(tmp_path: Path) -> None:
     source = parse_program_content(
         """
         let a = 1 + 2
@@ -49,6 +49,7 @@ def test_strict_strategy_reports_store_cache_hits(tmp_path: Path) -> None:
     assert first.success is True
     assert second.success is True
     assert first.cache_summary["computed"] > 0
-    assert second.cache_summary["cached_store"] > 0
+    assert second.cache_summary["cached_store"] == 0
+    assert second.cache_summary["cached_local"] > 0
     assert isinstance(second.node_events, list)
     assert any(event.get("status") == "cached" for event in second.node_events)

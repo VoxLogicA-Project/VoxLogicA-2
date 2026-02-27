@@ -12,7 +12,7 @@ from voxlogica.storage import SQLiteResultsDatabase
 def test_repl_evaluates_expression_and_persists_result(tmp_path: Path):
     db_path = tmp_path / "repl_results.db"
     storage = SQLiteResultsDatabase(db_path=db_path)
-    session = ReplSession(strategy="strict", storage=storage)
+    session = ReplSession(strategy="dask", storage=storage)
 
     try:
         definition_result = session.execute_input("let inc(x)=x+1")
@@ -35,7 +35,7 @@ def test_repl_evaluates_expression_and_persists_result(tmp_path: Path):
 def test_repl_load_file_adds_declarations_and_skips_goals(tmp_path: Path):
     db_path = tmp_path / "repl_results.db"
     storage = SQLiteResultsDatabase(db_path=db_path)
-    session = ReplSession(strategy="strict", storage=storage)
+    session = ReplSession(strategy="dask", storage=storage)
 
     source = tmp_path / "defs.imgql"
     source.write_text(

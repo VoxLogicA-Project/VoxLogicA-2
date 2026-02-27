@@ -37,6 +37,7 @@ Once started, the API will be available at:
 | `serve playground`                   | `DELETE /api/v1/playground/jobs/{job_id}` | Kill running/stale playground job |
 | `serve playground`                   | `POST /api/v1/playground/symbols` | Parse/static resolution + diagnostics for editor |
 | `serve playground`                   | `POST /api/v1/playground/value` | On-demand value materialization/inspection |
+| `serve playground`                   | `POST /api/v1/playground/value/page` | On-demand paginated value inspection |
 | `serve gallery`                      | `GET /api/v1/docs/gallery` | Return markdown + parsed playground examples |
 | `serve quality dashboard`            | `GET /api/v1/testing/report` | JUnit + coverage + perf report snapshot |
 | `serve quality dashboard`            | `GET /api/v1/testing/performance/chart` | Latest vox1-vs-vox2 perf SVG |
@@ -52,10 +53,13 @@ Once started, the API will be available at:
 
 - Serve/API always runs with non-legacy policy (`legacy=false`).
 - Playground execution strategy is forced to `dask` for `/playground/jobs` and `/playground/value`.
+- Playground execution strategy is forced to `dask` for `/playground/jobs`, `/playground/value`, and `/playground/value/page`.
 - Read primitives are restricted to configured roots:
   - `VOXLOGICA_SERVE_DATA_DIR` (primary root)
   - `VOXLOGICA_SERVE_EXTRA_READ_ROOTS` (optional comma-separated roots)
 - Unknown callable names fail during static resolution (before execution).
+- Store/inspect payloads use canonical `voxpod/1` descriptors (`descriptor.vox_type`, no Python runtime repr leakage).
+- Unsupported inspectable runtime values fail explicitly with `E_UNSPECIFIED_VALUE_TYPE`.
 - Execution failures include structured failed-operation metadata:
   - `execution.errors`: node -> error message
   - `execution.error_details`: node -> `{operator, args, kwargs, attrs, output_kind, kind}`

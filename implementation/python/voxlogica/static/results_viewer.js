@@ -69,6 +69,7 @@
       this.root = root;
       this.onNavigate = options.onNavigate || (() => {});
       this.onStatusClick = options.onStatusClick || (() => {});
+      this.fetchPage = options.fetchPage || null;
       this.nv = null;
       this.carouselState = {};
       this.mountToken = 0;
@@ -142,110 +143,108 @@
           ["updated", record.updated_at || "-"],
         ]),
       );
-      const descriptor = record.descriptor || { kind: "unknown" };
+      const descriptor = record.descriptor || { vox_type: "unavailable" };
       const body = this._renderDescriptor(descriptor, record.path || "");
       this.root.append(body);
     }
 
     _renderDescriptor(descriptor, path) {
       const card = create("section", "viewer-card");
-      const kind = create("div", "viewer-kind", descriptor.kind || "unknown");
+      const voxType = String(descriptor.vox_type || "unknown");
+      const summary = descriptor && typeof descriptor.summary === "object" ? descriptor.summary : {};
+      const navigation = descriptor && typeof descriptor.navigation === "object" ? descriptor.navigation : {};
+      const kind = create("div", "viewer-kind", voxType || "unknown");
       card.append(kind);
 
-      if (descriptor.kind === "string") {
+      if (voxType === "string") {
         const pre = create("pre", "viewer-code");
-        pre.textContent = descriptor.preview && descriptor.preview.text ? descriptor.preview.text : "";
+        pre.textContent = summary && typeof summary.value === "string" ? summary.value : "";
         card.append(pre);
         return card;
       }
 
-      if (["integer", "number", "boolean", "null"].includes(descriptor.kind)) {
-        card.append(create("div", "viewer-scalar", fmt(descriptor.value)));
+      if (["integer", "number", "boolean", "null"].includes(voxType)) {
+        card.append(create("div", "viewer-scalar", fmt(summary.value)));
         return card;
       }
 
-      if (descriptor.kind === "bytes") {
-        card.append(create("div", "muted", `byte length: ${fmt(descriptor.length)}`));
+      if (voxType === "bytes") {
+        card.append(create("div", "muted", `byte length: ${fmt(summary.length)}`));
         return card;
       }
 
-      if (descriptor.kind === "ndarray") {
+      if (voxType === "ndarray") {
         card.append(
           keyValueGrid([
-            ["dtype", descriptor.dtype || "-"],
-            ["shape", (descriptor.shape || []).join(" x ") || "-"],
-            ["size", descriptor.size || 0],
+            ["dtype", summary.dtype || "-"],
+            ["shape", (summary.shape || []).join(" x ") || "-"],
+            ["size", summary.size || 0],
           ]),
         );
-        if (descriptor.stats && Object.keys(descriptor.stats).length) {
+        if (summary.stats && Object.keys(summary.stats).length) {
           card.append(
             keyValueGrid([
-              ["min", descriptor.stats.min],
-              ["max", descriptor.stats.max],
-              ["mean", descriptor.stats.mean],
+              ["min", summary.stats.min],
+              ["max", summary.stats.max],
+              ["mean", summary.stats.mean],
             ]),
           );
         }
-        if (Array.isArray(descriptor.values)) {
-          const plot = sparkline(descriptor.values.map((v) => Number(v)));
+        if (Array.isArray(summary.values)) {
+          const plot = sparkline(summary.values.map((v) => Number(v)));
           if (plot) card.append(plot);
         }
         this._appendRenderMedia(card, descriptor.render, path);
         return card;
       }
 
-      if (descriptor.kind === "simpleitk-image") {
+      if (voxType === "image2d" || voxType === "volume3d") {
         card.append(
           keyValueGrid([
-            ["dimension", descriptor.dimension || "-"],
-            ["size", (descriptor.size || []).join(" x ") || "-"],
-            ["pixel", descriptor.pixel_id || "-"],
-            ["spacing", (descriptor.spacing || []).join(", ") || "-"],
+            ["dimension", summary.dimension || "-"],
+            ["size", (summary.size || []).join(" x ") || "-"],
+            ["pixel", summary.pixel_id || "-"],
+            ["spacing", (summary.spacing || []).join(", ") || "-"],
           ]),
         );
         this._appendRenderMedia(card, descriptor.render, path);
         return card;
       }
 
-      if (descriptor.kind === "sequence") {
+      if (voxType === "sequence") {
         card.append(
           keyValueGrid([
-            ["type", descriptor.sequence_type || "sequence"],
-            ["length", descriptor.length || 0],
+            ["type", "sequence"],
+            ["length", summary.length ?? "-"],
           ]),
         );
-        if (Array.isArray(descriptor.numeric_values) && descriptor.numeric_values.length > 1) {
-          const plot = sparkline(descriptor.numeric_values);
-          if (plot) card.append(plot);
-        }
-        card.append(this._buildCarousel(descriptor.items || [], "sequence", descriptor.truncated));
+        card.append(this._buildPagedList(path, navigation, "sequence"));
         return card;
       }
 
-      if (descriptor.kind === "mapping") {
+      if (voxType === "mapping") {
         card.append(
           keyValueGrid([
-            ["type", descriptor.mapping_type || "mapping"],
-            ["entries", descriptor.length || 0],
+            ["type", "mapping"],
+            ["entries", summary.length ?? "-"],
           ]),
         );
-        card.append(this._buildCarousel(descriptor.entries || [], "mapping", descriptor.truncated));
+        card.append(this._buildPagedList(path, navigation, "mapping"));
         return card;
       }
 
-      if (descriptor.kind === "object") {
-        const pre = create("pre", "viewer-code");
-        pre.textContent = descriptor.repr || descriptor.type || "object";
-        card.append(pre);
+      if (voxType === "error" || voxType === "unavailable") {
+        const reason =
+          summary && typeof summary.message === "string"
+            ? summary.message
+            : summary && typeof summary.reason === "string"
+              ? summary.reason
+              : "Value unavailable.";
+        card.append(create("div", "muted", reason));
         return card;
       }
 
-      if (descriptor.kind === "unavailable") {
-        card.append(create("div", "muted", descriptor.reason || "Value unavailable."));
-        return card;
-      }
-
-      card.append(create("pre", "viewer-code", JSON.stringify(descriptor, null, 2)));
+      card.append(create("div", "viewer-error", `Unsupported vox_type '${voxType}'.`));
       return card;
     }
 
@@ -284,48 +283,126 @@
       }
     }
 
-    _buildCarousel(items, family, truncated) {
+    _descriptorPreviewText(descriptor) {
+      if (!descriptor || typeof descriptor !== "object") return "value";
+      const voxType = String(descriptor.vox_type || "value");
+      const summary = descriptor.summary && typeof descriptor.summary === "object" ? descriptor.summary : {};
+      if (["integer", "number", "boolean", "null"].includes(voxType)) return `${voxType}: ${fmt(summary.value)}`;
+      if (voxType === "string") return `string(${fmt(summary.length)})`;
+      if (voxType === "ndarray") return `ndarray ${Array.isArray(summary.shape) ? summary.shape.join("x") : ""}`.trim();
+      if (voxType === "mapping") return `mapping(${fmt(summary.length)})`;
+      if (voxType === "sequence") return `sequence(${fmt(summary.length)})`;
+      if (voxType === "image2d" || voxType === "volume3d") {
+        return `${voxType} ${Array.isArray(summary.size) ? summary.size.join("x") : ""}`.trim();
+      }
+      return voxType;
+    }
+
+    _buildPagedList(path, navigation, family) {
       const block = create("div", "viewer-carousel");
-      if (!Array.isArray(items) || items.length === 0) {
-        block.append(create("div", "muted", "No preview items available."));
+      if (typeof this.fetchPage !== "function") {
+        block.append(create("div", "muted", "Paged API unavailable in this viewer."));
         return block;
       }
-      const stateKey = `${family}:${items.map((item) => item.path).join("|")}`;
-      if (!Number.isInteger(this.carouselState[stateKey])) this.carouselState[stateKey] = 0;
-      const index = Math.max(0, Math.min(this.carouselState[stateKey], items.length - 1));
-      this.carouselState[stateKey] = index;
-
-      const top = create("div", "viewer-carousel-head");
-      const title = create("strong", "", `${family} item ${index + 1}/${items.length}`);
+      if (!navigation || !navigation.pageable) {
+        block.append(create("div", "muted", "This value is not pageable."));
+        return block;
+      }
+      const stateKey = `${this.lastRecord && this.lastRecord.node_id ? this.lastRecord.node_id : "node"}:${path || "/"}`;
+      if (!this.carouselState[stateKey]) {
+        this.carouselState[stateKey] = {
+          offset: 0,
+          limit: Math.max(1, Number(navigation.default_page_size || 32)),
+        };
+      }
+      const pager = this.carouselState[stateKey];
+      const head = create("div", "viewer-carousel-head");
+      const title = create("strong", "", `${family} page`);
       const nav = create("div", "row gap-s");
       const prev = create("button", "btn btn-ghost btn-small", "Prev");
       const next = create("button", "btn btn-ghost btn-small", "Next");
-      prev.disabled = index === 0;
-      next.disabled = index === items.length - 1;
+      const inspectCurrent = create("button", "btn btn-primary btn-small", "Inspect Path");
+      nav.append(prev, next, inspectCurrent);
+      head.append(title, nav);
+      block.append(head);
+
+      const meta = create("div", "muted", "Loading page...");
+      block.append(meta);
+      const list = create("div", "table-like muted");
+      block.append(list);
+
+      inspectCurrent.addEventListener("click", () => this.onNavigate(path || ""));
+      const renderItems = (pagePayload) => {
+        const page = pagePayload && typeof pagePayload === "object" ? pagePayload : {};
+        const items = Array.isArray(page.items) ? page.items : [];
+        const currentOffset = Number(page.offset || 0);
+        const currentLimit = Number(page.limit || pager.limit || 0);
+        pager.offset = currentOffset;
+        pager.limit = currentLimit || pager.limit;
+        pager.nextOffset = page.next_offset === null || page.next_offset === undefined ? null : Number(page.next_offset);
+        pager.hasMore = Boolean(page.has_more);
+        const start = currentOffset + 1;
+        const end = currentOffset + items.length;
+        meta.textContent = `items ${items.length ? `${start}-${end}` : "0"} | offset ${currentOffset} | limit ${pager.limit}`;
+        prev.disabled = currentOffset <= 0;
+        next.disabled = !pager.hasMore;
+        if (!items.length) {
+          list.innerHTML = `<div class="muted">No items available for this page.</div>`;
+          return;
+        }
+        list.innerHTML = items
+          .map((entry) => {
+            const label = entry && entry.label ? String(entry.label) : "item";
+            const entryPath = entry && entry.path ? String(entry.path) : "";
+            const descriptor = entry && entry.descriptor ? entry.descriptor : {};
+            const preview = this._descriptorPreviewText(descriptor);
+            return `
+              <article class="table-like-row">
+                <div class="name">${label}</div>
+                <div class="detail">${preview}</div>
+                <div class="detail">${entryPath || "/"}</div>
+              </article>
+            `;
+          })
+          .join("");
+        if (family === "mapping") {
+          list.querySelectorAll(".table-like-row").forEach((row, index) => {
+            row.style.cursor = "pointer";
+            row.addEventListener("click", () => {
+              const entry = items[index];
+              if (!entry || !entry.path) return;
+              this.onNavigate(String(entry.path));
+            });
+          });
+        }
+      };
+
+      const loadPage = async (offset) => {
+        meta.textContent = "Loading page...";
+        list.innerHTML = "";
+        try {
+          const payload = await this.fetchPage({
+            nodeId: this.lastRecord && this.lastRecord.node_id ? this.lastRecord.node_id : "",
+            path: path || "",
+            offset: Math.max(0, Number(offset || 0)),
+            limit: pager.limit,
+          });
+          renderItems(payload && payload.page ? payload.page : {});
+        } catch (error) {
+          meta.textContent = "Page load failed.";
+          list.innerHTML = `<div class="viewer-error">${error && error.message ? error.message : error}</div>`;
+        }
+      };
+
       prev.addEventListener("click", () => {
-        this.carouselState[stateKey] = Math.max(0, this.carouselState[stateKey] - 1);
-        this.renderRecord(this.lastRecord);
+        const nextOffset = Math.max(0, pager.offset - pager.limit);
+        loadPage(nextOffset);
       });
       next.addEventListener("click", () => {
-        this.carouselState[stateKey] = Math.min(items.length - 1, this.carouselState[stateKey] + 1);
-        this.renderRecord(this.lastRecord);
+        if (pager.nextOffset === null || pager.nextOffset === undefined) return;
+        loadPage(pager.nextOffset);
       });
-      nav.append(prev, next);
-      top.append(title, nav);
-      block.append(top);
-
-      const selected = items[index];
-      const label = create("div", "muted", `${selected.label || "item"} (${selected.path || "/"})`);
-      block.append(label);
-      const summary = create("pre", "viewer-code");
-      summary.textContent = JSON.stringify(selected.summary || {}, null, 2);
-      block.append(summary);
-      const inspect = create("button", "btn btn-primary btn-small", "Inspect Selected");
-      inspect.addEventListener("click", () => this.onNavigate(selected.path || ""));
-      block.append(inspect);
-      if (truncated) {
-        block.append(create("div", "muted", "Preview truncated. Use path navigation to inspect deeper values."));
-      }
+      loadPage(pager.offset || 0);
       return block;
     }
 

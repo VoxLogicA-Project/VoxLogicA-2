@@ -43,8 +43,7 @@ python -m voxlogica.main run <filename> [OPTIONS]
 | `--save-syntax <file>`             | str  | Save the AST in text format and exit                        |
 | `--compute-memory-assignment`      | flag | Compute and display memory buffer assignments               |
 | `--execute` / `--no-execute`       | flag | Execute the workplan (default: --execute)                   |
-| `--execution-strategy <name>`      | str  | Execution strategy (`dask` or `strict`)                     |
-| `--strict`                         | flag | Shortcut for `--execution-strategy strict`                  |
+| `--execution-strategy <name>`      | str  | Execution strategy (`dask` only)                            |
 | `--legacy`                         | flag | Enable legacy mode (allows effectful primitives)            |
 | `--debug`                          | flag | Enable debug mode (more verbose logging)                    |
 | `--verbose`                        | flag | Enable verbose logging (between info and debug)             |
@@ -95,8 +94,7 @@ Start interactive REPL.
 
 | Option                        | Type | Description                                           |
 | ----------------------------- | ---- | ----------------------------------------------------- |
-| `--execution-strategy <name>` | str  | Execution strategy (`dask` or `strict`)              |
-| `--strict`                    | flag | Shortcut for `--execution-strategy strict`            |
+| `--execution-strategy <name>` | str  | Execution strategy (`dask` only)                      |
 | `--legacy`                    | flag | Enable legacy mode (allows effectful primitives)      |
 | `--debug`                     | flag | Enable debug logging                                  |
 | `--verbose`                   | flag | Enable verbose logging                                |

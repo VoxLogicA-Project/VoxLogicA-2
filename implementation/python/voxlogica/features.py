@@ -193,6 +193,12 @@ def handle_run(
 ) -> OperationResult[Dict[str, Any]]:
     """Run parse/reduce/export/execute pipeline for a VoxLogicA program."""
     try:
+        strategy_name = str(execution_strategy or "dask").strip().lower()
+        if strategy_name not in {"", "dask"}:
+            return OperationResult.fail(
+                f"Unsupported execution strategy '{execution_strategy}'. Only 'dask' is available."
+            )
+        execution_strategy = "dask"
         syntax = _load_syntax(program, filename)
         workplan, declaration_bindings = reduce_program_with_bindings(syntax)
         policy_goal_scope = list(_goals or []) if execute and _goals else None
@@ -479,7 +485,7 @@ run_feature = FeatureRegistry.register(
                 "type": str,
                 "required": False,
                 "default": "dask",
-                "help": "Execution strategy to use (dask|strict)",
+                "help": "Execution strategy to use (dask only)",
             },
             "legacy": {
                 "type": bool,
@@ -502,7 +508,7 @@ run_feature = FeatureRegistry.register(
                 "execute": (Optional[bool], "Execute workplan"),
                 "debug": (Optional[bool], "Enable debug mode"),
                 "verbose": (Optional[bool], "Enable verbose logging"),
-                "execution_strategy": (Optional[str], "Execution strategy (dask|strict)"),
+                "execution_strategy": (Optional[str], "Execution strategy (dask only)"),
                 "legacy": (Optional[bool], "Enable legacy mode (allow effectful primitives)"),
             },
             "response_model": Dict[str, Any],

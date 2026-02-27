@@ -50,7 +50,7 @@ def test_save_goal_writes_output(reduce_from_text, tmp_path: Path):
     workplan = reduce_from_text(program)
 
     engine = ExecutionEngine()
-    result = engine.execute_workplan(workplan, strategy="strict")
+    result = engine.execute_workplan(workplan, strategy="dask")
 
     assert result.success
     assert output_path.exists()

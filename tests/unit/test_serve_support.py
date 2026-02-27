@@ -12,6 +12,7 @@ from voxlogica.serve_support import (
     build_test_dashboard_snapshot,
     describe_runtime_value,
     inspect_store_result,
+    inspect_store_result_page,
     list_playground_programs,
     list_store_results_snapshot,
     load_playground_program,
@@ -44,7 +45,7 @@ def test_parse_playground_examples_extracts_comment_directives():
     assert example["id"] == "hello"
     assert example["title"] == "Hello Example"
     assert example["module"] == "default"
-    assert example["strategy"] == "strict"
+    assert example["strategy"] == "dask"
     assert 'print "hello" 1 + 2' in example["code"]
 
 
@@ -185,34 +186,30 @@ def test_playground_program_library_uses_fixed_directory(tmp_path: Path, monkeyp
 def test_store_results_snapshot_and_inspection_describe_types(tmp_path: Path) -> None:
     np = pytest.importorskip("numpy")
     db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
-    db.put_success(
-        "node-a",
-        {
-            "arr2d": np.arange(9, dtype=np.float32).reshape(3, 3),
-            "arr3d": np.arange(27, dtype=np.float32).reshape(3, 3, 3),
-            "nums": [1, 2, 3],
-            "label": "hello",
-        },
-    )
+    db.put_success("node-map", {"nums": [1, 2, 3], "label": "hello"})
+    db.put_success("node-arr2d", np.arange(9, dtype=np.float32).reshape(3, 3))
+    db.put_success("node-arr3d", np.arange(27, dtype=np.float32).reshape(3, 3, 3))
     try:
         snapshot = list_store_results_snapshot(db, limit=10)
         assert snapshot["available"] is True
-        assert snapshot["summary"]["materialized"] == 1
-        assert snapshot["records"][0]["node_id"] == "node-a"
+        assert snapshot["summary"]["materialized"] == 3
 
-        root = inspect_store_result(db, node_id="node-a")
+        root = inspect_store_result(db, node_id="node-map")
         assert root["status"] == "materialized"
-        assert root["descriptor"]["kind"] == "mapping"
+        assert root["descriptor"]["vox_type"] == "mapping"
 
-        arr2d = inspect_store_result(db, node_id="node-a", path="/arr2d")
-        assert arr2d["descriptor"]["kind"] == "ndarray"
+        arr2d = inspect_store_result(db, node_id="node-arr2d")
+        assert arr2d["descriptor"]["vox_type"] == "ndarray"
         assert arr2d["descriptor"]["render"]["kind"] == "image2d"
 
-        arr3d = inspect_store_result(db, node_id="node-a", path="/arr3d")
+        arr3d = inspect_store_result(db, node_id="node-arr3d")
         assert arr3d["descriptor"]["render"]["kind"] == "medical-volume"
 
-        nums = inspect_store_result(db, node_id="node-a", path="/nums")
-        assert nums["descriptor"]["numeric_values"] == [1.0, 2.0, 3.0]
+        nums = inspect_store_result(db, node_id="node-map", path="/nums")
+        assert nums["descriptor"]["vox_type"] == "sequence"
+        nums_page = inspect_store_result_page(db, node_id="node-map", path="/nums", offset=0, limit=2)
+        assert nums_page["descriptor"]["vox_type"] == "sequence"
+        assert len(nums_page["page"]["items"]) == 2
     finally:
         db.close()
 
@@ -275,7 +272,21 @@ def test_describe_runtime_value_detects_simpleitk_duck_typed_images() -> None:
         path="/image",
     )
     descriptor = payload["descriptor"]
-    assert descriptor["kind"] == "simpleitk-image"
-    assert descriptor["dimension"] == 3
-    assert descriptor["size"] == [8, 6, 4]
-    assert descriptor["render"]["kind"] == "medical-volume"
+    assert descriptor["vox_type"] == "volume3d"
+    assert descriptor["summary"]["dimension"] == 3
+    assert descriptor["summary"]["size"] == [8, 6, 4]
+
+
+@pytest.mark.unit
+def test_descriptors_do_not_leak_python_runtime_type_names(tmp_path: Path) -> None:
+    import json as _json
+
+    db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    db.put_success("node-seq", [1, 2, 3, 4])
+    try:
+        payload = inspect_store_result(db, node_id="node-seq")
+        rendered = _json.dumps(payload)
+        assert "dask.bag" not in rendered
+        assert "voxlogica.execution_strategy" not in rendered
+    finally:
+        db.close()

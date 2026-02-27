@@ -21,7 +21,7 @@ from voxlogica.lazy.ir import NodeId, NodeSpec, SymbolicPlan
 from voxlogica.parser import EBool, ECall, EFor, ELet, ENumber, EString, Expression, parse_expression_content
 from voxlogica.policy import enforce_runtime_read_path_policy
 from voxlogica.primitives.registry import PrimitiveRegistry
-from voxlogica.storage import MATERIALIZED_STATUS, DefinitionStore, MaterializationStore, ResultsDatabase
+from voxlogica.storage import DefinitionStore, MaterializationStore, ResultsDatabase
 
 
 @dataclass
@@ -194,27 +194,6 @@ class StrictExecutionStrategy(ExecutionStrategy):
                 duration_s=0.0,
             )
             return value
-
-        if self.results_database is not None and node.output_kind != "effect":
-            try:
-                record = self.results_database.get_record(node_id)
-            except Exception:
-                record = None
-            if record is not None and record.status == MATERIALIZED_STATUS:
-                prepared.materialization_store.put(
-                    node_id,
-                    record.value,
-                    metadata={"source": "results-db", "cache_hit": True},
-                )
-                self._record_node_event(
-                    node_id=node_id,
-                    operator=node.operator,
-                    output_kind=node.output_kind,
-                    status="cached",
-                    cache_source="results-db",
-                    duration_s=0.0,
-                )
-                return record.value
 
         try:
             started = time.perf_counter()
@@ -536,14 +515,12 @@ class StrictExecutionStrategy(ExecutionStrategy):
 
     def _run_goal_side_effect(self, operation: str, name: str, value: Any) -> None:
         if operation == "print":
-            rendered_value = value
-            if isinstance(value, SequenceValue):
-                rendered_value = list(value.iter_values())
+            rendered_value = self._materialize_goal_value(value)
             print(f"{name}={rendered_value}")
             return
 
         if operation == "save":
-            self._save_to_file(name, value)
+            self._save_to_file(name, self._materialize_goal_value(value))
             return
 
         raise ValueError(f"Unknown goal operation: {operation}")
@@ -551,9 +528,6 @@ class StrictExecutionStrategy(ExecutionStrategy):
     def _save_to_file(self, filename: str, value: Any) -> None:
         path = Path(filename)
         path.parent.mkdir(parents=True, exist_ok=True)
-
-        if isinstance(value, SequenceValue):
-            value = list(value.iter_values())
 
         suffix = path.suffix.lower()
         if suffix == ".json":
@@ -565,6 +539,20 @@ class StrictExecutionStrategy(ExecutionStrategy):
             return
 
         path.write_text(str(value), encoding="utf-8")
+
+    def _materialize_goal_value(self, value: Any) -> Any:
+        if isinstance(value, SequenceValue):
+            return list(value.iter_values())
+        if hasattr(value, "compute") and callable(value.compute):
+            computed = value.compute()
+            if isinstance(computed, SequenceValue):
+                return list(computed.iter_values())
+            if isinstance(computed, (list, tuple, dict, str, bytes, bytearray)):
+                return computed
+            if hasattr(computed, "__iter__"):
+                return list(computed)
+            return computed
+        return value
 
     def _normalize_operator(self, operator: str) -> str:
         if "." in operator:

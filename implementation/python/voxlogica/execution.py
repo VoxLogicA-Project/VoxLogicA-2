@@ -11,7 +11,6 @@ from voxlogica.execution_strategy import (
     ExecutionResult,
     PageResult,
     PreparedPlan,
-    StrictExecutionStrategy,
 )
 from voxlogica.lazy.ir import NodeId, SymbolicPlan
 from voxlogica.primitives.registry import PrimitiveRegistry
@@ -86,7 +85,6 @@ class ExecutionEngine:
 
         self._strategies = {
             "dask": DaskExecutionStrategy(self.registry, self.storage),
-            "strict": StrictExecutionStrategy(self.registry, self.storage),
         }
         self.default_strategy = "dask"
 

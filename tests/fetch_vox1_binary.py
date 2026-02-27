@@ -11,7 +11,7 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
-    from tests._vox1_binary import LEGACY_BIN_ENV, resolve_legacy_binary_path
+    from tests._vox1_binary import LEGACY_BIN_ENV, PINNED_RELEASE_PAGE, resolve_legacy_binary_path
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quiet", action="store_true", help="Print only the resolved path")
@@ -22,7 +22,7 @@ def main() -> int:
         if not args.quiet:
             print(
                 f"Unable to resolve VoxLogicA-1 binary. "
-                f"Set {LEGACY_BIN_ENV} or allow GitHub release downloads.",
+                f"Set {LEGACY_BIN_ENV} or allow GitHub release downloads from {PINNED_RELEASE_PAGE}.",
                 file=sys.stderr,
             )
         return 1

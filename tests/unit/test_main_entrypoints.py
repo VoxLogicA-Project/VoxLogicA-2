@@ -42,15 +42,14 @@ def test_run_command_success_and_file_not_found(tmp_path: Path, monkeypatch: pyt
         lambda _name: SimpleNamespace(handler=fake_handler),
     )
 
-    main_mod.run(str(src), execute=False, execution_strategy="strict")
+    main_mod.run(str(src), execute=False, execution_strategy="dask")
     assert captured["filename"] == str(src)
     assert captured["execute"] is False
-    assert captured["execution_strategy"] == "strict"
+    assert captured["execution_strategy"] == "dask"
     assert captured["legacy"] is False
 
-    captured.clear()
-    main_mod.run(str(src), execute=False, execution_strategy="dask", strict=True)
-    assert captured["execution_strategy"] == "strict"
+    with pytest.raises(typer.Exit):
+        main_mod.run(str(src), execute=False, execution_strategy="strict")
 
     captured.clear()
     main_mod.run(str(src), execute=False, execution_strategy="dask", legacy=True)
@@ -215,8 +214,40 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             )
             assert value_cached.status_code == 200
             assert value_cached.json()["materialization"] == "cached"
-            assert value_cached.json()["descriptor"]["kind"] == "integer"
-            assert value_cached.json()["descriptor"]["value"] == 5
+            assert value_cached.json()["descriptor"]["vox_type"] == "integer"
+            assert value_cached.json()["descriptor"]["summary"]["value"] == 5
+
+            page_cached = client.post(
+                "/api/v1/playground/value/page",
+                json={
+                    "program": "let x = 2 + 3",
+                    "variable": "x",
+                    "offset": 0,
+                    "limit": 8,
+                    "enqueue": False,
+                },
+            )
+            assert page_cached.status_code == 400
+
+            symbols_seq = client.post("/api/v1/playground/symbols", json={"program": "let xs = range(0,5)"})
+            assert symbols_seq.status_code == 200
+            xs_node = symbols_seq.json()["symbol_table"]["xs"]
+            fake_storage.put_success(xs_node, [0, 1, 2, 3, 4])
+            page_seq = client.post(
+                "/api/v1/playground/value/page",
+                json={
+                    "program": "let xs = range(0,5)",
+                    "variable": "xs",
+                    "offset": 1,
+                    "limit": 2,
+                    "enqueue": False,
+                },
+            )
+            assert page_seq.status_code == 200
+            page_payload = page_seq.json()
+            assert page_payload["descriptor"]["vox_type"] == "sequence"
+            assert page_payload["page"]["offset"] == 1
+            assert len(page_payload["page"]["items"]) == 2
 
             invalid_node = client.post(
                 "/api/v1/playground/value",
@@ -257,6 +288,8 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             results_resp = client.get("/api/v1/results/store")
             assert results_resp.status_code == 200
             assert "available" in results_resp.json()
+            page_resp = client.get("/api/v1/results/store/missing-node/page")
+            assert page_resp.status_code == 404
             assert client.get("/api/v1/results/store/missing-node").status_code == 404
 
             test_job_start = client.post("/api/v1/testing/jobs", json={"profile": "quick", "include_perf": False})
@@ -356,7 +389,7 @@ def test_playground_value_failed_job_exposes_diagnostics(monkeypatch: pytest.Mon
 
 
 @pytest.mark.unit
-def test_playground_value_uses_transient_runtime_descriptor_when_store_missing(
+def test_playground_value_reports_spec_error_when_value_is_not_persistable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
@@ -412,11 +445,11 @@ def test_playground_value_uses_transient_runtime_descriptor_when_store_missing(
             )
             assert value_resp.status_code == 200
             payload = value_resp.json()
-            assert payload["available"] is True
-            assert payload["materialization"] == "computed-transient"
-            assert payload["transient"] is True
-            assert payload["descriptor"]["kind"] == "sequence"
-            assert payload["diagnostics"]["persist_error"] == "Value not serializable"
+            assert payload["available"] is False
+            assert payload["materialization"] == "failed"
+            assert payload["compute_status"] == "failed"
+            assert "E_UNSPECIFIED_VALUE_TYPE" in str(payload["error"])
+            assert payload["diagnostics"]["code"] == "E_UNSPECIFIED_VALUE_TYPE"
             assert payload["node_id"] == node_id
             assert tracked_jobs == []
 

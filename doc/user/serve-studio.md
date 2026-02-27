@@ -21,7 +21,8 @@
   - selector built from print goals and declared variables
   - variable quick-inspection via editor double-click
   - per-query execution trace with `computed` vs `cached` node events
-  - when a value is computed but not persistable, inspector still shows a transient runtime descriptor (`computed-transient`)
+  - paginated inspection endpoint for composite values: `POST /api/v1/playground/value/page`
+  - unsupported value inspection fails explicitly with `E_UNSPECIFIED_VALUE_TYPE`
 - Static diagnostics:
   - `/api/v1/playground/symbols` returns `available=false` with structured diagnostics when parse/static-policy checks fail
   - policy diagnostics can be returned with `available=true` when symbols are still resolvable
@@ -39,6 +40,7 @@
 - Store-only inspection APIs:
   - `GET /api/v1/results/store`
   - `GET /api/v1/results/store/{node_id}`
+  - `GET /api/v1/results/store/{node_id}/page`
   - `GET /api/v1/results/store/{node_id}/render/png`
   - `GET /api/v1/results/store/{node_id}/render/nii.gz`
 - Renderers:
@@ -83,7 +85,7 @@ id: unique-id
 title: Human title
 module: default
 level: intro
-strategy: strict
+strategy: dask
 description: Short card description.
 -->
 ```imgql
@@ -97,7 +99,7 @@ Supported keys:
 - `title`: gallery card title
 - `module`: namespace tag (used for filtering)
 - `level`: progression tag
-- `strategy`: preserved as metadata; serve playground executes with `dask`
+- `strategy`: parsed for compatibility; serve playground executes with `dask`
 - `description`: card description
 
 ## Report Artifacts

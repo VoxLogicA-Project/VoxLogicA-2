@@ -112,7 +112,11 @@
     const text = await response.text();
     const payload = text ? JSON.parse(text) : {};
     if (!response.ok) {
-      const detail = payload.detail || `${response.status} ${response.statusText}`;
+      const rawDetail = payload.detail;
+      const detail =
+        rawDetail && typeof rawDetail === "object"
+          ? rawDetail.message || rawDetail.code || JSON.stringify(rawDetail)
+          : rawDetail || `${response.status} ${response.statusText}`;
       throw new Error(detail);
     }
     return payload;
@@ -397,6 +401,13 @@
           if (!state.currentResultNodeId) return;
           inspectStoreRecord(state.currentResultNodeId, path || "");
         },
+        fetchPage: ({ nodeId, path, offset, limit }) =>
+          requestStorePage({
+            nodeId: nodeId || state.currentResultNodeId || "",
+            path: path || "",
+            offset: Number(offset || 0),
+            limit: Number(limit || 64),
+          }),
         onStatusClick: (record) => {
           if (!record || (record.status !== "failed" && record.status !== "killed")) return;
           const details = [
@@ -589,6 +600,18 @@
           if (!target || !target.nodeId) return;
           inspectPlayTarget(target.nodeId, path || "");
         },
+        fetchPage: ({ nodeId, path, offset, limit }) => {
+          const target = state.playSelectableTargets[Number(dom.playResultSelector.value)];
+          const variable = target && target.kind === "variable" ? String(target.label || "") : "";
+          return requestPlayValuePage({
+            nodeId: nodeId || (target && target.nodeId) || "",
+            variable,
+            path: path || "",
+            offset: Number(offset || 0),
+            limit: Number(limit || 64),
+            enqueue: true,
+          });
+        },
         onStatusClick: (record) => {
           if (!record || (record.status !== "failed" && record.status !== "killed")) return;
           renderPlayFailureDiagnostics(record, {
@@ -747,6 +770,42 @@
     });
   };
 
+  const requestPlayValuePage = async ({
+    nodeId,
+    variable = "",
+    path = "",
+    offset = 0,
+    limit = 64,
+    enqueue = true,
+  }) => {
+    const payload = {
+      program: dom.programInput.value,
+      execution_strategy: "dask",
+      variable,
+      path,
+      offset: Math.max(0, Number(offset || 0)),
+      limit: Math.max(1, Number(limit || 64)),
+      enqueue,
+    };
+    if (!variable && nodeId) {
+      payload.node_id = nodeId;
+    }
+    return api("/api/v1/playground/value/page", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  };
+
+  const requestStorePage = async ({ nodeId, path = "", offset = 0, limit = 64 }) => {
+    if (!nodeId) throw new Error("Missing node id for page request.");
+    const params = new URLSearchParams();
+    if (path) params.set("path", path);
+    params.set("offset", `${Math.max(0, Number(offset || 0))}`);
+    params.set("limit", `${Math.max(1, Number(limit || 64))}`);
+    return api(`/api/v1/results/store/${encodeURIComponent(nodeId)}/page?${params.toString()}`);
+  };
+
   const normalizedExecutionErrors = (payload) => {
     const direct = payload && typeof payload === "object" ? payload.execution_errors : null;
     if (direct && typeof direct === "object") {
@@ -877,11 +936,19 @@
       log_tail: payload.log_tail || "",
       execution_errors: normalizedExecutionErrors(payload),
       descriptor: {
-        kind: "string",
-        length: detailsText.length,
-        preview: {
-          text: detailsText,
+        vox_type: "string",
+        format_version: "voxpod/1",
+        summary: {
+          value: detailsText,
+          length: detailsText.length,
           truncated: false,
+        },
+        navigation: {
+          path: path || "",
+          pageable: false,
+          can_descend: false,
+          default_page_size: 64,
+          max_page_size: 512,
         },
       },
       diagnostics: payload.diagnostics || {},
@@ -921,13 +988,14 @@
     const jobId = payload.job_id ? String(payload.job_id) : "";
     const descriptorKind =
       payload.descriptor && typeof payload.descriptor === "object"
-        ? String(payload.descriptor.kind || "")
+        ? String(payload.descriptor.vox_type || "")
         : "";
     const hasRenderableDescriptor =
       payload.descriptor &&
       typeof payload.descriptor === "object" &&
       descriptorKind &&
-      descriptorKind !== "unavailable";
+      descriptorKind !== "unavailable" &&
+      descriptorKind !== "error";
     const isMaterialized = materialization === "cached" || materialization === "computed" || statusName === "materialized";
     if (isMaterialized && hasRenderableDescriptor) {
       stopValuePolling();
@@ -1349,27 +1417,28 @@
 
   const summarizeDescriptor = (descriptor) => {
     if (!descriptor || typeof descriptor !== "object") return "value available";
-    const kind = String(descriptor.kind || "value");
-    if (kind === "integer" || kind === "number" || kind === "boolean") {
-      return `${kind}: ${descriptor.value}`;
+    const voxType = String(descriptor.vox_type || "value");
+    const summary = descriptor.summary && typeof descriptor.summary === "object" ? descriptor.summary : {};
+    if (voxType === "integer" || voxType === "number" || voxType === "boolean") {
+      return `${voxType}: ${summary.value}`;
     }
-    if (kind === "string") {
-      const preview = descriptor.preview && descriptor.preview.text ? descriptor.preview.text : "";
-      return `string(${descriptor.length || 0}): ${preview}`;
+    if (voxType === "string") {
+      const preview = summary && summary.value ? String(summary.value) : "";
+      return `string(${summary.length || 0}): ${preview}`;
     }
-    if (kind === "ndarray") {
-      return `ndarray ${Array.isArray(descriptor.shape) ? descriptor.shape.join("x") : ""} ${descriptor.dtype || ""}`.trim();
+    if (voxType === "ndarray") {
+      return `ndarray ${Array.isArray(summary.shape) ? summary.shape.join("x") : ""} ${summary.dtype || ""}`.trim();
     }
-    if (kind === "simpleitk-image") {
-      return `image ${Array.isArray(descriptor.size) ? descriptor.size.join("x") : ""} ${descriptor.pixel_id || ""}`.trim();
+    if (voxType === "image2d" || voxType === "volume3d") {
+      return `${voxType} ${Array.isArray(summary.size) ? summary.size.join("x") : ""} ${summary.pixel_id || ""}`.trim();
     }
-    if (kind === "sequence") {
-      return `sequence length=${descriptor.length || 0}`;
+    if (voxType === "sequence") {
+      return `sequence length=${summary.length || 0}`;
     }
-    if (kind === "mapping") {
-      return `mapping length=${descriptor.length || 0}`;
+    if (voxType === "mapping") {
+      return `mapping length=${summary.length || 0}`;
     }
-    return kind;
+    return voxType;
   };
 
   const previewVariableHover = async (token) => {
@@ -1629,7 +1698,7 @@
         <div class="gallery-meta">
           <span class="mini-chip">${sanitize(example.module)}</span>
           <span class="mini-chip">${sanitize(example.level)}</span>
-          <span class="mini-chip">${sanitize(example.strategy || "strict")}</span>
+          <span class="mini-chip">${sanitize(example.strategy || "dask")}</span>
         </div>
         <p class="muted">${sanitize(example.description || "")}</p>
         <pre class="gallery-code">${sanitize(example.code)}</pre>

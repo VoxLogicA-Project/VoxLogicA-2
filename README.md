@@ -1,10 +1,10 @@
 # VoxLogicA
 
-VoxLogicA is a symbolic, declarative computation language for building and executing dataflow plans (including large image-processing workloads) with pluggable execution strategies.
+VoxLogicA is a symbolic, declarative computation language for building and executing dataflow plans (including large image-processing workloads).
 
 Current runtime architecture:
 - Symbolic reducer (`AST -> SymbolicPlan`)
-- Pluggable execution strategies (`dask`, `strict`)
+- Dask execution runtime (single supported strategy)
 - Stable primitive contract (`PrimitiveSpec`)
 - Modular results database API (`~/.voxlogica/results.db` by default)
 - Interactive REPL session runtime (CLI today, GUI-ready integration point)
@@ -29,9 +29,6 @@ python3 bootstrap.py --with-test
 # Run a program file
 ./voxlogica run test.imgql
 
-# Run with strict strategy shortcut (parity/debug)
-./voxlogica run --strict test.imgql
-
 # Run with legacy side-effect policy enabled (CLI only)
 ./voxlogica run --legacy test.imgql
 
@@ -44,6 +41,8 @@ python3 bootstrap.py --with-test
 - Static resolution is strict: unknown callable names fail before execution.
 - Non-legacy mode is default; side-effectful primitives are blocked unless CLI `--legacy` is set.
 - `serve` always runs non-legacy policy and disables server-side save/export fields.
+- Persisted values use the canonical `voxpod/1` JSON+Binary format (see `doc/spec/store-format-voxpod-v1.md`).
+- Results DB schema/version mismatches trigger destructive recreation by design in this branch.
 - Serve-mode read primitives are constrained to allowed roots:
   - `VOXLOGICA_SERVE_DATA_DIR` (primary root)
   - `VOXLOGICA_SERVE_EXTRA_READ_ROOTS` (optional comma-separated extras)
@@ -113,7 +112,7 @@ print "n_thresholds" hi-lo+1
 
 Why this is lazy/symbolic:
 - `thresholds` and `masks` are represented as symbolic sequence computations in the plan.
-- Execution strategy decides when to materialize values (strict, paginated, streamed, etc.).
+- Materialization and paging are lazy; sequence pages are fetched on demand.
 
 ### Inspect the plan without executing
 

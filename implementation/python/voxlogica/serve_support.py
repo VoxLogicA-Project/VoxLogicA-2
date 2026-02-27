@@ -9,7 +9,6 @@ from typing import Any
 import multiprocessing as mp
 import json
 import os
-import pickle
 import re
 import signal
 import sqlite3
@@ -22,6 +21,19 @@ import traceback
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
 import uuid
+
+from voxlogica.storage import ResultRecord
+from voxlogica.value_model import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    VOX_FORMAT_VERSION,
+    UnsupportedVoxValueError,
+    VoxMappingValue,
+    VoxSequenceValue,
+    adapt_runtime_value,
+    append_path,
+    normalize_path,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -38,9 +50,6 @@ DEFAULT_PLAYGROUND_LOAD_DIR = REPO_ROOT / "tests"
 PLAYGROUND_LOAD_DIR_ENV = "VOXLOGICA_SERVE_LOAD_DIR"
 MAX_PLAYGROUND_PROGRAM_BYTES = 2 * 1024 * 1024
 MAX_RESULT_LIST_LIMIT = 300
-MAX_RESULT_PREVIEW_ITEMS = 16
-MAX_RESULT_PREVIEW_DEPTH = 3
-MAX_INLINE_STRING_CHARS = 4096
 
 _PLAYGROUND_COMMENT = re.compile(
     r"<!--\s*vox:playground(?P<meta>.*?)-->\s*```imgql\s*(?P<code>.*?)\s*```",
@@ -81,7 +90,7 @@ def parse_playground_examples(markdown: str) -> list[dict[str, Any]]:
         module = meta.get("module") or "general"
         level = meta.get("level") or "core"
         description = meta.get("description") or ""
-        strategy = meta.get("strategy") or "strict"
+        strategy = "dask"
         examples.append(
             {
                 "id": example_id,
@@ -386,12 +395,24 @@ def build_storage_stats_snapshot(storage: Any) -> dict[str, Any]:
                     COUNT(*) AS total,
                     SUM(CASE WHEN status = 'materialized' THEN 1 ELSE 0 END) AS materialized,
                     SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
-                    AVG(LENGTH(payload)) AS avg_payload_bytes,
-                    SUM(LENGTH(payload)) AS payload_bytes,
+                    AVG(
+                        COALESCE(LENGTH(payload_json), 0) + COALESCE(LENGTH(payload_bin), 0)
+                    ) AS avg_payload_bytes,
+                    SUM(
+                        COALESCE(LENGTH(payload_json), 0) + COALESCE(LENGTH(payload_bin), 0)
+                    ) AS payload_bytes,
                     AVG(LENGTH(metadata_json)) AS avg_metadata_bytes,
                     MIN(updated_at) AS first_update,
                     MAX(updated_at) AS last_update
                 FROM results
+                """
+            ).fetchone()
+            page_totals = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_pages,
+                    SUM(COALESCE(LENGTH(payload_json), 0) + COALESCE(LENGTH(payload_bin), 0)) AS page_payload_bytes
+                FROM result_pages
                 """
             ).fetchone()
             versions = conn.execute(
@@ -407,11 +428,11 @@ def build_storage_stats_snapshot(storage: Any) -> dict[str, Any]:
                 """
                 SELECT
                     CASE
-                        WHEN payload IS NULL THEN 'none'
-                        WHEN LENGTH(payload) < 1024 THEN '<1KB'
-                        WHEN LENGTH(payload) < 10240 THEN '1KB-10KB'
-                        WHEN LENGTH(payload) < 102400 THEN '10KB-100KB'
-                        WHEN LENGTH(payload) < 1048576 THEN '100KB-1MB'
+                        WHEN (COALESCE(LENGTH(payload_json), 0) + COALESCE(LENGTH(payload_bin), 0)) = 0 THEN 'none'
+                        WHEN (COALESCE(LENGTH(payload_json), 0) + COALESCE(LENGTH(payload_bin), 0)) < 1024 THEN '<1KB'
+                        WHEN (COALESCE(LENGTH(payload_json), 0) + COALESCE(LENGTH(payload_bin), 0)) < 10240 THEN '1KB-10KB'
+                        WHEN (COALESCE(LENGTH(payload_json), 0) + COALESCE(LENGTH(payload_bin), 0)) < 102400 THEN '10KB-100KB'
+                        WHEN (COALESCE(LENGTH(payload_json), 0) + COALESCE(LENGTH(payload_bin), 0)) < 1048576 THEN '100KB-1MB'
                         ELSE '>=1MB'
                     END AS bucket,
                     COUNT(*) AS count
@@ -432,6 +453,8 @@ def build_storage_stats_snapshot(storage: Any) -> dict[str, Any]:
     failed = _safe_int(totals["failed"]) if totals is not None else 0
     avg_payload = _safe_float(totals["avg_payload_bytes"]) if totals is not None else 0.0
     payload_bytes = _safe_int(totals["payload_bytes"]) if totals is not None else 0
+    total_pages = _safe_int(page_totals["total_pages"]) if page_totals is not None else 0
+    page_payload_bytes = _safe_int(page_totals["page_payload_bytes"]) if page_totals is not None else 0
     avg_metadata = _safe_float(totals["avg_metadata_bytes"]) if totals is not None else 0.0
     first_update = _safe_float(totals["first_update"]) if totals is not None else 0.0
     last_update = _safe_float(totals["last_update"]) if totals is not None else 0.0
@@ -445,6 +468,8 @@ def build_storage_stats_snapshot(storage: Any) -> dict[str, Any]:
             "hit_ready_ratio": (materialized / total) if total else 0.0,
             "avg_payload_bytes": avg_payload,
             "total_payload_bytes": payload_bytes,
+            "total_page_records": total_pages,
+            "total_page_payload_bytes": page_payload_bytes,
             "avg_metadata_bytes": avg_metadata,
             "first_update_at": _iso_utc(first_update) if first_update > 0 else None,
             "last_update_at": _iso_utc(last_update) if last_update > 0 else None,
@@ -618,8 +643,9 @@ def list_store_results_snapshot(
             node_id,
             status,
             runtime_version,
-            payload_encoding,
-            LENGTH(payload) AS payload_bytes,
+            format_version,
+            vox_type,
+            COALESCE(LENGTH(payload_json), 0) + COALESCE(LENGTH(payload_bin), 0) AS payload_bytes,
             error,
             created_at,
             updated_at
@@ -656,7 +682,8 @@ def list_store_results_snapshot(
             "node_id": str(row["node_id"]),
             "status": str(row["status"]),
             "runtime_version": str(row["runtime_version"]),
-            "payload_encoding": str(row["payload_encoding"]),
+            "format_version": str(row["format_version"] or ""),
+            "vox_type": str(row["vox_type"] or ""),
             "payload_bytes": _safe_int(row["payload_bytes"]),
             "error": row["error"],
             "created_at": _iso_utc(_safe_float(row["created_at"])),
@@ -692,8 +719,11 @@ def _load_store_row(storage: Any, node_id: str) -> sqlite3.Row | None:
         SELECT
             node_id,
             status,
-            payload,
-            payload_encoding,
+            format_version,
+            vox_type,
+            descriptor_json,
+            payload_json,
+            payload_bin,
             error,
             metadata_json,
             runtime_version,
@@ -724,23 +754,8 @@ def _decode_metadata(metadata_json: Any) -> dict[str, Any]:
     return {}
 
 
-def _deserialize_payload(payload: Any, encoding: str) -> Any:
-    if encoding == "none" or payload is None:
-        return None
-    if encoding != "pickle":
-        raise ValueError(f"Unsupported payload encoding: {encoding}")
-    if not isinstance(payload, (bytes, bytearray)):
-        raise ValueError("Invalid payload for pickle decoding")
-    return pickle.loads(payload)
-
-
 def _normalize_result_path(path: str | None) -> str:
-    raw = (path or "").strip()
-    if not raw or raw == "/":
-        return ""
-    if raw.startswith("/"):
-        return raw
-    return f"/{raw}"
+    return normalize_path(path)
 
 
 def _decode_path_token(token: str) -> str:
@@ -752,35 +767,20 @@ def _encode_path_token(token: str) -> str:
 
 
 def _append_path(base: str, token: str) -> str:
-    encoded = _encode_path_token(token)
-    if not base:
-        return f"/{encoded}"
-    return f"{base}/{encoded}"
+    return append_path(base, token)
 
 
 def _resolve_value_path(value: Any, path: str) -> Any:
     normalized = _normalize_result_path(path)
     if not normalized:
         return value
-    current = value
-    for token in [part for part in normalized.split("/") if part]:
-        key = _decode_path_token(token)
-        if isinstance(current, (list, tuple)):
-            try:
-                index = int(key)
-            except ValueError as exc:
-                raise KeyError(f"Invalid list index '{key}' in path '{path}'") from exc
-            if index < 0 or index >= len(current):
-                raise KeyError(f"List index out of range in path '{path}'")
-            current = current[index]
-            continue
-        if isinstance(current, dict):
-            if key not in current:
-                raise KeyError(f"Missing key '{key}' in path '{path}'")
-            current = current[key]
-            continue
-        raise KeyError(f"Cannot descend into value type {type(current).__name__} using path '{path}'")
-    return current
+    try:
+        resolved = adapt_runtime_value(value).resolve(path=normalized)
+    except UnsupportedVoxValueError as exc:
+        raise KeyError(str(exc)) from exc
+    except Exception as exc:
+        raise KeyError(str(exc)) from exc
+    return resolved.raw
 
 
 def _import_numpy() -> Any | None:
@@ -880,274 +880,301 @@ def _build_render_url(node_id: str, render_kind: str, path: str) -> str:
     return f"/api/v1/results/store/{encoded_node}/render/{render_kind}{suffix}"
 
 
-def _string_preview(value: str) -> dict[str, Any]:
-    if len(value) <= MAX_INLINE_STRING_CHARS:
-        return {"text": value, "truncated": False}
-    return {
-        "text": value[:MAX_INLINE_STRING_CHARS],
-        "truncated": True,
-        "total_chars": len(value),
-    }
+def _record_from_storage(storage: Any, node_id: str) -> ResultRecord:
+    getter = getattr(storage, "get_record", None)
+    if callable(getter):
+        record = getter(node_id)
+        if record is not None:
+            return record
+    raise KeyError(f"Unknown store result: {node_id}")
 
 
-def _sequence_numeric_preview(value: list[Any] | tuple[Any, ...]) -> list[float] | None:
-    if len(value) > 2048:
-        return None
-    out: list[float] = []
-    for item in value:
-        if isinstance(item, bool):
-            out.append(1.0 if item else 0.0)
-            continue
-        if isinstance(item, (int, float)):
-            out.append(float(item))
-            continue
-        return None
-    return out
-
-
-def _ndarray_stats(array: Any) -> dict[str, Any]:
-    np = _import_numpy()
-    if np is None:
-        return {}
-    if array.size == 0:
-        return {"empty": True}
-    if not np.issubdtype(array.dtype, np.number):
-        return {}
-    sample = array.reshape(-1)
-    if sample.size > 1_000_000:
-        step = max(1, sample.size // 1_000_000)
-        sample = sample[::step]
-    finite = sample
-    if np.issubdtype(sample.dtype, np.floating):
-        finite = sample[np.isfinite(sample)]
-        if finite.size == 0:
-            return {"has_finite": False}
-    return {
-        "min": float(np.min(finite)),
-        "max": float(np.max(finite)),
-        "mean": float(np.mean(finite)),
-    }
-
-
-def _describe_value(
-    value: Any,
+def _canonical_descriptor(
+    descriptor: dict[str, Any] | None,
     *,
     node_id: str,
     path: str,
-    depth: int = 0,
-    seen_ids: set[int] | None = None,
 ) -> dict[str, Any]:
-    np = _import_numpy()
-    sitk = _import_simpleitk()
-    seen = seen_ids if seen_ids is not None else set()
+    normalized = _normalize_result_path(path)
+    source = dict(descriptor or {})
+    vox_type = str(source.get("vox_type", "unavailable") or "unavailable")
+    summary = source.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+    navigation = source.get("navigation")
+    if not isinstance(navigation, dict):
+        navigation = {}
+    navigation_payload = {
+        "path": normalized,
+        "pageable": bool(navigation.get("pageable", False)),
+        "can_descend": bool(navigation.get("can_descend", False)),
+        "default_page_size": int(navigation.get("default_page_size", DEFAULT_PAGE_SIZE)),
+        "max_page_size": int(navigation.get("max_page_size", MAX_PAGE_SIZE)),
+    }
+    payload: dict[str, Any] = {
+        "vox_type": vox_type,
+        "format_version": str(source.get("format_version", VOX_FORMAT_VERSION) or VOX_FORMAT_VERSION),
+        "summary": summary,
+        "navigation": navigation_payload,
+    }
+    render = source.get("render")
+    if isinstance(render, dict):
+        payload["render"] = dict(render)
+    return _decorate_descriptor_render(payload, node_id=node_id, path=normalized)
 
-    if depth > MAX_RESULT_PREVIEW_DEPTH:
-        return {"kind": "truncated", "reason": "depth-limit"}
 
-    if value is None:
-        return {"kind": "null", "value": None}
-    if isinstance(value, bool):
-        return {"kind": "boolean", "value": value}
-    if isinstance(value, int):
-        return {"kind": "integer", "value": value}
-    if isinstance(value, float):
-        return {"kind": "number", "value": value}
-    if isinstance(value, str):
-        return {
-            "kind": "string",
-            "length": len(value),
-            "preview": _string_preview(value),
+def _decorate_descriptor_render(descriptor: dict[str, Any], *, node_id: str, path: str) -> dict[str, Any]:
+    payload = dict(descriptor)
+    vox_type = str(payload.get("vox_type", "unavailable"))
+    summary = payload.get("summary")
+    summary_dict = summary if isinstance(summary, dict) else {}
+
+    render_kind: str | None = None
+    if vox_type in {"image2d"}:
+        render_kind = "image2d"
+    elif vox_type in {"volume3d"}:
+        render_kind = "medical-volume"
+    elif vox_type == "ndarray":
+        shape = summary_dict.get("shape")
+        if isinstance(shape, list):
+            if len(shape) == 2:
+                render_kind = "image2d"
+            elif len(shape) == 3:
+                render_kind = "medical-volume"
+
+    if render_kind == "image2d":
+        payload["render"] = {
+            "kind": "image2d",
+            "png_url": _build_render_url(node_id, "png", path),
         }
-    if isinstance(value, bytes):
-        return {"kind": "bytes", "length": len(value)}
-
-    if np is not None and isinstance(value, np.generic):
-        return _describe_value(
-            value.item(),
-            node_id=node_id,
-            path=path,
-            depth=depth,
-            seen_ids=seen,
-        )
-
-    tracked = isinstance(value, (list, tuple, dict))
-    if np is not None and isinstance(value, np.ndarray):
-        tracked = True
-    if _is_simpleitk_image_like(value, sitk):
-        tracked = True
-
-    if tracked:
-        pointer = id(value)
-        if pointer in seen:
-            return {"kind": "cycle", "type": type(value).__name__}
-        seen.add(pointer)
-
-    if np is not None and isinstance(value, np.ndarray):
-        summary = {
-            "kind": "ndarray",
-            "dtype": str(value.dtype),
-            "shape": [int(v) for v in value.shape],
-            "size": int(value.size),
-            "stats": _ndarray_stats(value),
+    elif render_kind == "medical-volume":
+        payload["render"] = {
+            "kind": "medical-volume",
+            "nifti_url": _build_render_url(node_id, "nii", path),
         }
-        if value.ndim == 1 and value.size <= 4096:
-            summary["values"] = value.tolist()
-        if value.ndim == 2:
-            summary["render"] = {
-                "kind": "image2d",
-                "png_url": _build_render_url(node_id, "png", path),
-            }
-        elif value.ndim == 3:
-            summary["render"] = {
-                "kind": "medical-volume",
-                "nifti_url": _build_render_url(node_id, "nii", path),
-            }
-        return summary
+    return payload
 
-    if _is_simpleitk_image_like(value, sitk):
-        metadata = _simpleitk_image_metadata(value)
-        if metadata is None:
-            return {
-                "kind": "object",
-                "type": f"{type(value).__module__}.{type(value).__name__}",
-                "repr": repr(value)[:MAX_INLINE_STRING_CHARS],
-            }
-        summary = {
-            "kind": "simpleitk-image",
-            "dimension": metadata["dimension"],
-            "size": metadata["size"],
-            "spacing": metadata["spacing"],
-            "origin": metadata["origin"],
-            "direction": metadata["direction"],
-            "pixel_id": metadata["pixel_id"],
-        }
-        if int(metadata["dimension"]) == 2:
-            summary["render"] = {
-                "kind": "image2d",
-                "png_url": _build_render_url(node_id, "png", path),
-            }
-        elif int(metadata["dimension"]) >= 3:
-            summary["render"] = {
-                "kind": "medical-volume",
-                "nifti_url": _build_render_url(node_id, "nii", path),
-            }
-        return summary
 
-    if isinstance(value, (list, tuple)):
-        sequence: list[Any] | tuple[Any, ...] = value
-        payload: dict[str, Any] = {
-            "kind": "sequence",
-            "sequence_type": type(sequence).__name__,
-            "length": len(sequence),
-        }
-        numeric = _sequence_numeric_preview(sequence)
-        if numeric is not None:
-            payload["numeric_values"] = numeric
-        if depth < MAX_RESULT_PREVIEW_DEPTH and sequence:
-            items: list[dict[str, Any]] = []
-            for index, item in enumerate(sequence[:MAX_RESULT_PREVIEW_ITEMS]):
-                child_path = _append_path(path, str(index))
-                items.append(
-                    {
-                        "label": f"[{index}]",
-                        "path": child_path,
-                        "summary": _describe_value(
-                            item,
-                            node_id=node_id,
-                            path=child_path,
-                            depth=depth + 1,
-                            seen_ids=seen,
-                        ),
-                    }
-                )
-            payload["items"] = items
-            payload["truncated"] = len(sequence) > MAX_RESULT_PREVIEW_ITEMS
-        return payload
-
-    if isinstance(value, dict):
-        keys = list(value.keys())
-        key_preview = [str(k) for k in keys[:MAX_RESULT_PREVIEW_ITEMS]]
-        payload = {
-            "kind": "mapping",
-            "mapping_type": type(value).__name__,
-            "length": len(value),
-            "keys": key_preview,
-            "truncated": len(keys) > MAX_RESULT_PREVIEW_ITEMS,
-        }
-        if depth < MAX_RESULT_PREVIEW_DEPTH and keys:
-            entries: list[dict[str, Any]] = []
-            for key in keys[:MAX_RESULT_PREVIEW_ITEMS]:
-                child_path = _append_path(path, str(key))
-                entries.append(
-                    {
-                        "label": str(key),
-                        "path": child_path,
-                        "summary": _describe_value(
-                            value[key],
-                            node_id=node_id,
-                            path=child_path,
-                            depth=depth + 1,
-                            seen_ids=seen,
-                        ),
-                    }
-                )
-            payload["entries"] = entries
-        return payload
-
+def _materialized_payload_base(record: ResultRecord, *, path: str) -> dict[str, Any]:
     return {
-        "kind": "object",
-        "type": f"{type(value).__module__}.{type(value).__name__}",
-        "repr": repr(value)[:MAX_INLINE_STRING_CHARS],
+        "available": True,
+        "node_id": str(record.node_id),
+        "status": str(record.status),
+        "runtime_version": str(record.runtime_version),
+        "created_at": _iso_utc(float(record.created_at)),
+        "updated_at": _iso_utc(float(record.updated_at)),
+        "metadata": dict(record.metadata or {}),
+        "error": record.error,
+        "path": _normalize_result_path(path),
     }
 
 
-def _load_store_materialized_value(storage: Any, node_id: str) -> tuple[sqlite3.Row, Any]:
-    row = _load_store_row(storage, node_id)
-    if row is None:
-        raise KeyError(f"Unknown store result: {node_id}")
-    status = str(row["status"])
-    if status != "materialized":
-        raise ValueError(f"Store result '{node_id}' has status '{status}', not materialized")
-    value = _deserialize_payload(row["payload"], str(row["payload_encoding"]))
-    return row, value
+def _load_store_materialized_value(storage: Any, node_id: str) -> tuple[ResultRecord, Any]:
+    record = _record_from_storage(storage, node_id)
+    if str(record.status) != "materialized":
+        raise ValueError(f"Store result '{node_id}' has status '{record.status}', not materialized")
+    if record.value is None:
+        raise UnsupportedVoxValueError(
+            record,
+            "E_UNSPECIFIED_VALUE_TYPE: materialized record has no inspectable voxpod payload.",
+        )
+    return record, record.value
 
 
 def inspect_store_result(storage: Any, *, node_id: str, path: str = "") -> dict[str, Any]:
     """Inspect one stored result value (or one sub-path inside it)."""
-    row = _load_store_row(storage, node_id)
-    if row is None:
-        raise KeyError(f"Unknown store result: {node_id}")
+    record = _record_from_storage(storage, node_id)
+    normalized_path = _normalize_result_path(path)
+    payload = _materialized_payload_base(record, path=normalized_path)
+    payload["format_version"] = str(record.format_version or VOX_FORMAT_VERSION)
+    payload["vox_type"] = str(record.vox_type or "")
 
-    status = str(row["status"])
-    payload: dict[str, Any] = {
-        "available": True,
-        "node_id": str(row["node_id"]),
-        "status": status,
-        "runtime_version": str(row["runtime_version"]),
-        "created_at": _iso_utc(_safe_float(row["created_at"])),
-        "updated_at": _iso_utc(_safe_float(row["updated_at"])),
-        "metadata": _decode_metadata(row["metadata_json"]),
-        "error": row["error"],
-        "path": _normalize_result_path(path),
-    }
-    if status != "materialized":
-        payload["descriptor"] = {"kind": "unavailable", "reason": f"status={status}"}
+    if str(record.status) != "materialized":
+        payload["descriptor"] = _canonical_descriptor(
+            {
+                "vox_type": "unavailable",
+                "format_version": VOX_FORMAT_VERSION,
+                "summary": {"reason": f"status={record.status}"},
+                "navigation": {
+                    "path": normalized_path,
+                    "pageable": False,
+                    "can_descend": False,
+                    "default_page_size": DEFAULT_PAGE_SIZE,
+                    "max_page_size": MAX_PAGE_SIZE,
+                },
+            },
+            node_id=node_id,
+            path=normalized_path,
+        )
         return payload
 
-    value = _deserialize_payload(row["payload"], str(row["payload_encoding"]))
-    target = _resolve_value_path(value, path)
-    payload["descriptor"] = _describe_value(
-        target,
+    if normalized_path in {"", "/"}:
+        payload["descriptor"] = _canonical_descriptor(
+            record.descriptor,
+            node_id=node_id,
+            path=normalized_path,
+        )
+        return payload
+
+    if str(record.vox_type or "") == "sequence":
+        raise UnsupportedVoxValueError(
+            record,
+            "E_UNSPECIFIED_VALUE_TYPE: sequence item lookup requires /page endpoint under voxpod/1.",
+        )
+
+    if record.value is None:
+        raise UnsupportedVoxValueError(
+            record,
+            "E_UNSPECIFIED_VALUE_TYPE: value exists in runtime but is not representable by voxpod/1.",
+        )
+    resolved = adapt_runtime_value(record.value).resolve(path=normalized_path)
+    payload["descriptor"] = _canonical_descriptor(
+        resolved.describe(path=normalized_path),
         node_id=node_id,
-        path=_normalize_result_path(path),
+        path=normalized_path,
     )
     return payload
 
 
+def inspect_store_result_page(
+    storage: Any,
+    *,
+    node_id: str,
+    path: str = "",
+    offset: int = 0,
+    limit: int = DEFAULT_PAGE_SIZE,
+) -> dict[str, Any]:
+    """Inspect a pageable value as a lazy/paginated page."""
+    record = _record_from_storage(storage, node_id)
+    normalized_path = _normalize_result_path(path)
+    safe_offset = max(0, int(offset))
+    safe_limit = max(1, min(int(limit), MAX_PAGE_SIZE))
+    payload = _materialized_payload_base(record, path=normalized_path)
+
+    if str(record.status) != "materialized":
+        raise ValueError(f"Store result '{node_id}' has status '{record.status}', not materialized")
+    if str(record.vox_type or "") == "sequence" and normalized_path in {"", "/"}:
+        getter_exact = getattr(storage, "get_page_record", None)
+        getter_containing = getattr(storage, "get_page_containing_index", None)
+        items_raw: list[Any] = []
+        has_more = False
+        next_offset: int | None = None
+        if callable(getter_exact):
+            exact = getter_exact(node_id, "", safe_offset, safe_limit)
+            if isinstance(exact, dict):
+                items_raw = list(exact.get("items", []))
+                has_more = bool(exact.get("has_more", False))
+        if not items_raw and callable(getter_containing):
+            remaining = safe_limit
+            cursor = safe_offset
+            while remaining > 0:
+                chunk = getter_containing(node_id, "", cursor)
+                if not isinstance(chunk, dict):
+                    break
+                chunk_items = list(chunk.get("items", []))
+                chunk_offset = int(chunk.get("offset", cursor))
+                local_start = max(0, cursor - chunk_offset)
+                if local_start >= len(chunk_items):
+                    if bool(chunk.get("has_more", False)):
+                        cursor = chunk_offset + int(chunk.get("limit", len(chunk_items)))
+                        continue
+                    break
+                take = chunk_items[local_start : local_start + remaining]
+                items_raw.extend(take)
+                cursor += len(take)
+                remaining = safe_limit - len(items_raw)
+                if remaining <= 0:
+                    has_more = bool(chunk.get("has_more", False) or (local_start + len(take) < len(chunk_items)))
+                    break
+                if bool(chunk.get("has_more", False)):
+                    has_more = True
+                    continue
+                has_more = False
+                break
+        next_offset = safe_offset + len(items_raw) if has_more else None
+        items_out = []
+        for index, raw_item in enumerate(items_raw):
+            absolute = safe_offset + index
+            item_path = append_path(normalized_path, str(absolute))
+            item_descriptor = _canonical_descriptor(
+                adapt_runtime_value(raw_item).describe(path=item_path),
+                node_id=node_id,
+                path=item_path,
+            )
+            items_out.append(
+                {
+                    "index": absolute,
+                    "label": f"[{absolute}]",
+                    "path": item_path,
+                    "descriptor": item_descriptor,
+                }
+            )
+        payload["descriptor"] = _canonical_descriptor(record.descriptor, node_id=node_id, path=normalized_path)
+        payload["page"] = {
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "items": items_out,
+            "next_offset": next_offset,
+            "has_more": bool(has_more),
+            "total": payload["descriptor"].get("summary", {}).get("length"),
+        }
+        return payload
+
+    if record.value is None:
+        raise UnsupportedVoxValueError(
+            record,
+            "E_UNSPECIFIED_VALUE_TYPE: value is not inspectable under voxpod/1.",
+        )
+
+    root = adapt_runtime_value(record.value).resolve(path=normalized_path)
+    if not isinstance(root, (VoxSequenceValue, VoxMappingValue)):
+        raise ValueError(
+            f"Path '{normalized_path or '/'}' is not pageable (vox_type={root.vox_type})."
+        )
+
+    page = root.page(offset=safe_offset, limit=safe_limit)
+    root_descriptor = _canonical_descriptor(root.describe(path=normalized_path), node_id=node_id, path=normalized_path)
+    items_out: list[dict[str, Any]] = []
+    for index, item in enumerate(page.items):
+        label = str(item.get("label", "item"))
+        if isinstance(root, VoxMappingValue):
+            item_path = append_path(normalized_path, label)
+        else:
+            item_path = append_path(normalized_path, str(safe_offset + index))
+        descriptor = item.get("descriptor")
+        if isinstance(descriptor, dict):
+            item_descriptor = _canonical_descriptor(descriptor, node_id=node_id, path=item_path)
+        else:
+            item_descriptor = _canonical_descriptor(
+                adapt_runtime_value(item).describe(path=item_path),
+                node_id=node_id,
+                path=item_path,
+            )
+        items_out.append(
+            {
+                "index": safe_offset + index,
+                "label": label,
+                "path": item_path,
+                "descriptor": item_descriptor,
+            }
+        )
+
+    payload["descriptor"] = root_descriptor
+    payload["page"] = {
+        "offset": int(page.offset),
+        "limit": int(page.limit),
+        "items": items_out,
+        "next_offset": page.next_offset,
+        "has_more": bool(page.has_more),
+        "total": page.total,
+    }
+    return payload
+
+
 def describe_runtime_value(*, node_id: str, value: Any, path: str = "") -> dict[str, Any]:
-    """Describe an in-memory value using the same schema as store inspection."""
+    """Describe an in-memory value using the canonical voxpod descriptor contract."""
     normalized = _normalize_result_path(path)
-    target = _resolve_value_path(value, normalized)
+    resolved = adapt_runtime_value(value).resolve(path=normalized)
     return {
         "available": True,
         "node_id": node_id,
@@ -1158,7 +1185,11 @@ def describe_runtime_value(*, node_id: str, value: Any, path: str = "") -> dict[
         "metadata": {"source": "runtime"},
         "error": None,
         "path": normalized,
-        "descriptor": _describe_value(target, node_id=node_id, path=normalized),
+        "descriptor": _canonical_descriptor(
+            resolved.describe(path=normalized),
+            node_id=node_id,
+            path=normalized,
+        ),
     }
 
 
@@ -1621,7 +1652,7 @@ class PlaygroundJobManager:
         process = self._ctx.Process(
             target=_playground_worker,
             args=(send_conn, payload, str(log_path)),
-            daemon=True,
+            daemon=False,
         )
 
         job = PlaygroundJob(
