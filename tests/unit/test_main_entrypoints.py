@@ -410,6 +410,12 @@ def test_playground_value_uses_transient_runtime_descriptor_when_store_missing(
             assert payload["diagnostics"]["persist_error"] == "Value not serializable"
             assert payload["node_id"] == node_id
             assert tracked_jobs == []
+
+            missing_preview = client.post(
+                "/api/v1/playground/value",
+                json={"program": "let x = 2 + 3", "node_id": "does-not-exist", "enqueue": False},
+            )
+            assert missing_preview.status_code == 400
     finally:
         fake_storage.close()
 

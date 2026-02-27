@@ -287,27 +287,56 @@ def handle_run(
 
             goal_results: list[dict[str, Any]] = []
             if prepared_plan is not None:
-                for goal in workplan.goals:
-                    goal_payload: dict[str, Any] = {
-                        "operation": goal.operation,
-                        "name": goal.name,
-                        "node_id": goal.id,
+                declared_names_by_node: dict[str, str] = {}
+                for declared_name, declared_node in declaration_bindings.items():
+                    key = str(declared_node)
+                    if key not in declared_names_by_node:
+                        declared_names_by_node[key] = str(declared_name)
+
+                target_nodes: list[dict[str, str]] = [
+                    {
+                        "operation": str(goal.operation),
+                        "name": str(goal.name),
+                        "node_id": str(goal.id),
                     }
-                    if goal.id in execution_result.failed_operations:
+                    for goal in workplan.goals
+                ]
+                seen_target_nodes = {entry["node_id"] for entry in target_nodes}
+                for requested_node in _goals or []:
+                    requested_id = str(requested_node)
+                    if requested_id in seen_target_nodes:
+                        continue
+                    target_nodes.append(
+                        {
+                            "operation": "inspect",
+                            "name": declared_names_by_node.get(requested_id, requested_id),
+                            "node_id": requested_id,
+                        }
+                    )
+                    seen_target_nodes.add(requested_id)
+
+                for goal in target_nodes:
+                    node_id = goal["node_id"]
+                    goal_payload: dict[str, Any] = {
+                        "operation": goal["operation"],
+                        "name": goal["name"],
+                        "node_id": node_id,
+                    }
+                    if node_id in execution_result.failed_operations:
                         goal_payload["status"] = "failed"
-                        goal_payload["error"] = execution_result.failed_operations[goal.id]
+                        goal_payload["error"] = execution_result.failed_operations[node_id]
                     else:
                         try:
-                            metadata = prepared_plan.materialization_store.metadata(goal.id)
+                            metadata = prepared_plan.materialization_store.metadata(node_id)
                             goal_payload["status"] = "materialized"
                             goal_payload["metadata"] = metadata
                             if _include_goal_descriptors:
                                 try:
                                     from voxlogica.serve_support import describe_runtime_value
 
-                                    runtime_value = prepared_plan.materialization_store.get(goal.id)
+                                    runtime_value = prepared_plan.materialization_store.get(node_id)
                                     goal_payload["runtime_descriptor"] = describe_runtime_value(
-                                        node_id=goal.id,
+                                        node_id=node_id,
                                         value=runtime_value,
                                         path="",
                                     )

@@ -179,3 +179,31 @@ def test_handle_run_goal_scoped_policy_allows_pure_target_with_unrelated_effect(
         serve_mode=False,
     )
     assert result.success is True
+
+
+@pytest.mark.unit
+def test_handle_run_emits_runtime_descriptor_for_requested_non_goal_node() -> None:
+    program = '\n'.join(
+        [
+            "let a = 2 + 3",
+            'print "done" 1',
+        ]
+    )
+    _workplan, bindings = reduce_program_with_bindings(parse_program_content(program))
+    target = bindings["a"]
+
+    result = handle_run(
+        program=program,
+        execute=True,
+        execution_strategy="dask",
+        _goals=[target],
+        _include_goal_descriptors=True,
+        legacy=False,
+        serve_mode=False,
+    )
+    assert result.success is True
+    goal_results = (result.data or {}).get("goal_results", []) if isinstance(result.data, dict) else []
+    target_entry = next((row for row in goal_results if str(row.get("node_id")) == str(target)), None)
+    assert target_entry is not None
+    assert target_entry.get("operation") == "inspect"
+    assert isinstance(target_entry.get("runtime_descriptor"), dict)

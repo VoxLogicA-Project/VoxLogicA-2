@@ -714,7 +714,10 @@
         nodeId: String(goal.node_id),
       });
     }
-    const mergedSymbols = { ...state.precomputedSymbolTable, ...state.latestSymbolTable };
+    const mergedSymbols =
+      Object.keys(state.precomputedSymbolTable || {}).length > 0
+        ? state.precomputedSymbolTable
+        : state.latestSymbolTable;
     for (const [name, nodeId] of Object.entries(mergedSymbols)) {
       if (!nodeId || typeof nodeId !== "string") continue;
       pushTarget({
@@ -1941,6 +1944,8 @@
     dom.killProgramBtn.addEventListener("click", killCurrentJob);
     dom.clearOutputBtn.addEventListener("click", clearOutput);
     dom.programInput.addEventListener("input", () => {
+      state.latestSymbolTable = {};
+      state.latestGoalResults = [];
       renderEditorTokenOverlay();
       scheduleProgramSymbolsRefresh();
       clearHoverTokenState();

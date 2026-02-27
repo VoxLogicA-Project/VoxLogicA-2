@@ -939,7 +939,10 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                         compute_status="failed",
                         inspected_payload=inspected,
                         tracked_job_payload=tracked_job,
-                        fallback_error="Value job completed without a materialized result.",
+                        fallback_error=(
+                            "Node evaluation finished, but no persisted value exists in the store "
+                            "and no runtime preview payload was returned."
+                        ),
                         request_enqueued=False,
                     )
                 )
