@@ -163,10 +163,12 @@ def handle_run(
     try:
         syntax = _load_syntax(program, filename)
         workplan, declaration_bindings = reduce_program_with_bindings(syntax)
+        policy_goal_scope = list(_goals or []) if execute and _goals else None
         enforce_workplan_policy_or_raise(
             workplan,
             legacy=bool(legacy),
             serve_mode=bool(serve_mode),
+            goal_scope=policy_goal_scope,
         )
 
         cli_mode = bool(filename)

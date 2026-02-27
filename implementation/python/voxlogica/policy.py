@@ -361,15 +361,19 @@ def validate_workplan_policy(
     *,
     legacy: bool,
     serve_mode: bool,
+    goal_scope: Iterable[str] | None = None,
 ) -> list[StaticDiagnostic]:
     """Return static diagnostics for policy violations in a reduced workplan."""
     diagnostics: list[StaticDiagnostic] = []
     registry: PrimitiveRegistry = workplan.registry
     nodes: dict[str, NodeSpec] = dict(workplan.nodes)
+    scoped_node_ids = _resolve_node_scope(nodes, goal_scope)
 
     read_roots = resolve_serve_read_roots() if serve_mode else ()
 
     for node_id, node in nodes.items():
+        if scoped_node_ids is not None and node_id not in scoped_node_ids:
+            continue
         if node.kind != "primitive":
             continue
 
@@ -402,6 +406,8 @@ def validate_workplan_policy(
         return diagnostics
 
     for node_id, node in nodes.items():
+        if scoped_node_ids is not None and node_id not in scoped_node_ids:
+            continue
         if node.kind != "closure":
             continue
 
@@ -453,15 +459,50 @@ def enforce_workplan_policy_or_raise(
     *,
     legacy: bool,
     serve_mode: bool,
+    goal_scope: Iterable[str] | None = None,
 ) -> None:
     """Raise StaticPolicyError when policy checks fail."""
     diagnostics = validate_workplan_policy(
         workplan,
         legacy=legacy,
         serve_mode=serve_mode,
+        goal_scope=goal_scope,
     )
     if diagnostics:
         raise StaticPolicyError(diagnostics)
+
+
+def _resolve_node_scope(
+    nodes: dict[str, NodeSpec],
+    goal_scope: Iterable[str] | None,
+) -> set[str] | None:
+    if goal_scope is None:
+        return None
+
+    pending: list[str] = []
+    reachable: set[str] = set()
+
+    for node_id in goal_scope:
+        node_key = str(node_id)
+        if node_key in nodes and node_key not in reachable:
+            pending.append(node_key)
+            reachable.add(node_key)
+
+    while pending:
+        current = pending.pop()
+        node = nodes.get(current)
+        if node is None:
+            continue
+
+        dependencies = list(node.args)
+        dependencies.extend(value_id for _name, value_id in node.kwargs)
+        for dep_id in dependencies:
+            dep_key = str(dep_id)
+            if dep_key in nodes and dep_key not in reachable:
+                pending.append(dep_key)
+                reachable.add(dep_key)
+
+    return reachable
 
 
 def _runtime_policy_or_none() -> RuntimePolicyContext | None:

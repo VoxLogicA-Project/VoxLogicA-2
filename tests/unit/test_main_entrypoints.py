@@ -374,7 +374,7 @@ def test_playground_symbols_reports_static_diagnostics(monkeypatch: pytest.Monke
         )
         assert effect_resp.status_code == 200
         effect_payload = effect_resp.json()
-        assert effect_payload["available"] is False
+        assert effect_payload["available"] is True
         assert any(item.get("code") == "E_EFFECT_BLOCKED" for item in effect_payload.get("diagnostics", []))
 
 
@@ -403,7 +403,7 @@ def test_playground_symbols_enforces_read_roots(monkeypatch: pytest.MonkeyPatch,
         )
         assert resp.status_code == 200
         payload = resp.json()
-        assert payload["available"] is False
+        assert payload["available"] is True
         assert any(item.get("code") == "E_READ_ROOT_POLICY" for item in payload.get("diagnostics", []))
 
 

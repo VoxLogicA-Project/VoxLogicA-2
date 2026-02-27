@@ -7,7 +7,7 @@ import pytest
 from voxlogica.features import handle_run
 from voxlogica.parser import parse_program_content
 from voxlogica.policy import validate_workplan_policy
-from voxlogica.reducer import reduce_program
+from voxlogica.reducer import reduce_program, reduce_program_with_bindings
 
 
 def _reduce(program_text: str):
@@ -155,3 +155,27 @@ def test_handle_run_runtime_read_policy_blocks_dynamic_paths(
     execution = ((result.data or {}).get("execution") if isinstance(result.data, dict) else {}) or {}
     errors = execution.get("errors") if isinstance(execution, dict) else {}
     assert any("Serve read policy blocked" in str(message) for message in dict(errors or {}).values())
+
+
+@pytest.mark.unit
+def test_handle_run_goal_scoped_policy_allows_pure_target_with_unrelated_effect() -> None:
+    program = '\n'.join(
+        [
+            'import "simpleitk"',
+            "let pure = 2 + 3",
+            'let side = WriteImage(0, "tests/output/unreached.nii.gz")',
+            'print "pure" pure',
+        ]
+    )
+    _workplan, bindings = reduce_program_with_bindings(parse_program_content(program))
+    pure_node = bindings["pure"]
+
+    result = handle_run(
+        program=program,
+        execute=True,
+        execution_strategy="dask",
+        _goals=[pure_node],
+        legacy=False,
+        serve_mode=False,
+    )
+    assert result.success is True

@@ -26,7 +26,12 @@ from watchdog.observers.api import BaseObserver
 
 from voxlogica.features import FeatureRegistry, OperationResult, handle_list_primitives
 from voxlogica.parser import parse_program_content
-from voxlogica.policy import diagnostics_from_exception, enforce_workplan_policy_or_raise
+from voxlogica.policy import (
+    diagnostics_payload,
+    diagnostics_from_exception,
+    enforce_workplan_policy_or_raise,
+    validate_workplan_policy,
+)
 from voxlogica.reducer import reduce_program_with_bindings
 from voxlogica.repl import run_interactive_repl
 from voxlogica.serve_support import (
@@ -152,14 +157,16 @@ def _program_introspection(
     *,
     legacy: bool = False,
     serve_mode: bool = False,
+    enforce_policy: bool = True,
 ) -> tuple[Any, dict[str, str], list[dict[str, str]]]:
     syntax = parse_program_content(program_text)
     workplan, symbol_table = reduce_program_with_bindings(syntax)
-    enforce_workplan_policy_or_raise(
-        workplan,
-        legacy=legacy,
-        serve_mode=serve_mode,
-    )
+    if enforce_policy:
+        enforce_workplan_policy_or_raise(
+            workplan,
+            legacy=legacy,
+            serve_mode=serve_mode,
+        )
     print_targets = [
         {"name": goal.name, "node_id": goal.id}
         for goal in workplan.goals
@@ -693,6 +700,7 @@ async def playground_symbols_endpoint(request: PlaygroundSymbolsRequest) -> dict
             request.program,
             legacy=False,
             serve_mode=True,
+            enforce_policy=False,
         )
     except Exception as exc:  # noqa: BLE001
         return {
@@ -704,6 +712,11 @@ async def playground_symbols_endpoint(request: PlaygroundSymbolsRequest) -> dict
             "print_targets": [],
             "diagnostics": diagnostics_from_exception(exc),
         }
+    diagnostics = validate_workplan_policy(
+        workplan,
+        legacy=False,
+        serve_mode=True,
+    )
     return {
         "available": True,
         "program_hash": _program_hash(request.program),
@@ -711,7 +724,7 @@ async def playground_symbols_endpoint(request: PlaygroundSymbolsRequest) -> dict
         "goals": len(workplan.goals),
         "symbol_table": symbol_table,
         "print_targets": print_targets,
-        "diagnostics": [],
+        "diagnostics": diagnostics_payload(diagnostics),
     }
 
 
@@ -723,6 +736,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             request.program,
             legacy=False,
             serve_mode=True,
+            enforce_policy=False,
         )
     except Exception as exc:  # noqa: BLE001
         diagnostics = diagnostics_from_exception(exc)

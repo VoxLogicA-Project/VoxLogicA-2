@@ -109,7 +109,7 @@ Run a VoxLogicA program with various output options. This endpoint mirrors the C
   - `program_hash`
   - `symbol_table`
   - `print_targets`
-  - `diagnostics: []`
+  - `diagnostics` (may contain policy warnings while remaining inspectable)
 - Static failure payload:
   - `available: false`
   - `diagnostics: [{code, message, location?, symbol?}]`

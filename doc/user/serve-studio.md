@@ -23,6 +23,7 @@
   - per-query execution trace with `computed` vs `cached` node events
 - Static diagnostics:
   - `/api/v1/playground/symbols` returns `available=false` with structured diagnostics when parse/static-policy checks fail
+  - policy diagnostics can be returned with `available=true` when symbols are still resolvable
   - editor shows diagnostics inline and only overlays clickable variable tokens when symbol resolution succeeds
 - Program library (fixed load directory only):
   - `GET /api/v1/playground/files`
