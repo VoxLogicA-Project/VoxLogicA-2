@@ -26,7 +26,7 @@ from voxlogica.storage import NoCacheStorageBackend, get_storage
 logger = logging.getLogger("voxlogica.features")
 T = TypeVar("T")
 _VALUE_RESOLVE_PERSIST_WAIT_ENV = "VOXLOGICA_VALUE_RESOLVE_PERSIST_TIMEOUT_S"
-_DEFAULT_VALUE_RESOLVE_PERSIST_TIMEOUT_S = 900.0
+_DEFAULT_VALUE_RESOLVE_PERSIST_TIMEOUT_S = 0.0
 
 
 @dataclass
@@ -103,7 +103,7 @@ def _resolve_persistence_flush_timeout_s(*, job_kind: str) -> float:
         parsed = float(raw)
     except Exception:
         return _DEFAULT_VALUE_RESOLVE_PERSIST_TIMEOUT_S
-    if parsed <= 0:
+    if parsed < 0:
         return _DEFAULT_VALUE_RESOLVE_PERSIST_TIMEOUT_S
     return parsed
 

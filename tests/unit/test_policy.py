@@ -249,7 +249,7 @@ def test_handle_run_emits_runtime_descriptor_for_requested_non_goal_node() -> No
 
 
 @pytest.mark.unit
-def test_handle_run_uses_longer_flush_timeout_for_value_resolve_jobs(
+def test_handle_run_keeps_value_resolve_flush_non_blocking_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     flush_calls: list[float] = []
@@ -295,7 +295,7 @@ def test_handle_run_uses_longer_flush_timeout_for_value_resolve_jobs(
     )
     assert result.success is True
     assert flush_calls
-    assert flush_calls[0] == pytest.approx(900.0, abs=0.001)
+    assert flush_calls[0] == pytest.approx(0.0, abs=0.001)
 
 
 @pytest.mark.unit
