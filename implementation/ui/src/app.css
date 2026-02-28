@@ -127,7 +127,7 @@ body {
 
 .tabbar {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.65rem;
   margin-bottom: 1rem;
 }
@@ -530,6 +530,112 @@ body {
   min-height: 220px;
 }
 
+.start-shell {
+  padding: 0.85rem;
+}
+
+.start-split {
+  display: grid;
+  min-height: 74vh;
+  height: clamp(640px, 78vh, 960px);
+}
+
+.start-result {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0.5rem;
+}
+
+.start-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.start-head h2 {
+  margin: 0;
+  font-size: clamp(1.08rem, 2.2vw, 1.45rem);
+}
+
+.start-viewer-wrap {
+  min-height: 0;
+  border: 1px solid rgba(38, 198, 169, 0.28);
+  border-radius: 14px;
+  background: radial-gradient(circle at 12% 10%, rgba(38, 198, 169, 0.08) 0%, rgba(2, 13, 24, 0.88) 40%),
+    radial-gradient(circle at 90% 14%, rgba(255, 138, 61, 0.07) 0%, rgba(2, 13, 24, 0.85) 45%);
+  overflow: hidden;
+}
+
+.start-viewer {
+  min-height: 100%;
+  max-height: none;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.start-caption {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-height: 1.8rem;
+}
+
+.start-caption-main {
+  font-family: "Sora", sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.start-caption-type {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+}
+
+.start-divider {
+  height: 10px;
+  display: grid;
+  place-items: center;
+  cursor: row-resize;
+  user-select: none;
+  touch-action: none;
+}
+
+.start-divider span {
+  width: 72px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(166, 183, 200, 0.5);
+  transition: background 110ms ease, width 110ms ease;
+}
+
+.start-divider:hover span,
+.start-divider.is-active span {
+  width: 92px;
+  background: rgba(38, 198, 169, 0.88);
+}
+
+.start-editor {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.start-editor :global(.vx-editor__input) {
+  min-height: 100%;
+  height: 100%;
+}
+
+.start-status {
+  margin: 0.55rem 0 0;
+}
+
 .viewer-header {
   display: flex;
   align-items: center;
@@ -824,6 +930,11 @@ body {
 
   .tabbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .start-split {
+    min-height: 66vh;
+    height: clamp(580px, 70vh, 860px);
   }
 }
 

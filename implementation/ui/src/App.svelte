@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { getCapabilities, getVersion, sendClientLogBatch } from "$lib/api/client.js";
+  import StartTab from "$lib/components/tabs/StartTab.svelte";
   import PlaygroundTab from "$lib/components/tabs/PlaygroundTab.svelte";
   import ResultsTab from "$lib/components/tabs/ResultsTab.svelte";
   import GalleryTab from "$lib/components/tabs/GalleryTab.svelte";
@@ -8,6 +9,7 @@
   import StorageTab from "$lib/components/tabs/StorageTab.svelte";
 
   const tabs = [
+    { id: "start", label: "Start" },
     { id: "playground", label: "Playground" },
     { id: "results", label: "Results Explorer" },
     { id: "gallery", label: "Example Gallery" },
@@ -15,7 +17,7 @@
     { id: "storage", label: "Storage Stats" },
   ];
 
-  let activeTab = "playground";
+  let activeTab = "start";
   let capabilities = {};
   let buildStamp = "Loading...";
   let clientLoggerInstalled = false;
@@ -163,6 +165,7 @@
   </nav>
 
   <main class="content">
+    <StartTab active={activeTab === "start"} {capabilities} />
     <PlaygroundTab bind:this={playgroundTabRef} active={activeTab === "playground"} {capabilities} />
     <ResultsTab active={activeTab === "results"} {capabilities} />
     <GalleryTab active={activeTab === "gallery"} on:load={onGalleryLoad} />

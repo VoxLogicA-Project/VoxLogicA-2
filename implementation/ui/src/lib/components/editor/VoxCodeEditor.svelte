@@ -446,16 +446,12 @@
     font: inherit;
     line-height: inherit;
     cursor: pointer;
-    text-decoration-line: underline;
-    text-decoration-color: rgba(47, 215, 185, 0.45);
-    text-decoration-thickness: 1px;
-    text-underline-offset: 2px;
-    transition: color 120ms ease, text-decoration-color 120ms ease;
+    text-decoration: none;
+    transition: color 120ms ease;
   }
 
   :global(.vx-editor__symbol:hover) {
     color: #d8fff7;
-    text-decoration-color: rgba(47, 215, 185, 0.95);
   }
 
   :global(.vx-editor__symbol:focus-visible) {
