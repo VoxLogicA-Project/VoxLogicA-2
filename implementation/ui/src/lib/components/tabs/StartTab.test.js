@@ -49,8 +49,13 @@ describe("StartTab", () => {
 
     const { container } = render(StartTab, { active: true, capabilities: {} });
     await waitFor(() => {
-      expect(resolvePlaygroundValueMock).toHaveBeenCalled();
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
     });
+    expect(resolvePlaygroundValueMock).not.toHaveBeenCalled();
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
 
     const latest = resolvePlaygroundValueMock.mock.calls.at(-1)?.[0];
     expect(latest?.variable).toBe("b");
@@ -110,8 +115,12 @@ describe("StartTab", () => {
 
     const { container } = render(StartTab, { active: true, capabilities: {} });
     await waitFor(() => {
-      expect(container.textContent).toContain("Fix static diagnostics before execution.");
+      expect(container.textContent).toContain("Static diagnostics detected.");
     });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
 
     expect(resolvePlaygroundValueMock).not.toHaveBeenCalled();
   });

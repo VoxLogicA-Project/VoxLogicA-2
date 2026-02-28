@@ -469,14 +469,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
 
     initialized = true;
     await refreshSymbols();
-    if (active) {
-      await resolvePrimaryValue({ enqueue: false, path: "" });
-    }
   });
-
-  $: if (active && initialized && statusValue === "idle" && primaryVariable) {
-    void resolvePrimaryValue({ enqueue: false, path: currentPath || "" });
-  }
 
   onDestroy(() => {
     stopPoll();
