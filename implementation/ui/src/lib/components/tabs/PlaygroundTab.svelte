@@ -20,15 +20,7 @@
     normalizedExecutionErrors,
     summarizeDescriptor,
   } from "$lib/utils/playground-value.js";
-  import {
-    expressionContextAt,
-    extractTokenAt,
-    extractTokenInfoAt,
-    isOperatorToken,
-    renderTokenOverlayHtml,
-    textIndexFromPoint,
-  } from "$lib/utils/token-editor.js";
-  import { sanitizeAttr, sanitizeText } from "$lib/utils/sanitize.js";
+  import VoxCodeEditor from "$lib/components/editor/VoxCodeEditor.svelte";
   import StatusChip from "$lib/components/shared/StatusChip.svelte";
 
   export let active = false;
@@ -54,21 +46,26 @@ flair_paths = subsequence(all_flair_paths, 0, k)
 
 // Paper method (simplified branch): lines 1-6 of the GBM specification.
 // We sweep viThr in [0.83, 0.91] with step 0.01 while keeping hiThr fixed at 0.93.
-mask_for_vi(path, vi_thr) =
-  let flair = intensity(ReadImage(path)) in
+read_image(path) = ReadImage(path)
+to_intensity(img) = intensity(img)
+preprocess_flair(flair) =
   let background = touch(leq_sv(0.1, flair), border) in
   let brain = not(background) in
-  let pflair = percentiles(flair, brain, 0) in
-  let hyper_intense = smoothen(geq_sv(hi_thr, pflair), 5.0) in
-  let very_intense = smoothen(geq_sv(vi_thr, pflair), 2.0) in
-  grow(hyper_intense, very_intense)
+  percentiles(flair, brain, 0)
 
-sweep_vi_for_case(path) =
+sweep_case(pflair) =
+  let hyper_intense = smoothen(geq_sv(hi_thr, pflair), 5.0) in
   for vi_thr in vi_thresholds do
-    mask_for_vi(path, vi_thr)
+    let very_intense = smoothen(geq_sv(vi_thr, pflair), 2.0) in
+    grow(hyper_intense, very_intense)
+
+// Debuggable sequence-of-maps pipeline.
+flair_images = map(read_image, flair_paths)
+flair_intensities = map(to_intensity, flair_images)
+pflair_images = map(preprocess_flair, flair_intensities)
 
 // Sequence of sequences: for each case, one mask per viThr value.
-vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
+vi_sweep_masks = map(sweep_case, pflair_images)`;
 
   let programText = INITIAL_PROGRAM;
 
@@ -113,14 +110,8 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
   let recentJobsError = "";
 
   let hoverPreviewMessage = "Hover a variable to see cached value status, or hover an operator to inspect expression context.";
-  let hoverActiveToken = "";
-  let hoverPreviewToken = "";
   let hoverPreviewSeq = 0;
   let lastHoverToken = "";
-  let hoverTimer = null;
-
-  let programInputEl;
-  let programOverlayEl;
 
   let playResultInspectorEl;
   let daskQueueVizEl;
@@ -141,6 +132,25 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
   let jobWsAttempts = 0;
   let activeJobSubscription = "";
 
+  const DEFAULT_AUTOCOMPLETE_BUILTINS = [
+    "map",
+    "for",
+    "range",
+    "subsequence",
+    "dir",
+    "ReadImage",
+    "BinaryThreshold",
+    "intensity",
+    "percentiles",
+    "smoothen",
+    "grow",
+    "touch",
+    "not",
+    "leq_sv",
+    "geq_sv",
+    "index",
+  ];
+
   const formatDiagnostics = (diagnostics) => {
     const rows = Array.isArray(diagnostics) ? diagnostics : [];
     if (!rows.length) return "";
@@ -156,6 +166,42 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
   };
 
   $: diagnosticsText = formatDiagnostics(symbolDiagnostics);
+  $: editorSymbols = {
+    ...(precomputedSymbolTable || {}),
+    ...(latestSymbolTable || {}),
+  };
+
+  const provideEditorCompletions = ({ prefix = "" }) => {
+    const base = new Map();
+    for (const keyword of ["import", "let", "in", "for", "do", "true", "false"]) {
+      base.set(keyword, {
+        label: keyword,
+        insertText: keyword,
+        kind: "keyword",
+        detail: "language keyword",
+      });
+    }
+    for (const builtin of DEFAULT_AUTOCOMPLETE_BUILTINS) {
+      base.set(builtin, {
+        label: builtin,
+        insertText: builtin,
+        kind: "primitive",
+        detail: "known primitive",
+      });
+    }
+    for (const symbol of Object.keys(editorSymbols || {})) {
+      base.set(symbol, {
+        label: symbol,
+        insertText: symbol,
+        kind: "symbol",
+        detail: "declared symbol",
+      });
+    }
+    const prefixLower = String(prefix || "").toLowerCase();
+    return Array.from(base.values())
+      .filter((item) => !prefixLower || item.label.toLowerCase().startsWith(prefixLower))
+      .sort((a, b) => String(a.label).localeCompare(String(b.label)));
+  };
 
   const applyRuntimeMetrics = (job) => {
     const metrics = job?.metrics || {};
@@ -557,7 +603,6 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
       programLibraryMeta = `${payload.path} | ${fmtBytes(Number(payload.bytes || 0))}`;
       latestGoalResults = [];
       latestSymbolTable = {};
-      renderEditorTokenOverlay();
       await refreshProgramSymbols();
       clearRunError();
     } catch (error) {
@@ -576,7 +621,6 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
       precomputedPrintTargets = [];
       symbolDiagnostics = [];
       parseSelectableTargets();
-      renderEditorTokenOverlay();
       return;
     }
 
@@ -589,14 +633,12 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
       precomputedPrintTargets = available ? payload.print_targets || [] : [];
       symbolDiagnostics = payload?.diagnostics || [];
       parseSelectableTargets();
-      renderEditorTokenOverlay();
     } catch (error) {
       if (token !== symbolRefreshToken) return;
       precomputedSymbolTable = {};
       precomputedPrintTargets = [];
       symbolDiagnostics = [{ code: "E_SYMBOLS", message: `Unable to refresh symbols: ${error.message}` }];
       parseSelectableTargets();
-      renderEditorTokenOverlay();
     }
   };
 
@@ -968,53 +1010,14 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
 
   const resolveSymbolNode = (token) => precomputedSymbolTable[token] || latestSymbolTable[token] || "";
 
-  const syncOverlayScroll = () => {
-    if (!programOverlayEl || !programInputEl) return;
-    programOverlayEl.scrollTop = programInputEl.scrollTop;
-    programOverlayEl.scrollLeft = programInputEl.scrollLeft;
-  };
-
-  const setOverlayActiveToken = (token) => {
-    if (!programOverlayEl) return;
-    const encoded = encodeURIComponent(String(token || ""));
-    programOverlayEl.querySelectorAll(".editor-token-hit").forEach((element) => {
-      if (!(element instanceof HTMLElement)) return;
-      if (token && element.dataset.token === encoded) {
-        element.classList.add("is-active");
-      } else {
-        element.classList.remove("is-active");
-      }
-    });
-  };
-
   const setHoverPreview = (message) => {
     hoverPreviewMessage = message || "";
   };
 
   const clearHoverState = () => {
-    hoverActiveToken = "";
-    hoverPreviewToken = "";
-    setOverlayActiveToken("");
+    hoverPreviewSeq += 1;
+    lastHoverToken = "";
     setHoverPreview("Hover a variable to see cached value status, or hover an operator to inspect expression context.");
-  };
-
-  const setHoverState = (token) => {
-    hoverActiveToken = token || "";
-    setOverlayActiveToken(token || "");
-  };
-
-  const renderEditorTokenOverlay = () => {
-    if (!programOverlayEl) return;
-    programOverlayEl.innerHTML = renderTokenOverlayHtml(
-      String(programText || ""),
-      resolveSymbolNode,
-      sanitizeText,
-      sanitizeAttr,
-    );
-    syncOverlayScroll();
-    if (hoverActiveToken) {
-      setOverlayActiveToken(hoverActiveToken);
-    }
   };
 
   const inspectSymbolToken = async (token) => {
@@ -1037,7 +1040,7 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
     setHoverPreview(`var ${token}: checking cache...`);
     try {
       const payload = await requestPlayValue({ variable: token, enqueue: false });
-      if (seq !== hoverPreviewSeq || hoverActiveToken !== token) return;
+      if (seq !== hoverPreviewSeq || lastHoverToken !== token) return;
 
       const materialization = String(payload.materialization || "");
       if (payload.descriptor && (materialization === "cached" || materialization === "computed")) {
@@ -1057,53 +1060,9 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
 
       setHoverPreview(`var ${token}: not materialized yet. Click to compute on demand.`);
     } catch {
-      if (seq !== hoverPreviewSeq || hoverActiveToken !== token) return;
+      if (seq !== hoverPreviewSeq || lastHoverToken !== token) return;
       setHoverPreview(`var ${token}: click to compute on demand.`);
     }
-  };
-
-  const handleProgramHover = (event) => {
-    if (!active) return;
-
-    if (hoverTimer) {
-      clearTimeout(hoverTimer);
-      hoverTimer = null;
-    }
-
-    hoverTimer = setTimeout(() => {
-      const position = textIndexFromPoint(programInputEl, event.clientX, event.clientY);
-      if (!Number.isInteger(position)) {
-        clearHoverState();
-        return;
-      }
-
-      const info = extractTokenInfoAt(programText || "", position);
-      if (!info.token) {
-        clearHoverState();
-        return;
-      }
-
-      const nodeId = resolveSymbolNode(info.token);
-      if (!nodeId && !isOperatorToken(info.token)) {
-        clearHoverState();
-        return;
-      }
-
-      lastHoverToken = info.token;
-      if (nodeId) {
-        setHoverState(info.token);
-        if (hoverPreviewToken !== info.token) {
-          hoverPreviewToken = info.token;
-          previewVariableHover(info.token);
-        }
-        return;
-      }
-
-      setHoverState("");
-      hoverPreviewToken = info.token;
-      const context = expressionContextAt(programText || "", info.start);
-      setHoverPreview(context ? `operator '${info.token}' in: ${context}` : `operator '${info.token}'`);
-    }, 140);
   };
 
   const inspectTokenWithRefresh = async (token) => {
@@ -1112,11 +1071,7 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
     let resolved = resolveSymbolNode(token) ? token : "";
     if (!resolved) {
       await refreshProgramSymbols();
-      const selectedToken = extractTokenAt(programText || "", Number(programInputEl?.selectionStart || 0));
-      resolved = resolveSymbolNode(token) ? token : resolveSymbolNode(selectedToken) ? selectedToken : "";
-      if (!resolved && lastHoverToken && resolveSymbolNode(lastHoverToken)) {
-        resolved = lastHoverToken;
-      }
+      resolved = resolveSymbolNode(token) ? token : "";
     }
 
     if (!resolved) return false;
@@ -1125,70 +1080,41 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
     return true;
   };
 
-  const handleProgramInput = () => {
+  const handleEditorChange = (event) => {
+    programText = String(event?.detail?.value ?? programText ?? "");
     latestSymbolTable = {};
     latestGoalResults = [];
-    renderEditorTokenOverlay();
     scheduleSymbolRefresh();
     clearHoverState();
   };
 
-  const setupOverlayEvents = () => {
-    if (!programOverlayEl) return;
+  const handleEditorSymbolHover = async (event) => {
+    const token = String(event?.detail?.token || "");
+    if (!token) return;
+    lastHoverToken = token;
+    await previewVariableHover(token);
+  };
 
-    const onMouseDown = (event) => {
-      const tokenEl = event.target instanceof Element ? event.target.closest(".editor-token-hit") : null;
-      if (!tokenEl) return;
-      event.preventDefault();
-    };
+  const handleEditorSymbolLeave = () => {
+    clearHoverState();
+  };
 
-    const onMouseOver = (event) => {
-      const tokenEl = event.target instanceof Element ? event.target.closest(".editor-token-hit") : null;
-      if (!tokenEl) return;
+  const handleEditorSymbolClick = async (event) => {
+    const token = String(event?.detail?.token || "");
+    if (!token) return;
+    lastHoverToken = token;
+    await inspectTokenWithRefresh(token);
+  };
 
-      const token = decodeURIComponent(String(tokenEl.getAttribute("data-token") || ""));
-      if (!token) return;
+  const handleEditorOperatorHover = (event) => {
+    const token = String(event?.detail?.token || "");
+    if (!token) return;
+    const context = String(event?.detail?.context || "");
+    setHoverPreview(context ? `operator '${token}' in: ${context}` : `operator '${token}'`);
+  };
 
-      lastHoverToken = token;
-      setHoverState(token);
-      if (hoverPreviewToken !== token) {
-        hoverPreviewToken = token;
-        previewVariableHover(token);
-      }
-    };
-
-    const onMouseOut = (event) => {
-      const fromToken = event.target instanceof Element ? event.target.closest(".editor-token-hit") : null;
-      if (!fromToken) return;
-      const toToken = event.relatedTarget instanceof Element ? event.relatedTarget.closest(".editor-token-hit") : null;
-      if (toToken) return;
-
-      lastHoverToken = "";
-      clearHoverState();
-    };
-
-    const onClick = async (event) => {
-      const tokenEl = event.target instanceof Element ? event.target.closest(".editor-token-hit") : null;
-      if (!tokenEl) return;
-      event.preventDefault();
-
-      const token = decodeURIComponent(String(tokenEl.getAttribute("data-token") || ""));
-      if (!token) return;
-      await inspectTokenWithRefresh(token);
-      programInputEl?.focus({ preventScroll: true });
-    };
-
-    programOverlayEl.addEventListener("mousedown", onMouseDown);
-    programOverlayEl.addEventListener("mouseover", onMouseOver);
-    programOverlayEl.addEventListener("mouseout", onMouseOut);
-    programOverlayEl.addEventListener("click", onClick);
-
-    return () => {
-      programOverlayEl.removeEventListener("mousedown", onMouseDown);
-      programOverlayEl.removeEventListener("mouseover", onMouseOver);
-      programOverlayEl.removeEventListener("mouseout", onMouseOut);
-      programOverlayEl.removeEventListener("click", onClick);
-    };
+  const handleEditorHoverLeave = () => {
+    clearHoverState();
   };
 
   const selectJobFromChip = async (jobId) => {
@@ -1214,7 +1140,7 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
     programText = String(code || "");
     latestSymbolTable = {};
     latestGoalResults = [];
-    renderEditorTokenOverlay();
+    clearHoverState();
     await refreshProgramSymbols();
     if (runAfterLoad) {
       await runProgram();
@@ -1242,9 +1168,6 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
     ensureQueueVisualizer();
     renderQueueVisualizer();
 
-    const cleanupOverlay = setupOverlayEvents();
-    renderEditorTokenOverlay();
-
     void (async () => {
       await refreshProgramLibrary();
       if (!autoLoadedLibraryProgram && selectedProgramPath) {
@@ -1253,10 +1176,6 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
       }
       await Promise.all([refreshJobList(), refreshProgramSymbols()]);
     })();
-
-    return () => {
-      cleanupOverlay?.();
-    };
   });
 
   onDestroy(() => {
@@ -1266,9 +1185,6 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
 
     if (symbolRefreshTimer) {
       clearTimeout(symbolRefreshTimer);
-    }
-    if (hoverTimer) {
-      clearTimeout(hoverTimer);
     }
 
     if (queueVisualizer && typeof queueVisualizer.destroy === "function") {
@@ -1294,25 +1210,21 @@ vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
       </div>
 
       <div id="editorShell" class="editor-shell">
-        <textarea
-          id="programInput"
-          class="code-input"
-          spellcheck="false"
-          bind:this={programInputEl}
+        <VoxCodeEditor
+          ariaLabel="VoxLogicA program editor"
           bind:value={programText}
-          on:input={handleProgramInput}
-          on:mousemove={handleProgramHover}
-          on:mouseleave={() => {
-            lastHoverToken = "";
-            clearHoverState();
-            if (hoverTimer) {
-              clearTimeout(hoverTimer);
-              hoverTimer = null;
-            }
-          }}
-          on:scroll={syncOverlayScroll}
-        ></textarea>
-        <pre class="editor-token-overlay" bind:this={programOverlayEl} aria-hidden="true"></pre>
+          symbols={editorSymbols}
+          diagnostics={symbolDiagnostics}
+          autocompleteEnabled={true}
+          completionProvider={provideEditorCompletions}
+          completionBuiltins={DEFAULT_AUTOCOMPLETE_BUILTINS}
+          on:change={handleEditorChange}
+          on:symbolhover={handleEditorSymbolHover}
+          on:symbolleave={handleEditorSymbolLeave}
+          on:symbolclick={handleEditorSymbolClick}
+          on:operatorhover={handleEditorOperatorHover}
+          on:hoverleave={handleEditorHoverLeave}
+        />
       </div>
 
       <div class="row controls">

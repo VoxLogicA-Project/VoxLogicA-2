@@ -8,6 +8,7 @@ export default defineConfig({
     alias: {
       $lib: resolve(__dirname, "src/lib"),
     },
+    conditions: ["browser"],
   },
   server: {
     proxy: {
@@ -51,6 +52,17 @@ export default defineConfig({
           }
           return "assets/[name][extname]";
         },
+      },
+    },
+  },
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.js"],
+    include: ["src/**/*.test.{js,ts}"],
+    clearMocks: true,
+    server: {
+      deps: {
+        inline: ["svelte", "@testing-library/svelte"],
       },
     },
   },
