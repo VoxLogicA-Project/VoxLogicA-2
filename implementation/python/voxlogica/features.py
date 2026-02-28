@@ -20,7 +20,7 @@ from voxlogica.policy import (
     runtime_policy_scope,
 )
 from voxlogica.reducer import reduce_program_with_bindings
-from voxlogica.storage import NoCacheStorageBackend
+from voxlogica.storage import NoCacheStorageBackend, get_storage
 
 
 logger = logging.getLogger("voxlogica.features")
@@ -202,6 +202,7 @@ def handle_run(
     debug: bool = False,
     verbose: bool = False,
     no_cache: bool = False,
+    fresh: bool = False,
     dask_dashboard: bool = False,
     execution_strategy: str = "dask",
     legacy: bool = False,
@@ -221,7 +222,12 @@ def handle_run(
         execution_strategy = "dask"
         syntax = _load_syntax(program, filename)
         workplan, declaration_bindings = reduce_program_with_bindings(syntax)
-        policy_goal_scope = list(_goals or []) if execute and _goals else None
+        cli_mode = bool(filename)
+        effective_goals = list(_goals or [])
+        if execute and not effective_goals and cli_mode and not serve_mode:
+            # Batch CLI runs should observe all declarations even without save/print goals.
+            effective_goals = [str(node_id) for node_id in declaration_bindings.values()]
+        policy_goal_scope = list(effective_goals) if execute and effective_goals else None
         enforce_workplan_policy_or_raise(
             workplan,
             legacy=bool(legacy),
@@ -229,7 +235,20 @@ def handle_run(
             goal_scope=policy_goal_scope,
         )
 
-        cli_mode = bool(filename)
+        if fresh:
+            target_node_ids = {
+                str(node_id)
+                for node_id in (
+                    list(getattr(workplan, "nodes", {}).keys())
+                    + [str(goal.id) for goal in getattr(workplan, "goals", [])]
+                )
+            }
+            if target_node_ids:
+                storage = get_storage()
+                for node_id in target_node_ids:
+                    storage.delete(node_id)
+                logger.info("Fresh mode removed %d cached entries for this program", len(target_node_ids))
+
         execution_result = None
         prepared_plan = None
         if execute:
@@ -242,7 +261,7 @@ def handle_run(
                         workplan,
                         dask_dashboard=dask_dashboard,
                         strategy=execution_strategy,
-                        goals=_goals,
+                        goals=effective_goals or None,
                     )
             else:
                 engine = ExecutionEngine()
@@ -251,7 +270,7 @@ def handle_run(
                         workplan,
                         dask_dashboard=dask_dashboard,
                         strategy=execution_strategy,
-                        goals=_goals,
+                        goals=effective_goals or None,
                     )
 
             # Playground/value jobs need persisted pages to become immediately inspectable.
@@ -260,7 +279,7 @@ def handle_run(
             if (
                 prepared_plan is not None
                 and bool(serve_mode)
-                and (_include_goal_descriptors or bool(_goals))
+                and (_include_goal_descriptors or bool(effective_goals))
             ):
                 try:
                     persist_timeout_s = _resolve_persistence_flush_timeout_s(
@@ -390,7 +409,7 @@ def handle_run(
                     for goal in workplan.goals
                 ]
                 seen_target_nodes = {entry["node_id"] for entry in target_nodes}
-                for requested_node in _goals or []:
+                for requested_node in effective_goals or []:
                     requested_id = str(requested_node)
                     if requested_id in seen_target_nodes:
                         continue

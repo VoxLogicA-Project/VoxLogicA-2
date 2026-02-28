@@ -18,6 +18,7 @@ from voxlogica.primitives.default import (
     multiplication,
     print_primitive,
     range as range_primitive,
+    subsequence,
     subtraction,
 )
 import voxlogica.primitives.default as default_ns
@@ -78,6 +79,27 @@ def test_range_primitive():
     assert range_primitive.execute(**{"0": 5, "1": 2}).compute() == []
     with pytest.raises(ValueError):
         range_primitive.execute(**{"0": 1.2})
+
+
+@pytest.mark.unit
+def test_subsequence_primitive():
+    assert subsequence.execute(**{"0": [0, 1, 2, 3], "1": 2}) == [0, 1]
+    assert subsequence.execute(**{"0": [0, 1, 2, 3], "1": 1, "2": 3}) == [1, 2]
+    assert subsequence.execute(**{"0": [0, 1, 2, 3], "1": 3, "2": 1}) == []
+
+    lazy = SequenceValue(lambda: iter([10, 20, 30, 40]), total_size=4)
+    sliced_lazy = subsequence.execute(**{"0": lazy, "1": 1, "2": 3})
+    assert isinstance(sliced_lazy, SequenceValue)
+    assert list(sliced_lazy.iter_values()) == [20, 30]
+    assert sliced_lazy.total_size == 2
+
+    bag = db.from_sequence([5, 6, 7, 8], npartitions=2)
+    sliced_bag = subsequence.execute(**{"0": bag, "1": 1, "2": 3})
+    assert isinstance(sliced_bag, SequenceValue)
+    assert list(sliced_bag.iter_values()) == [6, 7]
+
+    with pytest.raises(ValueError):
+        subsequence.execute(**{"0": [1, 2, 3], "1": 1.5})
 
 
 @pytest.mark.unit

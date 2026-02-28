@@ -346,3 +346,90 @@ def test_handle_run_keeps_short_flush_timeout_for_non_value_jobs(
     assert result.success is True
     assert flush_calls
     assert flush_calls[0] == pytest.approx(2.5, abs=0.001)
+
+
+@pytest.mark.unit
+def test_handle_run_cli_observes_all_declarations_without_print(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeEngine:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        def execute_with_prepared(self, workplan, **kwargs):  # noqa: ANN001
+            captured["goals"] = list(kwargs.get("goals") or [])
+            return (
+                SimpleNamespace(
+                    success=True,
+                    completed_operations=set(),
+                    failed_operations={},
+                    execution_time=0.01,
+                    total_operations=len(getattr(workplan, "nodes", {})),
+                    cache_summary={},
+                    node_events=[],
+                ),
+                SimpleNamespace(materialization_store=SimpleNamespace(metadata=lambda _node: {})),
+            )
+
+    monkeypatch.setattr(features_mod, "ExecutionEngine", _FakeEngine)
+    result = handle_run(
+        filename="tests/brats_flair_mean_threshold.imgql",
+        execute=True,
+        serve_mode=False,
+    )
+    assert result.success is True
+    assert isinstance(captured.get("goals"), list)
+    assert len(captured["goals"]) > 0
+
+
+@pytest.mark.unit
+def test_handle_run_fresh_deletes_only_loaded_program_hashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deleted: list[str] = []
+
+    class _FakeStorage:
+        def delete(self, node_id: str) -> None:
+            deleted.append(str(node_id))
+
+    class _FakeEngine:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        def execute_with_prepared(self, workplan, **kwargs):  # noqa: ANN001
+            return (
+                SimpleNamespace(
+                    success=True,
+                    completed_operations=set(),
+                    failed_operations={},
+                    execution_time=0.01,
+                    total_operations=len(getattr(workplan, "nodes", {})),
+                    cache_summary={},
+                    node_events=[],
+                ),
+                SimpleNamespace(materialization_store=SimpleNamespace(metadata=lambda _node: {})),
+            )
+
+    monkeypatch.setattr(features_mod, "get_storage", lambda: _FakeStorage())
+    monkeypatch.setattr(features_mod, "ExecutionEngine", _FakeEngine)
+
+    program = "\n".join(
+        [
+            "a = 1 + 2",
+            "b = a * 3",
+        ]
+    )
+    workplan, _bindings = reduce_program_with_bindings(parse_program_content(program))
+    expected = {str(node_id) for node_id in workplan.nodes.keys()}
+    expected.update(str(goal.id) for goal in workplan.goals)
+
+    result = handle_run(
+        program=program,
+        filename="inline.imgql",
+        execute=True,
+        fresh=True,
+    )
+    assert result.success is True
+    assert set(deleted) == expected

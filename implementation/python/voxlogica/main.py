@@ -676,6 +676,14 @@ def run(
         "--no-cache",
         help="Force recomputation without reading or writing cache",
     ),
+    fresh: bool = typer.Option(
+        False,
+        "--fresh",
+        help=(
+            "Drop cached entries for all hashes reachable from the loaded program "
+            "before execution"
+        ),
+    ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging"),
     dask_dashboard: bool = typer.Option(
@@ -713,6 +721,7 @@ def run(
         logger.error("Only dask execution strategy is supported.")
         raise typer.Exit(code=2)
     legacy_enabled = legacy if isinstance(legacy, bool) else False
+    fresh_enabled = fresh if isinstance(fresh, bool) else False
     feature = _feature_or_exit("run")
     result = feature.handler(
         program=program,
@@ -724,6 +733,7 @@ def run(
         compute_memory_assignment=compute_memory_assignment,
         execute=execute,
         no_cache=no_cache,
+        fresh=fresh_enabled,
         debug=debug,
         verbose=verbose,
         dask_dashboard=dask_dashboard,

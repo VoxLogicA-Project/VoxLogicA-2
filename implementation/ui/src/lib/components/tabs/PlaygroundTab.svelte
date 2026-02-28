@@ -39,19 +39,36 @@
 
 dataset_root = "tests/data/datasets/BraTS_2019_HGG"
 
-// Recursively discover all BRaTS FLAIR volumes.
-flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
+// Controls.
+k = 10
+hi_thr = 0.93
+vi_thr_start = 83
+vi_thr_stop = 92
+vi_ticks = range(vi_thr_start, vi_thr_stop)
+to_thr(tick) = tick / 100
+vi_thresholds = map(to_thr, vi_ticks)
 
-// Threshold each image at the midpoint between its min and max intensity.
-mk_mask(path) =
-  let img = ReadImage(path) in
-  let mm = MinimumMaximum(img) in
-  let lo = index(mm, 0) in
-  let hi = index(mm, 1) in
-  BinaryThreshold(img, (lo + hi) / 2, hi, 255, 0)
+// Recursively discover BraTS FLAIR volumes and keep first k cases.
+all_flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
+flair_paths = subsequence(all_flair_paths, 0, k)
 
-// Sequence of binary masks, one per discovered FLAIR image.
-masks = map(mk_mask, flair_paths)`;
+// Paper method (simplified branch): lines 1-6 of the GBM specification.
+// We sweep viThr in [0.83, 0.91] with step 0.01 while keeping hiThr fixed at 0.93.
+mask_for_vi(path, vi_thr) =
+  let flair = intensity(ReadImage(path)) in
+  let background = touch(leq_sv(0.1, flair), border) in
+  let brain = not(background) in
+  let pflair = percentiles(flair, brain, 0) in
+  let hyper_intense = smoothen(geq_sv(hi_thr, pflair), 5.0) in
+  let very_intense = smoothen(geq_sv(vi_thr, pflair), 2.0) in
+  grow(hyper_intense, very_intense)
+
+sweep_vi_for_case(path) =
+  for vi_thr in vi_thresholds do
+    mask_for_vi(path, vi_thr)
+
+// Sequence of sequences: for each case, one mask per viThr value.
+vi_sweep_masks = map(sweep_vi_for_case, flair_paths)`;
 
   let programText = INITIAL_PROGRAM;
 

@@ -50,13 +50,15 @@ def test_run_command_success_and_file_not_found(tmp_path: Path, monkeypatch: pyt
     assert captured["execute"] is False
     assert captured["execution_strategy"] == "dask"
     assert captured["legacy"] is False
+    assert captured["fresh"] is False
 
     with pytest.raises(typer.Exit):
         main_mod.run(str(src), execute=False, execution_strategy="strict")
 
     captured.clear()
-    main_mod.run(str(src), execute=False, execution_strategy="dask", legacy=True)
+    main_mod.run(str(src), execute=False, execution_strategy="dask", legacy=True, fresh=True)
     assert captured["legacy"] is True
+    assert captured["fresh"] is True
 
     with pytest.raises(typer.Exit):
         main_mod.run(str(tmp_path / "missing.imgql"))
