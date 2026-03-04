@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy } from "svelte";
   import {
     getTestingReport,
     getTestingJob,
@@ -223,16 +223,14 @@
   $: if (active) {
     refreshNow();
     startActivePolling();
+  } else if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
   }
 
   $: if (capabilities.testing_jobs === false) {
     setUnavailable("This backend does not expose testing jobs. Restart server from latest commit.");
   }
-
-  onMount(async () => {
-    await refreshNow();
-    startActivePolling();
-  });
 
   onDestroy(() => {
     if (refreshTimer) {

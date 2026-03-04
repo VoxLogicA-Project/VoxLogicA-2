@@ -131,6 +131,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let jobWsReconnectTimer = null;
   let jobWsAttempts = 0;
   let activeJobSubscription = "";
+  let initializedOnFirstActivation = false;
 
   const DEFAULT_AUTOCOMPLETE_BUILTINS = [
     "map",
@@ -1151,7 +1152,19 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     await runProgram();
   }
 
+  const initializeForActiveTab = async () => {
+    await refreshProgramLibrary();
+    if (!autoLoadedLibraryProgram && selectedProgramPath) {
+      autoLoadedLibraryProgram = true;
+      await loadFromLibrary();
+    }
+  };
+
   $: if (active) {
+    if (!initializedOnFirstActivation) {
+      initializedOnFirstActivation = true;
+      void initializeForActiveTab();
+    }
     refreshJobList();
     refreshProgramSymbols();
     startActiveRefresh();
@@ -1167,15 +1180,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     ensurePlayResultViewer();
     ensureQueueVisualizer();
     renderQueueVisualizer();
-
-    void (async () => {
-      await refreshProgramLibrary();
-      if (!autoLoadedLibraryProgram && selectedProgramPath) {
-        autoLoadedLibraryProgram = true;
-        await loadFromLibrary();
-      }
-      await Promise.all([refreshJobList(), refreshProgramSymbols()]);
-    })();
   });
 
   onDestroy(() => {

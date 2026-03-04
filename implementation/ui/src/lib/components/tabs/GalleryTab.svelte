@@ -1,5 +1,5 @@
 <script>
-  import { createEventDispatcher, onMount } from "svelte";
+  import { createEventDispatcher } from "svelte";
   import { getGallery } from "$lib/api/client.js";
 
   export let active = false;
@@ -41,9 +41,6 @@
     refresh();
   }
 
-  onMount(() => {
-    refresh();
-  });
 </script>
 
 <section class={`panel ${active ? "active" : ""}`} id="tab-gallery">

@@ -913,6 +913,123 @@ def test_playground_value_pages_nested_sequence_path_while_root_is_persisting(
 
 
 @pytest.mark.unit
+def test_playground_value_page_rebases_sequence_item_paths_for_materialized_nested_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    root_node_id = "node-root-seq"
+    child_node_id = hash_sequence_item(root_node_id, 0)
+    fake_storage.put_success(child_node_id, [7, 8, 9])
+
+    async def _fake_value_endpoint(_request):  # noqa: ANN001
+        return {
+            "available": True,
+            "node_id": root_node_id,
+            "path": "/0",
+            "materialization": "cached",
+            "compute_status": "cached",
+            "descriptor": {
+                "vox_type": "sequence",
+                "format_version": "voxpod/1",
+                "summary": {"length": 3},
+                "navigation": {
+                    "path": "/0",
+                    "pageable": True,
+                    "can_descend": True,
+                    "default_page_size": 64,
+                    "max_page_size": 512,
+                },
+            },
+        }
+
+    monkeypatch.setattr(main_mod, "playground_value_endpoint", _fake_value_endpoint)
+
+    try:
+        with TestClient(main_mod.api_app) as client:
+            page_resp = client.post(
+                "/api/v1/playground/value/page",
+                json={
+                    "program": "xs = range(0,3)",
+                    "variable": "xs",
+                    "path": "/0",
+                    "offset": 0,
+                    "limit": 2,
+                    "enqueue": False,
+                },
+            )
+            assert page_resp.status_code == 200
+            page_payload = page_resp.json()
+            assert page_payload["path"] == "/0"
+            assert page_payload["descriptor"]["navigation"]["path"] == "/0"
+            assert page_payload["page"]["items"][0]["path"] == "/0/0"
+            assert page_payload["page"]["items"][1]["path"] == "/0/1"
+    finally:
+        fake_storage.close()
+
+
+@pytest.mark.unit
+def test_playground_value_page_returns_json_400_for_vox_value_path_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    fake_storage.put_success("node-map", {"a": 1})
+
+    async def _fake_value_endpoint(_request):  # noqa: ANN001
+        return {
+            "available": True,
+            "node_id": "node-map",
+            "path": "/0",
+            "materialization": "cached",
+            "compute_status": "cached",
+            "descriptor": {
+                "vox_type": "mapping",
+                "format_version": "voxpod/1",
+                "summary": {"length": 1},
+                "navigation": {
+                    "path": "/0",
+                    "pageable": True,
+                    "can_descend": True,
+                    "default_page_size": 64,
+                    "max_page_size": 512,
+                },
+            },
+        }
+
+    monkeypatch.setattr(main_mod, "playground_value_endpoint", _fake_value_endpoint)
+
+    try:
+        with TestClient(main_mod.api_app) as client:
+            page_resp = client.post(
+                "/api/v1/playground/value/page",
+                json={
+                    "program": "xs = 1",
+                    "variable": "xs",
+                    "path": "/0",
+                    "offset": 0,
+                    "limit": 4,
+                    "enqueue": False,
+                },
+            )
+            assert page_resp.status_code == 400
+            payload = page_resp.json()
+            assert isinstance(payload, dict)
+            assert "detail" in payload
+            assert "Missing key" in str(payload["detail"])
+    finally:
+        fake_storage.close()
+
+
+@pytest.mark.unit
 def test_playground_value_exposes_sequence_navigation_while_job_is_running(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

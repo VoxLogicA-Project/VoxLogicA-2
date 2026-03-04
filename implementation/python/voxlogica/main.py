@@ -60,7 +60,7 @@ from voxlogica.serve_support import (
     render_store_result_png,
 )
 from voxlogica.storage import get_storage
-from voxlogica.value_model import UnsupportedVoxValueError
+from voxlogica.value_model import UnsupportedVoxValueError, VoxValueError
 from voxlogica.version import get_version
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 
@@ -2095,12 +2095,12 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
             detail="Unable to page value: node id could not be resolved.",
         )
     path = str(value_payload.get("path") or request.path or "")
+    descriptor_payload = value_payload.get("descriptor") if isinstance(value_payload.get("descriptor"), dict) else None
 
     if materialization in {"failed"} or compute_status in {"failed", "killed"}:
         return value_payload
 
     if materialization in {"pending", "missing"} or compute_status in {"queued", "running", "persisting", "missing"}:
-        descriptor_payload = value_payload.get("descriptor") if isinstance(value_payload.get("descriptor"), dict) else None
         container_node_id: str | None = None
         if isinstance(descriptor_payload, dict) and str(descriptor_payload.get("vox_type", "")) == "sequence":
             resolved_node_raw = value_payload.get("resolved_store_node_id")
@@ -2137,11 +2137,30 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
             },
         }
 
+    inspect_node_id = node_id
+    inspect_path = path
+    rebase_sequence_path: str | None = None
+    if isinstance(descriptor_payload, dict) and str(descriptor_payload.get("vox_type", "")) == "sequence" and path not in {"", "/"}:
+        resolved_node_raw = value_payload.get("resolved_store_node_id")
+        resolved_path_raw = value_payload.get("resolved_store_path")
+        if isinstance(resolved_node_raw, str) and resolved_node_raw.strip():
+            normalized_resolved_path = str(resolved_path_raw or "").strip()
+            if normalized_resolved_path in {"", "/"}:
+                inspect_node_id = resolved_node_raw.strip()
+                inspect_path = ""
+        if inspect_node_id == node_id:
+            container_node_id = _sequence_container_node_for_path(node_id, path)
+            if container_node_id is not None:
+                inspect_node_id = container_node_id
+                inspect_path = ""
+        if inspect_path in {"", "/"}:
+            rebase_sequence_path = path
+
     try:
         paged = inspect_store_result_page(
             get_storage(),
-            node_id=node_id,
-            path=path,
+            node_id=inspect_node_id,
+            path=inspect_path,
             offset=request.offset,
             limit=request.limit,
         )
@@ -2161,8 +2180,34 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
                 "path": path or "/",
             },
         }
-    except ValueError as exc:
+    except (ValueError, VoxValueError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    if rebase_sequence_path is not None:
+        paged["path"] = rebase_sequence_path
+        descriptor = paged.get("descriptor")
+        if isinstance(descriptor, dict):
+            navigation = descriptor.get("navigation")
+            if isinstance(navigation, dict):
+                navigation["path"] = rebase_sequence_path
+        page_payload = paged.get("page")
+        if isinstance(page_payload, dict):
+            items = page_payload.get("items")
+            if isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        item_index = int(item.get("index"))
+                    except Exception:
+                        continue
+                    rebased_item_path = _append_sequence_index_path(rebase_sequence_path, item_index)
+                    item["path"] = rebased_item_path
+                    item_descriptor = item.get("descriptor")
+                    if isinstance(item_descriptor, dict):
+                        item_navigation = item_descriptor.get("navigation")
+                        if isinstance(item_navigation, dict):
+                            item_navigation["path"] = rebased_item_path
 
     return {
         **value_payload,

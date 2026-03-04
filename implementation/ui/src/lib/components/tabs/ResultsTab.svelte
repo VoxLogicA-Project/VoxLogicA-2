@@ -148,7 +148,6 @@
 
   onMount(() => {
     ensureViewer();
-    refresh();
 
     return () => {
       if (searchTimer) {
