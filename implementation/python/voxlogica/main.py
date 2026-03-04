@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from datetime import datetime, timezone
+from functools import lru_cache
 import hashlib
 import json
 import logging
@@ -19,7 +20,7 @@ from typing import Any, Optional, TypeVar, Generic, MutableMapping
 import dask
 import typer
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.routing import APIRouter
@@ -45,8 +46,9 @@ from voxlogica.serve_support import (
     PERF_REPORT_DIR,
     PlaygroundJobManager,
     TestingJobManager,
-    build_storage_stats_snapshot,
     build_test_dashboard_snapshot,
+    describe_runtime_value,
+    get_lightweight_storage_stats_snapshot,
     inspect_store_result,
     inspect_store_result_page,
     list_playground_programs,
@@ -200,6 +202,37 @@ def _program_introspection(
     serve_mode: bool = False,
     enforce_policy: bool = True,
 ) -> tuple[Any, dict[str, str], list[dict[str, str]]]:
+    workplan, symbol_table, print_targets = _cached_program_introspection(program_text)
+    if enforce_policy:
+        enforce_workplan_policy_or_raise(
+            workplan,
+            legacy=legacy,
+            serve_mode=serve_mode,
+        )
+    # Return shallow copies so callers can mutate payloads without polluting cache.
+    return workplan, dict(symbol_table), [dict(item) for item in print_targets]
+
+
+@lru_cache(maxsize=64)
+def _cached_program_introspection(program_text: str) -> tuple[Any, dict[str, str], list[dict[str, str]]]:
+    syntax = parse_program_content(program_text)
+    workplan, symbol_table = reduce_program_with_bindings(syntax)
+    print_targets = [
+        {"name": goal.name, "node_id": goal.id}
+        for goal in workplan.goals
+        if goal.operation == "print"
+    ]
+    return workplan, symbol_table, print_targets
+
+
+def _program_introspection_uncached(
+    program_text: str,
+    *,
+    legacy: bool = False,
+    serve_mode: bool = False,
+    enforce_policy: bool = True,
+) -> tuple[Any, dict[str, str], list[dict[str, str]]]:
+    """Compatibility helper retained for diagnostics/debugging paths."""
     syntax = parse_program_content(program_text)
     workplan, symbol_table = reduce_program_with_bindings(syntax)
     if enforce_policy:
@@ -344,6 +377,46 @@ def _sequence_container_node_for_path(root_node_id: str, path: str | None) -> st
     return current_node
 
 
+def _inspect_store_result_best_effort(
+    storage: Any,
+    *,
+    node_id: str,
+    path: str,
+    lock_wait_ms: float = 0.0,
+) -> tuple[dict[str, Any] | None, str]:
+    """Inspect one stored value without blocking behind persistence lock contention."""
+    lock = getattr(storage, "_lock", None)
+    lock_acquired = False
+    lock_is_rlock_like = (
+        callable(getattr(lock, "_is_owned", None))
+        and callable(getattr(lock, "acquire", None))
+        and callable(getattr(lock, "release", None))
+    )
+
+    if lock_is_rlock_like:
+        wait_ms = max(0.0, float(lock_wait_ms))
+        try:
+            if wait_ms <= 0.0:
+                lock_acquired = bool(lock.acquire(blocking=False))
+            else:
+                lock_acquired = bool(lock.acquire(timeout=wait_ms / 1000.0))
+        except TypeError:
+            lock_acquired = bool(lock.acquire(False))
+        if not lock_acquired:
+            return None, "busy"
+
+    try:
+        return inspect_store_result(storage, node_id=node_id, path=path), "ok"
+    except KeyError:
+        return None, "missing"
+    finally:
+        if lock_is_rlock_like and lock_acquired:
+            try:
+                lock.release()
+            except Exception:
+                pass
+
+
 def _transient_sequence_page_from_store(
     *,
     storage: Any,
@@ -393,9 +466,12 @@ def _transient_sequence_page_from_store(
             item_node_id = hash_sequence_item(container_node_id, cursor)
             item_path = _append_sequence_index_path(base_path, cursor)
             try:
-                item_payload = inspect_store_result(storage, node_id=item_node_id, path="")
-            except KeyError:
-                item_payload = None
+                item_payload, _lookup_state = _inspect_store_result_best_effort(
+                    storage,
+                    node_id=item_node_id,
+                    path="",
+                    lock_wait_ms=0.0,
+                )
             except UnsupportedVoxValueError:
                 item_payload = None
 
@@ -436,9 +512,12 @@ def _transient_sequence_page_from_store(
         item_path = _append_sequence_index_path(base_path, cursor)
         item_payload: dict[str, Any] | None
         try:
-            item_payload = inspect_store_result(storage, node_id=item_node_id, path="")
-        except KeyError:
-            item_payload = None
+            item_payload, _lookup_state = _inspect_store_result_best_effort(
+                storage,
+                node_id=item_node_id,
+                path="",
+                lock_wait_ms=0.0,
+            )
         except UnsupportedVoxValueError:
             item_payload = None
 
@@ -898,6 +977,71 @@ api_app.add_middleware(
 )
 
 
+def _should_trace_http_request(path: str) -> bool:
+    """Return whether request-level tracing should be emitted for this path."""
+    normalized = str(path or "")
+    if normalized == "/api/v1/log/client":
+        return True
+    if normalized.startswith("/api/v1/playground"):
+        return True
+    if normalized.startswith("/api/v1/testing"):
+        return True
+    if normalized.startswith("/api/v1/version"):
+        return True
+    if normalized.startswith("/api/v1/capabilities"):
+        return True
+    if normalized.startswith("/api/v1/results"):
+        return True
+    if normalized.startswith("/api/v1/docs/gallery"):
+        return True
+    if normalized.startswith("/api/v1/storage"):
+        return True
+    return False
+
+
+@api_app.middleware("http")
+async def trace_http_requests(request: Request, call_next):
+    """Emit start/end timing for selected API endpoints to isolate transport delays."""
+    path = request.url.path
+    if not _should_trace_http_request(path):
+        return await call_next(request)
+
+    trace_logger = logging.getLogger("voxlogica.http")
+    trace_id = hashlib.sha1(f"{time.time_ns()}:{request.method}:{path}".encode("utf-8")).hexdigest()[:10]
+    started = time.perf_counter()
+    trace_logger.info(
+        "[http:%s] start method=%s path=%s query=%s",
+        trace_id,
+        request.method,
+        path,
+        request.url.query or "-",
+    )
+    try:
+        response = await call_next(request)
+    except Exception as exc:  # noqa: BLE001
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        trace_logger.error(
+            "[http:%s] error method=%s path=%s elapsed=%.1fms error=%s",
+            trace_id,
+            request.method,
+            path,
+            elapsed_ms,
+            exc,
+        )
+        raise
+
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    trace_logger.info(
+        "[http:%s] done method=%s path=%s status=%s elapsed=%.1fms",
+        trace_id,
+        request.method,
+        path,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
+
+
 class NoCacheStaticFiles(StaticFiles):
     """StaticFiles variant that disables browser caching for UI assets."""
 
@@ -1042,7 +1186,8 @@ async def capabilities_endpoint() -> dict[str, Any]:
         "client_logging": True,
         "testing_jobs": True,
         "testing_report": True,
-        "storage_stats": True,
+        "storage_stats": False,
+        "storage_stats_lightweight": True,
         "store_results_viewer": True,
         "store_results_paging": True,
         "gallery": True,
@@ -1175,6 +1320,32 @@ async def playground_symbols_endpoint(request: PlaygroundSymbolsRequest) -> dict
 @api_router.post("/playground/value")
 async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str, Any]:
     """Resolve one node lazily with cache-first lookup and prioritized on-demand execution."""
+    value_logger = logging.getLogger("voxlogica.playground.value")
+    request_started = time.perf_counter()
+    requested_variable = str(request.variable or "").strip()
+    requested_node = str(request.node_id or "").strip()
+    requested_path = str(request.path or "").strip() or "/"
+    program_hash = _program_hash(request.program)
+    request_id = hashlib.sha1(
+        f"{program_hash}:{requested_variable}:{requested_node}:{requested_path}:{time.time_ns()}".encode("utf-8")
+    ).hexdigest()[:12]
+    phase_timings_ms: dict[str, float] = {}
+    introspection_cache_state = "unknown"
+
+    def _request_elapsed_ms() -> float:
+        return (time.perf_counter() - request_started) * 1000.0
+
+    value_logger.info(
+        "[value:%s] start enqueue=%s variable=%s node=%s path=%s program=%s",
+        request_id,
+        bool(request.enqueue),
+        requested_variable or "-",
+        requested_node[:12] if requested_node else "-",
+        requested_path,
+        program_hash[:12],
+    )
+    introspection_started = time.perf_counter()
+    introspection_cache_before = _cached_program_introspection.cache_info()
     try:
         workplan, symbol_table, _print_targets = _program_introspection(
             request.program,
@@ -1183,9 +1354,32 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             enforce_policy=False,
         )
     except Exception as exc:  # noqa: BLE001
+        value_logger.error(
+            "[value:%s] introspection failed after %.1fms: %s",
+            request_id,
+            _request_elapsed_ms(),
+            exc,
+        )
         diagnostics = diagnostics_from_exception(exc)
         detail = diagnostics[0]["message"] if diagnostics else f"Unable to parse program: {exc}"
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc
+
+    introspection_cache_after = _cached_program_introspection.cache_info()
+    if introspection_cache_after.hits > introspection_cache_before.hits:
+        introspection_cache_state = "hit"
+    elif introspection_cache_after.misses > introspection_cache_before.misses:
+        introspection_cache_state = "miss"
+    introspection_ms = (time.perf_counter() - introspection_started) * 1000.0
+    phase_timings_ms["introspection"] = introspection_ms
+    if introspection_ms >= 120.0:
+        value_logger.info(
+            "[value:%s] introspection %.1fms cache=%s symbols=%d nodes=%d",
+            request_id,
+            introspection_ms,
+            introspection_cache_state,
+            len(symbol_table),
+            len(getattr(workplan, "nodes", {})),
+        )
 
     node_id, variable_name = _resolve_requested_node(
         symbol_table=symbol_table,
@@ -1206,6 +1400,27 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
         if variable_name:
             payload["variable"] = variable_name
         return payload
+
+    def _attach_and_log(payload: dict[str, Any], *, reason: str) -> dict[str, Any]:
+        attached = _attach_common(payload)
+        timings_summary = ",".join(
+            f"{phase}={duration_ms:.1f}ms" for phase, duration_ms in phase_timings_ms.items()
+        ) or "-"
+        value_logger.info(
+            "[value:%s] %s materialization=%s compute_status=%s store_status=%s enqueued=%s job=%s "
+            "introspection_cache=%s timings=%s elapsed=%.1fms",
+            request_id,
+            reason,
+            str(attached.get("materialization", "-")),
+            str(attached.get("compute_status", attached.get("status", "-"))),
+            str(attached.get("store_status", attached.get("status", "-"))),
+            bool(attached.get("request_enqueued", False)),
+            str(attached.get("job_id", "-"))[:12],
+            introspection_cache_state,
+            timings_summary,
+            _request_elapsed_ms(),
+        )
+        return attached
 
     def _execution_errors_from_job(job_payload: dict[str, Any] | None) -> dict[str, str]:
         if not isinstance(job_payload, dict):
@@ -1309,15 +1524,18 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             return None
         referenced_node_id, referenced_remainder = referenced
         try:
-            item_payload = inspect_store_result(
+            item_payload, lookup_state = _inspect_store_result_best_effort(
                 storage,
                 node_id=referenced_node_id,
                 path=referenced_remainder,
+                lock_wait_ms=0.0,
             )
-        except KeyError:
-            return None
+            if lookup_state == "busy":
+                return None
+            if item_payload is None:
+                return None
         except UnsupportedVoxValueError as exc:
-            return _attach_common(
+            return _attach_and_log(
                 {
                     "available": False,
                     "materialization": "failed",
@@ -1332,7 +1550,8 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                         "node_id": node_id,
                         "path": view_path or "/",
                     },
-                }
+                },
+                reason="sequence-reference-unsupported",
             )
 
         item_status = str(item_payload.get("status", "unknown"))
@@ -1343,9 +1562,9 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             item_payload["request_enqueued"] = False
             item_payload["resolved_store_node_id"] = referenced_node_id
             item_payload["resolved_store_path"] = referenced_remainder
-            return _attach_common(item_payload)
+            return _attach_and_log(item_payload, reason="sequence-reference-materialized")
         if item_status == "failed":
-            return _attach_common(
+            return _attach_and_log(
                 {
                     "available": False,
                     "materialization": "failed",
@@ -1359,7 +1578,8 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                         "path": view_path or "/",
                         "store_status": item_status,
                     },
-                }
+                },
+                reason="sequence-reference-failed",
             )
         return None
 
@@ -1425,11 +1645,72 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             payload["job_id"] = job_id
         return payload
 
+    # Fast-path literal constants: they are immediately knowable from the
+    # reduced plan and should never wait for execution queue/persistence.
+    if selected_node is not None and str(getattr(selected_node, "kind", "")) == "constant":
+        try:
+            constant_payload = describe_runtime_value(
+                node_id=node_id,
+                value=getattr(selected_node, "attrs", {}).get("value"),
+                path=view_path,
+            )
+            constant_payload["materialization"] = "computed"
+            constant_payload["compute_status"] = "computed"
+            constant_payload["store_status"] = "ephemeral"
+            constant_payload["request_enqueued"] = False
+            constant_payload["metadata"] = {
+                **(constant_payload.get("metadata") or {}),
+                "source": "plan-constant",
+            }
+            return _attach_and_log(constant_payload, reason="constant-fast-path")
+        except UnsupportedVoxValueError as exc:
+            return _attach_and_log(
+                {
+                    "available": False,
+                    "materialization": "failed",
+                    "compute_status": "failed",
+                    "status": "failed",
+                    "error": str(exc),
+                    "request_enqueued": False,
+                    "diagnostics": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "node_id": node_id,
+                        "path": view_path or "/",
+                    },
+                },
+                reason="constant-fast-path-unsupported",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _attach_and_log(
+                {
+                    "available": False,
+                    "materialization": "failed",
+                    "compute_status": "failed",
+                    "status": "failed",
+                    "error": f"Unable to inspect constant value: {exc}",
+                    "request_enqueued": False,
+                    "diagnostics": {
+                        "node_id": node_id,
+                        "path": view_path or "/",
+                    },
+                },
+                reason="constant-fast-path-error",
+            )
+
     inspected: dict[str, Any] | None = None
+    store_lookup_started = time.perf_counter()
+    store_lookup_state = "missing"
     try:
-        inspected = inspect_store_result(storage, node_id=node_id, path=view_path)
+        store_lock_wait_ms = 2.0 if bool(request.enqueue) else 0.0
+        inspected, store_lookup_state = _inspect_store_result_best_effort(
+            storage,
+            node_id=node_id,
+            path=view_path,
+            lock_wait_ms=store_lock_wait_ms,
+        )
     except UnsupportedVoxValueError as exc:
-        return _attach_common(
+        return _attach_and_log(
             {
                 "available": False,
                 "materialization": "failed",
@@ -1443,22 +1724,48 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                     "node_id": node_id,
                     "path": view_path or "/",
                 },
-            }
+            },
+            reason="store-unsupported",
         )
-    except KeyError:
-        inspected = None
+    store_lookup_ms = (time.perf_counter() - store_lookup_started) * 1000.0
+    phase_timings_ms["store_lookup"] = store_lookup_ms
+    if store_lookup_ms >= 120.0:
+        value_logger.info(
+            "[value:%s] store-lookup %.1fms node=%s path=%s",
+            request_id,
+            store_lookup_ms,
+            node_id[:12],
+            view_path or "/",
+        )
+    elif store_lookup_state == "busy":
+        value_logger.info(
+            "[value:%s] store-lookup skipped lock-busy node=%s path=%s",
+            request_id,
+            node_id[:12],
+            view_path or "/",
+        )
 
     if inspected is not None and str(inspected.get("status")) == "materialized":
         inspected["materialization"] = "cached"
         inspected["compute_status"] = "cached"
-        return _attach_common(inspected)
+        return _attach_and_log(inspected, reason="store-hit")
 
-    program_hash = _program_hash(request.program)
+    tracked_lookup_started = time.perf_counter()
     tracked_job = playground_jobs.get_value_job(
         program_hash=program_hash,
         node_id=node_id,
         execution_strategy=strategy,
     )
+    tracked_lookup_ms = (time.perf_counter() - tracked_lookup_started) * 1000.0
+    phase_timings_ms["job_lookup"] = tracked_lookup_ms
+    if tracked_job is not None or tracked_lookup_ms >= 120.0:
+        value_logger.info(
+            "[value:%s] value-job lookup %.1fms job=%s status=%s",
+            request_id,
+            tracked_lookup_ms,
+            str((tracked_job or {}).get("job_id", "-"))[:12],
+            str((tracked_job or {}).get("status", "none")),
+        )
 
     if tracked_job is not None:
         job_status = str(tracked_job.get("status", "unknown"))
@@ -1475,7 +1782,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             )
             if reference_payload is not None:
                 return reference_payload
-            return _attach_common(
+            return _attach_and_log(
                 {
                     "available": False,
                     "materialization": "pending",
@@ -1487,18 +1794,26 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                     "descriptor": progress_descriptor,
                     "resolved_store_node_id": node_id,
                     "resolved_store_path": "",
-                }
+                },
+                reason=f"job-{job_status}",
             )
         if job_status == "completed":
             try:
-                inspected = inspect_store_result(storage, node_id=node_id, path=view_path)
-                if str(inspected.get("status")) == "materialized":
+                inspected, completed_lookup_state = _inspect_store_result_best_effort(
+                    storage,
+                    node_id=node_id,
+                    path=view_path,
+                    lock_wait_ms=0.0,
+                )
+                if inspected is not None and str(inspected.get("status")) == "materialized":
                     inspected["materialization"] = "computed"
                     inspected["compute_status"] = "completed"
                     inspected["job_id"] = tracked_job.get("job_id")
-                    return _attach_common(inspected)
+                    return _attach_and_log(inspected, reason="job-completed-store-hit")
+                if completed_lookup_state == "busy":
+                    inspected = None
             except UnsupportedVoxValueError as exc:
-                return _attach_common(
+                return _attach_and_log(
                     {
                         "available": False,
                         "materialization": "failed",
@@ -1513,10 +1828,9 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                             "node_id": node_id,
                             "path": view_path or "/",
                         },
-                    }
+                    },
+                    reason="job-completed-store-unsupported",
                 )
-            except KeyError:
-                inspected = None
             transient_descriptor, transient_metadata = _runtime_descriptor_from_job(tracked_job)
             if transient_descriptor is not None and view_path not in {"", "/"}:
                 root_descriptor = transient_descriptor.get("descriptor") if isinstance(transient_descriptor, dict) else None
@@ -1531,7 +1845,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                         return reference_payload
                     finished_at = _parse_iso_utc(tracked_job.get("finished_at"))
                     elapsed_s = (time.time() - finished_at) if finished_at is not None else None
-                    return _attach_common(
+                    return _attach_and_log(
                         {
                             "available": False,
                             "materialization": "pending",
@@ -1547,7 +1861,8 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                                 "message": "Result computed; waiting for async persistence.",
                                 "persistence_elapsed_s": elapsed_s,
                             },
-                        }
+                        },
+                        reason="job-completed-persisting-nested",
                     )
             if transient_descriptor is not None and view_path in {"", "/"}:
                 persisted_state = transient_metadata.get("persisted") if isinstance(transient_metadata, dict) else None
@@ -1560,7 +1875,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                         default_message = f"Persistence failed: {persist_error.strip()}"
                     message = str(warning_payload.get("message", default_message))
                     code = str(warning_payload.get("code", "E_PERSISTENCE_FAILED" if default_message.startswith("Persistence failed:") else "E_UNSPECIFIED_VALUE_TYPE"))
-                    return _attach_common(
+                    return _attach_and_log(
                         {
                             "available": False,
                             "materialization": "failed",
@@ -1576,7 +1891,8 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                                 "node_id": node_id,
                                 "path": view_path or "/",
                             },
-                        }
+                        },
+                        reason="job-completed-persistence-failed",
                     )
                 if persisted_state == "pending":
                     finished_at = _parse_iso_utc(tracked_job.get("finished_at"))
@@ -1609,7 +1925,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                             execution_strategy=strategy,
                         )
                         requeued_status = str(requeued_job.get("status", "queued"))
-                        return _attach_common(
+                        return _attach_and_log(
                             {
                                 "available": False,
                                 "materialization": "pending",
@@ -1627,30 +1943,32 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                                     "message": "Persistence appears stalled; re-enqueued value computation.",
                                     "persistence_elapsed_s": elapsed_s,
                                 },
-                            }
+                            },
+                            reason="job-completed-requeued",
                         )
-                    return _attach_common(
-                            {
-                                "available": False,
-                                "materialization": "pending",
-                                "compute_status": "persisting",
-                                "job_id": tracked_job.get("job_id"),
+                    return _attach_and_log(
+                        {
+                            "available": False,
+                            "materialization": "pending",
+                            "compute_status": "persisting",
+                            "job_id": tracked_job.get("job_id"),
+                            "store_status": "missing",
+                            "request_enqueued": False,
+                            "descriptor": transient_descriptor.get("descriptor")
+                            if isinstance(transient_descriptor.get("descriptor"), dict)
+                            else None,
+                            "resolved_store_node_id": node_id,
+                            "resolved_store_path": "",
+                            "diagnostics": {
                                 "store_status": "missing",
-                                "request_enqueued": False,
-                                "descriptor": transient_descriptor.get("descriptor")
-                                if isinstance(transient_descriptor.get("descriptor"), dict)
-                                else None,
-                                "resolved_store_node_id": node_id,
-                                "resolved_store_path": "",
-                                "diagnostics": {
-                                    "store_status": "missing",
-                                    "message": "Result computed; waiting for async persistence.",
-                                    "persistence_elapsed_s": elapsed_s,
-                                },
-                        }
+                                "message": "Result computed; waiting for async persistence.",
+                                "persistence_elapsed_s": elapsed_s,
+                            },
+                        },
+                        reason="job-completed-persisting-root",
                     )
             if not request.enqueue:
-                return _attach_common(
+                return _attach_and_log(
                     _failure_payload(
                         compute_status="failed",
                         inspected_payload=inspected,
@@ -1660,42 +1978,45 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                             "and no runtime preview payload was returned."
                         ),
                         request_enqueued=False,
-                    )
+                    ),
+                    reason="job-completed-missing-without-enqueue",
                 )
         if job_status in {"failed", "killed"}:
-            return _attach_common(
+            return _attach_and_log(
                 _failure_payload(
                     compute_status=job_status,
                     inspected_payload=inspected,
                     tracked_job_payload=tracked_job,
                     fallback_error="Value not materialized.",
                     request_enqueued=False,
-                )
+                ),
+                reason=f"job-{job_status}",
             )
 
     if inspected is not None and str(inspected.get("status")) == "failed":
-        return _attach_common(
+        return _attach_and_log(
             _failure_payload(
                 compute_status="failed",
                 inspected_payload=inspected,
                 tracked_job_payload=tracked_job,
                 fallback_error="Store contains a failed value for this node.",
                 request_enqueued=False,
-            )
+            ),
+            reason="store-failed",
         )
 
     if not request.enqueue:
         if inspected is not None:
             inspected["materialization"] = "store-status"
             inspected["compute_status"] = str(inspected.get("status", "unknown"))
-            return _attach_common(inspected)
+            return _attach_and_log(inspected, reason="store-status-no-enqueue")
         descriptor = _in_progress_descriptor(
             output_kind=node_output_kind,
             path=view_path,
             status="missing",
         )
         descriptor_vox_type = str(descriptor.get("vox_type", "unavailable"))
-        return _attach_common(
+        return _attach_and_log(
             {
                 "available": False,
                 "materialization": "pending" if descriptor_vox_type in {"sequence", "mapping"} else "missing",
@@ -1705,9 +2026,11 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                 "descriptor": descriptor,
                 "resolved_store_node_id": node_id,
                 "resolved_store_path": "",
-            }
+            },
+            reason="missing-no-enqueue",
         )
 
+    enqueue_started = time.perf_counter()
     value_job = playground_jobs.ensure_value_job(
         {
             "program": request.program,
@@ -1726,7 +2049,16 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
         node_id=node_id,
         execution_strategy="dask",
     )
-    return _attach_common(
+    enqueue_ms = (time.perf_counter() - enqueue_started) * 1000.0
+    phase_timings_ms["enqueue"] = enqueue_ms
+    value_logger.info(
+        "[value:%s] ensure-value-job %.1fms job=%s status=%s",
+        request_id,
+        enqueue_ms,
+        str(value_job.get("job_id", "-"))[:12],
+        str(value_job.get("status", "queued")),
+    )
+    return _attach_and_log(
         {
             "available": False,
             "materialization": "pending",
@@ -1735,7 +2067,8 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             "log_tail": value_job.get("log_tail", ""),
             "store_status": inspected.get("status") if inspected is not None else "missing",
             "request_enqueued": True,
-        }
+        },
+        reason="enqueued",
     )
 
 
@@ -1950,9 +2283,9 @@ async def testing_performance_primitive_chart_endpoint() -> FileResponse:
 
 
 @api_router.get("/storage/stats")
-async def storage_stats_endpoint() -> dict[str, Any]:
-    """Return persistent cache/storage statistics."""
-    return build_storage_stats_snapshot(get_storage())
+async def storage_stats_endpoint(refresh: bool = Query(default=False)) -> dict[str, Any]:
+    """Return lightweight non-blocking cache/storage statistics."""
+    return get_lightweight_storage_stats_snapshot(get_storage(), force_refresh=bool(refresh))
 
 
 @api_router.get("/results/store")

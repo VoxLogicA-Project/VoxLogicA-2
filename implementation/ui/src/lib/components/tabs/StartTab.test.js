@@ -124,4 +124,121 @@ describe("StartTab", () => {
 
     expect(resolvePlaygroundValueMock).not.toHaveBeenCalled();
   });
+
+  it("shows pending per-job logs while value is resolving", async () => {
+    vi.useFakeTimers();
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { x: "node-x" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock
+      .mockResolvedValueOnce({
+        materialization: "pending",
+        compute_status: "running",
+        node_id: "node-x",
+        job_id: "job-1234567890",
+        log_tail: '{"event":"playground.node","operator":"const","status":"cached","cache_source":"store","duration_s":0.001,"node_id":"node-c"}',
+      })
+      .mockResolvedValue({
+        materialization: "computed",
+        compute_status: "completed",
+        node_id: "node-x",
+        path: "/",
+        descriptor: {
+          vox_type: "integer",
+          format_version: "voxpod/1",
+          summary: { value: 1 },
+          navigation: {
+            path: "/",
+            pageable: false,
+            can_descend: false,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
+        },
+      });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Resolution log");
+      expect(container.textContent).toContain("job job-12345678");
+      expect(container.textContent).toContain("const · cached");
+      expect(container.textContent).toContain("playground.node");
+    });
+
+    vi.runOnlyPendingTimers();
+    await waitFor(() => {
+      expect(container.textContent).not.toContain("Resolution log");
+    });
+    vi.useRealTimers();
+  });
+
+  it("uses non-enqueue paging requests from the viewer", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { x: "node-x" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-x",
+      path: "/",
+      descriptor: {
+        vox_type: "sequence",
+        format_version: "voxpod/1",
+        summary: { length: 3 },
+        navigation: {
+          path: "/",
+          pageable: true,
+          can_descend: true,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    });
+    resolvePlaygroundValuePageMock.mockResolvedValue({
+      materialization: "pending",
+      compute_status: "running",
+      page: { offset: 0, limit: 8, items: [], has_more: false, next_offset: null },
+    });
+
+    let fetchPage = null;
+    const previousViewer = window.VoxResultViewer;
+    window.VoxResultViewer = {
+      ResultViewer: class {
+        constructor(_element, options) {
+          fetchPage = options.fetchPage;
+        }
+
+        setLoading() {}
+        setError() {}
+        renderRecord() {}
+        destroy() {}
+      },
+    };
+
+    try {
+      render(StartTab, { active: true, capabilities: {} });
+      await waitFor(() => {
+        expect(typeof fetchPage).toBe("function");
+      });
+
+      await fetchPage({ nodeId: "node-x", path: "/", offset: 0, limit: 8 });
+
+      const latest = resolvePlaygroundValuePageMock.mock.calls.at(-1)?.[0];
+      expect(latest?.enqueue).toBe(false);
+    } finally {
+      window.VoxResultViewer = previousViewer;
+    }
+  });
 });

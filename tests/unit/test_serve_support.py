@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import threading
+import time
 
 import pytest
 
@@ -12,6 +14,7 @@ from voxlogica.serve_support import (
     build_storage_stats_snapshot,
     build_test_dashboard_snapshot,
     describe_runtime_value,
+    get_lightweight_storage_stats_snapshot,
     inspect_store_result,
     inspect_store_result_page,
     list_playground_programs,
@@ -117,6 +120,32 @@ def test_build_storage_stats_snapshot_summarizes_sqlite_backend(tmp_path: Path):
     assert snapshot["summary"]["failed_records"] == 1
 
 
+@pytest.mark.unit
+def test_get_lightweight_storage_stats_snapshot_is_async_and_cached(tmp_path: Path):
+    db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    db.put_success("node-1", {"x": 1})
+    try:
+        first = get_lightweight_storage_stats_snapshot(db, force_refresh=True)
+        assert first["mode"] == "lightweight-async"
+        assert first["supports_detailed_stats"] is False
+        assert first["refreshing"] is True
+
+        deadline = time.time() + 2.0
+        latest = first
+        while time.time() < deadline:
+            latest = get_lightweight_storage_stats_snapshot(db)
+            if latest.get("available"):
+                break
+            time.sleep(0.02)
+        assert latest["available"] is True
+        assert latest["refreshing"] is False
+        assert latest["db_path"] == str(tmp_path / "results.db")
+        assert "disk" in latest
+        assert latest["payload_buckets"] == []
+    finally:
+        db.close()
+
+
 class _FakeRecvConnEOF:
     def poll(self) -> bool:
         return True
@@ -161,6 +190,149 @@ def test_playground_job_public_payload_omits_traceback() -> None:
     payload = job.as_public(include_result=False, include_log_tail=False)
     assert payload["request"]["job_kind"] == "value-resolve"
     assert "traceback" not in payload
+
+
+@pytest.mark.unit
+def test_playground_manager_value_resolve_uses_inprocess_future(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import voxlogica.serve_support as serve_support
+
+    monkeypatch.setattr(serve_support, "PLAYGROUND_JOB_LOG_DIR", tmp_path)
+
+    calls: list[dict[str, object]] = []
+
+    def _fake_execute(request_payload: dict[str, object], log_path_str: str) -> dict[str, object]:
+        started = time.time()
+        calls.append(
+            {
+                "request_payload": dict(request_payload),
+                "log_path": log_path_str,
+            }
+        )
+        return {
+            "ok": True,
+            "result": {"execution": {"success": True, "cache_summary": {"computed": 1}}},
+            "metrics": {"wall_time_s": 0.01, "cpu_time_s": 0.01},
+            "started_at": started,
+            "finished_at": started + 0.01,
+        }
+
+    monkeypatch.setattr(serve_support, "_execute_playground_request", _fake_execute)
+
+    manager = PlaygroundJobManager()
+    request_payload = {
+        "program": "x = 1",
+        "execute": True,
+        "execution_strategy": "dask",
+        "_job_kind": "value-resolve",
+        "_priority_node": "node-1",
+        "_program_hash": "prog-1",
+    }
+
+    created = manager.ensure_value_job(
+        request_payload,
+        program_hash="prog-1",
+        node_id="node-1",
+        execution_strategy="dask",
+    )
+    created_job_id = str(created["job_id"])
+    created_job = manager._jobs[created_job_id]
+    assert created_job.process is None
+    assert created_job.recv_conn is None
+    assert created_job.status in {"queued", "running", "completed"}
+
+    final = manager.get_value_job(
+        program_hash="prog-1",
+        node_id="node-1",
+        execution_strategy="dask",
+    )
+    assert final is not None
+    assert final["status"] == "completed"
+    assert calls and str(calls[0]["log_path"]).endswith(f"{created_job_id}.log")
+
+
+@pytest.mark.unit
+def test_playground_manager_value_resolve_reports_queued_before_thread_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import voxlogica.serve_support as serve_support
+
+    monkeypatch.setattr(serve_support, "PLAYGROUND_JOB_LOG_DIR", tmp_path)
+
+    first_started = threading.Event()
+    release_first = threading.Event()
+
+    def _fake_execute(request_payload: dict[str, object], log_path_str: str) -> dict[str, object]:
+        started = time.time()
+        if str(request_payload.get("_priority_node", "")) == "node-1":
+            first_started.set()
+            release_first.wait(timeout=2.0)
+        return {
+            "ok": True,
+            "result": {"execution": {"success": True, "cache_summary": {"computed": 1}}},
+            "metrics": {"wall_time_s": 0.01, "cpu_time_s": 0.01},
+            "started_at": started,
+            "finished_at": started + 0.01,
+        }
+
+    monkeypatch.setattr(serve_support, "_execute_playground_request", _fake_execute)
+
+    manager = PlaygroundJobManager()
+
+    manager.ensure_value_job(
+        {
+            "program": "x = 1",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-1",
+            "_program_hash": "prog-1",
+        },
+        program_hash="prog-1",
+        node_id="node-1",
+        execution_strategy="dask",
+    )
+    assert first_started.wait(timeout=1.0), "first value job did not start"
+
+    second = manager.ensure_value_job(
+        {
+            "program": "y = 2",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-2",
+            "_program_hash": "prog-1",
+        },
+        program_hash="prog-1",
+        node_id="node-2",
+        execution_strategy="dask",
+    )
+    assert second["status"] == "queued"
+
+    queued = manager.get_value_job(
+        program_hash="prog-1",
+        node_id="node-2",
+        execution_strategy="dask",
+    )
+    assert queued is not None
+    assert queued["status"] == "queued"
+
+    release_first.set()
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        final = manager.get_value_job(
+            program_hash="prog-1",
+            node_id="node-2",
+            execution_strategy="dask",
+        )
+        if final and final["status"] == "completed":
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("second value job did not complete after queue release")
 
 
 @pytest.mark.unit

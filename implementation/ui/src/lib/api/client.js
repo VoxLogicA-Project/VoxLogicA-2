@@ -10,12 +10,73 @@ const toErrorMessage = (status, statusText, detail) => {
   return `${status} ${statusText}`;
 };
 
+const isPlaygroundValueRequest = (path) => String(path || "").startsWith("/api/v1/playground/value");
+const nowMs = () =>
+  typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+
 export const apiRequest = async (path, init = {}) => {
+  const traceValueRequest = isPlaygroundValueRequest(path);
+  const method = String(init?.method || "GET").toUpperCase();
+  const started = nowMs();
+  if (traceValueRequest) {
+    console.info("[api.request]", {
+      phase: "start",
+      path,
+      method,
+    });
+  }
   const response = await fetch(path, init);
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
+  const elapsedMs = nowMs() - started;
+  if (traceValueRequest) {
+    console.info("[api.request]", {
+      phase: "response",
+      path,
+      method,
+      status: response.status,
+      ok: response.ok,
+      elapsedMs: Number(elapsedMs.toFixed(1)),
+      bytes: text.length,
+    });
+  }
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch (error) {
+      if (traceValueRequest) {
+        console.error("[api.request]", {
+          phase: "parse-error",
+          path,
+          method,
+          elapsedMs: Number(elapsedMs.toFixed(1)),
+          bytes: text.length,
+          message: String(error?.message || error || "json-parse-failed"),
+        });
+      }
+      throw error;
+    }
+  }
   if (!response.ok) {
+    if (traceValueRequest) {
+      console.warn("[api.request]", {
+        phase: "error",
+        path,
+        method,
+        status: response.status,
+        elapsedMs: Number(elapsedMs.toFixed(1)),
+        detail: payload?.detail || null,
+      });
+    }
     throw new Error(toErrorMessage(response.status, response.statusText, payload?.detail));
+  }
+  if (traceValueRequest) {
+    console.info("[api.request]", {
+      phase: "ok",
+      path,
+      method,
+      elapsedMs: Number(elapsedMs.toFixed(1)),
+    });
   }
   return payload;
 };

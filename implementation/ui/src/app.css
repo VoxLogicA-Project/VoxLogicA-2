@@ -636,6 +636,66 @@ body {
   margin: 0.55rem 0 0;
 }
 
+.start-activity {
+  margin-top: 0.62rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.start-status-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.34rem;
+}
+
+.start-status-pill {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.68rem;
+  border-radius: 999px;
+  padding: 0.18rem 0.44rem;
+  border: 1px solid var(--line);
+  color: #b6cae2;
+  background: rgba(4, 18, 30, 0.5);
+}
+
+.start-status-pill--idle {
+  color: #9cb0c6;
+  border-color: rgba(156, 176, 198, 0.5);
+}
+
+.start-status-pill--queued {
+  color: #a8b8cf;
+  border-color: rgba(168, 184, 207, 0.6);
+}
+
+.start-status-pill--running {
+  color: #ffd08a;
+  border-color: rgba(255, 208, 138, 0.75);
+}
+
+.start-status-pill--persisting {
+  color: #9dd8ff;
+  border-color: rgba(157, 216, 255, 0.75);
+}
+
+.start-status-pill--computed {
+  color: #afffd2;
+  border-color: rgba(80, 231, 152, 0.78);
+  background: rgba(34, 160, 104, 0.2);
+}
+
+.start-status-pill--failed {
+  color: #ffb9b9;
+  border-color: rgba(255, 123, 123, 0.82);
+  background: rgba(160, 44, 44, 0.2);
+}
+
+.start-logs {
+  margin-top: 0.62rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
 .viewer-header {
   display: flex;
   align-items: center;

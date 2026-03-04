@@ -4,6 +4,8 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -149,6 +151,7 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
     monkeypatch.setattr(main_mod, "handle_list_primitives", lambda namespace=None: OperationResult.ok({"n": namespace}))
     created_job_payloads: list[dict[str, object]] = []
+    value_job_payloads: list[dict[str, object]] = []
 
     monkeypatch.setattr(
         main_mod,
@@ -159,7 +162,10 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             get_job=lambda job_id: {"job_id": job_id, "status": "completed", "result": {}, "log_tail": ""},
             kill_job=lambda job_id: {"job_id": job_id, "status": "killed", "log_tail": ""},
             get_value_job=lambda **kwargs: None,
-            ensure_value_job=lambda payload, **kwargs: {"job_id": "vp1", "status": "running", "log_tail": ""},
+            ensure_value_job=lambda payload, **kwargs: (
+                value_job_payloads.append(dict(payload)),
+                {"job_id": "vp1", "status": "running", "log_tail": ""},
+            )[1],
         ),
     )
     monkeypatch.setattr(
@@ -183,6 +189,8 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             caps_resp = client.get("/api/v1/capabilities")
             assert caps_resp.status_code == 200
             assert caps_resp.json()["client_logging"] is True
+            assert caps_resp.json()["storage_stats"] is False
+            assert caps_resp.json()["storage_stats_lightweight"] is True
             log_resp = client.post(
                 "/api/v1/log/client",
                 json={
@@ -243,6 +251,21 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             assert value_pending.json()["materialization"] == "pending"
             assert value_pending.json()["compute_status"] in {"queued", "running"}
             assert value_pending.json()["execution_strategy"] == "dask"
+            assert value_job_payloads
+
+            value_job_payloads.clear()
+            literal_constant = client.post(
+                "/api/v1/playground/value",
+                json={"program": "k = 10", "variable": "k", "execution_strategy": "strict"},
+            )
+            assert literal_constant.status_code == 200
+            literal_payload = literal_constant.json()
+            assert literal_payload["materialization"] == "computed"
+            assert literal_payload["compute_status"] == "computed"
+            assert literal_payload["descriptor"]["vox_type"] == "integer"
+            assert literal_payload["descriptor"]["summary"]["value"] == 10
+            assert literal_payload["store_status"] == "ephemeral"
+            assert value_job_payloads == []
 
             # Variable lookup must win over stale/foreign node ids.
             value_with_stale_node = client.post(
@@ -676,6 +699,121 @@ def test_playground_value_paging_works_while_sequence_is_persisting(
             assert item_payload["descriptor"]["vox_type"] == "integer"
             assert item_payload["path"] == "/0"
     finally:
+        fake_storage.close()
+
+
+@pytest.mark.unit
+def test_playground_value_returns_pending_quickly_when_store_lock_is_busy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeRegistry:
+        @staticmethod
+        def get_feature(name: str):
+            if name == "version":
+                return SimpleNamespace(handler=lambda: OperationResult.ok({"version": "2.0.0"}))
+            if name == "run":
+                return SimpleNamespace(handler=lambda **kwargs: OperationResult.ok({"ok": True, "args": kwargs}))
+            return None
+
+    monkeypatch.setattr(main_mod, "FeatureRegistry", FakeRegistry)
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    def _job_payload(node_id: str) -> dict[str, object]:
+        return {
+            "job_id": "value-persisting-lock-busy",
+            "status": "completed",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "result": {
+                "goal_results": [
+                    {
+                        "node_id": node_id,
+                        "status": "materialized",
+                        "metadata": {"persisted": "pending"},
+                        "runtime_descriptor": {
+                            "available": True,
+                            "node_id": node_id,
+                            "status": "materialized",
+                            "runtime_version": "runtime",
+                            "path": "",
+                            "descriptor": {
+                                "vox_type": "sequence",
+                                "format_version": "voxpod/1",
+                                "summary": {"length": 2},
+                                "navigation": {
+                                    "path": "",
+                                    "pageable": True,
+                                    "can_descend": True,
+                                    "default_page_size": 64,
+                                    "max_page_size": 512,
+                                },
+                            },
+                        },
+                    }
+                ]
+            },
+            "log_tail": "",
+        }
+
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            get_value_job=lambda **kwargs: _job_payload(str(kwargs.get("node_id", ""))),
+            ensure_value_job=lambda payload, **kwargs: {"job_id": "unused", "status": "running", "log_tail": ""},
+        ),
+    )
+
+    lock_ready = threading.Event()
+    release_lock = threading.Event()
+
+    def _hold_store_lock() -> None:
+        acquired = fake_storage._lock.acquire(timeout=1.0)  # noqa: SLF001 - test-only lock contention
+        if not acquired:
+            return
+        try:
+            lock_ready.set()
+            release_lock.wait(timeout=5.0)
+        finally:
+            fake_storage._lock.release()  # noqa: SLF001 - test-only lock contention
+
+    holder = threading.Thread(target=_hold_store_lock, name="hold-store-lock", daemon=True)
+
+    try:
+        with TestClient(main_mod.api_app) as client:
+            symbols = client.post("/api/v1/playground/symbols", json={"program": "xs = range(0,2)"})
+            assert symbols.status_code == 200
+            node_id = symbols.json()["symbol_table"]["xs"]
+
+            # Item exists in store, but read path must not block behind lock contention.
+            fake_storage.put_success(hash_sequence_item(node_id, 0), 11)
+
+            holder.start()
+            assert lock_ready.wait(timeout=1.0)
+
+            started = time.perf_counter()
+            item_resp = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "xs = range(0,2)",
+                    "variable": "xs",
+                    "path": "/0",
+                    "enqueue": False,
+                },
+            )
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            assert item_resp.status_code == 200
+            payload = item_resp.json()
+            assert payload["compute_status"] == "persisting"
+            assert payload["materialization"] == "pending"
+            assert payload["request_enqueued"] is False
+            assert elapsed_ms < 1000.0
+    finally:
+        release_lock.set()
+        holder.join(timeout=1.0)
         fake_storage.close()
 
 

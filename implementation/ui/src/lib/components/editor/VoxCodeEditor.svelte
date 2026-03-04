@@ -16,6 +16,7 @@
   export let value = "";
   export let symbols = {};
   export let diagnostics = [];
+  export let symbolStatuses = {};
   export let autocompleteEnabled = true;
   export let completionProvider = null;
   export let completionKeywords = VOX_KEYWORDS;
@@ -253,7 +254,7 @@
     dispatch("hoverleave");
   };
 
-  $: overlayHtml = buildOverlayHtml(value, symbols, diagnostics);
+  $: overlayHtml = buildOverlayHtml(value, symbols, diagnostics, symbolStatuses);
   $: if (!suggestionsOpen && suggestions.length) {
     suggestions = [];
   }
@@ -452,6 +453,39 @@
 
   :global(.vx-editor__symbol:hover) {
     color: #d8fff7;
+  }
+
+  :global(.vx-editor__symbol--idle) {
+    color: #8cecdc;
+  }
+
+  :global(.vx-editor__symbol--queued) {
+    color: #9cb0c6;
+    text-decoration: underline dotted rgba(156, 176, 198, 0.8);
+    text-underline-offset: 0.14em;
+  }
+
+  :global(.vx-editor__symbol--running) {
+    color: #ffcc80;
+    text-decoration: underline wavy rgba(255, 204, 128, 0.9);
+    text-underline-offset: 0.15em;
+  }
+
+  :global(.vx-editor__symbol--persisting) {
+    color: #8ed1ff;
+    text-decoration: underline dashed rgba(142, 209, 255, 0.9);
+    text-underline-offset: 0.14em;
+  }
+
+  :global(.vx-editor__symbol--computed) {
+    color: #adffd0;
+    text-shadow: 0 0 8px rgba(44, 215, 142, 0.35);
+  }
+
+  :global(.vx-editor__symbol--failed) {
+    color: #ffb2b2;
+    text-decoration: underline solid rgba(255, 120, 120, 0.95);
+    text-underline-offset: 0.14em;
   }
 
   :global(.vx-editor__symbol:focus-visible) {

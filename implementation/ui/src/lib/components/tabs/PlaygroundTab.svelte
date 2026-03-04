@@ -470,7 +470,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
             path: path || "",
             offset: Number(offset || 0),
             limit: Number(limit || 64),
-            enqueue: true,
+            enqueue: false,
           });
         },
         onStatusClick: (record) => {

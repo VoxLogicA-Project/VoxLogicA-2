@@ -99,14 +99,29 @@ const tokenizeLine = (line) => {
   return out;
 };
 
-const renderToken = (token, symbolSet) => {
+const normalizeSymbolStatus = (status) => {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "cached") return "computed";
+  if (normalized === "completed") return "computed";
+  if (normalized === "pending") return "queued";
+  if (normalized === "killed") return "failed";
+  if (normalized === "missing") return "queued";
+  if (["idle", "queued", "running", "persisting", "computed", "failed"].includes(normalized)) {
+    return normalized;
+  }
+  return "idle";
+};
+
+const renderToken = (token, symbolSet, symbolStatuses) => {
   const text = String(token.text || "");
   const safeText = sanitizeText(text);
   if (token.kind === "space") return safeText;
   if (token.kind === "identifier" && symbolSet.has(text)) {
     const encoded = encodeURIComponent(text);
+    const status = normalizeSymbolStatus(symbolStatuses?.[text]);
+    const className = `vx-editor__symbol vx-editor__symbol--${sanitizeAttr(status)}`;
     return (
-      `<button type="button" class="vx-editor__symbol" ` +
+      `<button type="button" class="${className}" data-status="${sanitizeAttr(status)}" ` +
       `data-token="${sanitizeAttr(encoded)}" title="Inspect ${sanitizeAttr(text)}">` +
       `${safeText}</button>`
     );
@@ -115,7 +130,7 @@ const renderToken = (token, symbolSet) => {
   return `<span class="${className}">${safeText}</span>`;
 };
 
-export const buildOverlayHtml = (text, symbols = {}, diagnostics = []) => {
+export const buildOverlayHtml = (text, symbols = {}, diagnostics = [], symbolStatuses = {}) => {
   const source = String(text || "");
   const symbolSet = new Set(Object.keys(symbols || {}));
   const diagnosticLines = new Set();
@@ -132,7 +147,7 @@ export const buildOverlayHtml = (text, symbols = {}, diagnostics = []) => {
       const lineNo = idx + 1;
       const lineClass = diagnosticLines.has(lineNo) ? "vx-editor__line vx-editor__line--error" : "vx-editor__line";
       const tokens = tokenizeLine(line);
-      const rendered = tokens.map((token) => renderToken(token, symbolSet)).join("");
+      const rendered = tokens.map((token) => renderToken(token, symbolSet, symbolStatuses)).join("");
       return `<span class="${lineClass}" data-line="${lineNo}">${rendered || " "}</span>`;
     })
     .join("");

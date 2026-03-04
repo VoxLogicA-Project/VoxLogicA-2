@@ -7,8 +7,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import base64
+import concurrent.futures
 import multiprocessing as mp
 import json
+import logging
 import os
 import re
 import signal
@@ -57,6 +59,8 @@ _PLAYGROUND_COMMENT = re.compile(
     r"<!--\s*vox:playground(?P<meta>.*?)-->\s*```imgql\s*(?P<code>.*?)\s*```",
     re.DOTALL | re.IGNORECASE,
 )
+
+testing_jobs_logger = logging.getLogger("voxlogica.testing.jobs")
 
 
 def _iso_utc(ts: float | None) -> str | None:
@@ -491,6 +495,150 @@ def build_storage_stats_snapshot(storage: Any) -> dict[str, Any]:
         ],
         "generated_at": _iso_utc(time.time()),
     }
+
+
+def _lightweight_storage_snapshot(
+    *,
+    db_path: Path | None,
+    runtime_version: str | None,
+) -> dict[str, Any]:
+    """Build a cheap storage snapshot without scanning payload rows."""
+    if db_path is None:
+        return {
+            "available": False,
+            "mode": "lightweight-async",
+            "supports_detailed_stats": False,
+            "error": "Storage backend does not expose a SQLite path",
+            "db_path": None,
+            "generated_at": _iso_utc(time.time()),
+        }
+    if not db_path.exists():
+        return {
+            "available": False,
+            "mode": "lightweight-async",
+            "supports_detailed_stats": False,
+            "error": "Storage database has not been created yet",
+            "db_path": str(db_path),
+            "generated_at": _iso_utc(time.time()),
+        }
+
+    wal_path = db_path.with_suffix(f"{db_path.suffix}-wal")
+    shm_path = db_path.with_suffix(f"{db_path.suffix}-shm")
+    page_size = 0
+    page_count = 0
+    free_pages = 0
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            page_size_row = conn.execute("PRAGMA page_size").fetchone()
+            page_count_row = conn.execute("PRAGMA page_count").fetchone()
+            free_pages_row = conn.execute("PRAGMA freelist_count").fetchone()
+        if page_size_row:
+            page_size = _safe_int(page_size_row[0])
+        if page_count_row:
+            page_count = _safe_int(page_count_row[0])
+        if free_pages_row:
+            free_pages = _safe_int(free_pages_row[0])
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "available": False,
+            "mode": "lightweight-async",
+            "supports_detailed_stats": False,
+            "error": f"Unable to read lightweight storage stats: {exc}",
+            "db_path": str(db_path),
+            "generated_at": _iso_utc(time.time()),
+        }
+
+    db_bytes = db_path.stat().st_size if db_path.exists() else 0
+    wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
+    shm_bytes = shm_path.stat().st_size if shm_path.exists() else 0
+    approx_bytes = page_size * page_count if page_size > 0 and page_count > 0 else db_bytes
+    return {
+        "available": True,
+        "mode": "lightweight-async",
+        "supports_detailed_stats": False,
+        "db_path": str(db_path),
+        "summary": {
+            "page_size_bytes": page_size,
+            "page_count": page_count,
+            "free_pages": free_pages,
+            "allocated_bytes_estimate": approx_bytes,
+            "runtime_version": runtime_version,
+            "db_updated_at": _iso_utc(db_path.stat().st_mtime),
+        },
+        "disk": {
+            "db_bytes": db_bytes,
+            "wal_bytes": wal_bytes,
+            "shm_bytes": shm_bytes,
+        },
+        "payload_buckets": [],
+        "runtime_versions": (
+            [{"runtime_version": runtime_version, "count": 0}] if runtime_version else []
+        ),
+        "generated_at": _iso_utc(time.time()),
+    }
+
+
+@dataclass
+class LightweightStorageStatsProvider:
+    """Non-blocking cached provider for lightweight storage stats."""
+
+    refresh_interval_s: float = 60.0
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _snapshot: dict[str, Any] | None = None
+    _last_refresh_ts: float | None = None
+    _refresh_in_flight: bool = False
+
+    def _refresh_worker(self, *, db_path: Path | None, runtime_version: str | None) -> None:
+        snapshot = _lightweight_storage_snapshot(db_path=db_path, runtime_version=runtime_version)
+        with self._lock:
+            self._snapshot = snapshot
+            self._last_refresh_ts = time.time()
+            self._refresh_in_flight = False
+
+    def get_snapshot(self, storage: Any, *, force_refresh: bool = False) -> dict[str, Any]:
+        db_path = _storage_db_path(storage)
+        runtime_version = _result_runtime_filter(storage)
+        now = time.time()
+        with self._lock:
+            stale = (
+                self._last_refresh_ts is None
+                or (now - self._last_refresh_ts) >= max(5.0, self.refresh_interval_s)
+            )
+            should_refresh = bool(force_refresh or stale)
+            if should_refresh and not self._refresh_in_flight:
+                self._refresh_in_flight = True
+                threading.Thread(
+                    target=self._refresh_worker,
+                    kwargs={"db_path": db_path, "runtime_version": runtime_version},
+                    daemon=True,
+                    name="voxlogica-storage-stats",
+                ).start()
+            snapshot = dict(self._snapshot) if isinstance(self._snapshot, dict) else None
+            in_flight = bool(self._refresh_in_flight)
+
+        if snapshot is None:
+            snapshot = {
+                "available": False,
+                "mode": "lightweight-async",
+                "supports_detailed_stats": False,
+                "pending": True,
+                "db_path": str(db_path) if db_path is not None else None,
+                "generated_at": None,
+                "payload_buckets": [],
+                "runtime_versions": [],
+            }
+
+        snapshot["refreshing"] = in_flight
+        snapshot["refresh_interval_s"] = max(5.0, float(self.refresh_interval_s))
+        return snapshot
+
+
+_lightweight_storage_stats_provider = LightweightStorageStatsProvider()
+
+
+def get_lightweight_storage_stats_snapshot(storage: Any, *, force_refresh: bool = False) -> dict[str, Any]:
+    """Return cached lightweight storage stats, scheduling refresh asynchronously."""
+    return _lightweight_storage_stats_provider.get_snapshot(storage, force_refresh=force_refresh)
 
 
 def resolve_playground_load_directory() -> Path:
@@ -1432,7 +1580,7 @@ def _ru_maxrss_bytes() -> int:
     return int(value * 1024.0)
 
 
-def _playground_worker(send_conn: Any, request_payload: dict[str, Any], log_path_str: str) -> None:
+def _execute_playground_request(request_payload: dict[str, Any], log_path_str: str) -> dict[str, Any]:
     from voxlogica.features import handle_run
 
     log_path = Path(log_path_str)
@@ -1588,20 +1736,31 @@ def _playground_worker(send_conn: Any, request_payload: dict[str, Any], log_path
                 "finished_at": _iso_utc(finished_at),
             }
         )
+    return packet
+
+
+def _playground_worker(send_conn: Any, request_payload: dict[str, Any], log_path_str: str) -> None:
+    packet = _execute_playground_request(request_payload, log_path_str)
+    log_path = Path(log_path_str)
+
+    def _append_log(payload: dict[str, Any]) -> None:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+
+    try:
+        send_conn.send(packet)
+    except (BrokenPipeError, EOFError, OSError):
+        _append_log(
+            {
+                "event": "playground.run.send_failed",
+                "error": "Result pipe closed before payload delivery",
+            }
+        )
+    finally:
         try:
-            send_conn.send(packet)
-        except (BrokenPipeError, EOFError, OSError):
-            _append_log(
-                {
-                    "event": "playground.run.send_failed",
-                    "error": "Result pipe closed before payload delivery",
-                }
-            )
-        finally:
-            try:
-                send_conn.close()
-            except Exception:
-                pass
+            send_conn.close()
+        except Exception:
+            pass
 
 
 @dataclass
@@ -1617,6 +1776,7 @@ class PlaygroundJob:
     metrics: dict[str, Any] = field(default_factory=dict)
     process: Any = None
     recv_conn: Any = None
+    future: Any = None
     log_path: Path | None = None
 
     def as_public(
@@ -1666,10 +1826,32 @@ class PlaygroundJobManager:
         self._stale_seconds = stale_seconds
         self._retain_seconds = retain_seconds
         self._max_jobs = max_jobs
+        # Value-resolve jobs are frequent and latency-sensitive; keep them in a
+        # warm in-process worker to avoid per-request process spawn overhead.
+        self._value_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="vox-playground-value",
+        )
 
     def _poll_locked(self, job: PlaygroundJob) -> None:
         if job.status in {"completed", "failed", "killed"}:
             return
+
+        def _apply_packet(packet: dict[str, Any]) -> None:
+            job.started_at = _safe_float(packet.get("started_at", job.started_at or time.time()))
+            job.finished_at = _safe_float(packet.get("finished_at", time.time()))
+            job.metrics = dict(packet.get("metrics", {}))
+            if bool(packet.get("ok")):
+                job.status = "completed"
+                result = packet.get("result")
+                job.result = result if isinstance(result, dict) else {"payload": result}
+                job.error = None
+            else:
+                job.status = "failed"
+                job.error = str(packet.get("error", "Execution failed"))
+                result = packet.get("result")
+                if isinstance(result, dict):
+                    job.result = result
 
         process = job.process
         recv_conn = job.recv_conn
@@ -1682,19 +1864,7 @@ class PlaygroundJobManager:
                 job.finished_at = time.time()
                 packet = None
             if isinstance(packet, dict):
-                job.started_at = _safe_float(packet.get("started_at", job.started_at or time.time()))
-                job.finished_at = _safe_float(packet.get("finished_at", time.time()))
-                job.metrics = dict(packet.get("metrics", {}))
-                if bool(packet.get("ok")):
-                    job.status = "completed"
-                    result = packet.get("result")
-                    job.result = result if isinstance(result, dict) else {"payload": result}
-                else:
-                    job.status = "failed"
-                    job.error = str(packet.get("error", "Execution failed"))
-                    result = packet.get("result")
-                    if isinstance(result, dict):
-                        job.result = result
+                _apply_packet(packet)
             try:
                 recv_conn.close()
             except Exception:
@@ -1709,11 +1879,39 @@ class PlaygroundJobManager:
                 job.finished_at = time.time()
             job.process = None
 
+        future = job.future
+        if future is not None:
+            # ThreadPoolExecutor futures start in queued/pending state.
+            # Reflect this in public status so the UI can distinguish queue
+            # wait from active execution.
+            if future.done():
+                try:
+                    packet = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    job.status = "failed"
+                    job.error = f"Execution thread failed: {exc}"
+                    job.finished_at = time.time()
+                else:
+                    if isinstance(packet, dict):
+                        _apply_packet(packet)
+                    else:
+                        job.status = "failed"
+                        job.error = "Execution thread returned an invalid payload"
+                        job.finished_at = time.time()
+                job.future = None
+            elif future.running():
+                if job.status != "running":
+                    job.status = "running"
+                if job.started_at is None:
+                    job.started_at = time.time()
+            else:
+                job.status = "queued"
+
     def _cleanup_locked(self) -> None:
         now = time.time()
         for job in list(self._jobs.values()):
             self._poll_locked(job)
-            if job.status == "running" and job.started_at is not None:
+            if job.status == "running" and job.started_at is not None and job.process is not None:
                 if now - job.started_at > self._stale_seconds:
                     self._kill_locked(job, reason="Killed stale computation")
 
@@ -1742,6 +1940,16 @@ class PlaygroundJobManager:
             self._jobs.pop(job_id, None)
 
     def _kill_locked(self, job: PlaygroundJob, reason: str) -> None:
+        future = job.future
+        if future is not None:
+            future.cancel()
+            job.future = None
+            job.status = "killed"
+            job.error = reason
+            if job.finished_at is None:
+                job.finished_at = time.time()
+            return
+
         process = job.process
         if process is not None and process.is_alive():
             process.terminate()
@@ -1763,15 +1971,29 @@ class PlaygroundJobManager:
         payload["execute"] = bool(payload.get("execute", True))
         job_id = uuid.uuid4().hex
         created_at = time.time()
-        recv_conn, send_conn = self._ctx.Pipe(duplex=False)
         PLAYGROUND_JOB_LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = PLAYGROUND_JOB_LOG_DIR / f"{job_id}.log"
+        if str(payload.get("_job_kind", "")).strip().lower() == "value-resolve":
+            future = self._value_executor.submit(_execute_playground_request, payload, str(log_path))
+            job = PlaygroundJob(
+                job_id=job_id,
+                request_payload=payload,
+                created_at=created_at,
+                status="queued",
+                started_at=None,
+                future=future,
+                log_path=log_path,
+            )
+            self._jobs[job_id] = job
+            self._poll_locked(job)
+            return job
+
+        recv_conn, send_conn = self._ctx.Pipe(duplex=False)
         process = self._ctx.Process(
             target=_playground_worker,
             args=(send_conn, payload, str(log_path)),
             daemon=False,
         )
-
         job = PlaygroundJob(
             job_id=job_id,
             request_payload=payload,
@@ -1975,11 +2197,20 @@ class TestingJobManager:
         TEST_JOB_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     def _poll_locked(self, job: TestingJob) -> None:
+        poll_started = time.perf_counter()
         process = job.process
         if process is None:
             return
         code = process.poll()
         if code is None:
+            poll_elapsed_ms = (time.perf_counter() - poll_started) * 1000.0
+            if poll_elapsed_ms >= 50.0:
+                testing_jobs_logger.info(
+                    "[testing.jobs.poll] job=%s status=%s poll_elapsed=%.1fms",
+                    job.job_id[:12],
+                    job.status,
+                    poll_elapsed_ms,
+                )
             return
 
         job.return_code = int(code)
@@ -1993,7 +2224,14 @@ class TestingJobManager:
         job.finished_at = time.time()
         if code == 0:
             job.status = "completed"
+            snapshot_started = time.perf_counter()
             job.report_snapshot = build_test_dashboard_snapshot()
+            snapshot_elapsed_ms = (time.perf_counter() - snapshot_started) * 1000.0
+            testing_jobs_logger.info(
+                "[testing.jobs.poll] job=%s completed snapshot=%.1fms",
+                job.job_id[:12],
+                snapshot_elapsed_ms,
+            )
             if job.log_path is not None:
                 with job.log_path.open("a", encoding="utf-8") as handle:
                     handle.write("\n[testing.run.summary] success=true\n")
@@ -2001,13 +2239,22 @@ class TestingJobManager:
         elif job.status != "killed":
             job.status = "failed"
             job.error = f"Test run exited with code {code}"
+            snapshot_started = time.perf_counter()
             job.report_snapshot = build_test_dashboard_snapshot()
+            snapshot_elapsed_ms = (time.perf_counter() - snapshot_started) * 1000.0
+            testing_jobs_logger.info(
+                "[testing.jobs.poll] job=%s failed return_code=%s snapshot=%.1fms",
+                job.job_id[:12],
+                code,
+                snapshot_elapsed_ms,
+            )
             if job.log_path is not None:
                 with job.log_path.open("a", encoding="utf-8") as handle:
                     handle.write(f"\n[testing.run.summary] success=false return_code={code}\n")
                     handle.write(json.dumps(job.report_snapshot, sort_keys=True) + "\n")
 
     def _cleanup_locked(self) -> None:
+        cleanup_started = time.perf_counter()
         now = time.time()
         for job in list(self._jobs.values()):
             self._poll_locked(job)
@@ -2035,6 +2282,15 @@ class TestingJobManager:
 
         for jid in removable:
             self._jobs.pop(jid, None)
+
+        cleanup_elapsed_ms = (time.perf_counter() - cleanup_started) * 1000.0
+        if cleanup_elapsed_ms >= 50.0:
+            testing_jobs_logger.info(
+                "[testing.jobs.cleanup] jobs=%d removable=%d elapsed=%.1fms",
+                len(self._jobs),
+                len(removable),
+                cleanup_elapsed_ms,
+            )
 
     def _kill_locked(self, job: TestingJob, reason: str) -> None:
         process = job.process
@@ -2106,14 +2362,32 @@ class TestingJobManager:
             return job.as_public(include_log_tail=True, tail_lines=40)
 
     def list_jobs(self) -> dict[str, Any]:
+        list_started = time.perf_counter()
+        lock_wait_started = list_started
         with self._lock:
+            lock_wait_ms = (time.perf_counter() - lock_wait_started) * 1000.0
+            cleanup_started = time.perf_counter()
             self._cleanup_locked()
+            cleanup_ms = (time.perf_counter() - cleanup_started) * 1000.0
+            assemble_started = time.perf_counter()
             jobs = sorted(self._jobs.values(), key=lambda item: item.created_at, reverse=True)
-            return {
+            payload = {
                 "jobs": [job.as_public(include_log_tail=False) for job in jobs[:40]],
                 "total_jobs": len(self._jobs),
                 "generated_at": _iso_utc(time.time()),
             }
+            assemble_ms = (time.perf_counter() - assemble_started) * 1000.0
+        total_ms = (time.perf_counter() - list_started) * 1000.0
+        if total_ms >= 50.0 or lock_wait_ms >= 10.0:
+            testing_jobs_logger.info(
+                "[testing.jobs.list] total=%.1fms lock_wait=%.1fms cleanup=%.1fms assemble=%.1fms total_jobs=%d",
+                total_ms,
+                lock_wait_ms,
+                cleanup_ms,
+                assemble_ms,
+                len(payload.get("jobs", [])),
+            )
+        return payload
 
     def get_job(self, job_id: str, *, tail_lines: int = 120) -> dict[str, Any] | None:
         with self._lock:

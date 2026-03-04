@@ -6,7 +6,6 @@
   import ResultsTab from "$lib/components/tabs/ResultsTab.svelte";
   import GalleryTab from "$lib/components/tabs/GalleryTab.svelte";
   import QualityTab from "$lib/components/tabs/QualityTab.svelte";
-  import StorageTab from "$lib/components/tabs/StorageTab.svelte";
 
   const tabs = [
     { id: "start", label: "Start" },
@@ -14,7 +13,6 @@
     { id: "results", label: "Results Explorer" },
     { id: "gallery", label: "Example Gallery" },
     { id: "quality", label: "Test Intelligence" },
-    { id: "storage", label: "Storage Stats" },
   ];
 
   let activeTab = "start";
@@ -170,6 +168,5 @@
     <ResultsTab active={activeTab === "results"} {capabilities} />
     <GalleryTab active={activeTab === "gallery"} on:load={onGalleryLoad} />
     <QualityTab active={activeTab === "quality"} {capabilities} />
-    <StorageTab active={activeTab === "storage"} />
   </main>
 </div>
