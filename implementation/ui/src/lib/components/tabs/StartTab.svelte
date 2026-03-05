@@ -378,6 +378,43 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     pendingPollTicks = 0;
   };
 
+  const isTimeoutError = (error) => /timed out/i.test(String(error?.message || error || ""));
+
+  const ensurePendingPoll = ({ traceId = 0, variable = "", path = "" } = {}) => {
+    if (pendingPoll) return;
+    traceResolve("poll-start", {
+      traceId,
+      variable,
+      path: path || "/",
+    });
+    pendingPollTicks = 0;
+    pendingPoll = setInterval(() => {
+      if (resolveInFlight) return;
+      pendingPollTicks += 1;
+      if (pendingPollTicks > MAX_PENDING_POLL_TICKS) {
+        traceResolve("poll-timeout", {
+          traceId,
+          variable,
+          path: path || "/",
+          ticks: pendingPollTicks,
+        });
+        stopPoll();
+        statusValue = "idle";
+        statusText = `${variable} is still computing in the background. Click Run to refresh status.`;
+        errorText = "";
+        dissolveDream();
+        return;
+      }
+      traceResolve("poll-tick", {
+        traceId,
+        variable,
+        path: path || "/",
+        ticks: pendingPollTicks,
+      });
+      void resolvePrimaryValue({ enqueue: false, path: currentPath, background: true });
+    }, 1000);
+  };
+
   const stopProbe = () => {
     if (!pendingProbe) return;
     clearTimeout(pendingProbe);
@@ -526,6 +563,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     return Object.keys(recordPagesLoading || {}).some((cacheKey) => cacheKey.startsWith(prefix));
   };
 
+  const pagePollingForRecord = (record, path = "") => Boolean(recordPagePollTimers?.[pageKey(record, path)]);
+
   const collectionSelectionFor = (record, path = "") => {
     const key = pageKey(record, path);
     const selection = collectionSelections?.[key];
@@ -613,6 +652,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   const pathRecordLoadingFor = (sourceVariable = "", path = "") => Boolean(pathRecordsLoading?.[pathRecordKey(sourceVariable, path)]);
 
   const pathRecordErrorFor = (sourceVariable = "", path = "") => String(pathRecordsErrors?.[pathRecordKey(sourceVariable, path)] || "");
+
+  const pathRecordPollingFor = (sourceVariable = "", path = "") => Boolean(pathRecordPollTimers?.[pathRecordKey(sourceVariable, path)]);
 
   const cachePathRecord = (sourceVariable = "", path = "", payload = null) => {
     if (!sourceVariable || !payload) return;
@@ -720,6 +761,10 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       }
       return null;
     } catch (error) {
+      if (isTimeoutError(error)) {
+        schedulePathRecordPoll({ sourceVariable: variableName, path: targetPath, delayMs: 1100 });
+        return pathRecords?.[key] || null;
+      }
       pathRecordsErrors = {
         ...pathRecordsErrors,
         [key]: String(error?.message || error || "Unable to load value."),
@@ -889,6 +934,19 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       setCollectionSelection(record, resolvedPath, { selectedIndex, selectedAbsoluteIndex, selectedPath });
       return effectivePage;
     } catch (error) {
+      if (isTimeoutError(error)) {
+        scheduleRecordPagePoll(record, {
+          path: resolvedPath,
+          offset: resolvedOffset,
+          limit: resolvedLimit,
+          delayMs: 1100,
+        });
+        const cached = recordPages?.[cacheKey] || null;
+        if (cached) {
+          recordPagePointers = { ...recordPagePointers, [baseKey]: cacheKey };
+        }
+        return cached;
+      }
       recordPagesErrors = {
         ...recordPagesErrors,
         [baseKey]: String(error?.message || error || "Unable to load collection values."),
@@ -1441,39 +1499,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           dissolveDream();
           return { state: "idle", reason: "no-progress" };
         }
-        if (!pendingPoll) {
-          traceResolve("poll-start", {
-            traceId,
-            variable: request.variable,
-            path: currentPath || "/",
-          });
-          pendingPollTicks = 0;
-          pendingPoll = setInterval(() => {
-            if (resolveInFlight) return;
-            pendingPollTicks += 1;
-            if (pendingPollTicks > MAX_PENDING_POLL_TICKS) {
-              traceResolve("poll-timeout", {
-                traceId,
-                variable: request.variable,
-                path: currentPath || "/",
-                ticks: pendingPollTicks,
-              });
-              stopPoll();
-              statusValue = "idle";
-              statusText = `${request.variable} is still computing in the background. Click Run to refresh status.`;
-              errorText = "";
-              dissolveDream();
-              return;
-            }
-            traceResolve("poll-tick", {
-              traceId,
-              variable: request.variable,
-              path: currentPath || "/",
-              ticks: pendingPollTicks,
-            });
-            void resolvePrimaryValue({ enqueue: false, path: currentPath, background: true });
-          }, 1000);
-        }
+        ensurePendingPoll({ traceId, variable: request.variable, path: currentPath || "/" });
         return { state: "pending", reason: "in-progress" };
       }
 
@@ -1513,6 +1539,20 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         path: currentPath || "/",
         message: String(error?.message || error || "unknown"),
       });
+      if (isTimeoutError(error)) {
+        applyPending(
+          {
+            materialization: "pending",
+            compute_status: "running",
+            path: currentPath || "/",
+            log_tail: pendingLogRaw || "",
+            job_id: pendingLogJobId || "",
+          },
+          request.variable,
+        );
+        ensurePendingPoll({ traceId, variable: request.variable, path: currentPath || "/" });
+        return { state: "pending", reason: "request-timeout" };
+      }
       stopPoll();
       setSymbolStatus(request.variable, "failed");
       applyFailure({ error: error.message || "Request failed." }, request.variable);
@@ -1825,6 +1865,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
                         {pageForRecord}
                         {pageErrorForRecord}
                         {pageLoadingForRecord}
+                        {pagePollingForRecord}
                         {loadRecordPage}
                         {collectionItemsForPage}
                         {collectionSelectionFor}
@@ -1835,6 +1876,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
                         {pathRecordFor}
                         {pathRecordLoadingFor}
                         {pathRecordErrorFor}
+                        {pathRecordPollingFor}
                         {loadPathRecord}
                         {recordPages}
                         {recordPagePointers}

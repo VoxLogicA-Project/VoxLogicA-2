@@ -16,6 +16,7 @@
   export let pageForRecord = () => null;
   export let pageErrorForRecord = () => "";
   export let pageLoadingForRecord = () => false;
+  export let pagePollingForRecord = () => false;
   export let loadRecordPage = async () => null;
   export let collectionItemsForPage = (page) => (Array.isArray(page?.items) ? page.items : []);
   export let collectionSelectionFor = () => ({ selectedIndex: 0, selectedAbsoluteIndex: 0, selectedPath: "" });
@@ -26,6 +27,7 @@
   export let pathRecordFor = () => null;
   export let pathRecordLoadingFor = () => false;
   export let pathRecordErrorFor = () => "";
+  export let pathRecordPollingFor = () => false;
   export let loadPathRecord = async () => null;
 
   export let recordPages = {};
@@ -111,7 +113,7 @@
     }
   }
 
-  $: if (record && isCollection && !page && !loading && !error) {
+  $: if (record && isCollection && !page && !loading && !error && !pagePollingForRecord(record, path)) {
     void loadRecordPage(record, {
       path,
       offset: 0,
@@ -137,7 +139,8 @@
     selectedPath &&
     !selectedRecordDetail &&
     !selectedDetailLoading &&
-    !selectedDetailError
+    !selectedDetailError &&
+    !pathRecordPollingFor(sourceVariable, selectedPath)
   ) {
     void loadPathRecord({
       sourceVariable,
@@ -265,6 +268,7 @@
               {pageForRecord}
               {pageErrorForRecord}
               {pageLoadingForRecord}
+              {pagePollingForRecord}
               {loadRecordPage}
               {collectionItemsForPage}
               {collectionSelectionFor}
@@ -275,6 +279,7 @@
               {pathRecordFor}
               {pathRecordLoadingFor}
               {pathRecordErrorFor}
+              {pathRecordPollingFor}
               {loadPathRecord}
               {recordPages}
               {recordPagePointers}
