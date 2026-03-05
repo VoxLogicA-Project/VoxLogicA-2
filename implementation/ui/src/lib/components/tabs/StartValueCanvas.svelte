@@ -28,6 +28,15 @@
   export let pathRecordErrorFor = () => "";
   export let loadPathRecord = async () => null;
 
+  export let recordPages = {};
+  export let recordPagePointers = {};
+  export let recordPagesLoading = {};
+  export let recordPagesErrors = {};
+  export let collectionSelections = {};
+  export let pathRecords = {};
+  export let pathRecordsLoading = {};
+  export let pathRecordsErrors = {};
+
   const MAX_DEPTH = 7;
   const DEFAULT_LIMIT = 18;
 
@@ -49,11 +58,14 @@
   $: renderableImage = Boolean(renderPngUrl) && renderKind === "image2d";
   $: renderableVolume = Boolean(renderNiftiUrl) && renderKind === "medical-volume";
 
-  $: page = isCollection ? pageForRecord(record, path) : null;
-  $: loading = isCollection ? pageLoadingForRecord(record, path) : false;
-  $: error = isCollection ? pageErrorForRecord(record, path) : "";
+  $: page = (recordPages, recordPagePointers, isCollection ? pageForRecord(record, path) : null);
+  $: loading = (recordPagesLoading, isCollection ? pageLoadingForRecord(record, path) : false);
+  $: error = (recordPagesErrors, isCollection ? pageErrorForRecord(record, path) : "");
   $: items = isCollection ? collectionItemsForPage(page, voxType) : [];
-  $: selection = isCollection ? collectionSelectionFor(record, path) : { selectedIndex: 0, selectedAbsoluteIndex: 0, selectedPath: "" };
+  $: selection = (
+    collectionSelections,
+    isCollection ? collectionSelectionFor(record, path) : { selectedIndex: 0, selectedAbsoluteIndex: 0, selectedPath: "" }
+  );
 
   $: selectedIndex = (() => {
     if (!items.length) return 0;
@@ -67,9 +79,9 @@
   })();
   $: selectedItem = items.length ? items[selectedIndex] : null;
   $: selectedPath = String(selectedItem?.path || "");
-  $: selectedRecordDetail = selectedPath ? pathRecordFor(sourceVariable, selectedPath) : null;
-  $: selectedDetailLoading = selectedPath ? pathRecordLoadingFor(sourceVariable, selectedPath) : false;
-  $: selectedDetailError = selectedPath ? pathRecordErrorFor(sourceVariable, selectedPath) : "";
+  $: selectedRecordDetail = (pathRecords, selectedPath ? pathRecordFor(sourceVariable, selectedPath) : null);
+  $: selectedDetailLoading = (pathRecordsLoading, selectedPath ? pathRecordLoadingFor(sourceVariable, selectedPath) : false);
+  $: selectedDetailError = (pathRecordsErrors, selectedPath ? pathRecordErrorFor(sourceVariable, selectedPath) : "");
   $: selectedRecord = selectedRecordDetail || (selectedItem ? nestedRecordFromItem(record, selectedItem) : null);
   $: selectedDescriptor =
     selectedRecord?.descriptor && typeof selectedRecord.descriptor === "object"
@@ -254,6 +266,14 @@
               {pathRecordLoadingFor}
               {pathRecordErrorFor}
               {loadPathRecord}
+              {recordPages}
+              {recordPagePointers}
+              {recordPagesLoading}
+              {recordPagesErrors}
+              {collectionSelections}
+              {pathRecords}
+              {pathRecordsLoading}
+              {pathRecordsErrors}
             />
           {/if}
         </div>

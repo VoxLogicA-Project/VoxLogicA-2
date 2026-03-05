@@ -1735,6 +1735,14 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
                       {pathRecordLoadingFor}
                       {pathRecordErrorFor}
                       {loadPathRecord}
+                      {recordPages}
+                      {recordPagePointers}
+                      {recordPagesLoading}
+                      {recordPagesErrors}
+                      {collectionSelections}
+                      {pathRecords}
+                      {pathRecordsLoading}
+                      {pathRecordsErrors}
                     />
                   </article>
                 {/each}
