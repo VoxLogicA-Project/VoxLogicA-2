@@ -3,6 +3,7 @@
   import { getProgramSymbols, resolvePlaygroundValue, resolvePlaygroundValuePage } from "$lib/api/client.js";
   import { buildExecutionLogRows } from "$lib/utils/logs.js";
   import VoxCodeEditor from "$lib/components/editor/VoxCodeEditor.svelte";
+  import StartValueCanvas from "$lib/components/tabs/StartValueCanvas.svelte";
 
   export let active = false;
   export let capabilities = {};
@@ -83,8 +84,10 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let viewerMessage = "";
   let viewerErrorMessage = "";
   let recordPages = {};
+  let recordPagePointers = {};
   let recordPagesLoading = {};
   let recordPagesErrors = {};
+  let collectionSelections = {};
   let resolutionActivityRows = [];
   let resolutionActivitySummary = "No resolution activity yet.";
   let activitySeenKeys = new Set();
@@ -100,6 +103,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let probeToken = 0;
   let resolveTraceSeq = 0;
   const MAX_PENDING_POLL_TICKS = 45;
+  const COLLECTION_PAGE_SIZE = 18;
 
   let loadToken = 0;
 
@@ -485,22 +489,92 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     return selected || names[0] || (selectedVisualSymbols[index] ? selectedVisualSymbols[index] : `value ${index + 1}`);
   };
 
-  const variableForRecord = (record) => {
-    const nodeId = String(record?.node_id || "");
-    if (!nodeId) return primaryVariable;
-    const names = symbolNamesByNodeId()[nodeId] || [];
-    return names.find((name) => selectedVisualSymbols.includes(name)) || names[0] || primaryVariable;
-  };
-
   const recordPath = (record) => String(record?.path || "");
 
   const pageKey = (record, path = "") => `${String(record?.node_id || "")}:${String(path || recordPath(record) || "/")}`;
 
-  const pageForRecord = (record, path = "") => recordPages?.[pageKey(record, path)] || null;
+  const pageCacheKey = (record, path = "", offset = 0, limit = COLLECTION_PAGE_SIZE) =>
+    `${pageKey(record, path)}@${Math.max(0, Number(offset || 0))}:${Math.max(1, Number(limit || COLLECTION_PAGE_SIZE))}`;
+
+  const pageForRecord = (record, path = "") => {
+    const baseKey = pageKey(record, path);
+    const pointer = recordPagePointers?.[baseKey];
+    if (pointer && recordPages?.[pointer]) {
+      return recordPages[pointer];
+    }
+    const prefix = `${baseKey}@`;
+    const fallbackCacheKey = Object.keys(recordPages || {}).find((cacheKey) => cacheKey.startsWith(prefix));
+    if (!fallbackCacheKey) return null;
+    return recordPages[fallbackCacheKey] || null;
+  };
 
   const pageErrorForRecord = (record, path = "") => recordPagesErrors?.[pageKey(record, path)] || "";
 
-  const pageLoadingForRecord = (record, path = "") => Boolean(recordPagesLoading?.[pageKey(record, path)]);
+  const pageLoadingForRecord = (record, path = "") => {
+    const baseKey = pageKey(record, path);
+    const pointer = recordPagePointers?.[baseKey];
+    if (pointer && recordPagesLoading?.[pointer]) return true;
+    const prefix = `${baseKey}@`;
+    return Object.keys(recordPagesLoading || {}).some((cacheKey) => cacheKey.startsWith(prefix));
+  };
+
+  const collectionSelectionFor = (record, path = "") => {
+    const key = pageKey(record, path);
+    const selection = collectionSelections?.[key];
+    if (selection && typeof selection === "object") {
+      return {
+        selectedIndex: Math.max(0, Number(selection.selectedIndex || 0)),
+        selectedPath: String(selection.selectedPath || ""),
+      };
+    }
+    return { selectedIndex: 0, selectedPath: "" };
+  };
+
+  const setCollectionSelection = (record, path = "", selection = {}) => {
+    const key = pageKey(record, path);
+    const nextIndex = Math.max(0, Number(selection?.selectedIndex || 0));
+    const nextPath = String(selection?.selectedPath || "");
+    const current = collectionSelections?.[key];
+    if (current && Number(current.selectedIndex || 0) === nextIndex && String(current.selectedPath || "") === nextPath) return;
+    collectionSelections = {
+      ...collectionSelections,
+      [key]: {
+        selectedIndex: nextIndex,
+        selectedPath: nextPath,
+      },
+    };
+  };
+
+  const collectionItemsForPage = (page, voxType = "sequence") => {
+    const items = Array.isArray(page?.items) ? page.items : [];
+    if (String(voxType || "").toLowerCase() === "mapping") {
+      return [...items].sort((left, right) => String(left?.label || "").localeCompare(String(right?.label || "")));
+    }
+    return items;
+  };
+
+  const nestedRecordFromItem = (parentRecord, item) => ({
+    ...parentRecord,
+    node_id: String(item?.node_id || parentRecord?.node_id || ""),
+    path: String(item?.path || parentRecord?.path || ""),
+    status: String(item?.status || parentRecord?.status || ""),
+    descriptor:
+      item?.descriptor && typeof item.descriptor === "object"
+        ? item.descriptor
+        : {
+            vox_type: "unavailable",
+            summary: {
+              reason: "Value preview unavailable.",
+            },
+            navigation: {
+              path: String(item?.path || parentRecord?.path || ""),
+              pageable: false,
+              can_descend: false,
+              default_page_size: COLLECTION_PAGE_SIZE,
+              max_page_size: 256,
+            },
+          },
+  });
 
   const resolveViewerRecordsTypes = () => {
     const next = { ...symbolTypeHints };
@@ -516,17 +590,27 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     symbolTypeHints = next;
   };
 
-  const loadRecordPage = async (record, { path = "", offset = 0, limit = 12 } = {}) => {
+  const loadRecordPage = async (record, { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE } = {}) => {
     if (!record || !collectionRecord(record)) return null;
     const descriptor = recordDescriptor(record);
     const navigation = descriptor?.navigation && typeof descriptor.navigation === "object" ? descriptor.navigation : {};
     if (!navigation.pageable) return null;
     const resolvedPath = String(path || navigation.path || record.path || "");
-    const key = pageKey(record, resolvedPath);
-    if (recordPagesLoading?.[key]) return recordPages?.[key] || null;
-    recordPagesLoading = { ...recordPagesLoading, [key]: true };
+    const baseKey = pageKey(record, resolvedPath);
+    const resolvedLimit = Math.max(1, Number(limit || navigation.default_page_size || COLLECTION_PAGE_SIZE));
+    const resolvedOffset = Math.max(0, Number(offset || 0));
+    const cacheKey = pageCacheKey(record, resolvedPath, resolvedOffset, resolvedLimit);
+    if (recordPages?.[cacheKey]) {
+      recordPagePointers = {
+        ...recordPagePointers,
+        [baseKey]: cacheKey,
+      };
+      return recordPages[cacheKey];
+    }
+    if (recordPagesLoading?.[cacheKey]) return null;
+    recordPagesLoading = { ...recordPagesLoading, [cacheKey]: true };
     const nextErrors = { ...recordPagesErrors };
-    delete nextErrors[key];
+    delete nextErrors[baseKey];
     recordPagesErrors = nextErrors;
     try {
       const payload = await resolvePlaygroundValuePage({
@@ -534,43 +618,78 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         nodeId: String(record?.node_id || ""),
         variable: "",
         path: resolvedPath,
-        offset: Math.max(0, Number(offset || 0)),
-        limit: Math.max(1, Number(limit || 12)),
+        offset: resolvedOffset,
+        limit: resolvedLimit,
         enqueue: false,
       });
-      const page = payload?.page && typeof payload.page === "object" ? payload.page : { items: [], has_more: false, next_offset: null };
-      recordPages = { ...recordPages, [key]: page };
+      const page =
+        payload?.page && typeof payload.page === "object"
+          ? payload.page
+          : { offset: resolvedOffset, limit: resolvedLimit, items: [], has_more: false, next_offset: null };
+      recordPages = { ...recordPages, [cacheKey]: page };
+      recordPagePointers = { ...recordPagePointers, [baseKey]: cacheKey };
+      const items = collectionItemsForPage(page, recordType(record));
+      const currentSelection = collectionSelectionFor(record, resolvedPath);
+      let selectedIndex = Math.max(0, Number(currentSelection?.selectedIndex || 0));
+      let selectedPath = String(currentSelection?.selectedPath || "");
+      if (!items.length) {
+        selectedIndex = 0;
+        selectedPath = "";
+      } else {
+        const byPathIndex = selectedPath ? items.findIndex((item) => String(item?.path || "") === selectedPath) : -1;
+        if (byPathIndex >= 0) {
+          selectedIndex = byPathIndex;
+        } else if (selectedIndex >= items.length) {
+          selectedIndex = 0;
+        }
+        selectedPath = String(items[selectedIndex]?.path || "");
+      }
+      setCollectionSelection(record, resolvedPath, { selectedIndex, selectedPath });
       return page;
     } catch (error) {
       recordPagesErrors = {
         ...recordPagesErrors,
-        [key]: String(error?.message || error || "Unable to load collection values."),
+        [baseKey]: String(error?.message || error || "Unable to load collection values."),
       };
       return null;
     } finally {
       const nextLoading = { ...recordPagesLoading };
-      delete nextLoading[key];
+      delete nextLoading[cacheKey];
       recordPagesLoading = nextLoading;
     }
+  };
+
+  const loadCollectionPrev = async (record, path = "") => {
+    const page = pageForRecord(record, path);
+    if (!page) return null;
+    const offset = Math.max(0, Number(page.offset || 0));
+    const limit = Math.max(1, Number(page.limit || COLLECTION_PAGE_SIZE));
+    if (offset <= 0) return page;
+    return loadRecordPage(record, {
+      path,
+      offset: Math.max(0, offset - limit),
+      limit,
+    });
+  };
+
+  const loadCollectionNext = async (record, path = "") => {
+    const page = pageForRecord(record, path);
+    if (!page || page.next_offset === null || page.next_offset === undefined) return page;
+    const limit = Math.max(1, Number(page.limit || COLLECTION_PAGE_SIZE));
+    return loadRecordPage(record, {
+      path,
+      offset: Math.max(0, Number(page.next_offset || 0)),
+      limit,
+    });
   };
 
   const ensureRecordPages = () => {
     for (const record of viewerRecords) {
       if (!collectionRecord(record)) continue;
-      const key = pageKey(record, recordPath(record));
-      if (recordPages?.[key] || recordPagesLoading?.[key]) continue;
-      void loadRecordPage(record, { path: recordPath(record), offset: 0, limit: 12 });
+      const path = recordPath(record);
+      if (pageForRecord(record, path) || pageLoadingForRecord(record, path)) continue;
+      void loadRecordPage(record, { path, offset: 0, limit: COLLECTION_PAGE_SIZE });
     }
-  };
-
-  const inspectRecordPath = async (record, path = "") => {
-    const targetVariable = variableForRecord(record);
-    if (targetVariable && symbolTable?.[targetVariable]) {
-      primaryVariable = targetVariable;
-      captionVariable = targetVariable;
-    }
-    currentPath = String(path || "");
-    await resolvePrimaryValue({ enqueue: false, path: currentPath });
   };
 
   const previewText = (descriptor) => {
@@ -584,11 +703,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     if (voxType === "image2d" || voxType === "volume3d") return Array.isArray(summary.size) ? summary.size.join(" x ") : "image";
     if (summary && typeof summary.reason === "string") return summary.reason;
     return TYPE_LABELS[voxType] || voxType || "value";
-  };
-
-  const sortedCollectionItems = (page) => {
-    const items = Array.isArray(page?.items) ? page.items : [];
-    return [...items].sort((left, right) => String(left?.label || "").localeCompare(String(right?.label || "")));
   };
 
   const collectDreamIds = (payload = {}) => {
@@ -680,8 +794,10 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     viewerMessage = "";
     viewerErrorMessage = "";
     recordPages = {};
+    recordPagePointers = {};
     recordPagesLoading = {};
     recordPagesErrors = {};
+    collectionSelections = {};
   };
 
   const renderSelectedRecords = ({ fallbackRecord = null } = {}) => {
@@ -901,7 +1017,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       captionVariable = "-";
       dissolveDream();
       viewer.renderRecord(null);
-      return;
+      return { state: "idle", reason: "no-primary" };
     }
     if (symbolDiagnostics.length) {
       traceResolve("skip-diagnostics", {
@@ -918,7 +1034,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       viewer.setError(statusText);
       errorText = statusText;
       setSymbolStatus(primaryVariable, "failed");
-      return;
+      return { state: "failed", reason: "diagnostics" };
     }
 
     if (enqueue) {
@@ -990,7 +1106,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         });
         stopPoll();
         applyMaterialized(payload, primaryVariable);
-        return;
+        return { state: "computed", reason: "materialized" };
       }
 
       if (materialization === "failed" || computeStatus === "failed" || computeStatus === "killed") {
@@ -1005,7 +1121,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         stopPoll();
         setSymbolStatus(primaryVariable, "failed");
         applyFailure(payload, primaryVariable);
-        return;
+        return { state: "failed", reason: "materialization-failed" };
       }
 
       if (isPending) {
@@ -1031,7 +1147,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           setSymbolStatus(primaryVariable, "idle");
           setSymbolMaterialization(primaryVariable, materialization || "unresolved");
           dissolveDream();
-          return;
+          return { state: "idle", reason: "no-progress" };
         }
         if (!pendingPoll) {
           traceResolve("poll-start", {
@@ -1065,7 +1181,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
             void resolvePrimaryValue({ enqueue: false, path: currentPath });
           }, 1000);
         }
-        return;
+        return { state: "pending", reason: "in-progress" };
       }
 
       traceResolve("branch-unexpected", {
@@ -1084,6 +1200,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         },
         primaryVariable,
       );
+      return { state: "failed", reason: "unexpected-state" };
     } catch (error) {
       traceResolve("request-error", {
         traceId,
@@ -1095,6 +1212,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       stopPoll();
       setSymbolStatus(primaryVariable, "failed");
       applyFailure({ error: error.message || "Request failed." }, primaryVariable);
+      return { state: "failed", reason: "request-error" };
     }
   };
 
@@ -1194,6 +1312,22 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     await refreshSymbols();
   };
 
+  const resolveCurrentPreferCache = async () => {
+    const variableName = String(primaryVariable || "");
+    if (!variableName) return { state: "idle", reason: "no-primary" };
+    if (materializedRecords?.[variableName]) {
+      renderSelectedRecords();
+    }
+    const cachedAttempt = await resolvePrimaryValue({ enqueue: false, path: "" });
+    if (cachedAttempt?.state === "computed" || cachedAttempt?.state === "pending" || cachedAttempt?.state === "failed") {
+      return cachedAttempt;
+    }
+    if (materializedRecords?.[variableName]) {
+      return { state: "computed", reason: "local-cache" };
+    }
+    return resolvePrimaryValue({ enqueue: true, path: "" });
+  };
+
   const handleEditorSymbolClick = async (event) => {
     const token = String(event?.detail?.token || "");
     if (!token || !symbolTable[token]) return;
@@ -1208,7 +1342,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     selectedVisualSymbols = [token];
     renderSelectedRecords();
     currentPath = "";
-    await resolvePrimaryValue({ enqueue: true, path: "" });
+    await resolveCurrentPreferCache();
   };
 
   const runPrimary = async () => {
@@ -1246,7 +1380,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     currentPath = "";
     ensureSelectedVisualSymbols();
     renderSelectedRecords();
-    await resolvePrimaryValue({ enqueue: true, path: "" });
+    await resolveCurrentPreferCache();
   };
 
   $: editorSymbolTypes = Object.fromEntries(
@@ -1323,84 +1457,36 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
               <div class={`start-value-grid ${viewerRecords.length > 1 ? "is-multi" : "is-single"}`}>
                 {#each viewerRecords as record, index (`${record?.node_id || "value"}-${index}`)}
                   {@const descriptor = recordDescriptor(record)}
-                  {@const voxType = recordType(record)}
-                  {@const summary = descriptor?.summary && typeof descriptor.summary === "object" ? descriptor.summary : {}}
-                  <article class="start-value-card" title={`${recordLabel(record, index)} (${typeLabelFromDescriptor(descriptor)})`}>
+                  <article
+                    class={`start-value-card ${["integer", "number", "boolean", "null", "string", "bytes"].includes(recordType(record)) ? "is-centered-value" : ""}`.trim()}
+                    title={`${recordLabel(record, index)} (${typeLabelFromDescriptor(descriptor)})`}
+                  >
                     {#if viewerRecords.length > 1}
                       <header class="start-value-card-head">
                         <span class="start-value-card-label">{recordLabel(record, index)}</span>
                       </header>
                     {/if}
-
-                    {#if ["integer", "number", "boolean", "null"].includes(voxType)}
-                      <div class="start-pure-scalar">{summary.value ?? "null"}</div>
-                    {:else if voxType === "string"}
-                      <pre class="start-pure-text">{summary.value || ""}</pre>
-                    {:else if voxType === "bytes"}
-                      <div class="start-pure-scalar">{Number(summary.length || 0)} bytes</div>
-                    {:else if (voxType === "image2d" || voxType === "volume3d") && descriptor?.render?.png_url}
-                      <img class="start-pure-image" src={descriptor.render.png_url} alt={`${recordLabel(record, index)} preview`} />
-                    {:else if voxType === "ndarray"}
-                      <div class="start-pure-array">{previewText(descriptor)}</div>
-                    {:else if collectionRecord(record)}
-                      {@const collectionPage = pageForRecord(record, recordPath(record))}
-                      {@const collectionError = pageErrorForRecord(record, recordPath(record))}
-                      {@const collectionLoading = pageLoadingForRecord(record, recordPath(record))}
-                      {#if collectionLoading}
-                        <div class="start-gallery-loading">
-                          {#each (dreamNodeIds.length ? dreamNodeIds : [record?.node_id || "collection"]) as nodeId, nodeIndex}
-                            {#if nodeIndex < 8}
-                              <span style={`--node-index:${nodeIndex}`}>{shortNodeId(nodeId)}</span>
-                            {/if}
-                          {/each}
-                        </div>
-                      {:else if collectionError}
-                        <div class="viewer-error">{collectionError}</div>
-                      {:else if collectionPage && sortedCollectionItems(collectionPage).length}
-                        <div class="start-gallery-grid">
-                          {#each sortedCollectionItems(collectionPage) as item, itemIndex}
-                            {@const itemDescriptor = item?.descriptor && typeof item.descriptor === "object" ? item.descriptor : { vox_type: "value", summary: {} }}
-                            <button
-                              class="start-gallery-item"
-                              type="button"
-                              title={`${String(item?.label || `item ${itemIndex + 1}`)} (${typeLabelFromDescriptor(itemDescriptor)})`}
-                              on:click={() => void inspectRecordPath(record, item?.path || "")}
-                            >
-                              <span class="start-gallery-item-label">{item?.label || `item ${itemIndex + 1}`}</span>
-                              {#if itemDescriptor?.render?.png_url}
-                                <img
-                                  class="start-gallery-item-image"
-                                  src={itemDescriptor.render.png_url}
-                                  alt={`${String(item?.label || `item ${itemIndex + 1}`)} preview`}
-                                />
-                              {:else}
-                                <span class="start-gallery-item-value">{previewText(itemDescriptor)}</span>
-                              {/if}
-                            </button>
-                          {/each}
-                        </div>
-                        {#if collectionPage?.has_more}
-                          <div class="start-gallery-actions">
-                            <button
-                              class="btn btn-ghost btn-small"
-                              type="button"
-                              on:click={() =>
-                                void loadRecordPage(record, {
-                                  path: recordPath(record),
-                                  offset: Number(collectionPage?.next_offset || 0),
-                                  limit: Number(collectionPage?.limit || 12),
-                                })}
-                            >
-                              More
-                            </button>
-                          </div>
-                        {/if}
-                      {:else}
-                        <div class="start-viewer-message">No values yet</div>
-                      {/if}
-                    {:else}
-                      <div class="start-pure-array">{previewText(descriptor)}</div>
-                    {/if}
+                    <StartValueCanvas
+                      {record}
+                      label={recordLabel(record, index)}
+                      level={0}
+                      {collectionRecord}
+                      {recordDescriptor}
+                      {recordType}
+                      {recordPath}
+                      {previewText}
+                      {typeLabelFromDescriptor}
+                      {pageForRecord}
+                      {pageErrorForRecord}
+                      {pageLoadingForRecord}
+                      {loadRecordPage}
+                      {collectionItemsForPage}
+                      {collectionSelectionFor}
+                      {setCollectionSelection}
+                      {loadCollectionPrev}
+                      {loadCollectionNext}
+                      {nestedRecordFromItem}
+                    />
                   </article>
                 {/each}
               </div>
