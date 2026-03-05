@@ -125,7 +125,7 @@ describe("StartTab", () => {
     expect(resolvePlaygroundValueMock).not.toHaveBeenCalled();
   });
 
-  it("shows pending per-job logs while value is resolving", async () => {
+  it("polls pending values until completion", async () => {
     vi.useFakeTimers();
     getProgramSymbolsMock.mockResolvedValue({
       available: true,
@@ -169,17 +169,76 @@ describe("StartTab", () => {
     await fireEvent.click(runButton);
 
     await waitFor(() => {
-      expect(container.textContent).toContain("Resolution log");
-      expect(container.textContent).toContain("job job-12345678");
-      expect(container.textContent).toContain("const · cached");
-      expect(container.textContent).toContain("playground.node");
+      expect(container.textContent).toContain("Computing x");
     });
 
     vi.runOnlyPendingTimers();
     await waitFor(() => {
-      expect(container.textContent).not.toContain("Resolution log");
+      expect(resolvePlaygroundValueMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+      const chip = container.querySelector(".chip");
+      expect(chip?.textContent || "").toContain("completed");
     });
     vi.useRealTimers();
+  });
+
+  it("renders value tags with status/materialization and resolves clicked tags", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { a: "node-a", b: "node-b" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockImplementation(async ({ variable }) => ({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: `node-${variable || "x"}`,
+      path: "/",
+      descriptor: {
+        vox_type: "integer",
+        format_version: "voxpod/1",
+        summary: { value: variable === "b" ? 2 : 1 },
+        navigation: {
+          path: "/",
+          pageable: false,
+          can_descend: false,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    }));
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(container.querySelectorAll("button.start-value-tag").length).toBeGreaterThanOrEqual(2);
+    });
+    const valueTags = Array.from(container.querySelectorAll("button.start-value-tag"));
+    const aTag = valueTags.find((el) => (el.textContent || "").includes("a"));
+    const bTag = valueTags.find((el) => (el.textContent || "").includes("b"));
+    expect(aTag).not.toBeUndefined();
+    expect(bTag).not.toBeUndefined();
+    expect(aTag?.textContent || "").toContain("idle");
+    expect(aTag?.textContent || "").toContain("unresolved");
+
+    await fireEvent.click(aTag);
+    await waitFor(() => {
+      const latest = resolvePlaygroundValueMock.mock.calls.at(-1)?.[0];
+      expect(latest?.variable).toBe("a");
+    });
+
+    const latestBTag = Array.from(container.querySelectorAll("button.start-value-tag")).find((el) =>
+      (el.textContent || "").includes("b"),
+    );
+    await fireEvent.click(latestBTag, { ctrlKey: true });
+    await waitFor(() => {
+      const latest = resolvePlaygroundValueMock.mock.calls.at(-1)?.[0];
+      expect(latest?.variable).toBe("b");
+    });
+    await waitFor(() => {
+      expect(container.querySelectorAll(".start-value-tag.is-selected").length).toBe(2);
+    });
   });
 
   it("uses non-enqueue paging requests from the viewer", async () => {

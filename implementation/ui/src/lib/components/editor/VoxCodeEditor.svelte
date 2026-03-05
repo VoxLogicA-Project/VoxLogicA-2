@@ -17,6 +17,7 @@
   export let symbols = {};
   export let diagnostics = [];
   export let symbolStatuses = {};
+  export let selectedSymbols = [];
   export let autocompleteEnabled = true;
   export let completionProvider = null;
   export let completionKeywords = VOX_KEYWORDS;
@@ -254,7 +255,7 @@
     dispatch("hoverleave");
   };
 
-  $: overlayHtml = buildOverlayHtml(value, symbols, diagnostics, symbolStatuses);
+  $: overlayHtml = buildOverlayHtml(value, symbols, diagnostics, symbolStatuses, selectedSymbols);
   $: if (!suggestionsOpen && suggestions.length) {
     suggestions = [];
   }
@@ -354,14 +355,17 @@
 
   .vx-editor__shell {
     position: relative;
+    min-height: 340px;
+    height: 100%;
   }
 
   .vx-editor__input {
     width: 100%;
-    min-height: 300px;
+    min-height: 340px;
+    height: 100%;
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
-    resize: vertical;
+    resize: none;
     background: rgba(1, 10, 18, 0.8);
     color: transparent;
     caret-color: #cce2ff;
@@ -486,6 +490,13 @@
     color: #ffb2b2;
     text-decoration: underline solid rgba(255, 120, 120, 0.95);
     text-underline-offset: 0.14em;
+  }
+
+  :global(.vx-editor__symbol--selected) {
+    background: rgba(51, 105, 255, 0.22);
+    border-radius: 4px;
+    box-shadow: 0 0 0 1px rgba(51, 105, 255, 0.55);
+    padding: 0 3px;
   }
 
   :global(.vx-editor__symbol:focus-visible) {

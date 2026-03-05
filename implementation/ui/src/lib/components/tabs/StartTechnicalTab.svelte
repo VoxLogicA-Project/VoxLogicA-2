@@ -63,36 +63,33 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let symbolDiagnostics = [];
   let primaryVariable = "";
 
+  let splitPercent = 62;
+  let resizeActive = false;
+
   let viewerContainer;
   let viewer = null;
 
   let captionVariable = "-";
   let captionType = "-";
   let statusValue = "idle";
-  let statusText = "Write code and run to compute a value.";
+  let statusText = "Write code and run to materialize a result.";
   let errorText = "";
   let pendingLogSummary = "No execution log yet.";
   let pendingLogRows = [];
   let pendingLogRaw = "";
   let pendingLogJobId = "";
   let symbolStatuses = {};
-  let symbolMaterializations = {};
-  let materializedRecords = {};
-  let selectedVisualSymbols = [];
-  let viewerSupportsMultiValue = false;
-  let viewerSelectionSummary = "Select a value tag to visualize.";
   let resolutionActivityRows = [];
   let resolutionActivitySummary = "No resolution activity yet.";
   let activitySeenKeys = new Set();
   let currentPath = "";
   let pendingPoll = null;
-  let pendingPollTicks = 0;
   let pendingSave = null;
   let pendingProbe = null;
   let probeToken = 0;
   let resolveTraceSeq = 0;
-  const MAX_PENDING_POLL_TICKS = 45;
 
+  let initialized = false;
   let loadToken = 0;
 
   const diagnosticsText = () => {
@@ -126,22 +123,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     return "idle";
   };
 
-  const normalizeMaterialization = (value) => {
-    const normalized = String(value || "").trim().toLowerCase();
-    if (!normalized) return "unresolved";
-    if (normalized === "missing") return "pending";
-    if (normalized === "materialized" || normalized === "completed") return "computed";
-    if (normalized === "killed") return "failed";
-    if (["cached", "computed", "pending", "queued", "running", "persisting", "failed", "unresolved"].includes(normalized)) {
-      return normalized;
-    }
-    return "unresolved";
-  };
-
-  const materializationLabel = (name) => normalizeMaterialization(symbolMaterializations?.[name] || "unresolved");
-
-  const statusLabel = (name) => normalizeStatus(symbolStatuses?.[name] || "idle");
-
   const traceResolve = (event, details = {}) => {
     try {
       console.info("[start-tab.resolve]", {
@@ -165,51 +146,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       next[name] = normalizeStatus(symbolStatuses?.[name] || "idle");
     }
     symbolStatuses = next;
-  };
-
-  const syncSymbolMaterializations = (symbols) => {
-    const next = {};
-    for (const name of Object.keys(symbols || {})) {
-      next[name] = normalizeMaterialization(symbolMaterializations?.[name] || "unresolved");
-    }
-    symbolMaterializations = next;
-  };
-
-  const syncMaterializedRecords = (symbols) => {
-    const next = {};
-    for (const name of Object.keys(symbols || {})) {
-      if (materializedRecords?.[name]) {
-        next[name] = materializedRecords[name];
-      }
-    }
-    materializedRecords = next;
-  };
-
-  const ensureSelectedVisualSymbols = () => {
-    const names = Object.keys(symbolTable || {});
-    const retained = selectedVisualSymbols.filter((name) => names.includes(name));
-    if (retained.length) {
-      selectedVisualSymbols = retained;
-      return;
-    }
-    if (primaryVariable && names.includes(primaryVariable)) {
-      selectedVisualSymbols = [primaryVariable];
-      return;
-    }
-    if (names.length) {
-      selectedVisualSymbols = [names[0]];
-      return;
-    }
-    selectedVisualSymbols = [];
-  };
-
-  const setSymbolMaterialization = (name, materialization) => {
-    const symbolName = String(name || "").trim();
-    if (!symbolName || !symbolTable?.[symbolName]) return;
-    symbolMaterializations = {
-      ...symbolMaterializations,
-      [symbolName]: normalizeMaterialization(materialization),
-    };
   };
 
   const setSymbolStatus = (name, status) => {
@@ -290,11 +226,9 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   };
 
   const stopPoll = () => {
-    if (pendingPoll) {
-      clearInterval(pendingPoll);
-      pendingPoll = null;
-    }
-    pendingPollTicks = 0;
+    if (!pendingPoll) return;
+    clearInterval(pendingPoll);
+    pendingPoll = null;
   };
 
   const stopProbe = () => {
@@ -328,7 +262,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       const computeStatus = normalizeStatus(payload?.compute_status || "");
       if (materialization === "computed") {
         setSymbolStatus(symbolName, "computed");
-        setSymbolMaterialization(symbolName, payload?.materialization || "cached");
         pushResolutionActivity({
           variableName: symbolName,
           nodeId: String(payload?.node_id || ""),
@@ -341,16 +274,13 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       }
       if (computeStatus === "failed" || materialization === "failed") {
         setSymbolStatus(symbolName, "failed");
-        setSymbolMaterialization(symbolName, "failed");
         return;
       }
       if (["queued", "running", "persisting"].includes(computeStatus)) {
         setSymbolStatus(symbolName, computeStatus);
-        setSymbolMaterialization(symbolName, payload?.materialization || computeStatus);
         return;
       }
       setSymbolStatus(symbolName, "idle");
-      setSymbolMaterialization(symbolName, "unresolved");
     } catch {
       // Ignore per-symbol probe failures; interactive click still drives execution.
     }
@@ -417,8 +347,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
             enqueue: false,
           }),
       });
-      viewerSupportsMultiValue = typeof viewer?.renderRecords === "function";
-      updateViewerSelectionSummary();
       return;
     }
 
@@ -432,48 +360,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       renderRecord: (record) => {
         viewerContainer.textContent = JSON.stringify(record || {}, null, 2);
       },
-      renderRecords: (records) => {
-        viewerContainer.textContent = JSON.stringify(records || [], null, 2);
-      },
     };
-    viewerSupportsMultiValue = true;
-    updateViewerSelectionSummary();
-  };
-
-  const updateViewerSelectionSummary = () => {
-    if (!selectedVisualSymbols.length) {
-      viewerSelectionSummary = "Select a value tag to visualize.";
-      return;
-    }
-    if (selectedVisualSymbols.length === 1) {
-      viewerSelectionSummary = `Viewing ${selectedVisualSymbols[0]}`;
-      return;
-    }
-    if (viewerSupportsMultiValue) {
-      viewerSelectionSummary = `Comparing ${selectedVisualSymbols.length} values`;
-      return;
-    }
-    viewerSelectionSummary = `${selectedVisualSymbols.length} selected; active value shown`;
-  };
-
-  const renderSelectedRecords = ({ fallbackRecord = null } = {}) => {
-    ensureViewer();
-    const selectedRecords = selectedVisualSymbols.map((name) => materializedRecords?.[name]).filter((row) => !!row);
-    updateViewerSelectionSummary();
-    if (selectedRecords.length > 1 && viewerSupportsMultiValue && typeof viewer?.renderRecords === "function") {
-      viewer.renderRecords(selectedRecords);
-      return true;
-    }
-    const fallback =
-      materializedRecords?.[primaryVariable] ||
-      selectedRecords[selectedRecords.length - 1] ||
-      fallbackRecord ||
-      null;
-    if (fallback && typeof viewer?.renderRecord === "function") {
-      viewer.renderRecord(fallback);
-      return true;
-    }
-    return false;
   };
 
   const applyFailure = (payload, variableName) => {
@@ -483,13 +370,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     captionVariable = variableName || "-";
     captionType = "error";
     errorText = message;
-    setSymbolMaterialization(variableName, "failed");
-    if (materializedRecords?.[variableName]) {
-      const next = { ...materializedRecords };
-      delete next[variableName];
-      materializedRecords = next;
-    }
-    const failureRecord = {
+    viewer.renderRecord({
       available: false,
       node_id: payload?.node_id || "",
       status: "failed",
@@ -507,13 +388,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           max_page_size: 512,
         },
       },
-    };
-    const renderedFromSelection = renderSelectedRecords({
-      fallbackRecord: selectedVisualSymbols.includes(variableName) ? failureRecord : null,
     });
-    if (!renderedFromSelection) {
-      viewer.renderRecord(failureRecord);
-    }
   };
 
   const clearPendingLogs = () => {
@@ -594,7 +469,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     captionType = payload?.descriptor?.vox_type || "in-progress";
     errorText = "";
     setSymbolStatus(variableName, state);
-    setSymbolMaterialization(variableName, payload?.materialization || state);
     applyPendingLogs(payload, state);
     viewer.renderRecord({
       ...payload,
@@ -630,6 +504,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       path: String(payload?.path || currentPath || "/"),
       voxType: String(descriptor?.vox_type || ""),
     });
+    viewer.renderRecord(payload);
     statusValue = "completed";
     statusText = descriptor ? summarizeDescriptor(descriptor) : `Computed ${variableName}`;
     captionVariable = variableName || "-";
@@ -639,16 +514,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       statusText = `${statusText} (cached)`;
     }
     setSymbolStatus(variableName, "computed");
-    setSymbolMaterialization(variableName, materialization);
-    materializedRecords = {
-      ...materializedRecords,
-      [variableName]: payload,
-    };
-    if (!selectedVisualSymbols.includes(variableName)) {
-      selectedVisualSymbols = [...selectedVisualSymbols, variableName];
-    }
-    ensureSelectedVisualSymbols();
-    renderSelectedRecords({ fallbackRecord: payload });
     pushResolutionActivity({
       variableName,
       nodeId: String(payload?.node_id || ""),
@@ -682,7 +547,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         diagnostics: symbolDiagnostics.length,
       });
       statusValue = "failed";
-      statusText = "Fix static diagnostics before computing.";
+      statusText = "Fix static diagnostics before execution.";
       captionVariable = primaryVariable;
       captionType = "error";
       viewer.setError(statusText);
@@ -706,12 +571,12 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       statusBefore: statusValue,
     });
     statusValue = "running";
-    statusText = `Computing ${primaryVariable}...`;
+    statusText = `Resolving ${primaryVariable}...`;
     captionVariable = primaryVariable;
     captionType = "in-progress";
     errorText = "";
     setSymbolStatus(primaryVariable, "running");
-    viewer.setLoading(`Computing ${primaryVariable}${currentPath ? ` @ ${currentPath}` : ""}...`);
+    viewer.setLoading(`Resolving ${primaryVariable}${currentPath ? ` @ ${currentPath}` : ""}...`);
 
     try {
       const requestStarted = performance?.now ? performance.now() : Date.now();
@@ -780,56 +645,26 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       }
 
       if (isPending) {
-        const hasProgressSignal =
-          materialization === "pending" ||
-          ["queued", "running", "persisting"].includes(computeStatus) ||
-          Boolean(payload?.request_enqueued) ||
-          Boolean(payload?.job_id);
         traceResolve("branch-pending", {
           traceId,
           variable: primaryVariable,
           path: currentPath || "/",
           materialization,
           computeStatus,
-          hasProgressSignal,
           pollActive: Boolean(pendingPoll),
         });
         applyPending(payload, primaryVariable);
-        if (!hasProgressSignal) {
-          stopPoll();
-          statusValue = "idle";
-          statusText = `${primaryVariable} is not ready yet. Click Run or click the tag again to refresh.`;
-          setSymbolStatus(primaryVariable, "idle");
-          setSymbolMaterialization(primaryVariable, materialization || "unresolved");
-          return;
-        }
         if (!pendingPoll) {
           traceResolve("poll-start", {
             traceId,
             variable: primaryVariable,
             path: currentPath || "/",
           });
-          pendingPollTicks = 0;
           pendingPoll = setInterval(() => {
-            pendingPollTicks += 1;
-            if (pendingPollTicks > MAX_PENDING_POLL_TICKS) {
-              traceResolve("poll-timeout", {
-                traceId,
-                variable: primaryVariable,
-                path: currentPath || "/",
-                ticks: pendingPollTicks,
-              });
-              stopPoll();
-              statusValue = "idle";
-              statusText = `${primaryVariable} is still computing in the background. Click Run to refresh status.`;
-              errorText = "";
-              return;
-            }
             traceResolve("poll-tick", {
               traceId,
               variable: primaryVariable,
               path: currentPath || "/",
-              ticks: pendingPollTicks,
             });
             void resolvePrimaryValue({ enqueue: false, path: currentPath });
           }, 1000);
@@ -874,16 +709,12 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       symbolTable = {};
       symbolDiagnostics = [];
       symbolStatuses = {};
-      symbolMaterializations = {};
-      materializedRecords = {};
-      selectedVisualSymbols = [];
       primaryVariable = "";
       captionVariable = "-";
       captionType = "-";
       statusValue = "failed";
       statusText = "Program symbol API unavailable on this backend.";
       errorText = statusText;
-      updateViewerSelectionSummary();
       return;
     }
 
@@ -897,16 +728,12 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       symbolTable = {};
       symbolDiagnostics = [];
       symbolStatuses = {};
-      symbolMaterializations = {};
-      materializedRecords = {};
-      selectedVisualSymbols = [];
       primaryVariable = "";
       captionVariable = "-";
       captionType = "-";
       statusValue = "idle";
-      statusText = "Write code and run to compute a value.";
+      statusText = "Write code and run to materialize a result.";
       errorText = "";
-      updateViewerSelectionSummary();
       return;
     }
 
@@ -917,20 +744,15 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       symbolTable = available ? payload.symbol_table || {} : {};
       symbolDiagnostics = payload?.diagnostics || [];
       syncSymbolStatuses(symbolTable);
-      syncSymbolMaterializations(symbolTable);
-      syncMaterializedRecords(symbolTable);
       primaryVariable = inferPrimaryVariable(programText, symbolTable);
-      ensureSelectedVisualSymbols();
       captionVariable = primaryVariable || "-";
-      updateViewerSelectionSummary();
-      renderSelectedRecords();
       if (symbolDiagnostics.length) {
         statusValue = "failed";
         statusText = "Static diagnostics detected.";
         errorText = statusText;
       } else if (primaryVariable) {
         statusValue = "idle";
-        statusText = `Ready to compute ${primaryVariable}.`;
+        statusText = `Ready to resolve ${primaryVariable}.`;
         errorText = "";
         scheduleSymbolProbe();
       }
@@ -941,15 +763,11 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       symbolTable = {};
       symbolDiagnostics = [{ code: "E_SYMBOLS", message: error.message || "Unable to refresh symbols." }];
       symbolStatuses = {};
-      symbolMaterializations = {};
-      materializedRecords = {};
-      selectedVisualSymbols = [];
       primaryVariable = "";
       captionVariable = "-";
       statusValue = "failed";
       statusText = "Unable to refresh symbols.";
       errorText = statusText;
-      updateViewerSelectionSummary();
     }
   };
 
@@ -973,9 +791,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     });
     primaryVariable = token;
     captionVariable = token;
-    selectedVisualSymbols = [token];
-    updateViewerSelectionSummary();
-    renderSelectedRecords();
     currentPath = "";
     await resolvePrimaryValue({ enqueue: true, path: "" });
   };
@@ -988,35 +803,33 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     });
     stopPoll();
     await refreshSymbols();
-    ensureSelectedVisualSymbols();
-    updateViewerSelectionSummary();
     await resolvePrimaryValue({ enqueue: true, path: "" });
   };
 
-  const handleVisualTagClick = async (symbolName, event) => {
-    const name = String(symbolName || "");
-    if (!name || !symbolTable?.[name]) return;
-    const additive = Boolean(event?.metaKey || event?.ctrlKey || event?.shiftKey);
-    if (additive) {
-      if (selectedVisualSymbols.includes(name)) {
-        if (selectedVisualSymbols.length > 1) {
-          selectedVisualSymbols = selectedVisualSymbols.filter((entry) => entry !== name);
-          ensureSelectedVisualSymbols();
-          renderSelectedRecords();
-          return;
-        }
-      } else {
-        selectedVisualSymbols = [...selectedVisualSymbols, name];
-      }
-    } else {
-      selectedVisualSymbols = [name];
-    }
-    primaryVariable = name;
-    captionVariable = name;
-    currentPath = "";
-    ensureSelectedVisualSymbols();
-    renderSelectedRecords();
-    await resolvePrimaryValue({ enqueue: true, path: "" });
+  const startResize = (event) => {
+    event.preventDefault();
+    const splitRoot = event.currentTarget?.parentElement;
+    if (!(splitRoot instanceof HTMLElement)) return;
+
+    const rect = splitRoot.getBoundingClientRect();
+    resizeActive = true;
+
+    const onPointerMove = (moveEvent) => {
+      const y = moveEvent.clientY - rect.top;
+      const next = Math.max(28, Math.min(82, (y / rect.height) * 100));
+      splitPercent = Number(next.toFixed(2));
+    };
+
+    const onPointerUp = () => {
+      resizeActive = false;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
   };
 
   onMount(async () => {
@@ -1030,6 +843,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       // ignore localStorage errors
     }
 
+    initialized = true;
     await refreshSymbols();
   });
 
@@ -1044,76 +858,119 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   });
 </script>
 
-<section class={`panel ${active ? "active" : ""}`} id="tab-start">
-  <article class="card start-prime-shell">
-    <header class="start-prime-head">
-      <div class="start-prime-heading">
-        <p class="start-prime-eyebrow">Minimal Logic Workspace</p>
-        <h2>Start</h2>
-      </div>
-    </header>
-
-    <div class="start-prime-grid">
-      <section class="start-prime-editor">
-        <header class="start-prime-panel-head">
-          <h3>Code Editor</h3>
-        </header>
-        <div class="start-prime-editor-frame">
-          <VoxCodeEditor
-            ariaLabel="Start tab code editor"
-            bind:value={programText}
-            symbols={symbolTable}
-            symbolStatuses={symbolStatuses}
-            selectedSymbols={selectedVisualSymbols}
-            diagnostics={symbolDiagnostics}
-            autocompleteEnabled={true}
-            completionProvider={provideEditorCompletions}
-            completionBuiltins={COMPLETION_BUILTINS}
-            on:change={handleEditorChange}
-            on:symbolclick={handleEditorSymbolClick}
-          />
-        </div>
-      </section>
-
-      <section class="start-prime-visual">
-        <header class="start-prime-panel-head">
-          <h3>Visualization</h3>
-        </header>
-
-        <div class="start-viewer-wrap start-prime-viewer-wrap">
-          <div class="result-inspector start-viewer" bind:this={viewerContainer}></div>
-        </div>
-
-        <div class="start-prime-controls">
-          <footer class="start-caption">
-            <span class="start-caption-main">{captionVariable}</span>
-            <span class="start-caption-type">{captionType}</span>
-          </footer>
-          <div class="start-value-tag-row">
-            {#if !Object.keys(symbolTable || {}).length}
-              <span class="start-value-tag start-value-tag--empty">No visualizable symbols yet</span>
-            {:else}
-              {#each Object.keys(symbolTable || {}) as symbolName}
-                <button
-                  class={`start-value-tag start-value-tag--${statusLabel(symbolName)} ${selectedVisualSymbols.includes(symbolName) ? "is-selected" : ""}`.trim()}
-                  type="button"
-                  on:click={(event) => void handleVisualTagClick(symbolName, event)}
-                >
-                  <span class="start-value-tag-name">{symbolName}</span>
-                  <span class="start-value-tag-meta">{statusLabel(symbolName)} · {materializationLabel(symbolName)}</span>
-                </button>
-              {/each}
-            {/if}
-          </div>
-          <div class="start-prime-action-row">
+<section class={`panel ${active ? "active" : ""}`} id="tab-start-tech">
+  <article class="card start-shell">
+    <div class="start-split" style={`grid-template-rows: minmax(220px, ${splitPercent}fr) 10px minmax(220px, ${100 - splitPercent}fr);`}>
+      <section class="start-result">
+        <header class="start-head">
+          <h2>Start Technical</h2>
+          <div class="row gap-s">
             <StatusChip value={statusValue} />
             <button class="btn btn-primary btn-small" type="button" on:click={runPrimary}>Run</button>
           </div>
+        </header>
+        <div class="start-viewer-wrap">
+          <div class="result-inspector start-viewer" bind:this={viewerContainer}></div>
         </div>
+        <footer class="start-caption">
+          <span class="start-caption-main">{captionVariable}</span>
+          <span class="start-caption-type">{captionType}</span>
+        </footer>
+      </section>
+
+      <div
+        class={`start-divider ${resizeActive ? "is-active" : ""}`}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize result and code panes"
+        on:pointerdown={startResize}
+      >
+        <span></span>
+      </div>
+
+      <section class="start-editor">
+        <VoxCodeEditor
+          ariaLabel="Start tab code editor"
+          bind:value={programText}
+          symbols={symbolTable}
+          symbolStatuses={symbolStatuses}
+          diagnostics={symbolDiagnostics}
+          autocompleteEnabled={true}
+          completionProvider={provideEditorCompletions}
+          completionBuiltins={COMPLETION_BUILTINS}
+          on:change={handleEditorChange}
+          on:symbolclick={handleEditorSymbolClick}
+        />
       </section>
     </div>
 
     <p class="start-status muted">{statusText}</p>
+
+    <section class="start-activity">
+      <header class="viewer-header">
+        <h3>Resolution activity</h3>
+        <span class="muted">{resolutionActivitySummary}</span>
+      </header>
+      <div class="start-status-grid">
+        {#if !Object.keys(symbolTable || {}).length}
+          <span class="start-status-pill start-status-pill--idle">No symbols</span>
+        {:else}
+          {#each Object.keys(symbolTable || {}) as symbolName}
+            <span class={`start-status-pill start-status-pill--${normalizeStatus(symbolStatuses?.[symbolName] || "idle")}`}>
+              {symbolName}: {normalizeStatus(symbolStatuses?.[symbolName] || "idle")}
+            </span>
+          {/each}
+        {/if}
+      </div>
+      <div class="table-like muted">
+        {#if !resolutionActivityRows.length}
+          <article class="table-like-row">
+            <div class="name">No events yet</div>
+            <div class="detail">Click a variable to start resolution and watch status transitions.</div>
+          </article>
+        {:else}
+          {#each resolutionActivityRows as row}
+            <article class="table-like-row">
+              <div class="name">{row.variableName || "(internal)"} · {row.status}</div>
+              <div class="detail">{row.operator || "node"} · cache={row.cacheSource || "-"} · {row.durationS.toFixed(3)}s · {row.nodeId ? row.nodeId.slice(0, 12) : "-"}</div>
+            </article>
+          {/each}
+        {/if}
+      </div>
+    </section>
+
+    {#if statusValue === "running"}
+      <section class="start-logs">
+        <header class="viewer-header">
+          <h3>Resolution log</h3>
+          <span class="muted">{pendingLogJobId ? `job ${pendingLogJobId.slice(0, 12)}` : "job pending"}</span>
+        </header>
+        <p class="muted">{pendingLogSummary}</p>
+        <div class="table-like muted">
+          {#if !pendingLogRows.length}
+            <article class="table-like-row">
+              <div class="name">No structured events yet</div>
+              <div class="detail">Raw log tail below updates as the worker emits lines.</div>
+            </article>
+          {:else}
+            {#each pendingLogRows as entry}
+              {#if entry.event === "playground.node"}
+                <article class="table-like-row">
+                  <div class="name">{entry.operator || "node"} · {entry.status || "running"}</div>
+                  <div class="detail">cache={entry.cache_source || "-"} · {Number(entry.duration_s || 0).toFixed(3)}s · {String(entry.node_id || "").slice(0, 12)}</div>
+                </article>
+              {:else}
+                <article class="table-like-row">
+                  <div class="name">{entry.event || "event"}</div>
+                  <div class="detail">{entry.message || JSON.stringify(entry)}</div>
+                </article>
+              {/if}
+            {/each}
+          {/if}
+        </div>
+        <pre class="mono-scroll compact-log">{pendingLogRaw || "Waiting for log output..."}</pre>
+      </section>
+    {/if}
 
     {#if diagnosticsText()}
       <div class="inline-error">{diagnosticsText()}</div>

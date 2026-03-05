@@ -112,14 +112,15 @@ const normalizeSymbolStatus = (status) => {
   return "idle";
 };
 
-const renderToken = (token, symbolSet, symbolStatuses) => {
+const renderToken = (token, symbolSet, symbolStatuses, selectedSymbols) => {
   const text = String(token.text || "");
   const safeText = sanitizeText(text);
   if (token.kind === "space") return safeText;
   if (token.kind === "identifier" && symbolSet.has(text)) {
     const encoded = encodeURIComponent(text);
     const status = normalizeSymbolStatus(symbolStatuses?.[text]);
-    const className = `vx-editor__symbol vx-editor__symbol--${sanitizeAttr(status)}`;
+    const isSelected = selectedSymbols.has(text);
+    const className = `vx-editor__symbol vx-editor__symbol--${sanitizeAttr(status)}${isSelected ? " vx-editor__symbol--selected" : ""}`;
     return (
       `<button type="button" class="${className}" data-status="${sanitizeAttr(status)}" ` +
       `data-token="${sanitizeAttr(encoded)}" title="Inspect ${sanitizeAttr(text)}">` +
@@ -130,9 +131,10 @@ const renderToken = (token, symbolSet, symbolStatuses) => {
   return `<span class="${className}">${safeText}</span>`;
 };
 
-export const buildOverlayHtml = (text, symbols = {}, diagnostics = [], symbolStatuses = {}) => {
+export const buildOverlayHtml = (text, symbols = {}, diagnostics = [], symbolStatuses = {}, selectedSymbols = []) => {
   const source = String(text || "");
   const symbolSet = new Set(Object.keys(symbols || {}));
+  const selectedSet = new Set((Array.isArray(selectedSymbols) ? selectedSymbols : []).map((value) => String(value || "")));
   const diagnosticLines = new Set();
   for (const diag of Array.isArray(diagnostics) ? diagnostics : []) {
     const loc = parseDiagnosticLocation(diag);
@@ -147,7 +149,7 @@ export const buildOverlayHtml = (text, symbols = {}, diagnostics = [], symbolSta
       const lineNo = idx + 1;
       const lineClass = diagnosticLines.has(lineNo) ? "vx-editor__line vx-editor__line--error" : "vx-editor__line";
       const tokens = tokenizeLine(line);
-      const rendered = tokens.map((token) => renderToken(token, symbolSet, symbolStatuses)).join("");
+      const rendered = tokens.map((token) => renderToken(token, symbolSet, symbolStatuses, selectedSet)).join("");
       return `<span class="${lineClass}" data-line="${lineNo}">${rendered || " "}</span>`;
     })
     .join("");

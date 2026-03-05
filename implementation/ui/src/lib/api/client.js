@@ -17,15 +17,51 @@ const nowMs = () =>
 export const apiRequest = async (path, init = {}) => {
   const traceValueRequest = isPlaygroundValueRequest(path);
   const method = String(init?.method || "GET").toUpperCase();
+  const timeoutMsRaw = Number(init?.timeoutMs ?? (traceValueRequest ? 15000 : 0));
+  const timeoutMs = Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0 ? Math.floor(timeoutMsRaw) : 0;
+  const requestInit = { ...init };
+  delete requestInit.timeoutMs;
   const started = nowMs();
+  let timeoutId = null;
+  let timedOut = false;
+  let abortController = null;
+  if (timeoutMs > 0) {
+    abortController = new AbortController();
+    requestInit.signal = abortController.signal;
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      abortController.abort();
+    }, timeoutMs);
+  }
   if (traceValueRequest) {
     console.info("[api.request]", {
       phase: "start",
       path,
       method,
+      timeoutMs,
     });
   }
-  const response = await fetch(path, init);
+  let response;
+  try {
+    response = await fetch(path, requestInit);
+  } catch (error) {
+    const elapsedMs = nowMs() - started;
+    if (traceValueRequest) {
+      console.error("[api.request]", {
+        phase: timedOut ? "timeout" : "network-error",
+        path,
+        method,
+        elapsedMs: Number(elapsedMs.toFixed(1)),
+        message: String(error?.message || error || "request-failed"),
+      });
+    }
+    if (timedOut || String(error?.name || "").toLowerCase() === "aborterror") {
+      throw new Error(`Value request timed out after ${timeoutMs} ms.`);
+    }
+    throw error;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
   const text = await response.text();
   const elapsedMs = nowMs() - started;
   if (traceValueRequest) {
