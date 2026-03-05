@@ -2,9 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import { getProgramSymbols, resolvePlaygroundValue, resolvePlaygroundValuePage } from "$lib/api/client.js";
   import { buildExecutionLogRows } from "$lib/utils/logs.js";
-  import { summarizeDescriptor } from "$lib/utils/playground-value.js";
   import VoxCodeEditor from "$lib/components/editor/VoxCodeEditor.svelte";
-  import StatusChip from "$lib/components/shared/StatusChip.svelte";
 
   export let active = false;
   export let capabilities = {};
@@ -63,11 +61,9 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let symbolDiagnostics = [];
   let primaryVariable = "";
 
-  let viewerContainer;
   let viewer = null;
 
   let captionVariable = "-";
-  let captionType = "-";
   let statusValue = "idle";
   let statusText = "Write code and run to compute a value.";
   let errorText = "";
@@ -78,12 +74,24 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let symbolStatuses = {};
   let symbolMaterializations = {};
   let materializedRecords = {};
+  let symbolTypeHints = {};
+  let editorSymbolTypes = {};
   let selectedVisualSymbols = [];
   let viewerSupportsMultiValue = false;
-  let viewerSelectionSummary = "Select a value tag to visualize.";
+  let viewerRecords = [];
+  let viewerMode = "empty";
+  let viewerMessage = "";
+  let viewerErrorMessage = "";
+  let recordPages = {};
+  let recordPagesLoading = {};
+  let recordPagesErrors = {};
   let resolutionActivityRows = [];
   let resolutionActivitySummary = "No resolution activity yet.";
   let activitySeenKeys = new Set();
+  let dreamNodeIds = [];
+  let dreamVisible = false;
+  let dreamDissolving = false;
+  let pendingDreamCleanup = null;
   let currentPath = "";
   let pendingPoll = null;
   let pendingPollTicks = 0;
@@ -94,6 +102,21 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   const MAX_PENDING_POLL_TICKS = 45;
 
   let loadToken = 0;
+
+  const TYPE_LABELS = {
+    integer: "number",
+    number: "number",
+    boolean: "boolean",
+    string: "text",
+    bytes: "bytes",
+    ndarray: "array",
+    image2d: "image",
+    volume3d: "volume",
+    mapping: "object",
+    sequence: "collection",
+    unavailable: "pending",
+    error: "error",
+  };
 
   const diagnosticsText = () => {
     const rows = Array.isArray(symbolDiagnostics) ? symbolDiagnostics : [];
@@ -138,9 +161,42 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     return "unresolved";
   };
 
-  const materializationLabel = (name) => normalizeMaterialization(symbolMaterializations?.[name] || "unresolved");
+  const typeLabelFromDescriptor = (descriptor) => {
+    const rawType = String(descriptor?.vox_type || "").trim().toLowerCase();
+    if (!rawType) return "value";
+    return TYPE_LABELS[rawType] || rawType.replaceAll("_", " ");
+  };
 
-  const statusLabel = (name) => normalizeStatus(symbolStatuses?.[name] || "idle");
+  const symbolTypeLabel = (name) => {
+    const key = String(name || "");
+    if (!key) return "value";
+    const hinted = String(symbolTypeHints?.[key] || "").trim().toLowerCase();
+    if (hinted) return TYPE_LABELS[hinted] || hinted.replaceAll("_", " ");
+    const record = materializedRecords?.[key];
+    return typeLabelFromDescriptor(record?.descriptor);
+  };
+
+  const symbolTypeTitle = (name) => `${String(name || "")} (${symbolTypeLabel(name)})`;
+
+  const statusLabel = (name) => {
+    const key = String(name || "");
+    if (!key) return "idle";
+    if (materializedRecords?.[key]?.descriptor) return "computed";
+    const status = normalizeStatus(symbolStatuses?.[key] || "idle");
+    const materialization = normalizeMaterialization(symbolMaterializations?.[key] || "unresolved");
+    if (materialization === "computed") return "computed";
+    if (materialization === "failed") return "failed";
+    if (["queued", "running", "persisting", "failed", "computed"].includes(status)) return status;
+    if (["queued", "running", "persisting"].includes(materialization)) return materialization;
+    return "idle";
+  };
+
+  const shortNodeId = (nodeId) => {
+    const text = String(nodeId || "");
+    if (!text) return "";
+    if (text.length <= 20) return text;
+    return `${text.slice(0, 10)}…${text.slice(-6)}`;
+  };
 
   const traceResolve = (event, details = {}) => {
     try {
@@ -183,6 +239,19 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       }
     }
     materializedRecords = next;
+  };
+
+  const syncSymbolTypeHints = (symbols) => {
+    const next = {};
+    for (const name of Object.keys(symbols || {})) {
+      const hinted = String(symbolTypeHints?.[name] || "").trim();
+      if (hinted) {
+        next[name] = hinted;
+      } else if (materializedRecords?.[name]?.descriptor?.vox_type) {
+        next[name] = String(materializedRecords[name].descriptor.vox_type);
+      }
+    }
+    symbolTypeHints = next;
   };
 
   const ensureSelectedVisualSymbols = () => {
@@ -329,6 +398,12 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       if (materialization === "computed") {
         setSymbolStatus(symbolName, "computed");
         setSymbolMaterialization(symbolName, payload?.materialization || "cached");
+        if (payload?.descriptor?.vox_type) {
+          symbolTypeHints = {
+            ...symbolTypeHints,
+            [symbolName]: String(payload.descriptor.vox_type),
+          };
+        }
         pushResolutionActivity({
           variableName: symbolName,
           nodeId: String(payload?.node_id || ""),
@@ -396,70 +471,222 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     return symbolKeys[symbolKeys.length - 1] || symbolKeys[0] || "";
   };
 
-  const ensureViewer = () => {
-    if (viewer || !viewerContainer) return;
+  const recordDescriptor = (record) =>
+    record?.descriptor && typeof record.descriptor === "object" ? record.descriptor : { vox_type: "unavailable", summary: {} };
 
-    const ctor = window.VoxResultViewer?.ResultViewer;
-    if (typeof ctor === "function") {
-      viewer = new ctor(viewerContainer, {
-        onNavigate: (path) => {
-          currentPath = String(path || "");
-          void resolvePrimaryValue({ enqueue: false, path: currentPath });
-        },
-        fetchPage: ({ nodeId, path, offset, limit }) =>
-          resolvePlaygroundValuePage({
-            program: programText,
-            nodeId: nodeId || "",
-            variable: primaryVariable,
-            path: path || "",
-            offset: Number(offset || 0),
-            limit: Number(limit || 64),
-            enqueue: false,
-          }),
-      });
-      viewerSupportsMultiValue = typeof viewer?.renderRecords === "function";
-      updateViewerSelectionSummary();
-      return;
-    }
+  const recordType = (record) => String(recordDescriptor(record)?.vox_type || "unavailable").toLowerCase();
 
-    viewer = {
-      setLoading: (message) => {
-        viewerContainer.textContent = message || "Loading...";
-      },
-      setError: (message) => {
-        viewerContainer.textContent = message || "Viewer error";
-      },
-      renderRecord: (record) => {
-        viewerContainer.textContent = JSON.stringify(record || {}, null, 2);
-      },
-      renderRecords: (records) => {
-        viewerContainer.textContent = JSON.stringify(records || [], null, 2);
-      },
-    };
-    viewerSupportsMultiValue = true;
-    updateViewerSelectionSummary();
+  const collectionRecord = (record) => ["sequence", "mapping"].includes(recordType(record));
+
+  const recordLabel = (record, index = 0) => {
+    const nodeId = String(record?.node_id || "");
+    const names = symbolNamesByNodeId()[nodeId] || [];
+    const selected = names.find((name) => selectedVisualSymbols.includes(name));
+    return selected || names[0] || (selectedVisualSymbols[index] ? selectedVisualSymbols[index] : `value ${index + 1}`);
   };
 
-  const updateViewerSelectionSummary = () => {
-    if (!selectedVisualSymbols.length) {
-      viewerSelectionSummary = "Select a value tag to visualize.";
-      return;
+  const variableForRecord = (record) => {
+    const nodeId = String(record?.node_id || "");
+    if (!nodeId) return primaryVariable;
+    const names = symbolNamesByNodeId()[nodeId] || [];
+    return names.find((name) => selectedVisualSymbols.includes(name)) || names[0] || primaryVariable;
+  };
+
+  const recordPath = (record) => String(record?.path || "");
+
+  const pageKey = (record, path = "") => `${String(record?.node_id || "")}:${String(path || recordPath(record) || "/")}`;
+
+  const pageForRecord = (record, path = "") => recordPages?.[pageKey(record, path)] || null;
+
+  const pageErrorForRecord = (record, path = "") => recordPagesErrors?.[pageKey(record, path)] || "";
+
+  const pageLoadingForRecord = (record, path = "") => Boolean(recordPagesLoading?.[pageKey(record, path)]);
+
+  const resolveViewerRecordsTypes = () => {
+    const next = { ...symbolTypeHints };
+    for (const record of viewerRecords) {
+      const nodeId = String(record?.node_id || "");
+      const type = String(record?.descriptor?.vox_type || "").trim();
+      if (!nodeId || !type) continue;
+      const names = symbolNamesByNodeId()[nodeId] || [];
+      for (const name of names) {
+        next[name] = type;
+      }
     }
-    if (selectedVisualSymbols.length === 1) {
-      viewerSelectionSummary = `Viewing ${selectedVisualSymbols[0]}`;
-      return;
+    symbolTypeHints = next;
+  };
+
+  const loadRecordPage = async (record, { path = "", offset = 0, limit = 12 } = {}) => {
+    if (!record || !collectionRecord(record)) return null;
+    const descriptor = recordDescriptor(record);
+    const navigation = descriptor?.navigation && typeof descriptor.navigation === "object" ? descriptor.navigation : {};
+    if (!navigation.pageable) return null;
+    const resolvedPath = String(path || navigation.path || record.path || "");
+    const key = pageKey(record, resolvedPath);
+    if (recordPagesLoading?.[key]) return recordPages?.[key] || null;
+    recordPagesLoading = { ...recordPagesLoading, [key]: true };
+    const nextErrors = { ...recordPagesErrors };
+    delete nextErrors[key];
+    recordPagesErrors = nextErrors;
+    try {
+      const payload = await resolvePlaygroundValuePage({
+        program: programText,
+        nodeId: String(record?.node_id || ""),
+        variable: "",
+        path: resolvedPath,
+        offset: Math.max(0, Number(offset || 0)),
+        limit: Math.max(1, Number(limit || 12)),
+        enqueue: false,
+      });
+      const page = payload?.page && typeof payload.page === "object" ? payload.page : { items: [], has_more: false, next_offset: null };
+      recordPages = { ...recordPages, [key]: page };
+      return page;
+    } catch (error) {
+      recordPagesErrors = {
+        ...recordPagesErrors,
+        [key]: String(error?.message || error || "Unable to load collection values."),
+      };
+      return null;
+    } finally {
+      const nextLoading = { ...recordPagesLoading };
+      delete nextLoading[key];
+      recordPagesLoading = nextLoading;
     }
-    if (viewerSupportsMultiValue) {
-      viewerSelectionSummary = `Comparing ${selectedVisualSymbols.length} values`;
-      return;
+  };
+
+  const ensureRecordPages = () => {
+    for (const record of viewerRecords) {
+      if (!collectionRecord(record)) continue;
+      const key = pageKey(record, recordPath(record));
+      if (recordPages?.[key] || recordPagesLoading?.[key]) continue;
+      void loadRecordPage(record, { path: recordPath(record), offset: 0, limit: 12 });
     }
-    viewerSelectionSummary = `${selectedVisualSymbols.length} selected; active value shown`;
+  };
+
+  const inspectRecordPath = async (record, path = "") => {
+    const targetVariable = variableForRecord(record);
+    if (targetVariable && symbolTable?.[targetVariable]) {
+      primaryVariable = targetVariable;
+      captionVariable = targetVariable;
+    }
+    currentPath = String(path || "");
+    await resolvePrimaryValue({ enqueue: false, path: currentPath });
+  };
+
+  const previewText = (descriptor) => {
+    const voxType = String(descriptor?.vox_type || "value").toLowerCase();
+    const summary = descriptor?.summary && typeof descriptor.summary === "object" ? descriptor.summary : {};
+    if (["integer", "number", "boolean", "null"].includes(voxType)) return `${summary.value ?? ""}`;
+    if (voxType === "string") return String(summary.value || "");
+    if (voxType === "bytes") return `${Number(summary.length || 0)} bytes`;
+    if (voxType === "mapping" || voxType === "sequence") return `${Number(summary.length || 0)} values`;
+    if (voxType === "ndarray") return Array.isArray(summary.shape) ? summary.shape.join(" x ") : "array";
+    if (voxType === "image2d" || voxType === "volume3d") return Array.isArray(summary.size) ? summary.size.join(" x ") : "image";
+    if (summary && typeof summary.reason === "string") return summary.reason;
+    return TYPE_LABELS[voxType] || voxType || "value";
+  };
+
+  const sortedCollectionItems = (page) => {
+    const items = Array.isArray(page?.items) ? page.items : [];
+    return [...items].sort((left, right) => String(left?.label || "").localeCompare(String(right?.label || "")));
+  };
+
+  const collectDreamIds = (payload = {}) => {
+    const ids = [];
+    const seen = new Set();
+    const add = (value) => {
+      const text = String(value || "").trim();
+      if (!text || seen.has(text)) return;
+      seen.add(text);
+      ids.push(text);
+    };
+    add(symbolTable?.[primaryVariable]);
+    add(payload?.node_id);
+    add(payload?.job_id);
+    const arrays = [payload?.ancestor_ids, payload?.ancestor_node_ids, payload?.pending_node_ids, payload?.node_ids];
+    for (const list of arrays) {
+      if (!Array.isArray(list)) continue;
+      for (const item of list) add(item);
+    }
+    const rows = Array.isArray(pendingLogRows) ? pendingLogRows : [];
+    for (const row of rows) add(row?.node_id);
+    const logTail = String(payload?.log_tail || "");
+    for (const match of logTail.matchAll(/"node_id"\s*:\s*"([^"]+)"/g)) {
+      add(match?.[1]);
+    }
+    return ids.slice(0, 18);
+  };
+
+  const activateDream = (payload = {}) => {
+    if (pendingDreamCleanup) {
+      clearTimeout(pendingDreamCleanup);
+      pendingDreamCleanup = null;
+    }
+    dreamVisible = true;
+    dreamDissolving = false;
+    const ids = collectDreamIds(payload);
+    dreamNodeIds = ids.length ? ids : [String(symbolTable?.[primaryVariable] || primaryVariable || "node")];
+  };
+
+  const dissolveDream = () => {
+    if (!dreamVisible) return;
+    dreamDissolving = true;
+    if (pendingDreamCleanup) clearTimeout(pendingDreamCleanup);
+    pendingDreamCleanup = setTimeout(() => {
+      dreamVisible = false;
+      dreamDissolving = false;
+      dreamNodeIds = [];
+      pendingDreamCleanup = null;
+    }, 1200);
+  };
+
+  const ensureViewer = () => {
+    if (viewer) return;
+    viewer = {
+      setLoading: (message) => {
+        viewerMode = "loading";
+        viewerMessage = String(message || "Loading...");
+        viewerErrorMessage = "";
+      },
+      setError: (message) => {
+        viewerMode = "error";
+        viewerErrorMessage = String(message || "Viewer error");
+        viewerMessage = "";
+      },
+      renderRecord: (record) => {
+        viewerRecords = record ? [record] : [];
+        viewerMode = record ? "value" : "empty";
+        viewerErrorMessage = "";
+        viewerMessage = "";
+        resolveViewerRecordsTypes();
+        ensureRecordPages();
+      },
+      renderRecords: (records) => {
+        viewerRecords = (Array.isArray(records) ? records : []).filter((item) => !!item);
+        viewerMode = viewerRecords.length ? "value" : "empty";
+        viewerErrorMessage = "";
+        viewerMessage = "";
+        resolveViewerRecordsTypes();
+        ensureRecordPages();
+      },
+      destroy: () => {},
+    };
+    viewerSupportsMultiValue = true;
+  };
+
+  const resetViewer = () => {
+    viewerRecords = [];
+    viewerMode = "empty";
+    viewerMessage = "";
+    viewerErrorMessage = "";
+    recordPages = {};
+    recordPagesLoading = {};
+    recordPagesErrors = {};
   };
 
   const renderSelectedRecords = ({ fallbackRecord = null } = {}) => {
     ensureViewer();
     const selectedRecords = selectedVisualSymbols.map((name) => materializedRecords?.[name]).filter((row) => !!row);
-    updateViewerSelectionSummary();
     if (selectedRecords.length > 1 && viewerSupportsMultiValue && typeof viewer?.renderRecords === "function") {
       viewer.renderRecords(selectedRecords);
       return true;
@@ -481,8 +708,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     statusValue = "failed";
     statusText = message;
     captionVariable = variableName || "-";
-    captionType = "error";
     errorText = message;
+    dissolveDream();
     setSymbolMaterialization(variableName, "failed");
     if (materializedRecords?.[variableName]) {
       const next = { ...materializedRecords };
@@ -591,8 +818,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     statusValue = "running";
     statusText = `Computing ${variableName} (${state})`;
     captionVariable = variableName || "-";
-    captionType = payload?.descriptor?.vox_type || "in-progress";
     errorText = "";
+    activateDream(payload);
     setSymbolStatus(variableName, state);
     setSymbolMaterialization(variableName, payload?.materialization || state);
     applyPendingLogs(payload, state);
@@ -631,15 +858,18 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       voxType: String(descriptor?.vox_type || ""),
     });
     statusValue = "completed";
-    statusText = descriptor ? summarizeDescriptor(descriptor) : `Computed ${variableName}`;
+    statusText = `Computed ${variableName}`;
     captionVariable = variableName || "-";
-    captionType = descriptor?.vox_type || "value";
     errorText = "";
-    if (materialization === "cached") {
-      statusText = `${statusText} (cached)`;
-    }
+    dissolveDream();
     setSymbolStatus(variableName, "computed");
     setSymbolMaterialization(variableName, materialization);
+    if (descriptor?.vox_type) {
+      symbolTypeHints = {
+        ...symbolTypeHints,
+        [variableName]: String(descriptor.vox_type),
+      };
+    }
     materializedRecords = {
       ...materializedRecords,
       [variableName]: payload,
@@ -669,7 +899,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       statusValue = "idle";
       statusText = "Define at least one variable to inspect.";
       captionVariable = "-";
-      captionType = "-";
+      dissolveDream();
       viewer.renderRecord(null);
       return;
     }
@@ -684,7 +914,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       statusValue = "failed";
       statusText = "Fix static diagnostics before computing.";
       captionVariable = primaryVariable;
-      captionType = "error";
+      dissolveDream();
       viewer.setError(statusText);
       errorText = statusText;
       setSymbolStatus(primaryVariable, "failed");
@@ -708,7 +938,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     statusValue = "running";
     statusText = `Computing ${primaryVariable}...`;
     captionVariable = primaryVariable;
-    captionType = "in-progress";
     errorText = "";
     setSymbolStatus(primaryVariable, "running");
     viewer.setLoading(`Computing ${primaryVariable}${currentPath ? ` @ ${currentPath}` : ""}...`);
@@ -801,6 +1030,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           statusText = `${primaryVariable} is not ready yet. Click Run or click the tag again to refresh.`;
           setSymbolStatus(primaryVariable, "idle");
           setSymbolMaterialization(primaryVariable, materialization || "unresolved");
+          dissolveDream();
           return;
         }
         if (!pendingPoll) {
@@ -823,6 +1053,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
               statusValue = "idle";
               statusText = `${primaryVariable} is still computing in the background. Click Run to refresh status.`;
               errorText = "";
+              dissolveDream();
               return;
             }
             traceResolve("poll-tick", {
@@ -876,14 +1107,14 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       symbolStatuses = {};
       symbolMaterializations = {};
       materializedRecords = {};
+      symbolTypeHints = {};
       selectedVisualSymbols = [];
       primaryVariable = "";
       captionVariable = "-";
-      captionType = "-";
       statusValue = "failed";
       statusText = "Program symbol API unavailable on this backend.";
       errorText = statusText;
-      updateViewerSelectionSummary();
+      resetViewer();
       return;
     }
 
@@ -899,14 +1130,14 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       symbolStatuses = {};
       symbolMaterializations = {};
       materializedRecords = {};
+      symbolTypeHints = {};
       selectedVisualSymbols = [];
       primaryVariable = "";
       captionVariable = "-";
-      captionType = "-";
       statusValue = "idle";
       statusText = "Write code and run to compute a value.";
       errorText = "";
-      updateViewerSelectionSummary();
+      resetViewer();
       return;
     }
 
@@ -919,10 +1150,10 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       syncSymbolStatuses(symbolTable);
       syncSymbolMaterializations(symbolTable);
       syncMaterializedRecords(symbolTable);
+      syncSymbolTypeHints(symbolTable);
       primaryVariable = inferPrimaryVariable(programText, symbolTable);
       ensureSelectedVisualSymbols();
       captionVariable = primaryVariable || "-";
-      updateViewerSelectionSummary();
       renderSelectedRecords();
       if (symbolDiagnostics.length) {
         statusValue = "failed";
@@ -943,13 +1174,14 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       symbolStatuses = {};
       symbolMaterializations = {};
       materializedRecords = {};
+      symbolTypeHints = {};
       selectedVisualSymbols = [];
       primaryVariable = "";
       captionVariable = "-";
       statusValue = "failed";
       statusText = "Unable to refresh symbols.";
       errorText = statusText;
-      updateViewerSelectionSummary();
+      resetViewer();
     }
   };
 
@@ -974,7 +1206,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     primaryVariable = token;
     captionVariable = token;
     selectedVisualSymbols = [token];
-    updateViewerSelectionSummary();
     renderSelectedRecords();
     currentPath = "";
     await resolvePrimaryValue({ enqueue: true, path: "" });
@@ -989,7 +1220,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     stopPoll();
     await refreshSymbols();
     ensureSelectedVisualSymbols();
-    updateViewerSelectionSummary();
     await resolvePrimaryValue({ enqueue: true, path: "" });
   };
 
@@ -1019,6 +1249,14 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     await resolvePrimaryValue({ enqueue: true, path: "" });
   };
 
+  $: editorSymbolTypes = Object.fromEntries(
+    Object.keys(symbolTable || {}).map((name) => [name, symbolTypeLabel(name)]),
+  );
+
+  $: if (viewerMode === "value" && viewerRecords.length) {
+    ensureRecordPages();
+  }
+
   onMount(async () => {
     ensureViewer();
     try {
@@ -1038,6 +1276,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     stopProbe();
     probeToken += 1;
     if (pendingSave) clearTimeout(pendingSave);
+    if (pendingDreamCleanup) clearTimeout(pendingDreamCleanup);
     if (viewer && typeof viewer.destroy === "function") {
       viewer.destroy();
     }
@@ -1055,9 +1294,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
 
     <div class="start-prime-grid">
       <section class="start-prime-editor">
-        <header class="start-prime-panel-head">
-          <h3>Code Editor</h3>
-        </header>
         <div class="start-prime-editor-frame">
           <VoxCodeEditor
             ariaLabel="Start tab code editor"
@@ -1065,6 +1301,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
             symbols={symbolTable}
             symbolStatuses={symbolStatuses}
             selectedSymbols={selectedVisualSymbols}
+            symbolTypes={editorSymbolTypes}
             diagnostics={symbolDiagnostics}
             autocompleteEnabled={true}
             completionProvider={provideEditorCompletions}
@@ -1076,18 +1313,117 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       </section>
 
       <section class="start-prime-visual">
-        <header class="start-prime-panel-head">
-          <h3>Visualization</h3>
-        </header>
-
         <div class="start-viewer-wrap start-prime-viewer-wrap">
-          <div class="result-inspector start-viewer" bind:this={viewerContainer}></div>
+          <div class={`start-pure-viewer ${dreamVisible ? "is-under-dream" : ""}`}>
+            {#if viewerMode === "error"}
+              <div class="viewer-error">{viewerErrorMessage || "Unable to visualize value."}</div>
+            {:else if viewerMode === "loading" && !dreamVisible}
+              <div class="start-viewer-message">{viewerMessage || "Computing..."}</div>
+            {:else if viewerMode === "value" && viewerRecords.length}
+              <div class={`start-value-grid ${viewerRecords.length > 1 ? "is-multi" : "is-single"}`}>
+                {#each viewerRecords as record, index (`${record?.node_id || "value"}-${index}`)}
+                  {@const descriptor = recordDescriptor(record)}
+                  {@const voxType = recordType(record)}
+                  {@const summary = descriptor?.summary && typeof descriptor.summary === "object" ? descriptor.summary : {}}
+                  <article class="start-value-card" title={`${recordLabel(record, index)} (${typeLabelFromDescriptor(descriptor)})`}>
+                    {#if viewerRecords.length > 1}
+                      <header class="start-value-card-head">
+                        <span class="start-value-card-label">{recordLabel(record, index)}</span>
+                      </header>
+                    {/if}
+
+                    {#if ["integer", "number", "boolean", "null"].includes(voxType)}
+                      <div class="start-pure-scalar">{summary.value ?? "null"}</div>
+                    {:else if voxType === "string"}
+                      <pre class="start-pure-text">{summary.value || ""}</pre>
+                    {:else if voxType === "bytes"}
+                      <div class="start-pure-scalar">{Number(summary.length || 0)} bytes</div>
+                    {:else if (voxType === "image2d" || voxType === "volume3d") && descriptor?.render?.png_url}
+                      <img class="start-pure-image" src={descriptor.render.png_url} alt={`${recordLabel(record, index)} preview`} />
+                    {:else if voxType === "ndarray"}
+                      <div class="start-pure-array">{previewText(descriptor)}</div>
+                    {:else if collectionRecord(record)}
+                      {@const collectionPage = pageForRecord(record, recordPath(record))}
+                      {@const collectionError = pageErrorForRecord(record, recordPath(record))}
+                      {@const collectionLoading = pageLoadingForRecord(record, recordPath(record))}
+                      {#if collectionLoading}
+                        <div class="start-gallery-loading">
+                          {#each (dreamNodeIds.length ? dreamNodeIds : [record?.node_id || "collection"]) as nodeId, nodeIndex}
+                            {#if nodeIndex < 8}
+                              <span style={`--node-index:${nodeIndex}`}>{shortNodeId(nodeId)}</span>
+                            {/if}
+                          {/each}
+                        </div>
+                      {:else if collectionError}
+                        <div class="viewer-error">{collectionError}</div>
+                      {:else if collectionPage && sortedCollectionItems(collectionPage).length}
+                        <div class="start-gallery-grid">
+                          {#each sortedCollectionItems(collectionPage) as item, itemIndex}
+                            {@const itemDescriptor = item?.descriptor && typeof item.descriptor === "object" ? item.descriptor : { vox_type: "value", summary: {} }}
+                            <button
+                              class="start-gallery-item"
+                              type="button"
+                              title={`${String(item?.label || `item ${itemIndex + 1}`)} (${typeLabelFromDescriptor(itemDescriptor)})`}
+                              on:click={() => void inspectRecordPath(record, item?.path || "")}
+                            >
+                              <span class="start-gallery-item-label">{item?.label || `item ${itemIndex + 1}`}</span>
+                              {#if itemDescriptor?.render?.png_url}
+                                <img
+                                  class="start-gallery-item-image"
+                                  src={itemDescriptor.render.png_url}
+                                  alt={`${String(item?.label || `item ${itemIndex + 1}`)} preview`}
+                                />
+                              {:else}
+                                <span class="start-gallery-item-value">{previewText(itemDescriptor)}</span>
+                              {/if}
+                            </button>
+                          {/each}
+                        </div>
+                        {#if collectionPage?.has_more}
+                          <div class="start-gallery-actions">
+                            <button
+                              class="btn btn-ghost btn-small"
+                              type="button"
+                              on:click={() =>
+                                void loadRecordPage(record, {
+                                  path: recordPath(record),
+                                  offset: Number(collectionPage?.next_offset || 0),
+                                  limit: Number(collectionPage?.limit || 12),
+                                })}
+                            >
+                              More
+                            </button>
+                          </div>
+                        {/if}
+                      {:else}
+                        <div class="start-viewer-message">No values yet</div>
+                      {/if}
+                    {:else}
+                      <div class="start-pure-array">{previewText(descriptor)}</div>
+                    {/if}
+                  </article>
+                {/each}
+              </div>
+            {:else}
+              <div class="start-viewer-message">Run or click a variable</div>
+            {/if}
+          </div>
+
+          {#if dreamVisible}
+            <div class={`start-compute-dream ${dreamDissolving ? "is-dissolving" : ""}`}>
+              <div class="start-compute-mist"></div>
+              <div class="start-compute-ids">
+                {#each dreamNodeIds as nodeId, nodeIndex (`${nodeId}-${nodeIndex}`)}
+                  <span class="start-compute-id" style={`--node-index:${nodeIndex}`}>{shortNodeId(nodeId)}</span>
+                {/each}
+              </div>
+            </div>
+          {/if}
         </div>
 
         <div class="start-prime-controls">
           <footer class="start-caption">
             <span class="start-caption-main">{captionVariable}</span>
-            <span class="start-caption-type">{captionType}</span>
           </footer>
           <div class="start-value-tag-row">
             {#if !Object.keys(symbolTable || {}).length}
@@ -1097,23 +1433,22 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
                 <button
                   class={`start-value-tag start-value-tag--${statusLabel(symbolName)} ${selectedVisualSymbols.includes(symbolName) ? "is-selected" : ""}`.trim()}
                   type="button"
+                  title={symbolTypeTitle(symbolName)}
                   on:click={(event) => void handleVisualTagClick(symbolName, event)}
                 >
                   <span class="start-value-tag-name">{symbolName}</span>
-                  <span class="start-value-tag-meta">{statusLabel(symbolName)} · {materializationLabel(symbolName)}</span>
+                  <span class="start-value-tag-dot" aria-hidden="true"></span>
                 </button>
               {/each}
             {/if}
           </div>
           <div class="start-prime-action-row">
-            <StatusChip value={statusValue} />
+            <span class={`start-run-state start-run-state--${statusValue}`} aria-hidden="true"></span>
             <button class="btn btn-primary btn-small" type="button" on:click={runPrimary}>Run</button>
           </div>
         </div>
       </section>
     </div>
-
-    <p class="start-status muted">{statusText}</p>
 
     {#if diagnosticsText()}
       <div class="inline-error">{diagnosticsText()}</div>

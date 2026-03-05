@@ -61,9 +61,8 @@ describe("StartTab", () => {
     expect(latest?.variable).toBe("b");
     await waitFor(() => {
       const captionName = container.querySelector(".start-caption-main");
-      const captionType = container.querySelector(".start-caption-type");
       expect(captionName?.textContent || "").toContain("b");
-      expect(captionType?.textContent || "").toContain("integer");
+      expect(container.textContent).toContain("2");
     });
   });
 
@@ -169,19 +168,19 @@ describe("StartTab", () => {
     await fireEvent.click(runButton);
 
     await waitFor(() => {
-      expect(container.textContent).toContain("Computing x");
+      expect(resolvePlaygroundValueMock).toHaveBeenCalled();
     });
 
     vi.runOnlyPendingTimers();
     await waitFor(() => {
       expect(resolvePlaygroundValueMock.mock.calls.length).toBeGreaterThanOrEqual(2);
-      const chip = container.querySelector(".chip");
-      expect(chip?.textContent || "").toContain("completed");
+      const runState = container.querySelector(".start-run-state--completed");
+      expect(runState).not.toBeNull();
     });
     vi.useRealTimers();
   });
 
-  it("renders value tags with status/materialization and resolves clicked tags", async () => {
+  it("renders value tags with visual states and resolves clicked tags", async () => {
     getProgramSymbolsMock.mockResolvedValue({
       available: true,
       symbol_table: { a: "node-a", b: "node-b" },
@@ -219,8 +218,7 @@ describe("StartTab", () => {
     const bTag = valueTags.find((el) => (el.textContent || "").includes("b"));
     expect(aTag).not.toBeUndefined();
     expect(bTag).not.toBeUndefined();
-    expect(aTag?.textContent || "").toContain("idle");
-    expect(aTag?.textContent || "").toContain("unresolved");
+    expect(aTag?.getAttribute("title") || "").toContain("a");
 
     await fireEvent.click(aTag);
     await waitFor(() => {
@@ -239,9 +237,10 @@ describe("StartTab", () => {
     await waitFor(() => {
       expect(container.querySelectorAll(".start-value-tag.is-selected").length).toBe(2);
     });
+    expect(container.querySelector(".start-value-tag--computed")).not.toBeNull();
   });
 
-  it("uses non-enqueue paging requests from the viewer", async () => {
+  it("uses non-enqueue paging requests for collection previews", async () => {
     getProgramSymbolsMock.mockResolvedValue({
       available: true,
       symbol_table: { x: "node-x" },
@@ -271,33 +270,19 @@ describe("StartTab", () => {
       page: { offset: 0, limit: 8, items: [], has_more: false, next_offset: null },
     });
 
-    let fetchPage = null;
-    const previousViewer = window.VoxResultViewer;
-    window.VoxResultViewer = {
-      ResultViewer: class {
-        constructor(_element, options) {
-          fetchPage = options.fetchPage;
-        }
-
-        setLoading() {}
-        setError() {}
-        renderRecord() {}
-        destroy() {}
-      },
-    };
-
-    try {
-      render(StartTab, { active: true, capabilities: {} });
-      await waitFor(() => {
-        expect(typeof fetchPage).toBe("function");
-      });
-
-      await fetchPage({ nodeId: "node-x", path: "/", offset: 0, limit: 8 });
-
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+    await waitFor(() => {
+      expect(resolvePlaygroundValuePageMock).toHaveBeenCalled();
+    });
+    await waitFor(() => {
       const latest = resolvePlaygroundValuePageMock.mock.calls.at(-1)?.[0];
       expect(latest?.enqueue).toBe(false);
-    } finally {
-      window.VoxResultViewer = previousViewer;
-    }
+    });
   });
 });

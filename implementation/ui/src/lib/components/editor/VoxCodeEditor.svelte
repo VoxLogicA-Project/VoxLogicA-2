@@ -18,6 +18,7 @@
   export let diagnostics = [];
   export let symbolStatuses = {};
   export let selectedSymbols = [];
+  export let symbolTypes = {};
   export let autocompleteEnabled = true;
   export let completionProvider = null;
   export let completionKeywords = VOX_KEYWORDS;
@@ -255,7 +256,7 @@
     dispatch("hoverleave");
   };
 
-  $: overlayHtml = buildOverlayHtml(value, symbols, diagnostics, symbolStatuses, selectedSymbols);
+  $: overlayHtml = buildOverlayHtml(value, symbols, diagnostics, symbolStatuses, selectedSymbols, symbolTypes);
   $: if (!suggestionsOpen && suggestions.length) {
     suggestions = [];
   }
@@ -351,17 +352,20 @@
   .vx-editor {
     position: relative;
     width: 100%;
+    height: 100%;
+    min-height: 0;
+    display: grid;
   }
 
   .vx-editor__shell {
     position: relative;
-    min-height: 340px;
+    min-height: 0;
     height: 100%;
   }
 
   .vx-editor__input {
     width: 100%;
-    min-height: 340px;
+    min-height: 100%;
     height: 100%;
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);

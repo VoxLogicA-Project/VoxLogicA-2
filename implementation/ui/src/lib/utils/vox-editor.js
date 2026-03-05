@@ -112,7 +112,7 @@ const normalizeSymbolStatus = (status) => {
   return "idle";
 };
 
-const renderToken = (token, symbolSet, symbolStatuses, selectedSymbols) => {
+const renderToken = (token, symbolSet, symbolStatuses, selectedSymbols, symbolTypes) => {
   const text = String(token.text || "");
   const safeText = sanitizeText(text);
   if (token.kind === "space") return safeText;
@@ -120,10 +120,12 @@ const renderToken = (token, symbolSet, symbolStatuses, selectedSymbols) => {
     const encoded = encodeURIComponent(text);
     const status = normalizeSymbolStatus(symbolStatuses?.[text]);
     const isSelected = selectedSymbols.has(text);
+    const typeLabel = String(symbolTypes?.[text] || "").trim();
+    const hover = typeLabel ? `${text} (${typeLabel})` : `Inspect ${text}`;
     const className = `vx-editor__symbol vx-editor__symbol--${sanitizeAttr(status)}${isSelected ? " vx-editor__symbol--selected" : ""}`;
     return (
       `<button type="button" class="${className}" data-status="${sanitizeAttr(status)}" ` +
-      `data-token="${sanitizeAttr(encoded)}" title="Inspect ${sanitizeAttr(text)}">` +
+      `data-token="${sanitizeAttr(encoded)}" title="${sanitizeAttr(hover)}">` +
       `${safeText}</button>`
     );
   }
@@ -131,7 +133,7 @@ const renderToken = (token, symbolSet, symbolStatuses, selectedSymbols) => {
   return `<span class="${className}">${safeText}</span>`;
 };
 
-export const buildOverlayHtml = (text, symbols = {}, diagnostics = [], symbolStatuses = {}, selectedSymbols = []) => {
+export const buildOverlayHtml = (text, symbols = {}, diagnostics = [], symbolStatuses = {}, selectedSymbols = [], symbolTypes = {}) => {
   const source = String(text || "");
   const symbolSet = new Set(Object.keys(symbols || {}));
   const selectedSet = new Set((Array.isArray(selectedSymbols) ? selectedSymbols : []).map((value) => String(value || "")));
@@ -149,7 +151,7 @@ export const buildOverlayHtml = (text, symbols = {}, diagnostics = [], symbolSta
       const lineNo = idx + 1;
       const lineClass = diagnosticLines.has(lineNo) ? "vx-editor__line vx-editor__line--error" : "vx-editor__line";
       const tokens = tokenizeLine(line);
-      const rendered = tokens.map((token) => renderToken(token, symbolSet, symbolStatuses, selectedSet)).join("");
+      const rendered = tokens.map((token) => renderToken(token, symbolSet, symbolStatuses, selectedSet, symbolTypes)).join("");
       return `<span class="${lineClass}" data-line="${lineNo}">${rendered || " "}</span>`;
     })
     .join("");
