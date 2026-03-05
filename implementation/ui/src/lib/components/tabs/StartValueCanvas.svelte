@@ -49,11 +49,11 @@
 
   $: selectedIndex = (() => {
     if (!items.length) return 0;
+    const byAbsolute = Math.max(0, Number(selection?.selectedAbsoluteIndex || 0)) - Math.max(0, Number(page?.offset || 0));
+    if (byAbsolute >= 0 && byAbsolute < items.length) return byAbsolute;
     const selectedPath = String(selection?.selectedPath || "");
     const byPath = selectedPath ? items.findIndex((item) => String(item?.path || "") === selectedPath) : -1;
     if (byPath >= 0) return byPath;
-    const byAbsolute = Math.max(0, Number(selection?.selectedAbsoluteIndex || 0)) - Math.max(0, Number(page?.offset || 0));
-    if (byAbsolute >= 0 && byAbsolute < items.length) return byAbsolute;
     const byIndex = Math.max(0, Number(selection?.selectedIndex || 0));
     return byIndex < items.length ? byIndex : 0;
   })();

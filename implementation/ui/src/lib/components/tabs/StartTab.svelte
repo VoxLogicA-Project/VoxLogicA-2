@@ -802,16 +802,25 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         selectedAbsoluteIndex = 0;
         selectedPath = "";
       } else {
-        const byPathIndex = selectedPath ? items.findIndex((item) => String(item?.path || "") === selectedPath) : -1;
-        if (byPathIndex >= 0) {
-          selectedIndex = byPathIndex;
-          selectedAbsoluteIndex = resolvedOffset + byPathIndex;
-        } else if (selectedIndex >= items.length) {
+        const byAbsolute = selectedAbsoluteIndex >= resolvedOffset ? selectedAbsoluteIndex - resolvedOffset : -1;
+        if (byAbsolute >= 0 && byAbsolute < items.length) {
+          selectedIndex = byAbsolute;
+          selectedAbsoluteIndex = resolvedOffset + byAbsolute;
+        } else {
+          const byPathIndex = selectedPath ? items.findIndex((item) => String(item?.path || "") === selectedPath) : -1;
+          if (byPathIndex >= 0) {
+            selectedIndex = byPathIndex;
+            selectedAbsoluteIndex = resolvedOffset + byPathIndex;
+          } else if (selectedIndex >= items.length) {
+            selectedIndex = 0;
+            selectedAbsoluteIndex = resolvedOffset;
+          } else {
+            selectedAbsoluteIndex = resolvedOffset + selectedIndex;
+          }
+        }
+        if (selectedIndex >= items.length) {
           const byAbsolute = selectedAbsoluteIndex >= resolvedOffset ? selectedAbsoluteIndex - resolvedOffset : -1;
           selectedIndex = byAbsolute >= 0 && byAbsolute < items.length ? byAbsolute : 0;
-          selectedAbsoluteIndex = resolvedOffset + selectedIndex;
-        } else {
-          selectedAbsoluteIndex = resolvedOffset + selectedIndex;
         }
         selectedPath = String(items[selectedIndex]?.path || "");
       }
