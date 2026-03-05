@@ -41,6 +41,7 @@
 
   const MAX_DEPTH = 7;
   const DEFAULT_LIMIT = 18;
+  let stageExpanded = false;
 
   const safeText = (value) => {
     if (value === null || value === undefined) return "null";
@@ -113,6 +114,10 @@
     }
   }
 
+  $: if (!isCollection) {
+    stageExpanded = false;
+  }
+
   $: if (record && isCollection && !page && !loading && !error && !pagePollingForRecord(record, path)) {
     void loadRecordPage(record, {
       path,
@@ -174,129 +179,135 @@
       <StartMedicalVolume niftiUrl={renderNiftiUrl} label={label || "value"} />
     </div>
   {:else if isCollection}
-    <div class={`start-collection-shell ${level > 0 ? "is-nested" : ""}`}>
-    <aside class="start-collection-index">
-      <div class="start-collection-nav">
-        <button
-          class="btn btn-ghost btn-small"
-          type="button"
-          disabled={!page || Number(page?.offset || 0) <= 0 || loading}
-          on:click={() => void loadCollectionPrev(record, path)}
-        >
-          Prev
-        </button>
-        <div class="start-collection-nav-meta">
-          {#if page}
-            <span>
-              {Number(page?.offset || 0) + (items.length ? 1 : 0)}-{Number(page?.offset || 0) + items.length}
-            </span>
-          {:else}
-            <span>0-0</span>
-          {/if}
-        </div>
-        <button
-          class="btn btn-ghost btn-small"
-          type="button"
-          disabled={!page || !page?.has_more || loading}
-          on:click={() => void loadCollectionNext(record, path)}
-        >
-          Next
-        </button>
-      </div>
-
-      {#if loading && !items.length}
-        <div class="start-collection-loading">
-          {#each Array(6) as _, idx}
-            <span style={`--row-index:${idx}`}></span>
-          {/each}
-        </div>
-      {:else if error}
-        <div class="viewer-error">{error}</div>
-      {:else if items.length}
-        <div class="start-collection-list">
-          {#each items as item, itemIndex}
-            {@const itemDescriptor = item?.descriptor && typeof item.descriptor === "object" ? item.descriptor : { vox_type: "value", summary: {} }}
-            <button
-              class={`start-collection-item start-collection-item--${collectionItemState(item)} ${selectedIndex === itemIndex ? "is-selected" : ""}`.trim()}
-              type="button"
-              title={`${String(item?.label || `[${Number(page?.offset || 0) + itemIndex}]`)} (${typeLabelFromDescriptor(itemDescriptor)})`}
-              on:click={() =>
-                setCollectionSelection(record, path, {
-                  selectedIndex: itemIndex,
-                  selectedAbsoluteIndex: Math.max(0, Number(page?.offset || 0)) + itemIndex,
-                  selectedPath: String(item?.path || ""),
-                })}
-            >
-              <span class="start-collection-item-index">
-                {item?.label || `[${Number(page?.offset || 0) + itemIndex}]`}
+    {#if level > 0 && !items.length && !loading && !error}
+      <div class="start-viewer-message">No values yet</div>
+    {:else}
+      <div class={`start-collection-shell ${level > 0 ? "is-nested" : ""} ${stageExpanded ? "is-stage-maximized" : ""}`.trim()}>
+      <aside class="start-collection-index">
+        <div class="start-collection-nav">
+          <button
+            class="btn btn-ghost btn-small"
+            type="button"
+            disabled={!page || Number(page?.offset || 0) <= 0 || loading}
+            on:click={() => void loadCollectionPrev(record, path)}
+          >
+            Prev
+          </button>
+          <div class="start-collection-nav-meta">
+            {#if page}
+              <span>
+                {Number(page?.offset || 0) + (items.length ? 1 : 0)}-{Number(page?.offset || 0) + items.length}
               </span>
-              <span class="start-collection-item-preview">{previewText(itemDescriptor)}</span>
-            </button>
-          {/each}
+            {:else}
+              <span>0-0</span>
+            {/if}
+          </div>
+          <button
+            class="btn btn-ghost btn-small"
+            type="button"
+            disabled={!page || !page?.has_more || loading}
+            on:click={() => void loadCollectionNext(record, path)}
+          >
+            Next
+          </button>
         </div>
-      {:else}
-        <div class="start-viewer-message">No values yet</div>
-      {/if}
-    </aside>
+        {#if loading && !items.length}
+          <div class="start-collection-loading">
+            {#each Array(6) as _, idx}
+              <span style={`--row-index:${idx}`}></span>
+            {/each}
+          </div>
+        {:else if error}
+          <div class="viewer-error">{error}</div>
+        {:else if items.length}
+          <div class="start-collection-list">
+            {#each items as item, itemIndex}
+              {@const itemDescriptor = item?.descriptor && typeof item.descriptor === "object" ? item.descriptor : { vox_type: "value", summary: {} }}
+              <button
+                class={`start-collection-item start-collection-item--${collectionItemState(item)} ${selectedIndex === itemIndex ? "is-selected" : ""}`.trim()}
+                type="button"
+                title={`${String(item?.label || `[${Number(page?.offset || 0) + itemIndex}]`)} (${typeLabelFromDescriptor(itemDescriptor)})`}
+                on:click={() =>
+                  setCollectionSelection(record, path, {
+                    selectedIndex: itemIndex,
+                    selectedAbsoluteIndex: Math.max(0, Number(page?.offset || 0)) + itemIndex,
+                    selectedPath: String(item?.path || ""),
+                  })}
+              >
+                <span class="start-collection-item-index">
+                  {item?.label || `[${Number(page?.offset || 0) + itemIndex}]`}
+                </span>
+                <span class="start-collection-item-preview">{previewText(itemDescriptor)}</span>
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <div class="start-viewer-message">No values yet</div>
+        {/if}
+      </aside>
 
-    <section class="start-collection-stage">
-      {#if selectedItem}
-        <header class="start-collection-stage-head">
-          <span class="start-collection-stage-label">{selectedItem?.label || label || "value"}</span>
-        </header>
-        <div class="start-collection-stage-body">
-          {#if selectedDetailError}
-            <div class="viewer-error">{selectedDetailError}</div>
-          {:else if selectedDetailLoading && !selectedRecordDetail}
-            <div class="start-collection-stage-loading">
-              <span></span>
-            </div>
-          {:else if level >= MAX_DEPTH}
-            <div class="start-pure-array">{previewText(selectedDescriptor)}</div>
-          {:else}
-            <svelte:self
-              record={selectedRecord}
-              label={selectedItem?.label || label}
-              {sourceVariable}
-              level={level + 1}
-              {collectionRecord}
-              {recordDescriptor}
-              {recordType}
-              {recordPath}
-              {previewText}
-              {typeLabelFromDescriptor}
-              {pageForRecord}
-              {pageErrorForRecord}
-              {pageLoadingForRecord}
-              {pagePollingForRecord}
-              {loadRecordPage}
-              {collectionItemsForPage}
-              {collectionSelectionFor}
-              {setCollectionSelection}
-              {loadCollectionPrev}
-              {loadCollectionNext}
-              {nestedRecordFromItem}
-              {pathRecordFor}
-              {pathRecordLoadingFor}
-              {pathRecordErrorFor}
-              {pathRecordPollingFor}
-              {loadPathRecord}
-              {recordPages}
-              {recordPagePointers}
-              {recordPagesLoading}
-              {recordPagesErrors}
-              {collectionSelections}
-              {pathRecords}
-              {pathRecordsLoading}
-              {pathRecordsErrors}
-            />
-          {/if}
-        </div>
-      {:else}
-        <div class="start-viewer-message">No selected value</div>
-      {/if}
-    </section>
-    </div>
+      <section class="start-collection-stage">
+        {#if selectedItem}
+          <header class="start-collection-stage-head">
+            <span class="start-collection-stage-label">{selectedItem?.label || label || "value"}</span>
+            <button class="btn btn-ghost btn-small start-collection-stage-expand" type="button" on:click={() => (stageExpanded = !stageExpanded)}>
+              {stageExpanded ? "Restore" : "Maximize"}
+            </button>
+          </header>
+          <div class="start-collection-stage-body">
+            {#if selectedDetailError}
+              <div class="viewer-error">{selectedDetailError}</div>
+            {:else if selectedDetailLoading && !selectedRecordDetail}
+              <div class="start-collection-stage-loading">
+                <span></span>
+              </div>
+            {:else if level >= MAX_DEPTH}
+              <div class="start-pure-array">{previewText(selectedDescriptor)}</div>
+            {:else}
+              <svelte:self
+                record={selectedRecord}
+                label={selectedItem?.label || label}
+                {sourceVariable}
+                level={level + 1}
+                {collectionRecord}
+                {recordDescriptor}
+                {recordType}
+                {recordPath}
+                {previewText}
+                {typeLabelFromDescriptor}
+                {pageForRecord}
+                {pageErrorForRecord}
+                {pageLoadingForRecord}
+                {pagePollingForRecord}
+                {loadRecordPage}
+                {collectionItemsForPage}
+                {collectionSelectionFor}
+                {setCollectionSelection}
+                {loadCollectionPrev}
+                {loadCollectionNext}
+                {nestedRecordFromItem}
+                {pathRecordFor}
+                {pathRecordLoadingFor}
+                {pathRecordErrorFor}
+                {pathRecordPollingFor}
+                {loadPathRecord}
+                {recordPages}
+                {recordPagePointers}
+                {recordPagesLoading}
+                {recordPagesErrors}
+                {collectionSelections}
+                {pathRecords}
+                {pathRecordsLoading}
+                {pathRecordsErrors}
+              />
+            {/if}
+          </div>
+        {:else}
+          <div class="start-viewer-message">No selected value</div>
+        {/if}
+      </section>
+      </div>
+    {/if}
   {:else}
     <div class="start-value-centered">
       <div class="start-pure-array">{previewText(descriptor)}</div>

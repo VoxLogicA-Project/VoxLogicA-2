@@ -110,8 +110,16 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let resolveRequestSeq = 0;
   let resolveInFlight = false;
   let maximizedViewerIndex = -1;
+  let startPrimeGridEl = null;
+  let splitRatio = 0.48;
+  let splitDragActive = false;
+  let splitDragCleanup = null;
+  let recentlyMaterialized = {};
+  let recentMaterializeTimers = {};
   const MAX_PENDING_POLL_TICKS = 45;
   const COLLECTION_PAGE_SIZE = 18;
+  const SPLIT_MIN = 0.32;
+  const SPLIT_MAX = 0.68;
 
   let loadToken = 0;
 
@@ -225,6 +233,18 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     resolutionActivityRows = [];
     resolutionActivitySummary = "No resolution activity yet.";
     activitySeenKeys = new Set();
+  };
+
+  const hasActiveComputation = () => {
+    if (pendingPoll || resolveInFlight) return true;
+    if (Object.values(symbolStatuses || {}).some((value) => ["queued", "running", "persisting"].includes(normalizeStatus(value)))) {
+      return true;
+    }
+    if (Object.keys(recordPagesLoading || {}).length) return true;
+    if (Object.keys(pathRecordsLoading || {}).length) return true;
+    if (Object.keys(recordPagePollTimers || {}).length) return true;
+    if (Object.keys(pathRecordPollTimers || {}).length) return true;
+    return false;
   };
 
   const syncSymbolStatuses = (symbols) => {
@@ -413,6 +433,82 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       });
       void resolvePrimaryValue({ enqueue: false, path: currentPath, background: true });
     }, 1000);
+  };
+
+  const clampSplitRatio = (value) => Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, Number(value || 0.5)));
+
+  const updateSplitRatioFromClientX = (clientX) => {
+    const rect = startPrimeGridEl?.getBoundingClientRect?.();
+    if (!rect || !rect.width) return;
+    const ratio = (Number(clientX || 0) - rect.left) / rect.width;
+    splitRatio = clampSplitRatio(ratio);
+  };
+
+  const stopSplitDrag = () => {
+    if (splitDragCleanup) {
+      splitDragCleanup();
+      splitDragCleanup = null;
+    }
+    splitDragActive = false;
+  };
+
+  const handleSplitPointerDown = (event) => {
+    if (event?.button !== 0) return;
+    event.preventDefault();
+    updateSplitRatioFromClientX(event.clientX);
+    splitDragActive = true;
+    const onMove = (moveEvent) => {
+      if (!splitDragActive) return;
+      updateSplitRatioFromClientX(moveEvent.clientX);
+    };
+    const onUp = () => stopSplitDrag();
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    splitDragCleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  };
+
+  const handleSplitKeyDown = (event) => {
+    const key = String(event?.key || "");
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(key)) return;
+    event.preventDefault();
+    if (key === "Home") {
+      splitRatio = SPLIT_MIN;
+      return;
+    }
+    if (key === "End") {
+      splitRatio = SPLIT_MAX;
+      return;
+    }
+    const delta = key === "ArrowLeft" ? -0.02 : 0.02;
+    splitRatio = clampSplitRatio(splitRatio + delta);
+  };
+
+  const markRecordMaterialized = (nodeId = "") => {
+    const key = String(nodeId || "").trim();
+    if (!key) return;
+    const existingTimer = recentMaterializeTimers?.[key];
+    if (existingTimer) clearTimeout(existingTimer);
+    recentlyMaterialized = {
+      ...recentlyMaterialized,
+      [key]: true,
+    };
+    const timer = setTimeout(() => {
+      const nextPulse = { ...recentlyMaterialized };
+      delete nextPulse[key];
+      recentlyMaterialized = nextPulse;
+      const nextTimers = { ...recentMaterializeTimers };
+      delete nextTimers[key];
+      recentMaterializeTimers = nextTimers;
+    }, 1100);
+    recentMaterializeTimers = {
+      ...recentMaterializeTimers,
+      [key]: timer,
+    };
   };
 
   const stopProbe = () => {
@@ -644,6 +740,25 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     if (selectedVisualSymbols[index]) return selectedVisualSymbols[index];
     return primaryVariable || "";
   };
+
+  const recordCardState = (record, index = 0) => {
+    const sourceName = sourceVariableForRecord(record, index);
+    const symbolState = statusLabel(sourceName);
+    if (["queued", "running", "persisting"].includes(symbolState)) return "computing";
+    const recordState = String(record?.status || "").toLowerCase();
+    if (["queued", "running", "persisting", "pending", "missing"].includes(recordState)) return "computing";
+    if (collectionRecord(record)) {
+      const path = recordPath(record);
+      if (pageLoadingForRecord(record, path) || pagePollingForRecord(record, path)) {
+        return "computing";
+      }
+    }
+    if (symbolState === "failed") return "failed";
+    if (symbolState === "computed") return "computed";
+    return "idle";
+  };
+
+  const recordJustMaterialized = (record) => Boolean(recentlyMaterialized?.[String(record?.node_id || "")]);
 
   const pathRecordKey = (sourceVariable = "", path = "") => `${String(sourceVariable || "")}:${String(path || "/")}`;
 
@@ -1151,7 +1266,9 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     statusText = message;
     captionVariable = variableName || "-";
     errorText = message;
-    dissolveDream();
+    if (!hasActiveComputation()) {
+      dissolveDream();
+    }
     setSymbolMaterialization(variableName, "failed");
     if (materializedRecords?.[variableName]) {
       const next = { ...materializedRecords };
@@ -1303,7 +1420,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     statusText = `Computed ${variableName}`;
     captionVariable = variableName || "-";
     errorText = "";
-    dissolveDream();
     setSymbolStatus(variableName, "computed");
     setSymbolMaterialization(variableName, materialization);
     if (descriptor?.vox_type) {
@@ -1316,6 +1432,10 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       ...materializedRecords,
       [variableName]: payload,
     };
+    markRecordMaterialized(String(payload?.node_id || ""));
+    if (!hasActiveComputation()) {
+      dissolveDream();
+    }
     if (!selectedVisualSymbols.includes(variableName)) {
       selectedVisualSymbols = [...selectedVisualSymbols, variableName];
     }
@@ -1773,6 +1893,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   });
 
   onDestroy(() => {
+    stopSplitDrag();
     stopPoll();
     stopProbe();
     probeToken += 1;
@@ -1782,6 +1903,9 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       clearTimeout(timer);
     }
     for (const timer of Object.values(pathRecordPollTimers || {})) {
+      clearTimeout(timer);
+    }
+    for (const timer of Object.values(recentMaterializeTimers || {})) {
       clearTimeout(timer);
     }
     if (viewer && typeof viewer.destroy === "function") {
@@ -1799,7 +1923,11 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       </div>
     </header>
 
-    <div class="start-prime-grid">
+    <div
+      class={`start-prime-grid ${splitDragActive ? "is-resizing" : ""}`.trim()}
+      bind:this={startPrimeGridEl}
+      style={`--start-editor-width:${(splitRatio * 100).toFixed(1)}%`}
+    >
       <section class="start-prime-editor">
         <div class="start-prime-editor-frame">
           <VoxCodeEditor
@@ -1819,6 +1947,16 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         </div>
       </section>
 
+      <button
+        class="start-prime-splitter"
+        type="button"
+        aria-label="Resize editor and viewer panels"
+        on:pointerdown={handleSplitPointerDown}
+        on:keydown={handleSplitKeyDown}
+      >
+        <span></span>
+      </button>
+
       <section class="start-prime-visual">
         <div class="start-viewer-wrap start-prime-viewer-wrap">
           <div class={`start-pure-viewer ${dreamVisible ? "is-under-dream" : ""}`}>
@@ -1834,7 +1972,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
                   {#if maximizedViewerIndex < 0 || maximizedViewerIndex === index}
                     {@const descriptor = recordDescriptor(record)}
                     <article
-                      class={`start-value-card ${["integer", "number", "boolean", "null", "string", "bytes"].includes(recordType(record)) ? "is-centered-value" : ""} ${maximizedViewerIndex === index ? "is-maximized" : ""}`.trim()}
+                      class={`start-value-card ${["integer", "number", "boolean", "null", "string", "bytes"].includes(recordType(record)) ? "is-centered-value" : ""} ${maximizedViewerIndex === index ? "is-maximized" : ""} is-${recordCardState(record, index)} ${recordJustMaterialized(record) ? "is-just-materialized" : ""}`.trim()}
                       title={`${recordLabel(record, index)} (${typeLabelFromDescriptor(descriptor)})`}
                     >
                       <header class="start-value-card-head">
@@ -1848,7 +1986,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
                           type="button"
                           on:click={() => toggleMaximizedViewer(index)}
                         >
-                          {maximizedViewerIndex === index ? "Restore" : "Expand"}
+                          {maximizedViewerIndex === index ? "Restore" : "Maximize"}
                         </button>
                       </header>
                       <StartValueCanvas
