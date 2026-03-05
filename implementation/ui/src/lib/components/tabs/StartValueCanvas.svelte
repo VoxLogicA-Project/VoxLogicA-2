@@ -1,4 +1,6 @@
 <script>
+  import StartMedicalVolume from "$lib/components/tabs/StartMedicalVolume.svelte";
+
   export let record = null;
   export let label = "";
   export let sourceVariable = "";
@@ -16,7 +18,7 @@
   export let pageLoadingForRecord = () => false;
   export let loadRecordPage = async () => null;
   export let collectionItemsForPage = (page) => (Array.isArray(page?.items) ? page.items : []);
-  export let collectionSelectionFor = () => ({ selectedIndex: 0, selectedPath: "" });
+  export let collectionSelectionFor = () => ({ selectedIndex: 0, selectedAbsoluteIndex: 0, selectedPath: "" });
   export let setCollectionSelection = () => {};
   export let loadCollectionPrev = async () => null;
   export let loadCollectionNext = async () => null;
@@ -40,12 +42,18 @@
   $: summary = descriptor?.summary && typeof descriptor.summary === "object" ? descriptor.summary : {};
   $: path = recordPath(record);
   $: isCollection = collectionRecord(record);
+  $: render = descriptor?.render && typeof descriptor.render === "object" ? descriptor.render : {};
+  $: renderKind = String(render?.kind || "").toLowerCase();
+  $: renderPngUrl = String(render?.png_url || "");
+  $: renderNiftiUrl = String(render?.nifti_url || "");
+  $: renderableImage = Boolean(renderPngUrl) && renderKind === "image2d";
+  $: renderableVolume = Boolean(renderNiftiUrl) && renderKind === "medical-volume";
 
   $: page = isCollection ? pageForRecord(record, path) : null;
   $: loading = isCollection ? pageLoadingForRecord(record, path) : false;
   $: error = isCollection ? pageErrorForRecord(record, path) : "";
   $: items = isCollection ? collectionItemsForPage(page, voxType) : [];
-  $: selection = isCollection ? collectionSelectionFor(record, path) : { selectedIndex: 0, selectedPath: "" };
+  $: selection = isCollection ? collectionSelectionFor(record, path) : { selectedIndex: 0, selectedAbsoluteIndex: 0, selectedPath: "" };
 
   $: selectedIndex = (() => {
     if (!items.length) return 0;
@@ -132,9 +140,13 @@
     <div class="start-value-centered">
       <div class="start-pure-scalar">{Number(summary.length || 0)} bytes</div>
     </div>
-  {:else if (voxType === "image2d" || voxType === "volume3d") && descriptor?.render?.png_url}
+  {:else if renderableImage}
     <div class="start-value-centered">
-      <img class="start-pure-image" src={descriptor.render.png_url} alt={`${label || "value"} preview`} />
+      <img class="start-pure-image" src={renderPngUrl} alt={`${label || "value"} preview`} />
+    </div>
+  {:else if renderableVolume}
+    <div class="start-value-media-shell">
+      <StartMedicalVolume niftiUrl={renderNiftiUrl} label={label || "value"} />
     </div>
   {:else if isCollection}
     <div class={`start-collection-shell ${level > 0 ? "is-nested" : ""}`}>

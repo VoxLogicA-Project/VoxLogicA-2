@@ -106,6 +106,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let pendingProbe = null;
   let probeToken = 0;
   let resolveTraceSeq = 0;
+  let resolveRequestSeq = 0;
+  let resolveInFlight = false;
   const MAX_PENDING_POLL_TICKS = 45;
   const COLLECTION_PAGE_SIZE = 18;
 
@@ -1006,6 +1008,11 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     return false;
   };
 
+  const resolveContextMatches = (request = {}) =>
+    String(request?.variable || "") === String(primaryVariable || "") &&
+    String(request?.path || "") === String(currentPath || "") &&
+    String(request?.program || "") === String(programText || "");
+
   const applyFailure = (payload, variableName) => {
     const message = String(payload?.error || "Unable to inspect value.");
     statusValue = "failed";
@@ -1231,10 +1238,18 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     }
 
     currentPath = String(path || "");
+    const request = {
+      seq: resolveRequestSeq + 1,
+      variable: String(primaryVariable || ""),
+      path: String(currentPath || ""),
+      program: String(programText || ""),
+    };
+    resolveRequestSeq = request.seq;
+    resolveInFlight = true;
     traceResolve("start", {
       traceId,
       enqueue,
-      variable: primaryVariable,
+      variable: request.variable,
       path: currentPath || "/",
       statusBefore: statusValue,
     });
@@ -1250,20 +1265,29 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       traceResolve("request-dispatch", {
         traceId,
         enqueue,
-        variable: primaryVariable,
+        variable: request.variable,
         path: currentPath || "/",
       });
       const payload = await resolvePlaygroundValue({
-        program: programText,
-        variable: primaryVariable,
+        program: request.program,
+        variable: request.variable,
         path: currentPath,
         enqueue,
       });
+      if (request.seq !== resolveRequestSeq || !resolveContextMatches(request)) {
+        traceResolve("response-stale", {
+          traceId,
+          enqueue,
+          variable: request.variable,
+          path: request.path || "/",
+        });
+        return { state: "stale", reason: "superseded" };
+      }
       const requestElapsedMs = (performance?.now ? performance.now() : Date.now()) - requestStarted;
       traceResolve("response", {
         traceId,
         enqueue,
-        variable: primaryVariable,
+        variable: request.variable,
         path: currentPath || "/",
         elapsedMs: Number(requestElapsedMs.toFixed(1)),
         materialization: String(payload?.materialization || ""),
@@ -1286,28 +1310,28 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       if (isMaterialized) {
         traceResolve("branch-materialized", {
           traceId,
-          variable: primaryVariable,
+          variable: request.variable,
           path: currentPath || "/",
           materialization,
           computeStatus,
         });
         stopPoll();
-        applyMaterialized(payload, primaryVariable);
+        applyMaterialized(payload, request.variable);
         return { state: "computed", reason: "materialized" };
       }
 
       if (materialization === "failed" || computeStatus === "failed" || computeStatus === "killed") {
         traceResolve("branch-failed", {
           traceId,
-          variable: primaryVariable,
+          variable: request.variable,
           path: currentPath || "/",
           materialization,
           computeStatus,
           error: String(payload?.error || ""),
         });
         stopPoll();
-        setSymbolStatus(primaryVariable, "failed");
-        applyFailure(payload, primaryVariable);
+        setSymbolStatus(request.variable, "failed");
+        applyFailure(payload, request.variable);
         return { state: "failed", reason: "materialization-failed" };
       }
 
@@ -1319,49 +1343,50 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           Boolean(payload?.job_id);
         traceResolve("branch-pending", {
           traceId,
-          variable: primaryVariable,
+          variable: request.variable,
           path: currentPath || "/",
           materialization,
           computeStatus,
           hasProgressSignal,
           pollActive: Boolean(pendingPoll),
         });
-        applyPending(payload, primaryVariable);
+        applyPending(payload, request.variable);
         if (!hasProgressSignal) {
           stopPoll();
           statusValue = "idle";
-          statusText = `${primaryVariable} is not ready yet. Click Run or click the tag again to refresh.`;
-          setSymbolStatus(primaryVariable, "idle");
-          setSymbolMaterialization(primaryVariable, materialization || "unresolved");
+          statusText = `${request.variable} is not ready yet. Click Run or click the tag again to refresh.`;
+          setSymbolStatus(request.variable, "idle");
+          setSymbolMaterialization(request.variable, materialization || "unresolved");
           dissolveDream();
           return { state: "idle", reason: "no-progress" };
         }
         if (!pendingPoll) {
           traceResolve("poll-start", {
             traceId,
-            variable: primaryVariable,
+            variable: request.variable,
             path: currentPath || "/",
           });
           pendingPollTicks = 0;
           pendingPoll = setInterval(() => {
+            if (resolveInFlight) return;
             pendingPollTicks += 1;
             if (pendingPollTicks > MAX_PENDING_POLL_TICKS) {
               traceResolve("poll-timeout", {
                 traceId,
-                variable: primaryVariable,
+                variable: request.variable,
                 path: currentPath || "/",
                 ticks: pendingPollTicks,
               });
               stopPoll();
               statusValue = "idle";
-              statusText = `${primaryVariable} is still computing in the background. Click Run to refresh status.`;
+              statusText = `${request.variable} is still computing in the background. Click Run to refresh status.`;
               errorText = "";
               dissolveDream();
               return;
             }
             traceResolve("poll-tick", {
               traceId,
-              variable: primaryVariable,
+              variable: request.variable,
               path: currentPath || "/",
               ticks: pendingPollTicks,
             });
@@ -1373,33 +1398,47 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
 
       traceResolve("branch-unexpected", {
         traceId,
-        variable: primaryVariable,
+        variable: request.variable,
         path: currentPath || "/",
         materialization,
         computeStatus,
       });
       stopPoll();
-      setSymbolStatus(primaryVariable, "failed");
+      setSymbolStatus(request.variable, "failed");
       applyFailure(
         {
           ...payload,
           error: payload?.error || "Unexpected materialization state.",
         },
-        primaryVariable,
+        request.variable,
       );
       return { state: "failed", reason: "unexpected-state" };
     } catch (error) {
+      if (request.seq !== resolveRequestSeq || !resolveContextMatches(request)) {
+        traceResolve("request-error-stale", {
+          traceId,
+          enqueue,
+          variable: request.variable,
+          path: request.path || "/",
+          message: String(error?.message || error || "unknown"),
+        });
+        return { state: "stale", reason: "superseded" };
+      }
       traceResolve("request-error", {
         traceId,
         enqueue,
-        variable: primaryVariable,
+        variable: request.variable,
         path: currentPath || "/",
         message: String(error?.message || error || "unknown"),
       });
       stopPoll();
-      setSymbolStatus(primaryVariable, "failed");
-      applyFailure({ error: error.message || "Request failed." }, primaryVariable);
+      setSymbolStatus(request.variable, "failed");
+      applyFailure({ error: error.message || "Request failed." }, request.variable);
       return { state: "failed", reason: "request-error" };
+    } finally {
+      if (request.seq === resolveRequestSeq) {
+        resolveInFlight = false;
+      }
     }
   };
 
@@ -1493,8 +1532,11 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   const handleEditorChange = async (event) => {
     programText = String(event?.detail?.value ?? programText ?? "");
     schedulePersist();
+    resolveRequestSeq += 1;
+    resolveInFlight = false;
     probeToken += 1;
     stopProbe();
+    stopPoll();
     resetViewer();
     clearResolutionActivity();
     await refreshSymbols();
@@ -1508,6 +1550,9 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     }
     const cachedAttempt = await resolvePrimaryValue({ enqueue: false, path: "" });
     if (cachedAttempt?.state === "computed" || cachedAttempt?.state === "pending" || cachedAttempt?.state === "failed") {
+      return cachedAttempt;
+    }
+    if (cachedAttempt?.state === "stale") {
       return cachedAttempt;
     }
     if (materializedRecords?.[variableName]) {
@@ -1528,7 +1573,10 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     primaryVariable = token;
     captionVariable = token;
     selectedVisualSymbols = [token];
-    renderSelectedRecords();
+    stopPoll();
+    resolveRequestSeq += 1;
+    const rendered = renderSelectedRecords();
+    if (!rendered) viewer.renderRecord(null);
     currentPath = "";
     await resolveCurrentPreferCache();
   };
@@ -1539,6 +1587,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       status: statusValue,
       path: currentPath || "/",
     });
+    resolveRequestSeq += 1;
+    resolveInFlight = false;
     stopPoll();
     await refreshSymbols();
     ensureSelectedVisualSymbols();
@@ -1566,8 +1616,11 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     primaryVariable = name;
     captionVariable = name;
     currentPath = "";
+    stopPoll();
+    resolveRequestSeq += 1;
     ensureSelectedVisualSymbols();
-    renderSelectedRecords();
+    const rendered = renderSelectedRecords();
+    if (!rendered) viewer.renderRecord(null);
     await resolveCurrentPreferCache();
   };
 

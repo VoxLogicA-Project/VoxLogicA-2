@@ -7,6 +7,16 @@ const getProgramSymbolsMock = vi.fn();
 const resolvePlaygroundValueMock = vi.fn();
 const resolvePlaygroundValuePageMock = vi.fn();
 
+const deferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolveFn, rejectFn) => {
+    resolve = resolveFn;
+    reject = rejectFn;
+  });
+  return { promise, resolve, reject };
+};
+
 vi.mock("$lib/api/client.js", () => ({
   getProgramSymbols: (...args) => getProgramSymbolsMock(...args),
   resolvePlaygroundValue: (...args) => resolvePlaygroundValueMock(...args),
@@ -284,5 +294,83 @@ describe("StartTab", () => {
       const latest = resolvePlaygroundValuePageMock.mock.calls.at(-1)?.[0];
       expect(latest?.enqueue).toBe(false);
     });
+  });
+
+  it("ignores stale resolve responses after switching variable tags", async () => {
+    vi.useFakeTimers();
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { a: "node-a", b: "node-b" },
+      diagnostics: [],
+    });
+    const aDeferred = deferred();
+    const bDeferred = deferred();
+    resolvePlaygroundValueMock.mockImplementation(async ({ variable }) => {
+      if (variable === "a") return aDeferred.promise;
+      if (variable === "b") return bDeferred.promise;
+      return {
+        materialization: "computed",
+        compute_status: "completed",
+        node_id: "node-x",
+        path: "/",
+        descriptor: {
+          vox_type: "integer",
+          format_version: "voxpod/1",
+          summary: { value: 0 },
+          navigation: { path: "/", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
+        },
+      };
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(container.querySelectorAll("button.start-value-tag").length).toBe(2);
+    });
+    const valueTags = Array.from(container.querySelectorAll("button.start-value-tag"));
+    const aTag = valueTags.find((el) => (el.textContent || "").includes("a"));
+    const bTag = valueTags.find((el) => (el.textContent || "").includes("b"));
+    expect(aTag).not.toBeUndefined();
+    expect(bTag).not.toBeUndefined();
+
+    await fireEvent.click(aTag);
+    await fireEvent.click(bTag);
+
+    bDeferred.resolve({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-b",
+      path: "/",
+      descriptor: {
+        vox_type: "integer",
+        format_version: "voxpod/1",
+        summary: { value: 2 },
+        navigation: { path: "/", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
+      },
+    });
+    await waitFor(() => {
+      const caption = container.querySelector(".start-caption-main");
+      expect(caption?.textContent || "").toContain("b");
+      expect(container.textContent).toContain("2");
+    });
+
+    aDeferred.resolve({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-a",
+      path: "/",
+      descriptor: {
+        vox_type: "integer",
+        format_version: "voxpod/1",
+        summary: { value: 1 },
+        navigation: { path: "/", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const caption = container.querySelector(".start-caption-main");
+    expect(caption?.textContent || "").toContain("b");
+    expect(container.textContent).toContain("2");
+    vi.useRealTimers();
   });
 });
