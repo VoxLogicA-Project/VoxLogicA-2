@@ -88,6 +88,10 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let recordPagesLoading = {};
   let recordPagesErrors = {};
   let collectionSelections = {};
+  let recordPagePollTimers = {};
+  let pathRecords = {};
+  let pathRecordsLoading = {};
+  let pathRecordsErrors = {};
   let resolutionActivityRows = [];
   let resolutionActivitySummary = "No resolution activity yet.";
   let activitySeenKeys = new Set();
@@ -524,22 +528,32 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     if (selection && typeof selection === "object") {
       return {
         selectedIndex: Math.max(0, Number(selection.selectedIndex || 0)),
+        selectedAbsoluteIndex: Math.max(0, Number(selection.selectedAbsoluteIndex || 0)),
         selectedPath: String(selection.selectedPath || ""),
       };
     }
-    return { selectedIndex: 0, selectedPath: "" };
+    return { selectedIndex: 0, selectedAbsoluteIndex: 0, selectedPath: "" };
   };
 
   const setCollectionSelection = (record, path = "", selection = {}) => {
     const key = pageKey(record, path);
     const nextIndex = Math.max(0, Number(selection?.selectedIndex || 0));
+    const nextAbsoluteIndex = Math.max(0, Number(selection?.selectedAbsoluteIndex || selection?.selectedIndex || 0));
     const nextPath = String(selection?.selectedPath || "");
     const current = collectionSelections?.[key];
-    if (current && Number(current.selectedIndex || 0) === nextIndex && String(current.selectedPath || "") === nextPath) return;
+    if (
+      current &&
+      Number(current.selectedIndex || 0) === nextIndex &&
+      Number(current.selectedAbsoluteIndex || 0) === nextAbsoluteIndex &&
+      String(current.selectedPath || "") === nextPath
+    ) {
+      return;
+    }
     collectionSelections = {
       ...collectionSelections,
       [key]: {
         selectedIndex: nextIndex,
+        selectedAbsoluteIndex: nextAbsoluteIndex,
         selectedPath: nextPath,
       },
     };
@@ -576,6 +590,94 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           },
   });
 
+  const sourceVariableForRecord = (record, index = 0) => {
+    const nodeId = String(record?.node_id || "");
+    if (nodeId) {
+      const names = symbolNamesByNodeId()[nodeId] || [];
+      const selected = names.find((name) => selectedVisualSymbols.includes(name));
+      if (selected) return selected;
+      if (names[0]) return names[0];
+    }
+    if (selectedVisualSymbols[index]) return selectedVisualSymbols[index];
+    return primaryVariable || "";
+  };
+
+  const pathRecordKey = (sourceVariable = "", path = "") => `${String(sourceVariable || "")}:${String(path || "/")}`;
+
+  const pathRecordFor = (sourceVariable = "", path = "") => pathRecords?.[pathRecordKey(sourceVariable, path)] || null;
+
+  const pathRecordLoadingFor = (sourceVariable = "", path = "") => Boolean(pathRecordsLoading?.[pathRecordKey(sourceVariable, path)]);
+
+  const pathRecordErrorFor = (sourceVariable = "", path = "") => String(pathRecordsErrors?.[pathRecordKey(sourceVariable, path)] || "");
+
+  const cachePathRecord = (sourceVariable = "", path = "", payload = null) => {
+    if (!sourceVariable || !payload) return;
+    const key = pathRecordKey(sourceVariable, path);
+    pathRecords = {
+      ...pathRecords,
+      [key]: payload,
+    };
+  };
+
+  const loadPathRecord = async ({ sourceVariable = "", path = "", enqueueFallback = true } = {}) => {
+    const variableName = String(sourceVariable || "").trim();
+    const targetPath = String(path || "");
+    if (!variableName) return null;
+    const key = pathRecordKey(variableName, targetPath);
+    if (pathRecords?.[key]) return pathRecords[key];
+    if (pathRecordsLoading?.[key]) return null;
+
+    pathRecordsLoading = { ...pathRecordsLoading, [key]: true };
+    const nextErrors = { ...pathRecordsErrors };
+    delete nextErrors[key];
+    pathRecordsErrors = nextErrors;
+
+    const tryResolve = async (enqueueFlag) =>
+      resolvePlaygroundValue({
+        program: programText,
+        variable: variableName,
+        path: targetPath,
+        enqueue: enqueueFlag,
+      });
+
+    try {
+      const first = await tryResolve(false);
+      const firstMaterialization = String(first?.materialization || "").toLowerCase();
+      const firstStatus = String(first?.compute_status || "").toLowerCase();
+      const firstMaterialized = (firstMaterialization === "computed" || firstMaterialization === "cached") && Boolean(first?.descriptor);
+      if (firstMaterialized) {
+        cachePathRecord(variableName, targetPath, first);
+        return first;
+      }
+
+      if (enqueueFallback && ["pending", "missing"].includes(firstMaterialization) && !["failed", "killed"].includes(firstStatus)) {
+        const second = await tryResolve(true);
+        const secondMaterialization = String(second?.materialization || "").toLowerCase();
+        const secondMaterialized = (secondMaterialization === "computed" || secondMaterialization === "cached") && Boolean(second?.descriptor);
+        if (secondMaterialized) {
+          cachePathRecord(variableName, targetPath, second);
+          return second;
+        }
+      }
+
+      if (first?.descriptor) {
+        cachePathRecord(variableName, targetPath, first);
+        return first;
+      }
+      return null;
+    } catch (error) {
+      pathRecordsErrors = {
+        ...pathRecordsErrors,
+        [key]: String(error?.message || error || "Unable to load value."),
+      };
+      return null;
+    } finally {
+      const nextLoading = { ...pathRecordsLoading };
+      delete nextLoading[key];
+      pathRecordsLoading = nextLoading;
+    }
+  };
+
   const resolveViewerRecordsTypes = () => {
     const next = { ...symbolTypeHints };
     for (const record of viewerRecords) {
@@ -590,7 +692,37 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     symbolTypeHints = next;
   };
 
-  const loadRecordPage = async (record, { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE } = {}) => {
+  const clearRecordPagePoll = (baseKey = "") => {
+    const key = String(baseKey || "");
+    const timer = recordPagePollTimers?.[key];
+    if (timer) {
+      clearTimeout(timer);
+    }
+    const next = { ...recordPagePollTimers };
+    delete next[key];
+    recordPagePollTimers = next;
+  };
+
+  const scheduleRecordPagePoll = (record, { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, delayMs = 900 } = {}) => {
+    const resolvedPath = String(path || recordPath(record) || "");
+    const baseKey = pageKey(record, resolvedPath);
+    if (recordPagePollTimers?.[baseKey]) return;
+    const timer = setTimeout(() => {
+      clearRecordPagePoll(baseKey);
+      void loadRecordPage(record, {
+        path: resolvedPath,
+        offset,
+        limit,
+        enqueueFallback: false,
+      });
+    }, Math.max(250, Number(delayMs || 900)));
+    recordPagePollTimers = {
+      ...recordPagePollTimers,
+      [baseKey]: timer,
+    };
+  };
+
+  const loadRecordPage = async (record, { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, enqueueFallback = true } = {}) => {
     if (!record || !collectionRecord(record)) return null;
     const descriptor = recordDescriptor(record);
     const navigation = descriptor?.navigation && typeof descriptor.navigation === "object" ? descriptor.navigation : {};
@@ -613,38 +745,77 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     delete nextErrors[baseKey];
     recordPagesErrors = nextErrors;
     try {
-      const payload = await resolvePlaygroundValuePage({
-        program: programText,
-        nodeId: String(record?.node_id || ""),
-        variable: "",
-        path: resolvedPath,
-        offset: resolvedOffset,
-        limit: resolvedLimit,
-        enqueue: false,
-      });
-      const page =
+      const requestPage = async (enqueueFlag) =>
+        resolvePlaygroundValuePage({
+          program: programText,
+          nodeId: String(record?.node_id || ""),
+          variable: "",
+          path: resolvedPath,
+          offset: resolvedOffset,
+          limit: resolvedLimit,
+          enqueue: enqueueFlag,
+        });
+
+      let payload = await requestPage(false);
+      let page =
         payload?.page && typeof payload.page === "object"
           ? payload.page
           : { offset: resolvedOffset, limit: resolvedLimit, items: [], has_more: false, next_offset: null };
+      const pendingStatuses = new Set(["queued", "running", "persisting", "pending", "missing"]);
+      const payloadMaterialization = String(payload?.materialization || "").toLowerCase();
+      const payloadStatus = String(payload?.compute_status || "").toLowerCase();
+      const expectedLength = Number(descriptor?.summary?.length || 0);
+      const likelyPending = pendingStatuses.has(payloadMaterialization) || pendingStatuses.has(payloadStatus);
+      const needsFallback = !Array.isArray(page?.items) || page.items.length === 0;
+
+      if (enqueueFallback && needsFallback && (likelyPending || expectedLength > 0)) {
+        payload = await requestPage(true);
+        page =
+          payload?.page && typeof payload.page === "object"
+            ? payload.page
+            : { offset: resolvedOffset, limit: resolvedLimit, items: [], has_more: false, next_offset: null };
+      }
+
+      const pageMaterialization = String(payload?.materialization || "").toLowerCase();
+      const pageStatus = String(payload?.compute_status || "").toLowerCase();
+      const pagePending = pendingStatuses.has(pageMaterialization) || pendingStatuses.has(pageStatus);
+      if (pagePending && (!Array.isArray(page?.items) || page.items.length === 0)) {
+        scheduleRecordPagePoll(record, {
+          path: resolvedPath,
+          offset: resolvedOffset,
+          limit: resolvedLimit,
+          delayMs: 950,
+        });
+      } else {
+        clearRecordPagePoll(baseKey);
+      }
+
       recordPages = { ...recordPages, [cacheKey]: page };
       recordPagePointers = { ...recordPagePointers, [baseKey]: cacheKey };
       const items = collectionItemsForPage(page, recordType(record));
       const currentSelection = collectionSelectionFor(record, resolvedPath);
       let selectedIndex = Math.max(0, Number(currentSelection?.selectedIndex || 0));
+      let selectedAbsoluteIndex = Math.max(0, Number(currentSelection?.selectedAbsoluteIndex || 0));
       let selectedPath = String(currentSelection?.selectedPath || "");
       if (!items.length) {
         selectedIndex = 0;
+        selectedAbsoluteIndex = 0;
         selectedPath = "";
       } else {
         const byPathIndex = selectedPath ? items.findIndex((item) => String(item?.path || "") === selectedPath) : -1;
         if (byPathIndex >= 0) {
           selectedIndex = byPathIndex;
+          selectedAbsoluteIndex = resolvedOffset + byPathIndex;
         } else if (selectedIndex >= items.length) {
-          selectedIndex = 0;
+          const byAbsolute = selectedAbsoluteIndex >= resolvedOffset ? selectedAbsoluteIndex - resolvedOffset : -1;
+          selectedIndex = byAbsolute >= 0 && byAbsolute < items.length ? byAbsolute : 0;
+          selectedAbsoluteIndex = resolvedOffset + selectedIndex;
+        } else {
+          selectedAbsoluteIndex = resolvedOffset + selectedIndex;
         }
         selectedPath = String(items[selectedIndex]?.path || "");
       }
-      setCollectionSelection(record, resolvedPath, { selectedIndex, selectedPath });
+      setCollectionSelection(record, resolvedPath, { selectedIndex, selectedAbsoluteIndex, selectedPath });
       return page;
     } catch (error) {
       recordPagesErrors = {
@@ -789,6 +960,9 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   };
 
   const resetViewer = () => {
+    for (const timer of Object.values(recordPagePollTimers || {})) {
+      clearTimeout(timer);
+    }
     viewerRecords = [];
     viewerMode = "empty";
     viewerMessage = "";
@@ -798,6 +972,10 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     recordPagesLoading = {};
     recordPagesErrors = {};
     collectionSelections = {};
+    recordPagePollTimers = {};
+    pathRecords = {};
+    pathRecordsLoading = {};
+    pathRecordsErrors = {};
   };
 
   const renderSelectedRecords = ({ fallbackRecord = null } = {}) => {
@@ -1308,6 +1486,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     schedulePersist();
     probeToken += 1;
     stopProbe();
+    resetViewer();
     clearResolutionActivity();
     await refreshSymbols();
   };
@@ -1411,6 +1590,9 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     probeToken += 1;
     if (pendingSave) clearTimeout(pendingSave);
     if (pendingDreamCleanup) clearTimeout(pendingDreamCleanup);
+    for (const timer of Object.values(recordPagePollTimers || {})) {
+      clearTimeout(timer);
+    }
     if (viewer && typeof viewer.destroy === "function") {
       viewer.destroy();
     }
@@ -1469,6 +1651,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
                     <StartValueCanvas
                       {record}
                       label={recordLabel(record, index)}
+                      sourceVariable={sourceVariableForRecord(record, index)}
                       level={0}
                       {collectionRecord}
                       {recordDescriptor}
@@ -1486,6 +1669,10 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
                       {loadCollectionPrev}
                       {loadCollectionNext}
                       {nestedRecordFromItem}
+                      {pathRecordFor}
+                      {pathRecordLoadingFor}
+                      {pathRecordErrorFor}
+                      {loadPathRecord}
                     />
                   </article>
                 {/each}

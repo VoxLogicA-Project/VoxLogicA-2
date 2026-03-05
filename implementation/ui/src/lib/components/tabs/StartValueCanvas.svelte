@@ -1,6 +1,7 @@
 <script>
   export let record = null;
   export let label = "";
+  export let sourceVariable = "";
   export let level = 0;
 
   export let collectionRecord = () => false;
@@ -20,6 +21,10 @@
   export let loadCollectionPrev = async () => null;
   export let loadCollectionNext = async () => null;
   export let nestedRecordFromItem = (_record, item) => item;
+  export let pathRecordFor = () => null;
+  export let pathRecordLoadingFor = () => false;
+  export let pathRecordErrorFor = () => "";
+  export let loadPathRecord = async () => null;
 
   const MAX_DEPTH = 7;
   const DEFAULT_LIMIT = 18;
@@ -47,19 +52,30 @@
     const selectedPath = String(selection?.selectedPath || "");
     const byPath = selectedPath ? items.findIndex((item) => String(item?.path || "") === selectedPath) : -1;
     if (byPath >= 0) return byPath;
+    const byAbsolute = Math.max(0, Number(selection?.selectedAbsoluteIndex || 0)) - Math.max(0, Number(page?.offset || 0));
+    if (byAbsolute >= 0 && byAbsolute < items.length) return byAbsolute;
     const byIndex = Math.max(0, Number(selection?.selectedIndex || 0));
     return byIndex < items.length ? byIndex : 0;
   })();
   $: selectedItem = items.length ? items[selectedIndex] : null;
-  $: selectedRecord = selectedItem ? nestedRecordFromItem(record, selectedItem) : null;
+  $: selectedPath = String(selectedItem?.path || "");
+  $: selectedRecordDetail = selectedPath ? pathRecordFor(sourceVariable, selectedPath) : null;
+  $: selectedDetailLoading = selectedPath ? pathRecordLoadingFor(sourceVariable, selectedPath) : false;
+  $: selectedDetailError = selectedPath ? pathRecordErrorFor(sourceVariable, selectedPath) : "";
+  $: selectedRecord = selectedRecordDetail || (selectedItem ? nestedRecordFromItem(record, selectedItem) : null);
   $: selectedDescriptor =
-    selectedItem?.descriptor && typeof selectedItem.descriptor === "object" ? selectedItem.descriptor : { vox_type: "unavailable", summary: {} };
+    selectedRecord?.descriptor && typeof selectedRecord.descriptor === "object"
+      ? selectedRecord.descriptor
+      : selectedItem?.descriptor && typeof selectedItem.descriptor === "object"
+        ? selectedItem.descriptor
+        : { vox_type: "unavailable", summary: {} };
 
   $: if (isCollection && items.length) {
     const nextPath = String(items[selectedIndex]?.path || "");
     if (String(selection?.selectedPath || "") !== nextPath || Number(selection?.selectedIndex || 0) !== selectedIndex) {
       setCollectionSelection(record, path, {
         selectedIndex,
+        selectedAbsoluteIndex: Math.max(0, Number(page?.offset || 0)) + selectedIndex,
         selectedPath: nextPath,
       });
     }
@@ -82,6 +98,22 @@
         limit: DEFAULT_LIMIT,
       });
     }
+  }
+
+  $: if (
+    isCollection &&
+    selectedItem &&
+    sourceVariable &&
+    selectedPath &&
+    !selectedRecordDetail &&
+    !selectedDetailLoading &&
+    !selectedDetailError
+  ) {
+    void loadPathRecord({
+      sourceVariable,
+      path: selectedPath,
+      enqueueFallback: true,
+    });
   }
 </script>
 
@@ -154,6 +186,7 @@
               on:click={() =>
                 setCollectionSelection(record, path, {
                   selectedIndex: itemIndex,
+                  selectedAbsoluteIndex: Math.max(0, Number(page?.offset || 0)) + itemIndex,
                   selectedPath: String(item?.path || ""),
                 })}
             >
@@ -175,12 +208,19 @@
           <span class="start-collection-stage-label">{selectedItem?.label || label || "value"}</span>
         </header>
         <div class="start-collection-stage-body">
-          {#if level >= MAX_DEPTH}
+          {#if selectedDetailError}
+            <div class="viewer-error">{selectedDetailError}</div>
+          {:else if selectedDetailLoading && !selectedRecordDetail}
+            <div class="start-collection-stage-loading">
+              <span></span>
+            </div>
+          {:else if level >= MAX_DEPTH}
             <div class="start-pure-array">{previewText(selectedDescriptor)}</div>
           {:else}
             <svelte:self
               record={selectedRecord}
               label={selectedItem?.label || label}
+              {sourceVariable}
               level={level + 1}
               {collectionRecord}
               {recordDescriptor}
@@ -198,6 +238,10 @@
               {loadCollectionPrev}
               {loadCollectionNext}
               {nestedRecordFromItem}
+              {pathRecordFor}
+              {pathRecordLoadingFor}
+              {pathRecordErrorFor}
+              {loadPathRecord}
             />
           {/if}
         </div>
