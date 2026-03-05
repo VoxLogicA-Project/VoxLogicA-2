@@ -92,6 +92,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let pathRecords = {};
   let pathRecordsLoading = {};
   let pathRecordsErrors = {};
+  let pathRecordPollTimers = {};
   let resolutionActivityRows = [];
   let resolutionActivitySummary = "No resolution activity yet.";
   let activitySeenKeys = new Set();
@@ -108,6 +109,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let resolveTraceSeq = 0;
   let resolveRequestSeq = 0;
   let resolveInFlight = false;
+  let maximizedViewerIndex = -1;
   const MAX_PENDING_POLL_TICKS = 45;
   const COLLECTION_PAGE_SIZE = 18;
 
@@ -621,13 +623,46 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     };
   };
 
-  const loadPathRecord = async ({ sourceVariable = "", path = "", enqueueFallback = true } = {}) => {
+  const clearPathRecordPoll = (key = "") => {
+    const pollKey = String(key || "");
+    const timer = pathRecordPollTimers?.[pollKey];
+    if (timer) {
+      clearTimeout(timer);
+    }
+    const next = { ...pathRecordPollTimers };
+    delete next[pollKey];
+    pathRecordPollTimers = next;
+  };
+
+  const schedulePathRecordPoll = ({ sourceVariable = "", path = "", delayMs = 850 } = {}) => {
+    const variableName = String(sourceVariable || "").trim();
+    const targetPath = String(path || "");
+    if (!variableName) return;
+    const key = pathRecordKey(variableName, targetPath);
+    if (pathRecordPollTimers?.[key]) return;
+    const timer = setTimeout(() => {
+      clearPathRecordPoll(key);
+      void loadPathRecord({
+        sourceVariable: variableName,
+        path: targetPath,
+        enqueueFallback: false,
+        force: true,
+      });
+    }, Math.max(250, Number(delayMs || 850)));
+    pathRecordPollTimers = {
+      ...pathRecordPollTimers,
+      [key]: timer,
+    };
+  };
+
+  const loadPathRecord = async ({ sourceVariable = "", path = "", enqueueFallback = true, force = false } = {}) => {
     const variableName = String(sourceVariable || "").trim();
     const targetPath = String(path || "");
     if (!variableName) return null;
     const key = pathRecordKey(variableName, targetPath);
-    if (pathRecords?.[key]) return pathRecords[key];
+    if (!force && pathRecords?.[key]) return pathRecords[key];
     if (pathRecordsLoading?.[key]) return null;
+    clearPathRecordPoll(key);
 
     pathRecordsLoading = { ...pathRecordsLoading, [key]: true };
     const nextErrors = { ...pathRecordsErrors };
@@ -647,23 +682,40 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       const firstMaterialization = String(first?.materialization || "").toLowerCase();
       const firstStatus = String(first?.compute_status || "").toLowerCase();
       const firstMaterialized = (firstMaterialization === "computed" || firstMaterialization === "cached") && Boolean(first?.descriptor);
+      const firstPending = ["pending", "missing", "queued", "running", "persisting"].includes(firstMaterialization) ||
+        ["queued", "running", "persisting"].includes(firstStatus);
       if (firstMaterialized) {
         cachePathRecord(variableName, targetPath, first);
+        clearPathRecordPoll(key);
         return first;
       }
 
       if (enqueueFallback && ["pending", "missing"].includes(firstMaterialization) && !["failed", "killed"].includes(firstStatus)) {
         const second = await tryResolve(true);
         const secondMaterialization = String(second?.materialization || "").toLowerCase();
+        const secondStatus = String(second?.compute_status || "").toLowerCase();
         const secondMaterialized = (secondMaterialization === "computed" || secondMaterialization === "cached") && Boolean(second?.descriptor);
         if (secondMaterialized) {
           cachePathRecord(variableName, targetPath, second);
+          clearPathRecordPoll(key);
           return second;
+        }
+        const secondPending = ["pending", "missing", "queued", "running", "persisting"].includes(secondMaterialization) ||
+          ["queued", "running", "persisting"].includes(secondStatus);
+        if (secondPending) {
+          schedulePathRecordPoll({ sourceVariable: variableName, path: targetPath, delayMs: 900 });
+          return null;
         }
       }
 
-      if (first?.descriptor) {
+      if (firstPending) {
+        schedulePathRecordPoll({ sourceVariable: variableName, path: targetPath, delayMs: 900 });
+        return null;
+      }
+
+      if (first?.descriptor && !["pending", "missing"].includes(firstMaterialization)) {
         cachePathRecord(variableName, targetPath, first);
+        clearPathRecordPoll(key);
         return first;
       }
       return null;
@@ -716,6 +768,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         offset,
         limit,
         enqueueFallback: false,
+        force: true,
       });
     }, Math.max(250, Number(delayMs || 900)));
     recordPagePollTimers = {
@@ -724,7 +777,10 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     };
   };
 
-  const loadRecordPage = async (record, { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, enqueueFallback = true } = {}) => {
+  const loadRecordPage = async (
+    record,
+    { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, enqueueFallback = true, force = false } = {},
+  ) => {
     if (!record || !collectionRecord(record)) return null;
     const descriptor = recordDescriptor(record);
     const navigation = descriptor?.navigation && typeof descriptor.navigation === "object" ? descriptor.navigation : {};
@@ -734,7 +790,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     const resolvedLimit = Math.max(1, Number(limit || navigation.default_page_size || COLLECTION_PAGE_SIZE));
     const resolvedOffset = Math.max(0, Number(offset || 0));
     const cacheKey = pageCacheKey(record, resolvedPath, resolvedOffset, resolvedLimit);
-    if (recordPages?.[cacheKey]) {
+    if (!force && recordPages?.[cacheKey]) {
       recordPagePointers = {
         ...recordPagePointers,
         [baseKey]: cacheKey,
@@ -792,9 +848,13 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         clearRecordPagePoll(baseKey);
       }
 
-      recordPages = { ...recordPages, [cacheKey]: page };
+      const previousPage = recordPages?.[cacheKey];
+      const incomingItems = Array.isArray(page?.items) ? page.items : [];
+      const keepPrevious = Boolean(previousPage) && pagePending && incomingItems.length === 0;
+      const effectivePage = keepPrevious ? previousPage : page;
+      recordPages = { ...recordPages, [cacheKey]: effectivePage };
       recordPagePointers = { ...recordPagePointers, [baseKey]: cacheKey };
-      const items = collectionItemsForPage(page, recordType(record));
+      const items = collectionItemsForPage(effectivePage, recordType(record));
       const currentSelection = collectionSelectionFor(record, resolvedPath);
       let selectedIndex = Math.max(0, Number(currentSelection?.selectedIndex || 0));
       let selectedAbsoluteIndex = Math.max(0, Number(currentSelection?.selectedAbsoluteIndex || 0));
@@ -827,7 +887,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         selectedPath = String(items[selectedIndex]?.path || "");
       }
       setCollectionSelection(record, resolvedPath, { selectedIndex, selectedAbsoluteIndex, selectedPath });
-      return page;
+      return effectivePage;
     } catch (error) {
       recordPagesErrors = {
         ...recordPagesErrors,
@@ -974,6 +1034,9 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     for (const timer of Object.values(recordPagePollTimers || {})) {
       clearTimeout(timer);
     }
+    for (const timer of Object.values(pathRecordPollTimers || {})) {
+      clearTimeout(timer);
+    }
     viewerRecords = [];
     viewerMode = "empty";
     viewerMessage = "";
@@ -987,6 +1050,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     pathRecords = {};
     pathRecordsLoading = {};
     pathRecordsErrors = {};
+    pathRecordPollTimers = {};
+    maximizedViewerIndex = -1;
   };
 
   const renderSelectedRecords = ({ fallbackRecord = null } = {}) => {
@@ -1006,6 +1071,15 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       return true;
     }
     return false;
+  };
+
+  const toggleMaximizedViewer = (index = -1) => {
+    const next = Number(index);
+    if (!Number.isInteger(next) || next < 0) {
+      maximizedViewerIndex = -1;
+      return;
+    }
+    maximizedViewerIndex = maximizedViewerIndex === next ? -1 : next;
   };
 
   const resolveContextMatches = (request = {}) =>
@@ -1200,7 +1274,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     clearPendingLogs();
   };
 
-  const resolvePrimaryValue = async ({ enqueue = true, path = "" } = {}) => {
+  const resolvePrimaryValue = async ({ enqueue = true, path = "", background = false } = {}) => {
     ensureViewer();
     const traceId = resolveTraceSeq + 1;
     resolveTraceSeq = traceId;
@@ -1249,6 +1323,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     traceResolve("start", {
       traceId,
       enqueue,
+      background,
       variable: request.variable,
       path: currentPath || "/",
       statusBefore: statusValue,
@@ -1258,13 +1333,17 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     captionVariable = primaryVariable;
     errorText = "";
     setSymbolStatus(primaryVariable, "running");
-    viewer.setLoading(`Computing ${primaryVariable}${currentPath ? ` @ ${currentPath}` : ""}...`);
+    const preserveCurrentView = Boolean(background && viewerMode === "value" && viewerRecords.length);
+    if (!preserveCurrentView) {
+      viewer.setLoading(`Computing ${primaryVariable}${currentPath ? ` @ ${currentPath}` : ""}...`);
+    }
 
     try {
       const requestStarted = performance?.now ? performance.now() : Date.now();
       traceResolve("request-dispatch", {
         traceId,
         enqueue,
+        background,
         variable: request.variable,
         path: currentPath || "/",
       });
@@ -1278,6 +1357,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         traceResolve("response-stale", {
           traceId,
           enqueue,
+          background,
           variable: request.variable,
           path: request.path || "/",
         });
@@ -1287,6 +1367,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       traceResolve("response", {
         traceId,
         enqueue,
+        background,
         variable: request.variable,
         path: currentPath || "/",
         elapsedMs: Number(requestElapsedMs.toFixed(1)),
@@ -1390,7 +1471,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
               path: currentPath || "/",
               ticks: pendingPollTicks,
             });
-            void resolvePrimaryValue({ enqueue: false, path: currentPath });
+            void resolvePrimaryValue({ enqueue: false, path: currentPath, background: true });
           }, 1000);
         }
         return { state: "pending", reason: "in-progress" };
@@ -1427,6 +1508,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       traceResolve("request-error", {
         traceId,
         enqueue,
+        background,
         variable: request.variable,
         path: currentPath || "/",
         message: String(error?.message || error || "unknown"),
@@ -1548,7 +1630,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     if (materializedRecords?.[variableName]) {
       renderSelectedRecords();
     }
-    const cachedAttempt = await resolvePrimaryValue({ enqueue: false, path: "" });
+    const cachedAttempt = await resolvePrimaryValue({ enqueue: false, path: "", background: true });
     if (cachedAttempt?.state === "computed" || cachedAttempt?.state === "pending" || cachedAttempt?.state === "failed") {
       return cachedAttempt;
     }
@@ -1628,6 +1710,10 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     Object.keys(symbolTable || {}).map((name) => [name, symbolTypeLabel(name)]),
   );
 
+  $: if (maximizedViewerIndex >= viewerRecords.length || viewerMode !== "value") {
+    maximizedViewerIndex = -1;
+  }
+
   $: if (viewerMode === "value" && viewerRecords.length) {
     ensureRecordPages();
   }
@@ -1653,6 +1739,9 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     if (pendingSave) clearTimeout(pendingSave);
     if (pendingDreamCleanup) clearTimeout(pendingDreamCleanup);
     for (const timer of Object.values(recordPagePollTimers || {})) {
+      clearTimeout(timer);
+    }
+    for (const timer of Object.values(pathRecordPollTimers || {})) {
       clearTimeout(timer);
     }
     if (viewer && typeof viewer.destroy === "function") {
@@ -1698,53 +1787,66 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
             {:else if viewerMode === "loading" && !dreamVisible}
               <div class="start-viewer-message">{viewerMessage || "Computing..."}</div>
             {:else if viewerMode === "value" && viewerRecords.length}
-              <div class={`start-value-grid ${viewerRecords.length > 1 ? "is-multi" : "is-single"}`}>
+              <div
+                class={`start-value-grid ${viewerRecords.length > 1 ? "is-multi" : "is-single"} ${maximizedViewerIndex >= 0 ? "has-maximized" : ""} ${dreamVisible ? "is-materializing" : ""}`.trim()}
+              >
                 {#each viewerRecords as record, index (`${record?.node_id || "value"}-${index}`)}
-                  {@const descriptor = recordDescriptor(record)}
-                  <article
-                    class={`start-value-card ${["integer", "number", "boolean", "null", "string", "bytes"].includes(recordType(record)) ? "is-centered-value" : ""}`.trim()}
-                    title={`${recordLabel(record, index)} (${typeLabelFromDescriptor(descriptor)})`}
-                  >
-                    {#if viewerRecords.length > 1}
+                  {#if maximizedViewerIndex < 0 || maximizedViewerIndex === index}
+                    {@const descriptor = recordDescriptor(record)}
+                    <article
+                      class={`start-value-card ${["integer", "number", "boolean", "null", "string", "bytes"].includes(recordType(record)) ? "is-centered-value" : ""} ${maximizedViewerIndex === index ? "is-maximized" : ""}`.trim()}
+                      title={`${recordLabel(record, index)} (${typeLabelFromDescriptor(descriptor)})`}
+                    >
                       <header class="start-value-card-head">
-                        <span class="start-value-card-label">{recordLabel(record, index)}</span>
+                        {#if viewerRecords.length > 1 || maximizedViewerIndex === index}
+                          <span class="start-value-card-label">{recordLabel(record, index)}</span>
+                        {:else}
+                          <span class="start-value-card-label"></span>
+                        {/if}
+                        <button
+                          class="btn btn-ghost btn-small start-value-card-expand"
+                          type="button"
+                          on:click={() => toggleMaximizedViewer(index)}
+                        >
+                          {maximizedViewerIndex === index ? "Restore" : "Expand"}
+                        </button>
                       </header>
-                    {/if}
-                    <StartValueCanvas
-                      {record}
-                      label={recordLabel(record, index)}
-                      sourceVariable={sourceVariableForRecord(record, index)}
-                      level={0}
-                      {collectionRecord}
-                      {recordDescriptor}
-                      {recordType}
-                      {recordPath}
-                      {previewText}
-                      {typeLabelFromDescriptor}
-                      {pageForRecord}
-                      {pageErrorForRecord}
-                      {pageLoadingForRecord}
-                      {loadRecordPage}
-                      {collectionItemsForPage}
-                      {collectionSelectionFor}
-                      {setCollectionSelection}
-                      {loadCollectionPrev}
-                      {loadCollectionNext}
-                      {nestedRecordFromItem}
-                      {pathRecordFor}
-                      {pathRecordLoadingFor}
-                      {pathRecordErrorFor}
-                      {loadPathRecord}
-                      {recordPages}
-                      {recordPagePointers}
-                      {recordPagesLoading}
-                      {recordPagesErrors}
-                      {collectionSelections}
-                      {pathRecords}
-                      {pathRecordsLoading}
-                      {pathRecordsErrors}
-                    />
-                  </article>
+                      <StartValueCanvas
+                        {record}
+                        label={recordLabel(record, index)}
+                        sourceVariable={sourceVariableForRecord(record, index)}
+                        level={0}
+                        {collectionRecord}
+                        {recordDescriptor}
+                        {recordType}
+                        {recordPath}
+                        {previewText}
+                        {typeLabelFromDescriptor}
+                        {pageForRecord}
+                        {pageErrorForRecord}
+                        {pageLoadingForRecord}
+                        {loadRecordPage}
+                        {collectionItemsForPage}
+                        {collectionSelectionFor}
+                        {setCollectionSelection}
+                        {loadCollectionPrev}
+                        {loadCollectionNext}
+                        {nestedRecordFromItem}
+                        {pathRecordFor}
+                        {pathRecordLoadingFor}
+                        {pathRecordErrorFor}
+                        {loadPathRecord}
+                        {recordPages}
+                        {recordPagePointers}
+                        {recordPagesLoading}
+                        {recordPagesErrors}
+                        {collectionSelections}
+                        {pathRecords}
+                        {pathRecordsLoading}
+                        {pathRecordsErrors}
+                      />
+                    </article>
+                  {/if}
                 {/each}
               </div>
             {:else}

@@ -46,6 +46,16 @@
     return String(value);
   };
 
+  const collectionItemState = (item) => {
+    const descriptor = item?.descriptor && typeof item.descriptor === "object" ? item.descriptor : {};
+    const voxType = String(descriptor?.vox_type || "").toLowerCase();
+    const status = String(item?.status || "").toLowerCase();
+    if (["failed", "killed", "error"].includes(status) || voxType === "error") return "failed";
+    if (["pending", "missing", "queued", "running", "persisting"].includes(status)) return "pending";
+    if (!voxType || voxType === "unavailable") return "pending";
+    return "materialized";
+  };
+
   $: descriptor = recordDescriptor(record);
   $: voxType = recordType(record);
   $: summary = descriptor?.summary && typeof descriptor.summary === "object" ? descriptor.summary : {};
@@ -204,7 +214,7 @@
           {#each items as item, itemIndex}
             {@const itemDescriptor = item?.descriptor && typeof item.descriptor === "object" ? item.descriptor : { vox_type: "value", summary: {} }}
             <button
-              class={`start-collection-item ${selectedIndex === itemIndex ? "is-selected" : ""}`.trim()}
+              class={`start-collection-item start-collection-item--${collectionItemState(item)} ${selectedIndex === itemIndex ? "is-selected" : ""}`.trim()}
               type="button"
               title={`${String(item?.label || `[${Number(page?.offset || 0) + itemIndex}]`)} (${typeLabelFromDescriptor(itemDescriptor)})`}
               on:click={() =>
