@@ -20,6 +20,9 @@
   ];
 
   let activeTab = "start";
+  let tabsMenuOpen = false;
+  let tabsMenuEl = null;
+  let tabsMenuToggleEl = null;
   let capabilities = {};
   let buildStamp = "Loading...";
   let clientLoggerInstalled = false;
@@ -30,6 +33,31 @@
   const clientLogBatchSize = 40;
 
   let playgroundTabRef;
+
+  const activeTabLabel = () => tabs.find((tab) => tab.id === activeTab)?.label || "Start";
+
+  const selectTab = (tabId) => {
+    activeTab = String(tabId || "start");
+    tabsMenuOpen = false;
+  };
+
+  const toggleTabsMenu = () => {
+    tabsMenuOpen = !tabsMenuOpen;
+  };
+
+  const handleWindowPointerDown = (event) => {
+    if (!tabsMenuOpen) return;
+    const target = event?.target;
+    if (tabsMenuEl && target instanceof Node && tabsMenuEl.contains(target)) return;
+    if (tabsMenuToggleEl && target instanceof Node && tabsMenuToggleEl.contains(target)) return;
+    tabsMenuOpen = false;
+  };
+
+  const handleWindowKeyDown = (event) => {
+    if (String(event?.key || "") === "Escape") {
+      tabsMenuOpen = false;
+    }
+  };
 
   const toLogMessage = (args) =>
     args
@@ -147,20 +175,36 @@
 </script>
 
 <div class="background-layer"></div>
+<svelte:window on:pointerdown={handleWindowPointerDown} on:keydown={handleWindowKeyDown} />
 <div class="shell">
   <header class="topbar">
-    <div>
-      <p class="eyebrow">VoxLogicA Serve</p>
+    <div class="topbar-title">
       <h1>VoxLogicA Studio Console</h1>
     </div>
     <div class="topbar-meta">
+      <button
+        bind:this={tabsMenuToggleEl}
+        class={`btn btn-ghost btn-small topbar-menu-toggle ${tabsMenuOpen ? "is-open" : ""}`.trim()}
+        type="button"
+        aria-controls="main-pages-menu"
+        aria-expanded={tabsMenuOpen}
+        on:click={toggleTabsMenu}
+      >
+        <span class="topbar-menu-toggle-label">{activeTabLabel()}</span>
+        <span class="topbar-menu-toggle-icon" aria-hidden="true"></span>
+      </button>
       <span id="buildStamp" class="chip">{buildStamp}</span>
     </div>
   </header>
 
-  <nav class="tabbar" aria-label="Main pages">
+  <nav
+    id="main-pages-menu"
+    bind:this={tabsMenuEl}
+    class={`tabbar-menu ${tabsMenuOpen ? "is-open" : ""}`.trim()}
+    aria-label="Main pages"
+  >
     {#each tabs as tab}
-      <button class={`tab ${activeTab === tab.id ? "active" : ""}`.trim()} type="button" on:click={() => (activeTab = tab.id)}>
+      <button class={`tabbar-menu-item ${activeTab === tab.id ? "active" : ""}`.trim()} type="button" on:click={() => selectTab(tab.id)}>
         {tab.label}
       </button>
     {/each}

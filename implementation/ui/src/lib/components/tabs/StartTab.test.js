@@ -134,6 +134,47 @@ describe("StartTab", () => {
     expect(resolvePlaygroundValueMock).not.toHaveBeenCalled();
   });
 
+  it("surfaces concrete execution error details instead of generic failure counts", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { x: "node-x" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "failed",
+      compute_status: "failed",
+      node_id: "node-x",
+      path: "/",
+      error: "Execution failed with 1 errors",
+      execution_errors: {
+        "node-read": "ReadImage could not open '/tmp/missing_flair.nii.gz'",
+      },
+      execution_error_details: {
+        "node-read": {
+          operator: "ReadImage",
+          args: ["/tmp/missing_flair.nii.gz"],
+          kwargs: {},
+          kind: "primitive",
+          output_kind: "volume3d",
+        },
+      },
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("ReadImage could not open");
+      expect(container.textContent).toContain("execution_errors:");
+    });
+  });
+
   it("polls pending values until completion", async () => {
     vi.useFakeTimers();
     getProgramSymbolsMock.mockResolvedValue({

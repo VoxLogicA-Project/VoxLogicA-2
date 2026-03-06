@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import { getProgramSymbols, resolvePlaygroundValue, resolvePlaygroundValuePage } from "$lib/api/client.js";
   import { buildExecutionLogRows } from "$lib/utils/logs.js";
+  import { buildFailureDetailsText, normalizedExecutionErrors } from "$lib/utils/playground-value.js";
   import VoxCodeEditor from "$lib/components/editor/VoxCodeEditor.svelte";
   import StartValueCanvas from "$lib/components/tabs/StartValueCanvas.svelte";
 
@@ -1286,11 +1287,24 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     String(request?.program || "") === String(programText || "");
 
   const applyFailure = (payload, variableName) => {
-    const message = String(payload?.error || "Unable to inspect value.");
+    const executionErrors = normalizedExecutionErrors(payload);
+    const executionErrorEntries = Object.entries(executionErrors || {});
+    const primaryExecutionMessage = executionErrorEntries.length ? String(executionErrorEntries[0]?.[1] || "").trim() : "";
+    const fallbackMessage = String(payload?.error || "Unable to inspect value.").trim();
+    const summaryMessage = primaryExecutionMessage || fallbackMessage || "Unable to inspect value.";
+    const executionCount = executionErrorEntries.length;
+    const headline =
+      executionCount > 0
+        ? `Execution failed (${executionCount} ${executionCount === 1 ? "error" : "errors"}): ${summaryMessage}`
+        : summaryMessage;
+    const detailText = buildFailureDetailsText(payload, {
+      nodeId: String(payload?.node_id || symbolTable?.[String(variableName || "")] || ""),
+      path: String(payload?.path || currentPath || "/"),
+    });
     statusValue = "failed";
-    statusText = message;
+    statusText = headline;
     captionVariable = variableName || "-";
-    errorText = message;
+    errorText = detailText || headline;
     if (!hasActiveComputation()) {
       dissolveDream();
     }
@@ -1305,11 +1319,11 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       node_id: payload?.node_id || "",
       status: "failed",
       path: payload?.path || "/",
-      error: message,
+      error: headline,
       descriptor: {
         vox_type: "string",
         format_version: "voxpod/1",
-        summary: { value: message, length: message.length, truncated: false },
+        summary: { value: headline, length: headline.length, truncated: false },
         navigation: {
           path: payload?.path || "/",
           pageable: false,
@@ -1943,7 +1957,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   <article class="card start-prime-shell">
     <header class="start-prime-head">
       <div class="start-prime-heading">
-        <p class="start-prime-eyebrow">Minimal Logic Workspace</p>
         <h2>Start</h2>
       </div>
     </header>
