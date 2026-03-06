@@ -138,10 +138,15 @@ export const buildOverlayHtml = (text, symbols = {}, diagnostics = [], symbolSta
   const symbolSet = new Set(Object.keys(symbols || {}));
   const selectedSet = new Set((Array.isArray(selectedSymbols) ? selectedSymbols : []).map((value) => String(value || "")));
   const diagnosticLines = new Set();
+  const diagnosticMessagesByLine = new Map();
   for (const diag of Array.isArray(diagnostics) ? diagnostics : []) {
     const loc = parseDiagnosticLocation(diag);
     if (loc?.line && Number.isFinite(loc.line) && loc.line > 0) {
       diagnosticLines.add(loc.line);
+      const message = String(diag?.message || "Static error").trim();
+      const locationText = loc.column ? `Line ${loc.line}:${loc.column}` : `Line ${loc.line}`;
+      const codeText = diag?.code ? ` [${String(diag.code)}]` : "";
+      diagnosticMessagesByLine.set(loc.line, `${locationText} - ${message}${codeText}`);
     }
   }
 
@@ -150,9 +155,11 @@ export const buildOverlayHtml = (text, symbols = {}, diagnostics = [], symbolSta
     .map((line, idx) => {
       const lineNo = idx + 1;
       const lineClass = diagnosticLines.has(lineNo) ? "vx-editor__line vx-editor__line--error" : "vx-editor__line";
+      const title = diagnosticMessagesByLine.get(lineNo);
+      const titleAttr = title ? ` title="${sanitizeAttr(title)}"` : "";
       const tokens = tokenizeLine(line);
       const rendered = tokens.map((token) => renderToken(token, symbolSet, symbolStatuses, selectedSet, symbolTypes)).join("");
-      return `<span class="${lineClass}" data-line="${lineNo}">${rendered || " "}</span>`;
+      return `<span class="${lineClass}" data-line="${lineNo}"${titleAttr}>${rendered || " "}</span>`;
     })
     .join("");
 };

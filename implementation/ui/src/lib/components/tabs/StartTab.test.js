@@ -124,7 +124,7 @@ describe("StartTab", () => {
 
     const { container } = render(StartTab, { active: true, capabilities: {} });
     await waitFor(() => {
-      expect(container.textContent).toContain("Static diagnostics detected.");
+      expect(container.textContent).toContain("Line 1:1 - Unexpected token");
     });
 
     const runButton = container.querySelector(".btn.btn-primary");

@@ -139,15 +139,64 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     error: "error",
   };
 
-  const diagnosticsText = () => {
+  const parseDiagnosticLocation = (diag) => {
+    const location = String(diag?.location || "");
+    const message = String(diag?.message || "");
+    const raw = `${location} ${message}`;
+    let match = raw.match(/line\s+(\d+)(?:\s*,\s*column\s+(\d+))?/i);
+    if (match) {
+      return {
+        line: Number(match[1]),
+        column: match[2] ? Number(match[2]) : null,
+      };
+    }
+    match = raw.match(/(?:^|\s)(\d+):(\d+)(?:\s|$)/);
+    if (match) {
+      return {
+        line: Number(match[1]),
+        column: Number(match[2]),
+      };
+    }
+    return null;
+  };
+
+  const diagnosticsRows = () => {
     const rows = Array.isArray(symbolDiagnostics) ? symbolDiagnostics : [];
+    if (!rows.length) return [];
+    return rows.map((diag) => {
+      const message = String(diag?.message || "Static error").trim();
+      const code = String(diag?.code || "").trim();
+      const location = parseDiagnosticLocation(diag);
+      const locationLabel = location?.line
+        ? `Line ${location.line}${location?.column ? `:${location.column}` : ""}`
+        : String(diag?.location || "").trim();
+      const summary = locationLabel ? `${locationLabel} - ${message}` : message;
+      return {
+        message,
+        code,
+        location,
+        locationLabel,
+        summary,
+      };
+    });
+  };
+
+  const diagnosticsSummaryText = () => {
+    const rows = diagnosticsRows();
+    if (!rows.length) return "";
+    const head = rows[0];
+    const suffix = rows.length > 1 ? ` (+${rows.length - 1} more)` : "";
+    return `${head.summary}${suffix}`;
+  };
+
+  const diagnosticsDetailsText = () => {
+    const rows = diagnosticsRows();
     if (!rows.length) return "";
     return rows
-      .map((diag) => {
-        const code = diag?.code ? `[${diag.code}] ` : "";
-        const message = diag?.message ? String(diag.message) : "Static error";
-        const location = diag?.location ? ` @ ${diag.location}` : "";
-        return `${code}${message}${location}`;
+      .map((diag, index) => {
+        const prefix = `${index + 1}. `;
+        const code = diag.code ? ` [${diag.code}]` : "";
+        return `${prefix}${diag.summary}${code}`;
       })
       .join("\n");
   };
@@ -1515,6 +1564,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       return { state: "idle", reason: "no-primary" };
     }
     if (symbolDiagnostics.length) {
+      const summary = diagnosticsSummaryText() || "Fix static diagnostics before computing.";
+      const details = diagnosticsDetailsText() || summary;
       traceResolve("skip-diagnostics", {
         traceId,
         enqueue,
@@ -1523,11 +1574,11 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         diagnostics: symbolDiagnostics.length,
       });
       statusValue = "failed";
-      statusText = "Fix static diagnostics before computing.";
+      statusText = summary;
       captionVariable = primaryVariable;
       dissolveDream();
-      viewer.setError(statusText);
-      errorText = statusText;
+      viewer.setError(summary);
+      errorText = details;
       setSymbolStatus(primaryVariable, "failed");
       return { state: "failed", reason: "diagnostics" };
     }
@@ -1791,9 +1842,11 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       captionVariable = primaryVariable || "-";
       renderSelectedRecords();
       if (symbolDiagnostics.length) {
+        const summary = diagnosticsSummaryText() || "Static diagnostics detected.";
         statusValue = "failed";
-        statusText = "Static diagnostics detected.";
-        errorText = statusText;
+        statusText = summary;
+        errorText = diagnosticsDetailsText() || summary;
+        viewer.setError(summary);
       } else if (primaryVariable) {
         statusValue = "idle";
         statusText = `Ready to compute ${primaryVariable}.`;
@@ -1965,12 +2018,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
 
 <section class={`panel ${active ? "active" : ""}`} id="tab-start">
   <article class="card start-prime-shell">
-    <header class="start-prime-head">
-      <div class="start-prime-heading">
-        <h2>Start</h2>
-      </div>
-    </header>
-
     <div
       class={`start-prime-grid ${splitDragActive ? "is-resizing" : ""}`.trim()}
       bind:this={startPrimeGridEl}
@@ -2095,11 +2142,15 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         </div>
 
         <div class="start-prime-controls">
-          <footer class="start-caption">
-            <span class="start-caption-main">{captionVariable}</span>
-          </footer>
+          {#if !symbolDiagnostics.length}
+            <footer class="start-caption">
+              <span class="start-caption-main">{captionVariable}</span>
+            </footer>
+          {/if}
           <div class="start-value-tag-row">
-            {#if !Object.keys(symbolTable || {}).length}
+            {#if symbolDiagnostics.length}
+              <span class="start-value-tag start-value-tag--empty">Fix syntax errors to visualize values</span>
+            {:else if !Object.keys(symbolTable || {}).length}
               <span class="start-value-tag start-value-tag--empty">No visualizable symbols yet</span>
             {:else}
               {#each Object.keys(symbolTable || {}) as symbolName}
@@ -2123,9 +2174,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       </section>
     </div>
 
-    {#if diagnosticsText()}
-      <div class="inline-error">{diagnosticsText()}</div>
-    {:else if errorText}
+    {#if errorText}
       <div class="inline-error">{errorText}</div>
     {/if}
   </article>

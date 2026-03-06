@@ -21,8 +21,6 @@
 
   let activeTab = "start";
   let tabsMenuOpen = false;
-  let tabsMenuEl = null;
-  let tabsMenuToggleEl = null;
   let capabilities = {};
   let buildStamp = "Loading...";
   let clientLoggerInstalled = false;
@@ -45,11 +43,7 @@
     tabsMenuOpen = !tabsMenuOpen;
   };
 
-  const handleWindowPointerDown = (event) => {
-    if (!tabsMenuOpen) return;
-    const target = event?.target;
-    if (tabsMenuEl && target instanceof Node && tabsMenuEl.contains(target)) return;
-    if (tabsMenuToggleEl && target instanceof Node && tabsMenuToggleEl.contains(target)) return;
+  const closeTabsMenu = () => {
     tabsMenuOpen = false;
   };
 
@@ -153,6 +147,7 @@
     const code = String(event.detail?.code || "");
     const run = Boolean(event.detail?.run);
     activeTab = "playground";
+    tabsMenuOpen = false;
     if (playgroundTabRef && typeof playgroundTabRef.loadProgram === "function") {
       await playgroundTabRef.loadProgram(code, run);
     }
@@ -175,40 +170,51 @@
 </script>
 
 <div class="background-layer"></div>
-<svelte:window on:pointerdown={handleWindowPointerDown} on:keydown={handleWindowKeyDown} />
+<svelte:window on:keydown={handleWindowKeyDown} />
 <div class="shell">
   <header class="topbar">
     <div class="topbar-title">
-      <h1>VoxLogicA Studio Console</h1>
+      <h1>VoxLogicA Atelier</h1>
     </div>
     <div class="topbar-meta">
       <button
-        bind:this={tabsMenuToggleEl}
-        class={`btn btn-ghost btn-small topbar-menu-toggle ${tabsMenuOpen ? "is-open" : ""}`.trim()}
+        class={`btn btn-ghost btn-small topbar-hamburger ${tabsMenuOpen ? "is-open" : ""}`.trim()}
         type="button"
-        aria-controls="main-pages-menu"
+        aria-controls="main-pages-drawer"
         aria-expanded={tabsMenuOpen}
         on:click={toggleTabsMenu}
       >
-        <span class="topbar-menu-toggle-label">{activeTabLabel()}</span>
-        <span class="topbar-menu-toggle-icon" aria-hidden="true"></span>
+        <span class="topbar-hamburger-icon" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </span>
+        <span class="topbar-hamburger-label">Menu</span>
       </button>
+      <span class="chip neutral">{activeTabLabel()}</span>
       <span id="buildStamp" class="chip">{buildStamp}</span>
     </div>
   </header>
 
-  <nav
-    id="main-pages-menu"
-    bind:this={tabsMenuEl}
-    class={`tabbar-menu ${tabsMenuOpen ? "is-open" : ""}`.trim()}
-    aria-label="Main pages"
-  >
-    {#each tabs as tab}
-      <button class={`tabbar-menu-item ${activeTab === tab.id ? "active" : ""}`.trim()} type="button" on:click={() => selectTab(tab.id)}>
-        {tab.label}
-      </button>
-    {/each}
-  </nav>
+  <button
+    type="button"
+    class={`app-drawer-backdrop ${tabsMenuOpen ? "is-open" : ""}`.trim()}
+    aria-label="Close navigation menu"
+    on:click={closeTabsMenu}
+  ></button>
+  <aside id="main-pages-drawer" class={`app-drawer ${tabsMenuOpen ? "is-open" : ""}`.trim()} aria-hidden={!tabsMenuOpen}>
+    <div class="app-drawer-head">
+      <h2>Pages</h2>
+      <button class="btn btn-ghost btn-small" type="button" aria-label="Close menu" on:click={closeTabsMenu}>Close</button>
+    </div>
+    <nav class="app-drawer-nav" aria-label="Main pages">
+      {#each tabs as tab}
+        <button class={`app-drawer-item ${activeTab === tab.id ? "active" : ""}`.trim()} type="button" on:click={() => selectTab(tab.id)}>
+          {tab.label}
+        </button>
+      {/each}
+    </nav>
+  </aside>
 
   <main class="content">
     <StartTab active={activeTab === "start"} {capabilities} />

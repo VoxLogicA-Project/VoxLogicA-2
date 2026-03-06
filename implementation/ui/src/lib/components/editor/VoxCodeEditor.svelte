@@ -213,12 +213,21 @@
 
   const handleOverlayClick = (event) => {
     const symbolEl = event.target instanceof Element ? event.target.closest(".vx-editor__symbol") : null;
-    if (!symbolEl) return;
-    event.preventDefault();
-    const token = decodeURIComponent(String(symbolEl.getAttribute("data-token") || ""));
-    if (!token) return;
-    dispatch("symbolclick", { token });
-    textareaEl?.focus({ preventScroll: true });
+    if (symbolEl) {
+      event.preventDefault();
+      const token = decodeURIComponent(String(symbolEl.getAttribute("data-token") || ""));
+      if (!token) return;
+      dispatch("symbolclick", { token });
+      textareaEl?.focus({ preventScroll: true });
+      return;
+    }
+    if (!textareaEl) return;
+    const index = textIndexFromPoint(textareaEl, event.clientX, event.clientY);
+    textareaEl.focus({ preventScroll: true });
+    if (Number.isInteger(index)) {
+      textareaEl.selectionStart = Number(index);
+      textareaEl.selectionEnd = Number(index);
+    }
   };
 
   const handleMouseMove = (event) => {
@@ -418,6 +427,8 @@
   :global(.vx-editor__line--error) {
     background: rgba(240, 93, 94, 0.16);
     box-shadow: inset 3px 0 0 rgba(240, 93, 94, 0.75);
+    pointer-events: auto;
+    cursor: help;
   }
 
   :global(.vx-editor__token--keyword) {
