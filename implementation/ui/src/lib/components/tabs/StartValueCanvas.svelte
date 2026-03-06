@@ -123,6 +123,7 @@
       path,
       offset: 0,
       limit: DEFAULT_LIMIT,
+      sourceVariable,
     });
   }
 
@@ -133,6 +134,7 @@
         path: nestedPath,
         offset: 0,
         limit: DEFAULT_LIMIT,
+        sourceVariable,
       });
     }
   }
@@ -189,7 +191,7 @@
             class="btn btn-ghost btn-small"
             type="button"
             disabled={!page || Number(page?.offset || 0) <= 0 || loading}
-            on:click={() => void loadCollectionPrev(record, path)}
+            on:click={() => void loadCollectionPrev(record, path, sourceVariable)}
           >
             Prev
           </button>
@@ -206,7 +208,7 @@
             class="btn btn-ghost btn-small"
             type="button"
             disabled={!page || !page?.has_more || loading}
-            on:click={() => void loadCollectionNext(record, path)}
+            on:click={() => void loadCollectionNext(record, path, sourceVariable)}
           >
             Next
           </button>

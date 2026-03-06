@@ -399,6 +399,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   };
 
   const isTimeoutError = (error) => /timed out/i.test(String(error?.message || error || ""));
+  const isUnknownNodeSelectionError = (error) => /unknown node selection/i.test(String(error?.message || error || ""));
 
   const ensurePendingPoll = ({ traceId = 0, variable = "", path = "" } = {}) => {
     if (pendingPoll) return;
@@ -917,7 +918,10 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     recordPagePollTimers = next;
   };
 
-  const scheduleRecordPagePoll = (record, { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, delayMs = 900 } = {}) => {
+  const scheduleRecordPagePoll = (
+    record,
+    { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, delayMs = 900, sourceVariable = "" } = {},
+  ) => {
     const resolvedPath = String(path || recordPath(record) || "");
     const baseKey = pageKey(record, resolvedPath);
     if (recordPagePollTimers?.[baseKey]) return;
@@ -927,6 +931,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         path: resolvedPath,
         offset,
         limit,
+        sourceVariable,
         enqueueFallback: false,
         force: true,
       });
@@ -939,7 +944,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
 
   const loadRecordPage = async (
     record,
-    { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, enqueueFallback = true, force = false } = {},
+    { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, enqueueFallback = true, force = false, sourceVariable = "" } = {},
   ) => {
     if (!record || !collectionRecord(record)) return null;
     const descriptor = recordDescriptor(record);
@@ -949,6 +954,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     const baseKey = pageKey(record, resolvedPath);
     const resolvedLimit = Math.max(1, Number(limit || navigation.default_page_size || COLLECTION_PAGE_SIZE));
     const resolvedOffset = Math.max(0, Number(offset || 0));
+    const variableName = String(sourceVariable || sourceVariableForRecord(record, 0) || "").trim();
     const cacheKey = pageCacheKey(record, resolvedPath, resolvedOffset, resolvedLimit);
     if (!force && recordPages?.[cacheKey]) {
       recordPagePointers = {
@@ -966,8 +972,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       const requestPage = async (enqueueFlag) =>
         resolvePlaygroundValuePage({
           program: programText,
-          nodeId: String(record?.node_id || ""),
-          variable: "",
+          nodeId: variableName ? "" : String(record?.node_id || ""),
+          variable: variableName,
           path: resolvedPath,
           offset: resolvedOffset,
           limit: resolvedLimit,
@@ -1002,6 +1008,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           path: resolvedPath,
           offset: resolvedOffset,
           limit: resolvedLimit,
+          sourceVariable: variableName,
           delayMs: 950,
         });
       } else {
@@ -1054,6 +1061,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           path: resolvedPath,
           offset: resolvedOffset,
           limit: resolvedLimit,
+          sourceVariable: variableName,
           delayMs: 1100,
         });
         const cached = recordPages?.[cacheKey] || null;
@@ -1061,6 +1069,16 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           recordPagePointers = { ...recordPagePointers, [baseKey]: cacheKey };
         }
         return cached;
+      }
+      if (isUnknownNodeSelectionError(error) && variableName) {
+        scheduleRecordPagePoll(record, {
+          path: resolvedPath,
+          offset: resolvedOffset,
+          limit: resolvedLimit,
+          sourceVariable: variableName,
+          delayMs: 520,
+        });
+        return recordPages?.[cacheKey] || null;
       }
       recordPagesErrors = {
         ...recordPagesErrors,
@@ -1074,7 +1092,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     }
   };
 
-  const loadCollectionPrev = async (record, path = "") => {
+  const loadCollectionPrev = async (record, path = "", sourceVariable = "") => {
     const page = pageForRecord(record, path);
     if (!page) return null;
     const offset = Math.max(0, Number(page.offset || 0));
@@ -1084,10 +1102,11 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       path,
       offset: Math.max(0, offset - limit),
       limit,
+      sourceVariable,
     });
   };
 
-  const loadCollectionNext = async (record, path = "") => {
+  const loadCollectionNext = async (record, path = "", sourceVariable = "") => {
     const page = pageForRecord(record, path);
     if (!page || page.next_offset === null || page.next_offset === undefined) return page;
     const limit = Math.max(1, Number(page.limit || COLLECTION_PAGE_SIZE));
@@ -1095,15 +1114,21 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       path,
       offset: Math.max(0, Number(page.next_offset || 0)),
       limit,
+      sourceVariable,
     });
   };
 
   const ensureRecordPages = () => {
-    for (const record of viewerRecords) {
+    for (const [index, record] of viewerRecords.entries()) {
       if (!collectionRecord(record)) continue;
       const path = recordPath(record);
       if (pageForRecord(record, path) || pageLoadingForRecord(record, path)) continue;
-      void loadRecordPage(record, { path, offset: 0, limit: COLLECTION_PAGE_SIZE });
+      void loadRecordPage(record, {
+        path,
+        offset: 0,
+        limit: COLLECTION_PAGE_SIZE,
+        sourceVariable: sourceVariableForRecord(record, index),
+      });
     }
   };
 
