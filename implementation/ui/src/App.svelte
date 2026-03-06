@@ -32,8 +32,6 @@
 
   let playgroundTabRef;
 
-  const activeTabLabel = () => tabs.find((tab) => tab.id === activeTab)?.label || "Start";
-
   const selectTab = (tabId) => {
     activeTab = String(tabId || "start");
     tabsMenuOpen = false;
@@ -173,15 +171,13 @@
 <svelte:window on:keydown={handleWindowKeyDown} />
 <div class="shell">
   <header class="topbar">
-    <div class="topbar-title">
-      <h1>VoxLogicA Atelier</h1>
-    </div>
-    <div class="topbar-meta">
+    <div class="topbar-left">
       <button
         class={`btn btn-ghost btn-small topbar-hamburger ${tabsMenuOpen ? "is-open" : ""}`.trim()}
         type="button"
         aria-controls="main-pages-drawer"
         aria-expanded={tabsMenuOpen}
+        aria-label="Toggle navigation menu"
         on:click={toggleTabsMenu}
       >
         <span class="topbar-hamburger-icon" aria-hidden="true">
@@ -191,7 +187,11 @@
         </span>
         <span class="topbar-hamburger-label">Menu</span>
       </button>
-      <span class="chip neutral">{activeTabLabel()}</span>
+      <div class="topbar-title">
+        <h1>VoxLogicA</h1>
+      </div>
+    </div>
+    <div class="topbar-meta">
       <span id="buildStamp" class="chip">{buildStamp}</span>
     </div>
   </header>
