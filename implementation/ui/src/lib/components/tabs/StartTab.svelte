@@ -1004,7 +1004,17 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       const pageMaterialization = String(payload?.materialization || "").toLowerCase();
       const pageStatus = String(payload?.compute_status || "").toLowerCase();
       const pagePending = pendingStatuses.has(pageMaterialization) || pendingStatuses.has(pageStatus);
-      if (pagePending && (!Array.isArray(page?.items) || page.items.length === 0)) {
+      const pageItems = Array.isArray(page?.items) ? page.items : [];
+      const hasPendingItems = pageItems.some((item) => {
+        const itemStatus = String(item?.status || "").toLowerCase();
+        const itemType = String(item?.descriptor?.vox_type || "").toLowerCase();
+        return (
+          ["pending", "missing", "queued", "running", "persisting"].includes(itemStatus) ||
+          itemType === "unavailable" ||
+          !itemType
+        );
+      });
+      if (pagePending && (!Array.isArray(page?.items) || page.items.length === 0 || hasPendingItems)) {
         scheduleRecordPagePoll(record, {
           path: resolvedPath,
           offset: resolvedOffset,

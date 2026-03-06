@@ -337,6 +337,78 @@ describe("StartTab", () => {
     });
   });
 
+  it("keeps polling collection page while visible items are still pending", async () => {
+    vi.useFakeTimers();
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { x: "node-x" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-x",
+      path: "/",
+      descriptor: {
+        vox_type: "sequence",
+        format_version: "voxpod/1",
+        summary: { length: 2 },
+        navigation: {
+          path: "/",
+          pageable: true,
+          can_descend: true,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    });
+    resolvePlaygroundValuePageMock
+      .mockResolvedValueOnce({
+        materialization: "pending",
+        compute_status: "running",
+        page: {
+          offset: 0,
+          limit: 8,
+          has_more: false,
+          next_offset: null,
+          items: [
+            { index: 0, label: "[0]", path: "/0", status: "pending", descriptor: { vox_type: "unavailable", summary: {} } },
+            { index: 1, label: "[1]", path: "/1", status: "pending", descriptor: { vox_type: "unavailable", summary: {} } },
+          ],
+        },
+      })
+      .mockResolvedValue({
+        materialization: "computed",
+        compute_status: "completed",
+        page: {
+          offset: 0,
+          limit: 8,
+          has_more: false,
+          next_offset: null,
+          items: [
+            { index: 0, label: "[0]", path: "/0", status: "materialized", descriptor: { vox_type: "integer", summary: { value: 1 } } },
+            { index: 1, label: "[1]", path: "/1", status: "materialized", descriptor: { vox_type: "integer", summary: { value: 2 } } },
+          ],
+        },
+      });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+    await waitFor(() => {
+      expect(resolvePlaygroundValuePageMock).toHaveBeenCalledTimes(1);
+    });
+    vi.advanceTimersByTime(1400);
+    await waitFor(() => {
+      expect(resolvePlaygroundValuePageMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    vi.useRealTimers();
+  });
+
   it("ignores stale resolve responses after switching variable tags", async () => {
     vi.useFakeTimers();
     getProgramSymbolsMock.mockResolvedValue({

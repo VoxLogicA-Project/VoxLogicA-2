@@ -59,6 +59,38 @@
     return "materialized";
   };
 
+  const resolvedItemRecord = (item) => {
+    if (!item || !sourceVariable) return null;
+    const itemPath = String(item?.path || "");
+    if (!itemPath) return null;
+    const resolved = pathRecordFor(sourceVariable, itemPath);
+    if (!resolved || typeof resolved !== "object") return null;
+    if (!resolved?.descriptor || typeof resolved.descriptor !== "object") return null;
+    return resolved;
+  };
+
+  const effectiveDescriptorForItem = (item) => {
+    const resolved = resolvedItemRecord(item);
+    if (resolved?.descriptor && typeof resolved.descriptor === "object") {
+      return resolved.descriptor;
+    }
+    return item?.descriptor && typeof item.descriptor === "object" ? item.descriptor : { vox_type: "value", summary: {} };
+  };
+
+  const effectiveStateForItem = (item) => {
+    const resolved = resolvedItemRecord(item);
+    if (resolved) {
+      const materialization = String(resolved?.materialization || "").toLowerCase();
+      const computeStatus = String(resolved?.compute_status || "").toLowerCase();
+      if (materialization === "failed" || computeStatus === "failed" || computeStatus === "killed") return "failed";
+      if ((materialization === "computed" || materialization === "cached") && resolved?.descriptor) return "materialized";
+      if (["pending", "missing"].includes(materialization) || ["queued", "running", "persisting"].includes(computeStatus)) {
+        return "pending";
+      }
+    }
+    return collectionItemState(item);
+  };
+
   $: descriptor = recordDescriptor(record);
   $: voxType = recordType(record);
   $: summary = descriptor?.summary && typeof descriptor.summary === "object" ? descriptor.summary : {};
@@ -155,6 +187,23 @@
       enqueueFallback: true,
     });
   }
+
+  $: if (isCollection && sourceVariable && items.length) {
+    const budget = Math.min(items.length, 8);
+    for (let idx = 0; idx < budget; idx += 1) {
+      const item = items[idx];
+      const itemPath = String(item?.path || "");
+      if (!itemPath) continue;
+      if (resolvedItemRecord(item)) continue;
+      if (pathRecordLoadingFor(sourceVariable, itemPath)) continue;
+      if (pathRecordPollingFor(sourceVariable, itemPath)) continue;
+      void loadPathRecord({
+        sourceVariable,
+        path: itemPath,
+        enqueueFallback: false,
+      });
+    }
+  }
 </script>
 
 <div class="start-value-canvas">
@@ -224,9 +273,9 @@
         {:else if items.length}
           <div class="start-collection-list">
             {#each items as item, itemIndex}
-              {@const itemDescriptor = item?.descriptor && typeof item.descriptor === "object" ? item.descriptor : { vox_type: "value", summary: {} }}
+              {@const itemDescriptor = effectiveDescriptorForItem(item)}
               <button
-                class={`start-collection-item start-collection-item--${collectionItemState(item)} ${selectedIndex === itemIndex ? "is-selected" : ""}`.trim()}
+                class={`start-collection-item start-collection-item--${effectiveStateForItem(item)} ${selectedIndex === itemIndex ? "is-selected" : ""}`.trim()}
                 type="button"
                 title={`${String(item?.label || `[${Number(page?.offset || 0) + itemIndex}]`)} (${typeLabelFromDescriptor(itemDescriptor)})`}
                 on:click={() =>
