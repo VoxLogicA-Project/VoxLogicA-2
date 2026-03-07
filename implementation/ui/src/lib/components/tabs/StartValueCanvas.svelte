@@ -59,6 +59,17 @@
     return "materialized";
   };
 
+  const itemStateLabel = (item) => {
+    const state = effectiveStateForItem(item);
+    if (state === "materialized") return "ready";
+    if (state === "failed") return "failed";
+    const rawStatus = String(item?.status || "").toLowerCase();
+    if (rawStatus === "queued") return "queued";
+    if (rawStatus === "persisting") return "persisting";
+    if (rawStatus === "running") return "running";
+    return "computing";
+  };
+
   const resolvedItemRecord = (item) => {
     if (!item || !sourceVariable) return null;
     const itemPath = String(item?.path || "");
@@ -189,18 +200,25 @@
   }
 
   $: if (isCollection && sourceVariable && items.length) {
-    const budget = Math.min(items.length, 8);
-    for (let idx = 0; idx < budget; idx += 1) {
+    const budget = Math.min(items.length, 10);
+    const anchor = Math.max(0, Math.min(items.length - 1, Number(selectedIndex || 0)));
+    const prefetchOrder = [anchor];
+    for (let step = 1; prefetchOrder.length < budget && (anchor - step >= 0 || anchor + step < items.length); step += 1) {
+      if (anchor + step < items.length) prefetchOrder.push(anchor + step);
+      if (anchor - step >= 0 && prefetchOrder.length < budget) prefetchOrder.push(anchor - step);
+    }
+    for (const idx of prefetchOrder) {
       const item = items[idx];
       const itemPath = String(item?.path || "");
       if (!itemPath) continue;
       if (resolvedItemRecord(item)) continue;
       if (pathRecordLoadingFor(sourceVariable, itemPath)) continue;
       if (pathRecordPollingFor(sourceVariable, itemPath)) continue;
+      const shouldEnqueue = idx === anchor || idx < Math.min(4, items.length);
       void loadPathRecord({
         sourceVariable,
         path: itemPath,
-        enqueueFallback: false,
+        enqueueFallback: shouldEnqueue,
       });
     }
   }
@@ -277,7 +295,7 @@
               <button
                 class={`start-collection-item start-collection-item--${effectiveStateForItem(item)} ${selectedIndex === itemIndex ? "is-selected" : ""}`.trim()}
                 type="button"
-                title={`${String(item?.label || `[${Number(page?.offset || 0) + itemIndex}]`)} (${typeLabelFromDescriptor(itemDescriptor)})`}
+                title={`${String(item?.label || `[${Number(page?.offset || 0) + itemIndex}]`)} (${typeLabelFromDescriptor(itemDescriptor)}) · ${itemStateLabel(item)}`}
                 on:click={() =>
                   setCollectionSelection(record, path, {
                     selectedIndex: itemIndex,
@@ -287,6 +305,9 @@
               >
                 <span class="start-collection-item-index">
                   {item?.label || `[${Number(page?.offset || 0) + itemIndex}]`}
+                </span>
+                <span class={`start-collection-item-state start-collection-item-state--${itemStateLabel(item)}`.trim()}>
+                  {itemStateLabel(item)}
                 </span>
                 <span class="start-collection-item-preview">{previewText(itemDescriptor)}</span>
               </button>

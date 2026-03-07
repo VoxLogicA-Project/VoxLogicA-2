@@ -288,7 +288,7 @@ describe("StartTab", () => {
     await waitFor(() => {
       expect(container.querySelectorAll(".start-value-tag.is-selected").length).toBe(2);
     });
-    expect(container.querySelector(".start-value-tag--computed")).not.toBeNull();
+    expect(container.querySelector(".start-value-tag--failed")).toBeNull();
   });
 
   it("uses non-enqueue paging requests for collection previews", async () => {

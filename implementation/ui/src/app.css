@@ -1381,6 +1381,46 @@ body {
   color: #23344b;
 }
 
+.start-collection-item-state {
+  justify-self: start;
+  border-radius: 999px;
+  padding: 0.06rem 0.34rem;
+  font-family: var(--font-display);
+  font-size: 0.56rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border: 1px solid rgba(16, 28, 45, 0.18);
+  color: #4b5e7c;
+  background: rgba(238, 244, 253, 0.9);
+}
+
+.start-collection-item-state--ready {
+  color: #0f6247;
+  border-color: rgba(5, 150, 105, 0.36);
+  background: rgba(210, 247, 230, 0.9);
+}
+
+.start-collection-item-state--running,
+.start-collection-item-state--computing,
+.start-collection-item-state--persisting {
+  color: #7a4c12;
+  border-color: rgba(217, 119, 6, 0.36);
+  background: rgba(255, 235, 205, 0.9);
+}
+
+.start-collection-item-state--queued {
+  color: #2a4c8f;
+  border-color: rgba(63, 116, 255, 0.36);
+  background: rgba(221, 233, 255, 0.9);
+}
+
+.start-collection-item-state--failed {
+  color: #84242c;
+  border-color: rgba(220, 38, 38, 0.34);
+  background: rgba(255, 220, 220, 0.92);
+}
+
 .start-collection-item-preview {
   font-family: var(--font-mono);
   font-size: 0.62rem;

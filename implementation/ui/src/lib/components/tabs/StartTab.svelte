@@ -1063,7 +1063,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           !itemType
         );
       });
-      if (pagePending && (!Array.isArray(page?.items) || page.items.length === 0 || hasPendingItems)) {
+      if (hasPendingItems || (pagePending && (!Array.isArray(page?.items) || page.items.length === 0))) {
         scheduleRecordPagePoll(record, {
           path: resolvedPath,
           offset: resolvedOffset,
@@ -2154,10 +2154,11 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
               <span class="start-value-tag start-value-tag--empty">No visualizable symbols yet</span>
             {:else}
               {#each Object.keys(symbolTable || {}) as symbolName}
+                {@const symbolState = statusLabel(symbolName)}
                 <button
-                  class={`start-value-tag start-value-tag--${statusLabel(symbolName)} ${selectedVisualSymbols.includes(symbolName) ? "is-selected" : ""}`.trim()}
+                  class={`start-value-tag start-value-tag--${symbolState} ${selectedVisualSymbols.includes(symbolName) ? "is-selected" : ""}`.trim()}
                   type="button"
-                  title={symbolTypeTitle(symbolName)}
+                  title={`${symbolTypeTitle(symbolName)} · ${symbolState}`}
                   on:click={(event) => void handleVisualTagClick(symbolName, event)}
                 >
                   <span class="start-value-tag-name">{symbolName}</span>
