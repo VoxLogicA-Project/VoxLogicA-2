@@ -252,6 +252,7 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             assert value_pending.json()["compute_status"] in {"queued", "running"}
             assert value_pending.json()["execution_strategy"] == "dask"
             assert value_job_payloads
+            assert value_job_payloads[-1]["_goal_path"] in {"", "/"}
 
             value_job_payloads.clear()
             literal_constant = client.post(
@@ -580,10 +581,10 @@ def test_playground_value_completed_pending_persistence_status(monkeypatch: pyte
             assert requeued_resp.status_code == 200
             requeued_payload = requeued_resp.json()
             assert requeued_payload["materialization"] == "pending"
-            assert requeued_payload["compute_status"] == "running"
-            assert requeued_payload["request_enqueued"] is True
-            assert requeued_payload["job_id"] == "requeued-job"
-            assert len(enqueued_payloads) == 1
+            assert requeued_payload["compute_status"] == "persisting"
+            assert requeued_payload["request_enqueued"] is False
+            assert requeued_payload["job_id"] == "value-completed-1"
+            assert enqueued_payloads == []
     finally:
         fake_storage.close()
 
@@ -968,6 +969,194 @@ def test_playground_value_page_rebases_sequence_item_paths_for_materialized_nest
             assert page_payload["descriptor"]["navigation"]["path"] == "/0"
             assert page_payload["page"]["items"][0]["path"] == "/0/0"
             assert page_payload["page"]["items"][1]["path"] == "/0/1"
+    finally:
+        fake_storage.close()
+
+
+@pytest.mark.unit
+def test_playground_value_uses_runtime_preview_while_persisting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeRegistry:
+        @staticmethod
+        def get_feature(name: str):
+            if name == "version":
+                return SimpleNamespace(handler=lambda: OperationResult.ok({"version": "2.0.0"}))
+            if name == "run":
+                return SimpleNamespace(handler=lambda **kwargs: OperationResult.ok({"ok": True, "args": kwargs}))
+            return None
+
+    monkeypatch.setattr(main_mod, "FeatureRegistry", FakeRegistry)
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    def _job_payload(node_id: str) -> dict[str, object]:
+        return {
+            "job_id": "value-runtime-preview",
+            "status": "completed",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "result": {
+                "goal_results": [
+                    {
+                        "node_id": node_id,
+                        "status": "materialized",
+                        "metadata": {"persisted": "pending"},
+                        "runtime_descriptor": {
+                            "available": True,
+                            "node_id": node_id,
+                            "status": "materialized",
+                            "runtime_version": "runtime",
+                            "path": "",
+                            "descriptor": {
+                                "vox_type": "sequence",
+                                "format_version": "voxpod/1",
+                                "summary": {"length": 2},
+                                "navigation": {
+                                    "path": "",
+                                    "pageable": True,
+                                    "can_descend": True,
+                                    "default_page_size": 64,
+                                    "max_page_size": 512,
+                                },
+                            },
+                        },
+                        "runtime_previews": {
+                            "/": {
+                                "path": "/",
+                                "status": "materialized",
+                                "descriptor": {
+                                    "vox_type": "sequence",
+                                    "format_version": "voxpod/1",
+                                    "summary": {"length": 2},
+                                    "navigation": {
+                                        "path": "/",
+                                        "pageable": True,
+                                        "can_descend": True,
+                                        "default_page_size": 64,
+                                        "max_page_size": 512,
+                                    },
+                                },
+                                "page": {
+                                    "offset": 0,
+                                    "limit": 64,
+                                    "items": [
+                                        {
+                                            "index": 0,
+                                            "label": "[0]",
+                                            "path": "/0",
+                                            "status": "materialized",
+                                            "descriptor": {
+                                                "vox_type": "integer",
+                                                "format_version": "voxpod/1",
+                                                "summary": {"value": 80},
+                                                "navigation": {
+                                                    "path": "/0",
+                                                    "pageable": False,
+                                                    "can_descend": False,
+                                                    "default_page_size": 64,
+                                                    "max_page_size": 512,
+                                                },
+                                            },
+                                        },
+                                        {
+                                            "index": 1,
+                                            "label": "[1]",
+                                            "path": "/1",
+                                            "status": "materialized",
+                                            "descriptor": {
+                                                "vox_type": "integer",
+                                                "format_version": "voxpod/1",
+                                                "summary": {"value": 81},
+                                                "navigation": {
+                                                    "path": "/1",
+                                                    "pageable": False,
+                                                    "can_descend": False,
+                                                    "default_page_size": 64,
+                                                    "max_page_size": 512,
+                                                },
+                                            },
+                                        },
+                                    ],
+                                    "next_offset": None,
+                                    "has_more": False,
+                                    "total": 2,
+                                },
+                            },
+                            "/0": {
+                                "path": "/0",
+                                "status": "materialized",
+                                "value": 80,
+                                "descriptor": {
+                                    "vox_type": "integer",
+                                    "format_version": "voxpod/1",
+                                    "summary": {"value": 80},
+                                    "navigation": {
+                                        "path": "/0",
+                                        "pageable": False,
+                                        "can_descend": False,
+                                        "default_page_size": 64,
+                                        "max_page_size": 512,
+                                    },
+                                },
+                            },
+                        },
+                    }
+                ]
+            },
+            "log_tail": "",
+        }
+
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            get_value_job=lambda **kwargs: _job_payload(str(kwargs.get("node_id", ""))),
+            ensure_value_job=lambda payload, **kwargs: {"job_id": "unused", "status": "running", "log_tail": ""},
+        ),
+    )
+
+    try:
+        with TestClient(main_mod.api_app) as client:
+            symbols = client.post("/api/v1/playground/symbols", json={"program": "xs = range(80,82)"})
+            assert symbols.status_code == 200
+
+            page_resp = client.post(
+                "/api/v1/playground/value/page",
+                json={
+                    "program": "xs = range(80,82)",
+                    "variable": "xs",
+                    "path": "/",
+                    "offset": 0,
+                    "limit": 2,
+                    "enqueue": False,
+                },
+            )
+            assert page_resp.status_code == 200
+            page_payload = page_resp.json()
+            assert page_payload["compute_status"] == "persisting"
+            assert page_payload["materialization"] == "computed"
+            assert len(page_payload["page"]["items"]) == 2
+            assert page_payload["page"]["items"][0]["status"] == "materialized"
+            assert page_payload["page"]["items"][0]["path"] == "/0"
+
+            value_resp = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "xs = range(80,82)",
+                    "variable": "xs",
+                    "path": "/0",
+                    "enqueue": False,
+                },
+            )
+            assert value_resp.status_code == 200
+            value_payload = value_resp.json()
+            assert value_payload["compute_status"] == "persisting"
+            assert value_payload["materialization"] == "computed"
+            assert value_payload["descriptor"]["vox_type"] == "integer"
+            assert value_payload["value"] == 80
     finally:
         fake_storage.close()
 

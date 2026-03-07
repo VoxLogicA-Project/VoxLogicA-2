@@ -1415,6 +1415,12 @@ body {
   background: rgba(221, 233, 255, 0.9);
 }
 
+.start-collection-item-state--waiting {
+  color: #5f6f88;
+  border-color: rgba(129, 144, 171, 0.34);
+  background: rgba(233, 239, 248, 0.92);
+}
+
 .start-collection-item-state--failed {
   color: #84242c;
   border-color: rgba(220, 38, 38, 0.34);

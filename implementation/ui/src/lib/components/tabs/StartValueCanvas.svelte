@@ -67,7 +67,8 @@
     if (rawStatus === "queued") return "queued";
     if (rawStatus === "persisting") return "persisting";
     if (rawStatus === "running") return "running";
-    return "computing";
+    if (rawStatus === "pending" || rawStatus === "missing") return "waiting";
+    return "waiting";
   };
 
   const resolvedItemRecord = (item) => {

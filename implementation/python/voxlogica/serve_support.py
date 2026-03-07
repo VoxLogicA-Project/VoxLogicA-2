@@ -1449,6 +1449,79 @@ def describe_runtime_value(*, node_id: str, value: Any, path: str = "") -> dict[
     }
 
 
+def inspect_runtime_value_page(
+    *,
+    node_id: str,
+    value: Any,
+    path: str = "",
+    offset: int = 0,
+    limit: int = DEFAULT_PAGE_SIZE,
+) -> dict[str, Any]:
+    """Inspect a pageable in-memory runtime value using the same contract as store pages."""
+    normalized_path = _normalize_result_path(path)
+    safe_offset = max(0, int(offset))
+    safe_limit = max(1, min(int(limit), MAX_PAGE_SIZE))
+    root = adapt_runtime_value(value).resolve(path=normalized_path)
+    if not isinstance(root, (VoxSequenceValue, VoxMappingValue)):
+        raise ValueError(f"Path '{normalized_path or '/'}' is not pageable (vox_type={root.vox_type}).")
+
+    page = root.page(offset=safe_offset, limit=safe_limit)
+    payload = {
+        "available": True,
+        "node_id": node_id,
+        "status": "materialized",
+        "runtime_version": "runtime",
+        "created_at": _iso_utc(time.time()),
+        "updated_at": _iso_utc(time.time()),
+        "metadata": {"source": "runtime"},
+        "error": None,
+        "path": normalized_path,
+        "descriptor": _canonical_descriptor(
+            root.describe(path=normalized_path),
+            node_id=node_id,
+            path=normalized_path,
+        ),
+    }
+
+    items_out: list[dict[str, Any]] = []
+    for index, item in enumerate(page.items):
+        label = str(item.get("label", "item"))
+        if isinstance(root, VoxMappingValue):
+            item_path = append_path(normalized_path, label)
+            absolute_index = index
+        else:
+            item_path = append_path(normalized_path, str(safe_offset + index))
+            absolute_index = safe_offset + index
+        descriptor = item.get("descriptor")
+        if isinstance(descriptor, dict):
+            item_descriptor = _canonical_descriptor(descriptor, node_id=node_id, path=item_path)
+        else:
+            item_descriptor = _canonical_descriptor(
+                adapt_runtime_value(item).describe(path=item_path),
+                node_id=node_id,
+                path=item_path,
+            )
+        items_out.append(
+            {
+                "index": absolute_index,
+                "label": label,
+                "path": item_path,
+                "descriptor": item_descriptor,
+                "status": "materialized",
+            }
+        )
+
+    payload["page"] = {
+        "offset": int(page.offset),
+        "limit": int(page.limit),
+        "items": items_out,
+        "next_offset": page.next_offset,
+        "has_more": bool(page.has_more),
+        "total": page.total,
+    }
+    return payload
+
+
 def _image_to_png_bytes(image: Any) -> bytes:
     sitk = _import_simpleitk()
     if sitk is None:

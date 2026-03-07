@@ -177,58 +177,78 @@ describe("StartTab", () => {
 
   it("polls pending values until completion", async () => {
     vi.useFakeTimers();
-    getProgramSymbolsMock.mockResolvedValue({
-      available: true,
-      symbol_table: { x: "node-x" },
-      diagnostics: [],
-    });
-    resolvePlaygroundValueMock
-      .mockResolvedValueOnce({
-        materialization: "pending",
-        compute_status: "running",
-        node_id: "node-x",
-        job_id: "job-1234567890",
-        log_tail: '{"event":"playground.node","operator":"const","status":"cached","cache_source":"store","duration_s":0.001,"node_id":"node-c"}',
-      })
-      .mockResolvedValue({
-        materialization: "computed",
-        compute_status: "completed",
-        node_id: "node-x",
-        path: "/",
-        descriptor: {
-          vox_type: "integer",
-          format_version: "voxpod/1",
-          summary: { value: 1 },
-          navigation: {
-            path: "/",
-            pageable: false,
-            can_descend: false,
-            default_page_size: 64,
-            max_page_size: 512,
+    const originalWebSocket = globalThis.WebSocket;
+    try {
+      Object.defineProperty(globalThis, "WebSocket", {
+        value: undefined,
+        configurable: true,
+      });
+    } catch {
+      // best effort for environments where WebSocket is not configurable
+    }
+    try {
+      getProgramSymbolsMock.mockResolvedValue({
+        available: true,
+        symbol_table: { x: "node-x" },
+        diagnostics: [],
+      });
+      resolvePlaygroundValueMock
+        .mockResolvedValueOnce({
+          materialization: "pending",
+          compute_status: "running",
+          node_id: "node-x",
+          job_id: "job-1234567890",
+          log_tail: '{"event":"playground.node","operator":"const","status":"cached","cache_source":"store","duration_s":0.001,"node_id":"node-c"}',
+        })
+        .mockResolvedValue({
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-x",
+          path: "/",
+          descriptor: {
+            vox_type: "integer",
+            format_version: "voxpod/1",
+            summary: { value: 1 },
+            navigation: {
+              path: "/",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
           },
-        },
+        });
+
+      const { container } = render(StartTab, { active: true, capabilities: {} });
+      await waitFor(() => {
+        expect(getProgramSymbolsMock).toHaveBeenCalled();
       });
 
-    const { container } = render(StartTab, { active: true, capabilities: {} });
-    await waitFor(() => {
-      expect(getProgramSymbolsMock).toHaveBeenCalled();
-    });
+      const runButton = container.querySelector(".btn.btn-primary");
+      expect(runButton).not.toBeNull();
+      await fireEvent.click(runButton);
 
-    const runButton = container.querySelector(".btn.btn-primary");
-    expect(runButton).not.toBeNull();
-    await fireEvent.click(runButton);
+      await waitFor(() => {
+        expect(resolvePlaygroundValueMock).toHaveBeenCalled();
+      });
 
-    await waitFor(() => {
-      expect(resolvePlaygroundValueMock).toHaveBeenCalled();
-    });
-
-    vi.runOnlyPendingTimers();
-    await waitFor(() => {
-      expect(resolvePlaygroundValueMock.mock.calls.length).toBeGreaterThanOrEqual(2);
-      const runState = container.querySelector(".start-run-state--completed");
-      expect(runState).not.toBeNull();
-    });
-    vi.useRealTimers();
+      vi.runOnlyPendingTimers();
+      await waitFor(() => {
+        expect(resolvePlaygroundValueMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+        const runState = container.querySelector(".start-run-state--completed");
+        expect(runState).not.toBeNull();
+      });
+    } finally {
+      try {
+        Object.defineProperty(globalThis, "WebSocket", {
+          value: originalWebSocket,
+          configurable: true,
+        });
+      } catch {
+        // best effort restore
+      }
+      vi.useRealTimers();
+    }
   });
 
   it("renders value tags with visual states and resolves clicked tags", async () => {

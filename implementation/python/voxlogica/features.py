@@ -12,6 +12,7 @@ import os
 from voxlogica.converters import to_dot, to_json
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 from voxlogica.execution import ExecutionEngine
+from voxlogica.lazy.hash import hash_sequence_item
 from voxlogica.parser import parse_program, parse_program_content
 from voxlogica.policy import (
     StaticPolicyError,
@@ -21,6 +22,8 @@ from voxlogica.policy import (
 )
 from voxlogica.reducer import reduce_program_with_bindings
 from voxlogica.storage import NoCacheStorageBackend, get_storage
+from voxlogica.value_model import adapt_runtime_value, normalize_path
+from voxlogica.value_model import VoxMappingValue, VoxSequenceValue
 
 
 logger = logging.getLogger("voxlogica.features")
@@ -152,6 +155,131 @@ def _collect_exports(
     return messages, saved_files
 
 
+def _path_tokens(path: str | None) -> list[str]:
+    normalized = normalize_path(path)
+    if normalized in {"", "/"}:
+        return []
+    return [token for token in normalized.split("/") if token]
+
+
+def _materialize_sequence_focus_path(
+    materialization_store: Any,
+    *,
+    node_id: str,
+    path: str,
+) -> None:
+    """Best-effort focused child materialization for numeric sequence paths.
+
+    This lets `/playground/value` path probes expose item-level progress even when
+    full parent sequence persistence is still ongoing.
+    """
+    normalized = normalize_path(path)
+    tokens = _path_tokens(normalized)
+    if not tokens:
+        return
+
+    target_node_id = str(node_id)
+    for token in tokens:
+        try:
+            index = int(token)
+        except Exception:
+            return
+        if index < 0:
+            return
+        target_node_id = hash_sequence_item(target_node_id, index)
+
+    try:
+        if bool(getattr(materialization_store, "has")(target_node_id)):
+            return
+    except Exception:
+        pass
+
+    try:
+        root_value = materialization_store.get(str(node_id))
+    except Exception:
+        return
+
+
+def _build_runtime_previews_for_goal(
+    *,
+    node_id: str,
+    runtime_value: Any,
+    focus_path: str,
+) -> dict[str, dict[str, Any]]:
+    """Build stable runtime previews for the root and one focused nested path.
+
+    Previews are JSON-safe payloads used by serve-mode value endpoints while
+    persistence is still in progress.
+    """
+    from voxlogica.serve_support import describe_runtime_value, inspect_runtime_value_page
+
+    candidates = [normalize_path("")]
+    normalized_focus = normalize_path(focus_path)
+    if normalized_focus not in {"", "/"}:
+        candidates.append(normalized_focus)
+
+    previews: dict[str, dict[str, Any]] = {}
+    for candidate_path in candidates:
+        key = normalize_path(candidate_path)
+        try:
+            descriptor_payload = describe_runtime_value(node_id=node_id, value=runtime_value, path=key)
+        except Exception as exc:  # noqa: BLE001
+            previews[key] = {
+                "path": key,
+                "error": str(exc),
+            }
+            continue
+
+        preview: dict[str, Any] = {
+            "path": key,
+            "descriptor": descriptor_payload.get("descriptor"),
+            "status": "materialized",
+        }
+        try:
+            resolved = adapt_runtime_value(runtime_value).resolve(path=key)
+            preview["vox_type"] = str(resolved.vox_type)
+            if isinstance(resolved, (VoxSequenceValue, VoxMappingValue)):
+                paged = inspect_runtime_value_page(
+                    node_id=node_id,
+                    value=runtime_value,
+                    path=key,
+                    offset=0,
+                    limit=64,
+                )
+                page_payload = paged.get("page")
+                if isinstance(page_payload, dict):
+                    preview["page"] = page_payload
+            else:
+                try:
+                    preview["value"] = resolved.to_json_native()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        previews[key] = preview
+
+    return previews
+
+    try:
+        resolved = adapt_runtime_value(root_value).resolve(path=normalized)
+    except Exception:
+        return
+
+    raw_value = getattr(resolved, "raw", resolved)
+    try:
+        materialization_store.put(
+            target_node_id,
+            raw_value,
+            metadata={
+                "source": "runtime-focus",
+                "focus_parent_node_id": str(node_id),
+                "focus_path": normalized,
+            },
+        )
+    except Exception:
+        return
+
+
 def _failed_operation_details(workplan: Any, failed_operations: dict[str, str]) -> dict[str, dict[str, Any]]:
     details: dict[str, dict[str, Any]] = {}
     nodes = getattr(workplan, "nodes", {}) if workplan is not None else {}
@@ -273,6 +401,20 @@ def handle_run(
                         goals=effective_goals or None,
                     )
 
+            if (
+                prepared_plan is not None
+                and bool(serve_mode)
+                and str(kwargs.get("_job_kind", "")).strip().lower() == "value-resolve"
+            ):
+                focus_path = str(kwargs.get("_goal_path", "") or "").strip()
+                if focus_path:
+                    for focused_goal in effective_goals or []:
+                        _materialize_sequence_focus_path(
+                            prepared_plan.materialization_store,
+                            node_id=str(focused_goal),
+                            path=focus_path,
+                        )
+
             # Playground/value jobs need persisted pages to become immediately inspectable.
             # Keep non-blocking semantics for normal runs, but wait briefly in serve
             # scoped value-resolution paths so the UI does not get stuck in "queued".
@@ -393,6 +535,7 @@ def handle_run(
                 )
 
             goal_results: list[dict[str, Any]] = []
+            preview_focus_path = normalize_path(str(kwargs.get("_goal_path", "") or ""))
             if prepared_plan is not None:
                 declared_names_by_node: dict[str, str] = {}
                 for declared_name, declared_node in declaration_bindings.items():
@@ -447,6 +590,12 @@ def handle_run(
                                         value=runtime_value,
                                         path="",
                                     )
+                                    if bool(serve_mode):
+                                        goal_payload["runtime_previews"] = _build_runtime_previews_for_goal(
+                                            node_id=node_id,
+                                            runtime_value=runtime_value,
+                                            focus_path=preview_focus_path,
+                                        )
                                 except Exception as exc:  # noqa: BLE001
                                     goal_payload["runtime_descriptor_error"] = str(exc)
                         except Exception as exc:  # noqa: BLE001

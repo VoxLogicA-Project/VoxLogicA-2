@@ -84,6 +84,13 @@
   };
 
   const enqueueClientLog = (level, args, payload = null) => {
+    const firstArg = Array.isArray(args) && args.length ? String(args[0] || "") : "";
+    if (firstArg.startsWith("[api.request]")) {
+      return;
+    }
+    if (firstArg.startsWith("[start-tab.resolve]")) {
+      return;
+    }
     clientLogQueue.push({
       level,
       message: toLogMessage(args),

@@ -11,11 +11,14 @@ import json
 import logging
 import os
 from pathlib import Path
+import queue
 import shutil
 import subprocess
 import sys
+import threading
 import time
-from typing import Any, Optional, TypeVar, Generic, MutableMapping
+import webbrowser
+from typing import Any, Optional, TypeVar, Generic, MutableMapping, Callable
 
 import dask
 import typer
@@ -60,7 +63,7 @@ from voxlogica.serve_support import (
     render_store_result_png,
 )
 from voxlogica.storage import get_storage
-from voxlogica.value_model import UnsupportedVoxValueError, VoxValueError
+from voxlogica.value_model import UnsupportedVoxValueError, VoxValueError, normalize_path
 from voxlogica.version import get_version
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 
@@ -570,6 +573,43 @@ def _transient_sequence_page_from_store(
         "next_offset": next_offset,
         "has_more": bool(has_more),
         "total": total,
+    }
+
+
+def _slice_runtime_preview_page(
+    preview_page: dict[str, Any] | None,
+    *,
+    offset: int,
+    limit: int,
+) -> dict[str, Any] | None:
+    """Return one requested page window from a runtime preview page payload."""
+    if not isinstance(preview_page, dict):
+        return None
+    raw_items = preview_page.get("items")
+    if not isinstance(raw_items, list):
+        return None
+
+    safe_offset = max(0, int(offset))
+    safe_limit = max(1, int(limit))
+    items = [item for item in raw_items if isinstance(item, dict)]
+
+    indexed_items = [item for item in items if isinstance(item.get("index"), int)]
+    if indexed_items:
+        selected = [item for item in indexed_items if safe_offset <= int(item.get("index", -1)) < safe_offset + safe_limit]
+        next_offset = safe_offset + len(selected) if len(selected) >= safe_limit else None
+    else:
+        selected = items[safe_offset : safe_offset + safe_limit]
+        next_offset = safe_offset + len(selected) if (safe_offset + len(selected)) < len(items) else None
+
+    total = preview_page.get("total")
+    has_more = bool(next_offset is not None)
+    return {
+        "offset": safe_offset,
+        "limit": safe_limit,
+        "items": selected,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "total": total if isinstance(total, int) else None,
     }
 
 
@@ -1155,6 +1195,38 @@ def _terminate_child_process(process: subprocess.Popen[str] | None, *, name: str
     process.kill()
     process.wait(timeout=3.0)
 
+
+def _stdin_command_bridge(
+    *,
+    on_command: Callable[[str], None],
+    label: str = "serve",
+) -> tuple[threading.Event, threading.Thread] | None:
+    """Start a best-effort stdin command reader thread for interactive terminal controls."""
+    if not sys.stdin or not sys.stdin.isatty():
+        return None
+
+    stop_event = threading.Event()
+
+    def _reader() -> None:
+        while not stop_event.is_set():
+            try:
+                raw = sys.stdin.readline()
+            except Exception:
+                break
+            if raw == "":
+                break
+            command = str(raw).strip()
+            if not command:
+                continue
+            try:
+                on_command(command)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("%s command failed: %s", label, exc)
+
+    thread = threading.Thread(target=_reader, name=f"voxlogica-{label}-stdin", daemon=True)
+    thread.start()
+    return stop_event, thread
+
 api_router = APIRouter(prefix="/api/v1")
 playground_jobs = PlaygroundJobManager()
 testing_jobs = TestingJobManager()
@@ -1484,28 +1556,59 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
         except Exception:
             return None
 
-    def _runtime_descriptor_from_job(
-        job_payload: dict[str, Any] | None,
-    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    def _goal_result_from_job(job_payload: dict[str, Any] | None) -> dict[str, Any] | None:
         if not isinstance(job_payload, dict):
-            return None, {}
+            return None
         result_payload = job_payload.get("result")
         if not isinstance(result_payload, dict):
-            return None, {}
+            return None
         goal_results = result_payload.get("goal_results")
         if not isinstance(goal_results, list):
-            return None, {}
+            return None
         for goal_result in goal_results:
             if not isinstance(goal_result, dict):
                 continue
             if str(goal_result.get("node_id", "")) != node_id:
                 continue
-            descriptor = goal_result.get("runtime_descriptor")
-            metadata = goal_result.get("metadata")
-            if isinstance(descriptor, dict):
-                return descriptor, metadata if isinstance(metadata, dict) else {}
-            return None, metadata if isinstance(metadata, dict) else {}
-        return None, {}
+            return goal_result
+        return None
+
+    def _runtime_descriptor_from_job(
+        job_payload: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        goal_result = _goal_result_from_job(job_payload)
+        if not isinstance(goal_result, dict):
+            return None, {}
+        descriptor = goal_result.get("runtime_descriptor")
+        metadata = goal_result.get("metadata")
+        if isinstance(descriptor, dict):
+            return descriptor, metadata if isinstance(metadata, dict) else {}
+        return None, metadata if isinstance(metadata, dict) else {}
+
+    def _runtime_preview_from_job(
+        job_payload: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        goal_result = _goal_result_from_job(job_payload)
+        if not isinstance(goal_result, dict):
+            return None, {}
+        metadata = goal_result.get("metadata")
+        metadata_dict = metadata if isinstance(metadata, dict) else {}
+        previews = goal_result.get("runtime_previews")
+        if not isinstance(previews, dict):
+            return None, metadata_dict
+        requested_path = normalize_path(view_path)
+        lookup_candidates = [requested_path]
+        if requested_path in {"", "/"}:
+            lookup_candidates.extend(["", "/"])
+        preview: dict[str, Any] | None = None
+        for candidate in lookup_candidates:
+            candidate_preview = previews.get(candidate)
+            if isinstance(candidate_preview, dict):
+                preview = candidate_preview
+                break
+        if not isinstance(preview, dict):
+            return None, metadata_dict
+        return preview, metadata_dict
 
     def _inspect_sequence_reference_from_store(
         *,
@@ -1831,6 +1934,32 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                     },
                     reason="job-completed-store-unsupported",
                 )
+            runtime_preview, runtime_preview_metadata = _runtime_preview_from_job(tracked_job)
+            if isinstance(runtime_preview, dict):
+                preview_descriptor = runtime_preview.get("descriptor")
+                if isinstance(preview_descriptor, dict):
+                    preview_payload: dict[str, Any] = {
+                        "available": True,
+                        "status": "materialized",
+                        "materialization": "computed",
+                        "compute_status": "persisting",
+                        "store_status": "missing",
+                        "job_id": tracked_job.get("job_id"),
+                        "request_enqueued": False,
+                        "descriptor": preview_descriptor,
+                    }
+                    preview_value = runtime_preview.get("value")
+                    if preview_value is not None:
+                        preview_payload["value"] = preview_value
+                    preview_page = runtime_preview.get("page")
+                    if isinstance(preview_page, dict):
+                        preview_payload["runtime_preview_page"] = preview_page
+                    metadata_payload = runtime_preview_metadata if isinstance(runtime_preview_metadata, dict) else {}
+                    preview_payload["metadata"] = {
+                        **metadata_payload,
+                        "source": "runtime-preview",
+                    }
+                    return _attach_and_log(preview_payload, reason="job-completed-runtime-preview")
             transient_descriptor, transient_metadata = _runtime_descriptor_from_job(tracked_job)
             if transient_descriptor is not None and view_path not in {"", "/"}:
                 root_descriptor = transient_descriptor.get("descriptor") if isinstance(transient_descriptor, dict) else None
@@ -1897,55 +2026,6 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                 if persisted_state == "pending":
                     finished_at = _parse_iso_utc(tracked_job.get("finished_at"))
                     elapsed_s = (time.time() - finished_at) if finished_at is not None else None
-                    if request.enqueue and elapsed_s is not None and elapsed_s > 10.0:
-                        request_payload: dict[str, Any] = {
-                            "program": request.program,
-                            "execution_strategy": strategy,
-                            "execute": True,
-                            "legacy": False,
-                            "serve_mode": True,
-                            "no_cache": False,
-                            "debug": False,
-                            "verbose": False,
-                            "dask_dashboard": False,
-                        }
-                        request_payload.update(
-                            {
-                                "_job_kind": "value-resolve",
-                                "_include_goal_descriptors": True,
-                                "_goals": [node_id],
-                                "_priority_node": node_id,
-                                "_program_hash": program_hash,
-                            }
-                        )
-                        requeued_job = playground_jobs.ensure_value_job(
-                            request_payload,
-                            program_hash=program_hash,
-                            node_id=node_id,
-                            execution_strategy=strategy,
-                        )
-                        requeued_status = str(requeued_job.get("status", "queued"))
-                        return _attach_and_log(
-                            {
-                                "available": False,
-                                "materialization": "pending",
-                                "compute_status": "running" if requeued_status == "running" else requeued_status,
-                                "job_id": requeued_job.get("job_id"),
-                                "store_status": "missing",
-                                "request_enqueued": True,
-                                "descriptor": transient_descriptor.get("descriptor")
-                                if isinstance(transient_descriptor.get("descriptor"), dict)
-                                else None,
-                                "resolved_store_node_id": node_id,
-                                "resolved_store_path": "",
-                                "diagnostics": {
-                                    "store_status": "missing",
-                                    "message": "Persistence appears stalled; re-enqueued value computation.",
-                                    "persistence_elapsed_s": elapsed_s,
-                                },
-                            },
-                            reason="job-completed-requeued",
-                        )
                     return _attach_and_log(
                         {
                             "available": False,
@@ -2044,6 +2124,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             "_job_kind": "value-resolve",
             "_priority_node": node_id,
             "_program_hash": program_hash,
+            "_goal_path": view_path,
         },
         program_hash=program_hash,
         node_id=node_id,
@@ -2101,6 +2182,18 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
         return value_payload
 
     if materialization in {"pending", "missing"} or compute_status in {"queued", "running", "persisting", "missing"}:
+        runtime_preview_page = _slice_runtime_preview_page(
+            value_payload.get("runtime_preview_page") if isinstance(value_payload.get("runtime_preview_page"), dict) else None,
+            offset=request.offset,
+            limit=request.limit,
+        )
+        if runtime_preview_page is not None:
+            return {
+                **value_payload,
+                "path": path,
+                "page": runtime_preview_page,
+                "available": bool(runtime_preview_page.get("items")),
+            }
         container_node_id: str | None = None
         if isinstance(descriptor_payload, dict) and str(descriptor_payload.get("vox_type", "")) == "sequence":
             resolved_node_raw = value_payload.get("resolved_store_node_id")
@@ -2753,12 +2846,53 @@ def dev(
     backend_proc: subprocess.Popen[str] | None = None
     frontend_proc: subprocess.Popen[str] | None = None
     exit_code = 0
+    command_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
+
+    def _print_dev_help() -> None:
+        logger.info("[dev stdin] commands: h/help/? | o/open | rb (restart backend) | rf (restart frontend) | r (restart both) | q/quit")
+
+    def _on_dev_command(command: str) -> None:
+        command_queue.put(str(command or "").strip().lower())
+
+    bridge = _stdin_command_bridge(on_command=_on_dev_command, label="dev")
     try:
         backend_proc = subprocess.Popen(backend_cmd, cwd=repo_root, env=env)
         frontend_proc = subprocess.Popen(frontend_cmd, cwd=ui_dir, env=env)
         logger.info("Dev mode ready: open %s", frontend_origin)
         logger.info("Press Ctrl+C to stop both backend and frontend.")
+        _print_dev_help()
         while True:
+            while True:
+                try:
+                    command = command_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if command in {"h", "help", "?"}:
+                    _print_dev_help()
+                elif command in {"o", "open"}:
+                    webbrowser.open(frontend_origin)
+                    logger.info("[dev stdin] opened %s", frontend_origin)
+                elif command in {"rb", "restart-backend"}:
+                    _terminate_child_process(backend_proc, name="backend")
+                    backend_proc = subprocess.Popen(backend_cmd, cwd=repo_root, env=env)
+                    logger.info("[dev stdin] backend restarted")
+                elif command in {"rf", "restart-frontend"}:
+                    _terminate_child_process(frontend_proc, name="frontend")
+                    frontend_proc = subprocess.Popen(frontend_cmd, cwd=ui_dir, env=env)
+                    logger.info("[dev stdin] frontend restarted")
+                elif command in {"r", "restart"}:
+                    _terminate_child_process(frontend_proc, name="frontend")
+                    _terminate_child_process(backend_proc, name="backend")
+                    backend_proc = subprocess.Popen(backend_cmd, cwd=repo_root, env=env)
+                    frontend_proc = subprocess.Popen(frontend_cmd, cwd=ui_dir, env=env)
+                    logger.info("[dev stdin] backend+frontend restarted")
+                elif command in {"q", "quit", "exit"}:
+                    logger.info("[dev stdin] quit requested")
+                    exit_code = 0
+                    raise KeyboardInterrupt
+                else:
+                    logger.info("[dev stdin] unknown command '%s' (type 'h' for help)", command)
+
             backend_status = backend_proc.poll()
             frontend_status = frontend_proc.poll()
             if backend_status is not None:
@@ -2774,6 +2908,8 @@ def dev(
         logger.info("Stopping dev mode...")
         exit_code = 0
     finally:
+        if bridge is not None:
+            bridge[0].set()
         _terminate_child_process(frontend_proc, name="frontend")
         _terminate_child_process(backend_proc, name="backend")
 
@@ -2797,10 +2933,64 @@ def serve(
     except RuntimeError as exc:
         logger.error("Unable to prepare UI assets: %s", exc)
         raise typer.Exit(code=1) from exc
+    app_url = f"http://{host}:{port}/"
+    docs_url = f"http://{host}:{port}/docs"
     logger.info("Starting VoxLogicA API server version %s on %s:%s", get_version(), host, port)
-    logger.info("Interactive graph visualizer at http://%s:%s/", host, port)
-    logger.info("API docs available at http://%s:%s/docs", host, port)
-    uvicorn.run(api_app, host=host, port=port)
+    logger.info("Interactive graph visualizer at %s", app_url)
+    logger.info("API docs available at %s", docs_url)
+
+    current_server: dict[str, uvicorn.Server | None] = {"server": None}
+    restart_requested = False
+
+    def _print_serve_help() -> None:
+        logger.info("[serve stdin] commands: h/help/? | o/open | d/docs | r/reload (restart backend) | q/quit")
+
+    def _on_serve_command(command: str) -> None:
+        nonlocal restart_requested
+        normalized = str(command or "").strip().lower()
+        if normalized in {"h", "help", "?"}:
+            _print_serve_help()
+            return
+        if normalized in {"o", "open"}:
+            webbrowser.open(app_url)
+            logger.info("[serve stdin] opened %s", app_url)
+            return
+        if normalized in {"d", "docs"}:
+            webbrowser.open(docs_url)
+            logger.info("[serve stdin] opened %s", docs_url)
+            return
+        if normalized in {"r", "reload", "restart"}:
+            restart_requested = True
+            server = current_server.get("server")
+            if server is not None:
+                server.should_exit = True
+                logger.info("[serve stdin] restart requested")
+            return
+        if normalized in {"q", "quit", "exit"}:
+            restart_requested = False
+            server = current_server.get("server")
+            if server is not None:
+                server.should_exit = True
+                logger.info("[serve stdin] shutdown requested")
+            return
+        logger.info("[serve stdin] unknown command '%s' (type 'h' for help)", normalized)
+
+    bridge = _stdin_command_bridge(on_command=_on_serve_command, label="serve")
+    _print_serve_help()
+    try:
+        while True:
+            config = uvicorn.Config(api_app, host=host, port=port)
+            server = uvicorn.Server(config)
+            current_server["server"] = server
+            server.run()
+            current_server["server"] = None
+            if not restart_requested:
+                break
+            logger.info("[serve stdin] restarting API server...")
+            restart_requested = False
+    finally:
+        if bridge is not None:
+            bridge[0].set()
 
 
 if __name__ == "__main__":

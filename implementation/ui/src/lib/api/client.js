@@ -11,11 +11,12 @@ const toErrorMessage = (status, statusText, detail) => {
 };
 
 const isPlaygroundValueRequest = (path) => String(path || "").startsWith("/api/v1/playground/value");
+const traceValueRequests = () => String(import.meta?.env?.VITE_VOXLOGICA_TRACE_VALUE_REQUESTS || "").trim() === "1";
 const nowMs = () =>
   typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
 
 export const apiRequest = async (path, init = {}) => {
-  const traceValueRequest = isPlaygroundValueRequest(path);
+  const traceValueRequest = traceValueRequests() && isPlaygroundValueRequest(path);
   const method = String(init?.method || "GET").toUpperCase();
   const timeoutMsRaw = Number(init?.timeoutMs ?? (traceValueRequest ? 15000 : 0));
   const timeoutMs = Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0 ? Math.floor(timeoutMsRaw) : 0;

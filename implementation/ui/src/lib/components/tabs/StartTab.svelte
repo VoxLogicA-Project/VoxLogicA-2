@@ -104,6 +104,10 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let currentPath = "";
   let pendingPoll = null;
   let pendingPollTicks = 0;
+  let valueWs = null;
+  let valueWsReconnectTimer = null;
+  let valueWsAttempts = 0;
+  let activeValueSubscription = null;
   let pendingSave = null;
   let pendingProbe = null;
   let probeToken = 0;
@@ -446,6 +450,155 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       pendingPoll = null;
     }
     pendingPollTicks = 0;
+  };
+
+  const wsReconnectDelayMs = (attempt) => {
+    const clamped = Math.max(0, Math.min(6, Number(attempt || 0)));
+    return 220 + clamped * 300;
+  };
+
+  const wsBaseUrl = () => {
+    const configured = String(import.meta?.env?.VITE_VOXLOGICA_DEV_BACKEND_URL || "").trim();
+    if (configured) {
+      try {
+        const parsed = new URL(configured);
+        parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+        return parsed.toString().replace(/\/$/, "");
+      } catch {
+        // fall through
+      }
+    }
+    const protocol = window?.location?.protocol === "https:" ? "wss" : "ws";
+    return `${protocol}://${window.location.host}`;
+  };
+
+  const stopValueSocket = () => {
+    if (valueWsReconnectTimer) {
+      clearTimeout(valueWsReconnectTimer);
+      valueWsReconnectTimer = null;
+    }
+    const socket = valueWs;
+    valueWs = null;
+    if (socket) {
+      try {
+        socket.close();
+      } catch {
+        // ignore close errors
+      }
+    }
+  };
+
+  const applyStreamValuePayload = (payload = null) => {
+    if (!payload || !activeValueSubscription) return;
+    const requestedVariable = String(activeValueSubscription.variable || "");
+    const requestedPath = String(activeValueSubscription.path || "");
+    if (requestedVariable && requestedVariable !== String(primaryVariable || "")) return;
+    if (requestedPath !== String(currentPath || "")) return;
+
+    const materialization = String(payload?.materialization || "").toLowerCase();
+    const computeStatus = String(payload?.compute_status || "").toLowerCase();
+    const descriptor = payload?.descriptor && typeof payload.descriptor === "object" ? payload.descriptor : null;
+    const isMaterialized = (materialization === "cached" || materialization === "computed") && !!descriptor;
+    const isPending =
+      materialization === "pending" ||
+      materialization === "missing" ||
+      computeStatus === "queued" ||
+      computeStatus === "running" ||
+      computeStatus === "persisting";
+
+    if (isMaterialized) {
+      stopPoll();
+      applyMaterialized(payload, requestedVariable || String(primaryVariable || ""));
+      return;
+    }
+    if (materialization === "failed" || computeStatus === "failed" || computeStatus === "killed") {
+      stopPoll();
+      setSymbolStatus(requestedVariable || String(primaryVariable || ""), "failed");
+      applyFailure(payload, requestedVariable || String(primaryVariable || ""));
+      return;
+    }
+    if (isPending) {
+      applyPending(payload, requestedVariable || String(primaryVariable || ""));
+    }
+  };
+
+  const ensureValueSocket = () => {
+    if (valueWs && (valueWs.readyState === WebSocket.OPEN || valueWs.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    stopValueSocket();
+    valueWs = new WebSocket(`${wsBaseUrl()}/ws/playground/value`);
+    valueWs.onopen = () => {
+      valueWsAttempts = 0;
+      if (!activeValueSubscription) return;
+      valueWs.send(
+        JSON.stringify({
+          type: "subscribe",
+          request: {
+            program: activeValueSubscription.program || programText,
+            execution_strategy: "dask",
+            node_id: "",
+            variable: activeValueSubscription.variable || "",
+            path: activeValueSubscription.path || "",
+            enqueue: activeValueSubscription.enqueue !== false,
+          },
+        }),
+      );
+    };
+    valueWs.onmessage = (event) => {
+      try {
+        const message = JSON.parse(String(event.data || "{}"));
+        if (message?.type === "value" || message?.type === "terminal") {
+          applyStreamValuePayload(message?.payload || null);
+        }
+      } catch {
+        // ignore malformed ws messages
+      }
+    };
+    valueWs.onclose = () => {
+      valueWs = null;
+      if (!activeValueSubscription) return;
+      valueWsAttempts += 1;
+      const delay = wsReconnectDelayMs(valueWsAttempts);
+      if (valueWsReconnectTimer) clearTimeout(valueWsReconnectTimer);
+      valueWsReconnectTimer = setTimeout(() => {
+        ensureValueSocket();
+      }, delay);
+    };
+    valueWs.onerror = () => {
+      try {
+        valueWs?.close();
+      } catch {
+        // ignore
+      }
+    };
+  };
+
+  const subscribeValueSocket = ({ variable = "", path = "", enqueue = true } = {}) => {
+    if (typeof window === "undefined" || typeof window.WebSocket !== "function") return false;
+    activeValueSubscription = {
+      program: programText,
+      variable: String(variable || ""),
+      path: String(path || ""),
+      enqueue: Boolean(enqueue),
+    };
+    ensureValueSocket();
+    if (valueWs && valueWs.readyState === WebSocket.OPEN) {
+      valueWs.send(
+        JSON.stringify({
+          type: "subscribe",
+          request: {
+            program: activeValueSubscription.program,
+            execution_strategy: "dask",
+            node_id: "",
+            variable: activeValueSubscription.variable,
+            path: activeValueSubscription.path,
+            enqueue: activeValueSubscription.enqueue,
+          },
+        }),
+      );
+    }
+    return true;
   };
 
   const isTimeoutError = (error) => /timed out/i.test(String(error?.message || error || ""));
@@ -1310,6 +1463,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     pathRecordsErrors = {};
     pathRecordPollTimers = {};
     maximizedViewerIndex = -1;
+    activeValueSubscription = null;
+    stopValueSocket();
   };
 
   const renderSelectedRecords = ({ fallbackRecord = null } = {}) => {
@@ -1674,6 +1829,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           materialization,
           computeStatus,
         });
+        activeValueSubscription = null;
+        stopValueSocket();
         stopPoll();
         applyMaterialized(payload, request.variable);
         return { state: "computed", reason: "materialized" };
@@ -1688,6 +1845,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           computeStatus,
           error: String(payload?.error || ""),
         });
+        activeValueSubscription = null;
+        stopValueSocket();
         stopPoll();
         setSymbolStatus(request.variable, "failed");
         applyFailure(payload, request.variable);
@@ -1711,6 +1870,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         });
         applyPending(payload, request.variable);
         if (!hasProgressSignal) {
+          activeValueSubscription = null;
+          stopValueSocket();
           stopPoll();
           statusValue = "idle";
           statusText = `${request.variable} is not ready yet. Click Run or click the tag again to refresh.`;
@@ -1719,7 +1880,11 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           dissolveDream();
           return { state: "idle", reason: "no-progress" };
         }
-        ensurePendingPoll({ traceId, variable: request.variable, path: currentPath || "/" });
+        if (!subscribeValueSocket({ variable: request.variable, path: currentPath || "/", enqueue })) {
+          ensurePendingPoll({ traceId, variable: request.variable, path: currentPath || "/" });
+        } else {
+          stopPoll();
+        }
         return { state: "pending", reason: "in-progress" };
       }
 
@@ -1731,6 +1896,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         computeStatus,
       });
       stopPoll();
+      activeValueSubscription = null;
+      stopValueSocket();
       setSymbolStatus(request.variable, "failed");
       applyFailure(
         {
@@ -1770,10 +1937,16 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
           },
           request.variable,
         );
-        ensurePendingPoll({ traceId, variable: request.variable, path: currentPath || "/" });
+        if (!subscribeValueSocket({ variable: request.variable, path: currentPath || "/", enqueue })) {
+          ensurePendingPoll({ traceId, variable: request.variable, path: currentPath || "/" });
+        } else {
+          stopPoll();
+        }
         return { state: "pending", reason: "request-timeout" };
       }
       stopPoll();
+      activeValueSubscription = null;
+      stopValueSocket();
       setSymbolStatus(request.variable, "failed");
       applyFailure({ error: error.message || "Request failed." }, request.variable);
       return { state: "failed", reason: "request-error" };
@@ -1881,6 +2054,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     probeToken += 1;
     stopProbe();
     stopPoll();
+    activeValueSubscription = null;
+    stopValueSocket();
     resetViewer();
     clearResolutionActivity();
     await refreshSymbols();
@@ -1997,6 +2172,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   onDestroy(() => {
     stopSplitDrag();
     stopPoll();
+    activeValueSubscription = null;
+    stopValueSocket();
     stopProbe();
     probeToken += 1;
     if (pendingSave) clearTimeout(pendingSave);
