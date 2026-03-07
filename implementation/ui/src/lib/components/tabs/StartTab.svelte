@@ -883,6 +883,32 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
   const pagePollingForRecord = (record, path = "") => Boolean(recordPagePollTimers?.[pageKey(record, path)]);
 
+  const cacheRecordPage = (record, path = "", page = null) => {
+    if (!record || !page || typeof page !== "object") return null;
+    const rawItems = Array.isArray(page?.items) ? page.items : null;
+    if (!rawItems) return null;
+    const resolvedPath = String(path || recordPath(record) || "/");
+    const safeOffset = Math.max(0, Number(page?.offset || 0));
+    const safeLimit = Math.max(1, Number(page?.limit || COLLECTION_PAGE_SIZE));
+    const normalizedPage = {
+      ...page,
+      offset: safeOffset,
+      limit: safeLimit,
+      items: rawItems,
+    };
+    const baseKey = pageKey(record, resolvedPath);
+    const cacheKey = pageCacheKey(record, resolvedPath, safeOffset, safeLimit);
+    recordPages = {
+      ...recordPages,
+      [cacheKey]: normalizedPage,
+    };
+    recordPagePointers = {
+      ...recordPagePointers,
+      [baseKey]: cacheKey,
+    };
+    return normalizedPage;
+  };
+
   const collectionSelectionFor = (record, path = "") => {
     const key = pageKey(record, path);
     const selection = collectionSelections?.[key];
@@ -999,6 +1025,15 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       ...pathRecords,
       [key]: payload,
     };
+    const inlinePage =
+      payload?.runtime_preview_page && typeof payload.runtime_preview_page === "object"
+        ? payload.runtime_preview_page
+        : payload?.page && typeof payload.page === "object"
+          ? payload.page
+          : null;
+    if (inlinePage) {
+      cacheRecordPage(payload, String(payload?.path || path || "/"), inlinePage);
+    }
   };
 
   const clearPathRecordPoll = (key = "") => {
@@ -1369,7 +1404,17 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     if (["integer", "number", "boolean", "null"].includes(voxType)) return `${summary.value ?? ""}`;
     if (voxType === "string") return String(summary.value || "");
     if (voxType === "bytes") return `${Number(summary.length || 0)} bytes`;
-    if (voxType === "mapping" || voxType === "sequence") return `${Number(summary.length || 0)} values`;
+    if (voxType === "mapping" || voxType === "sequence") {
+      const rawLength = summary.length;
+      if (rawLength === null || rawLength === undefined || rawLength === "") {
+        return "collection";
+      }
+      const length = Number(rawLength);
+      if (Number.isFinite(length) && length >= 0) {
+        return `${length} values`;
+      }
+      return "collection";
+    }
     if (voxType === "overlay") return `${Number(summary.layer_count || 0)} layers`;
     if (voxType === "ndarray") return Array.isArray(summary.shape) ? summary.shape.join(" x ") : "array";
     if (voxType === "image2d" || voxType === "volume3d") return Array.isArray(summary.size) ? summary.size.join(" x ") : "image";

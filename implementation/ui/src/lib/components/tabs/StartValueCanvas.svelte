@@ -176,7 +176,15 @@
 
   $: if (selectedRecord && level < MAX_DEPTH && collectionRecord(selectedRecord)) {
     const nestedPath = recordPath(selectedRecord);
-    if (!pageForRecord(selectedRecord, nestedPath) && !pageLoadingForRecord(selectedRecord, nestedPath)) {
+    const nestedPage = pageForRecord(selectedRecord, nestedPath);
+    const waitingForNestedDetail =
+      Boolean(selectedPath) && !selectedRecordDetail && !selectedDetailError;
+    if (
+      !nestedPage &&
+      !waitingForNestedDetail &&
+      !pageLoadingForRecord(selectedRecord, nestedPath) &&
+      !pagePollingForRecord(selectedRecord, nestedPath)
+    ) {
       void loadRecordPage(selectedRecord, {
         path: nestedPath,
         offset: 0,
