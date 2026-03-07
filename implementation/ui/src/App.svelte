@@ -23,14 +23,13 @@
   let tabsMenuOpen = false;
   let capabilities = {};
   let buildStamp = "Loading...";
+  let startTabRef;
   let clientLoggerInstalled = false;
   let clientLogQueue = [];
   let clientLogFlushTimer = null;
   let clientLogInFlight = false;
   const clientLogMaxQueue = 300;
   const clientLogBatchSize = 40;
-
-  let playgroundTabRef;
 
   const selectTab = (tabId) => {
     activeTab = String(tabId || "start");
@@ -151,10 +150,10 @@
   const onGalleryLoad = async (event) => {
     const code = String(event.detail?.code || "");
     const run = Boolean(event.detail?.run);
-    activeTab = "playground";
+    activeTab = "start";
     tabsMenuOpen = false;
-    if (playgroundTabRef && typeof playgroundTabRef.loadProgram === "function") {
-      await playgroundTabRef.loadProgram(code, run);
+    if (startTabRef && typeof startTabRef.loadProgram === "function") {
+      await startTabRef.loadProgram(code, run);
     }
   };
 
@@ -224,10 +223,10 @@
   </aside>
 
   <main class="content">
-    <StartTab active={activeTab === "start"} {capabilities} />
+    <StartTab bind:this={startTabRef} active={activeTab === "start"} {capabilities} />
     <ComputeLogTab active={activeTab === "compute-log"} />
     <StartTechnicalTab active={activeTab === "start-tech"} {capabilities} />
-    <PlaygroundTab bind:this={playgroundTabRef} active={activeTab === "playground"} {capabilities} />
+    <PlaygroundTab active={activeTab === "playground"} {capabilities} />
     <ResultsTab active={activeTab === "results"} {capabilities} />
     <GalleryTab active={activeTab === "gallery"} on:load={onGalleryLoad} />
     <QualityTab active={activeTab === "quality"} {capabilities} />

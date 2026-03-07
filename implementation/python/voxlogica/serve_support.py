@@ -2540,8 +2540,16 @@ class PlaygroundJobManager:
                     page_offset=page_offset,
                     page_limit=page_limit,
                 )
-            except Exception:
-                return None
+            except Exception as exc:
+                message = str(exc).strip() or exc.__class__.__name__
+                if message.startswith("'") and message.endswith("'") and len(message) >= 2:
+                    message = message[1:-1]
+                return {
+                    "runtime_error": message,
+                    "runtime_error_type": exc.__class__.__name__,
+                    "path": str(path or ""),
+                    "node_id": str(node_id or ""),
+                }
 
     def list_jobs(self) -> dict[str, Any]:
         with self._lock:

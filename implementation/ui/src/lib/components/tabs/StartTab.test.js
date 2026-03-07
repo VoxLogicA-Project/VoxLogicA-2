@@ -858,6 +858,61 @@ describe("StartTab", () => {
     });
   });
 
+  it("keeps collection navigation visible when page resolution fails and shows the concrete error", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-xs",
+      path: "/",
+      descriptor: {
+        vox_type: "sequence",
+        format_version: "voxpod/1",
+        summary: { length: 3 },
+        navigation: {
+          path: "/",
+          pageable: true,
+          can_descend: true,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    });
+    resolvePlaygroundValuePageMock.mockResolvedValue({
+      materialization: "failed",
+      compute_status: "failed",
+      node_id: "node-xs",
+      path: "/",
+      error: "Unknown primitive: pflair",
+      diagnostics: {
+        code: "E_RUNTIME_INSPECTION",
+        message: "Unknown primitive: pflair",
+        node_id: "node-xs",
+        path: "/",
+      },
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(resolvePlaygroundValuePageMock).toHaveBeenCalled();
+      const collectionButtons = Array.from(container.querySelectorAll(".start-collection-item"));
+      expect(collectionButtons.length).toBeGreaterThanOrEqual(3);
+      expect(container.textContent).toContain("Unknown primitive: pflair");
+    });
+  });
+
   it("ignores stale resolve responses after switching variable tags", async () => {
     vi.useFakeTimers();
     getProgramSymbolsMock.mockResolvedValue({

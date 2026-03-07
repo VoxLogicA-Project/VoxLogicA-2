@@ -168,6 +168,49 @@ smooth = CurvatureFlow(img, 0.15, 4)
 output_path = "tests/output/smoothed_chris_t1.nii.gz"
 ```
 
+### Threshold sweep overlays on BraTS FLAIR
+
+<!-- vox:playground
+id: sitk-threshold-sweep-overlay
+title: BraTS threshold sweep overlays
+module: simpleitk
+level: advanced
+strategy: dask
+description: Explore one overlay per selected threshold, using preprocessed FLAIR as the base layer and the threshold mask as the overlay.
+-->
+```imgql
+import "simpleitk"
+
+dataset_root = "tests/data/datasets/BraTS_2019_HGG"
+k = 10
+hi_thr = 0.93
+vi_thr_start = 83
+vi_thr_stop = 92
+vi_ticks = range(vi_thr_start, vi_thr_stop)
+to_thr(tick) = tick / 100
+vi_thresholds = map(to_thr, vi_ticks)
+all_flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
+flair_paths = subsequence(all_flair_paths, 0, k)
+
+read_image(path) = ReadImage(path)
+to_intensity(img) = intensity(img)
+preprocess_flair(flair) =
+  let background = touch(leq_sv(0.1, flair), border) in
+  let brain = not(background) in
+  percentiles(flair, brain, 0)
+
+sweep_case_overlay(pflair) =
+  let hyper_intense = smoothen(geq_sv(hi_thr, pflair), 5.0) in
+  for vi_thr in vi_thresholds do
+    let very_intense = smoothen(geq_sv(vi_thr, pflair), 2.0) in
+    let mask = grow(hyper_intense, very_intense) in
+    overlay(pflair, mask)
+
+flair_images = map(read_image, flair_paths)
+pflair_images = map(preprocess_flair, map(to_intensity, flair_images))
+vi_sweep_overlays = map(sweep_case_overlay, pflair_images)
+```
+
 ## 4. `vox1` Compatibility Module
 
 ### Dot operators and legacy-compatible morphology helpers

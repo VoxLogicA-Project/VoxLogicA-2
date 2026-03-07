@@ -1483,6 +1483,98 @@ def test_playground_value_page_uses_runtime_cache_page_for_completed_value(
 
 
 @pytest.mark.unit
+def test_playground_value_returns_failed_payload_when_runtime_inspection_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeRegistry:
+        @staticmethod
+        def get_feature(name: str):
+            if name == "version":
+                return SimpleNamespace(handler=lambda: OperationResult.ok({"version": "2.0.0"}))
+            if name == "run":
+                return SimpleNamespace(handler=lambda **kwargs: OperationResult.ok({"ok": True, "args": kwargs}))
+            return None
+
+    monkeypatch.setattr(main_mod, "FeatureRegistry", FakeRegistry)
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    def _job_payload(node_id: str) -> dict[str, object]:
+        return {
+            "job_id": "value-runtime-error",
+            "status": "completed",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "result": {
+                "goal_results": [
+                    {
+                        "node_id": node_id,
+                        "status": "materialized",
+                        "metadata": {"persisted": "pending"},
+                        "runtime_descriptor": {
+                            "available": True,
+                            "node_id": node_id,
+                            "status": "materialized",
+                            "runtime_version": "runtime",
+                            "path": "",
+                            "descriptor": {
+                                "vox_type": "sequence",
+                                "format_version": "voxpod/1",
+                                "summary": {"length": 2},
+                                "navigation": {
+                                    "path": "",
+                                    "pageable": True,
+                                    "can_descend": True,
+                                    "default_page_size": 64,
+                                    "max_page_size": 512,
+                                },
+                            },
+                        },
+                    }
+                ]
+            },
+            "log_tail": "",
+        }
+
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            get_value_job=lambda **kwargs: _job_payload(str(kwargs.get("node_id", ""))),
+            inspect_value_job_runtime=lambda **kwargs: {
+                "runtime_error": "Unknown primitive: pflair",
+                "runtime_error_type": "KeyError",
+                "path": str(kwargs.get("path", "")),
+                "node_id": str(kwargs.get("node_id", "")),
+            },
+            ensure_value_job=lambda payload, **kwargs: {"job_id": "unused", "status": "running", "log_tail": ""},
+        ),
+    )
+
+    try:
+        with TestClient(main_mod.api_app) as client:
+            value_resp = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "xs = range(80,82)",
+                    "variable": "xs",
+                    "path": "/0",
+                    "enqueue": False,
+                },
+            )
+            assert value_resp.status_code == 200
+            payload = value_resp.json()
+            assert payload["compute_status"] == "failed"
+            assert payload["materialization"] == "failed"
+            assert payload["error"] == "Unknown primitive: pflair"
+            assert payload["diagnostics"]["code"] == "E_RUNTIME_INSPECTION"
+    finally:
+        fake_storage.close()
+
+
+@pytest.mark.unit
 def test_playground_value_page_returns_json_400_for_vox_value_path_errors(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

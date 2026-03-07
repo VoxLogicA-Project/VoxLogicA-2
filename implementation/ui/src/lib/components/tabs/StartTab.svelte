@@ -1094,9 +1094,22 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       const first = await tryResolve(false);
       const firstMaterialization = String(first?.materialization || "").toLowerCase();
       const firstStatus = String(first?.compute_status || "").toLowerCase();
+      const firstFailed = firstMaterialization === "failed" || ["failed", "killed"].includes(firstStatus);
       const firstMaterialized = (firstMaterialization === "computed" || firstMaterialization === "cached") && Boolean(first?.descriptor);
       const firstPending = ["pending", "missing", "queued", "running", "persisting"].includes(firstMaterialization) ||
         ["queued", "running", "persisting"].includes(firstStatus);
+      if (firstFailed) {
+        cachePathRecord(variableName, targetPath, first);
+        pathRecordsErrors = {
+          ...pathRecordsErrors,
+          [key]: buildFailureDetailsText(first, {
+            nodeId: variableName,
+            path: targetPath,
+          }),
+        };
+        clearPathRecordPoll(key);
+        return first;
+      }
       if (firstMaterialized) {
         cachePathRecord(variableName, targetPath, first);
         clearPathRecordPoll(key);
@@ -1107,7 +1120,20 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         const second = await tryResolve(true);
         const secondMaterialization = String(second?.materialization || "").toLowerCase();
         const secondStatus = String(second?.compute_status || "").toLowerCase();
+        const secondFailed = secondMaterialization === "failed" || ["failed", "killed"].includes(secondStatus);
         const secondMaterialized = (secondMaterialization === "computed" || secondMaterialization === "cached") && Boolean(second?.descriptor);
+        if (secondFailed) {
+          cachePathRecord(variableName, targetPath, second);
+          pathRecordsErrors = {
+            ...pathRecordsErrors,
+            [key]: buildFailureDetailsText(second, {
+              nodeId: variableName,
+              path: targetPath,
+            }),
+          };
+          clearPathRecordPoll(key);
+          return second;
+        }
         if (secondMaterialized) {
           cachePathRecord(variableName, targetPath, second);
           clearPathRecordPoll(key);
@@ -1237,6 +1263,27 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         });
 
       let payload = await requestPage(false);
+      const payloadFailed =
+        String(payload?.materialization || "").toLowerCase() === "failed" ||
+        ["failed", "killed"].includes(String(payload?.compute_status || "").toLowerCase());
+      if (payloadFailed) {
+        clearRecordPagePoll(baseKey);
+        const details = buildFailureDetailsText(payload, {
+          nodeId: variableName || String(record?.node_id || ""),
+          path: resolvedPath,
+        });
+        statusValue = "failed";
+        statusText = String(payload?.error || "Value resolution failed.");
+        errorText = details;
+        const fallbackPage =
+          recordPages?.[cacheKey] || fallbackCollectionPage(descriptor, resolvedPath, resolvedOffset, resolvedLimit, "failed");
+        if (fallbackPage) {
+          recordPages = { ...recordPages, [cacheKey]: fallbackPage };
+          recordPagePointers = { ...recordPagePointers, [baseKey]: cacheKey };
+          return fallbackPage;
+        }
+        return null;
+      }
       let page =
         payload?.page && typeof payload.page === "object"
           ? payload.page
@@ -1250,6 +1297,27 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
       if (enqueueFallback && needsFallback && (likelyPending || expectedLength > 0)) {
         payload = await requestPage(true);
+        const fallbackFailed =
+          String(payload?.materialization || "").toLowerCase() === "failed" ||
+          ["failed", "killed"].includes(String(payload?.compute_status || "").toLowerCase());
+        if (fallbackFailed) {
+          clearRecordPagePoll(baseKey);
+          const details = buildFailureDetailsText(payload, {
+            nodeId: variableName || String(record?.node_id || ""),
+            path: resolvedPath,
+          });
+          statusValue = "failed";
+          statusText = String(payload?.error || "Value resolution failed.");
+          errorText = details;
+          const fallbackPage =
+            recordPages?.[cacheKey] || fallbackCollectionPage(descriptor, resolvedPath, resolvedOffset, resolvedLimit, "failed");
+          if (fallbackPage) {
+            recordPages = { ...recordPages, [cacheKey]: fallbackPage };
+            recordPagePointers = { ...recordPagePointers, [baseKey]: cacheKey };
+            return fallbackPage;
+          }
+          return null;
+        }
         page =
           payload?.page && typeof payload.page === "object"
             ? payload.page
@@ -1420,6 +1488,46 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     if (voxType === "image2d" || voxType === "volume3d") return Array.isArray(summary.size) ? summary.size.join(" x ") : "image";
     if (summary && typeof summary.reason === "string") return summary.reason;
     return TYPE_LABELS[voxType] || voxType || "value";
+  };
+
+  const fallbackCollectionPage = (descriptor, basePath = "", offset = 0, limit = COLLECTION_PAGE_SIZE, status = "pending") => {
+    const summary = descriptor?.summary && typeof descriptor.summary === "object" ? descriptor.summary : {};
+    const rawLength = summary.length;
+    const totalLength = Number(rawLength);
+    if (!Number.isFinite(totalLength) || totalLength < 0) return null;
+    const safeOffset = Math.max(0, Number(offset || 0));
+    const safeLimit = Math.max(1, Number(limit || COLLECTION_PAGE_SIZE));
+    const end = Math.min(totalLength, safeOffset + safeLimit);
+    const items = [];
+    for (let index = safeOffset; index < end; index += 1) {
+      const itemPath = basePath && basePath !== "/" ? `${String(basePath).replace(/\/+$/, "")}/${index}` : `/${index}`;
+      items.push({
+        index,
+        label: `[${index}]`,
+        path: itemPath,
+        status,
+        descriptor: {
+          vox_type: "unavailable",
+          summary: {
+            reason: status === "failed" ? "resolve error" : "not loaded yet",
+          },
+          navigation: {
+            path: itemPath,
+            pageable: false,
+            can_descend: false,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
+        },
+      });
+    }
+    return {
+      offset: safeOffset,
+      limit: safeLimit,
+      items,
+      has_more: end < totalLength,
+      next_offset: end < totalLength ? end : null,
+    };
   };
 
   const collectDreamIds = (payload = {}) => {
@@ -2178,6 +2286,24 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     ensureSelectedVisualSymbols();
     await resolvePrimaryValue({ enqueue: true, path: "" });
   };
+
+  export async function loadProgram(code, runAfterLoad = false) {
+    programText = String(code || "");
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(STORAGE_KEY, programText);
+    }
+    resolveRequestSeq += 1;
+    resolveInFlight = false;
+    stopPoll();
+    stopProbe();
+    clearPendingLogs();
+    errorText = "";
+    await refreshSymbols();
+    ensureSelectedVisualSymbols();
+    if (runAfterLoad) {
+      await resolvePrimaryValue({ enqueue: true, path: "" });
+    }
+  }
 
   const handleVisualTagClick = async (symbolName, event) => {
     const name = String(symbolName || "");

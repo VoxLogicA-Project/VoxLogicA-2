@@ -221,6 +221,33 @@ def test_handle_run_goal_scoped_policy_allows_pure_target_with_unrelated_effect(
 
 
 @pytest.mark.unit
+def test_validate_workplan_policy_reports_unbound_identifier_in_deferred_function() -> None:
+    program = '\n'.join(
+        [
+            'import "simpleitk"',
+            "hi_thr = 1",
+            "vi_ticks = range(0, 2)",
+            "let bts(hi_thr,vi_thr) =",
+            "  let hyper_intense = smoothen(geq_sv(hi_thr, pflair), 5.0) in",
+            "  let very_intense = smoothen(geq_sv(vi_thr, pflair), 2.0) in",
+            "       grow(hyper_intense, very_intense)",
+            "sweep_case(pflair) =",
+            "  for vi_thr in vi_ticks do",
+            "     bts(hi_thr,vi_thr)",
+            "pflair_images = range(0, 1)",
+            "vi_sweep_masks = map(sweep_case, pflair_images)",
+        ]
+    )
+
+    workplan = _reduce(program)
+    diagnostics = validate_workplan_policy(workplan, legacy=False, serve_mode=True)
+
+    unbound = [diag for diag in diagnostics if diag.code == "E_UNBOUND_IDENTIFIER"]
+    assert unbound
+    assert any(str(diag.symbol) == "pflair" for diag in unbound)
+
+
+@pytest.mark.unit
 def test_handle_run_emits_runtime_descriptor_for_requested_non_goal_node() -> None:
     program = '\n'.join(
         [

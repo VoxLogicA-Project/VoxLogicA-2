@@ -49,6 +49,11 @@
     return String(value);
   };
 
+  const collectionDescriptor = (descriptor) => {
+    const voxType = String(descriptor?.vox_type || "").toLowerCase();
+    return voxType === "sequence" || voxType === "mapping";
+  };
+
   const collectionItemState = (item) => {
     const descriptor = item?.descriptor && typeof item.descriptor === "object" ? item.descriptor : {};
     const voxType = String(descriptor?.vox_type || "").toLowerCase();
@@ -61,12 +66,15 @@
 
   const itemStateLabel = (item) => {
     const state = effectiveStateForItem(item);
+    const descriptor = effectiveDescriptorForItem(item);
     if (state === "materialized") return "ready";
     if (state === "failed") return "failed";
+    if (state === "upstream") return "upstream";
     const rawStatus = String(item?.status || "").toLowerCase();
     if (rawStatus === "queued") return "queued";
     if (rawStatus === "persisting") return "persisting";
     if (rawStatus === "running") return "running";
+    if (collectionDescriptor(descriptor)) return "upstream";
     if (rawStatus === "pending" || rawStatus === "missing") return "waiting";
     return "waiting";
   };
@@ -76,9 +84,7 @@
     const itemPath = String(item?.path || "");
     if (!itemPath) return null;
     const resolved = pathRecordFor(sourceVariable, itemPath);
-    if (!resolved || typeof resolved !== "object") return null;
-    if (!resolved?.descriptor || typeof resolved.descriptor !== "object") return null;
-    return resolved;
+    return resolved && typeof resolved === "object" ? resolved : null;
   };
 
   const effectiveDescriptorForItem = (item) => {
@@ -97,7 +103,7 @@
       if (materialization === "failed" || computeStatus === "failed" || computeStatus === "killed") return "failed";
       if ((materialization === "computed" || materialization === "cached") && resolved?.descriptor) return "materialized";
       if (["pending", "missing"].includes(materialization) || ["queued", "running", "persisting"].includes(computeStatus)) {
-        return "pending";
+        return collectionDescriptor(effectiveDescriptorForItem(item)) ? "upstream" : "pending";
       }
     }
     return collectionItemState(item);

@@ -1687,6 +1687,34 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
         }
         return preview_payload
 
+    def _runtime_inspection_failure_payload(
+        *,
+        preview: dict[str, Any],
+        compute_status: str,
+        job_id: Any,
+    ) -> dict[str, Any]:
+        raw_error = str(preview.get("runtime_error") or "Nested value inspection failed.").strip()
+        error_message = raw_error
+        if raw_error.startswith("'") and raw_error.endswith("'") and len(raw_error) >= 2:
+            error_message = raw_error[1:-1]
+        return {
+            "available": False,
+            "materialization": "failed",
+            "compute_status": "failed" if compute_status == "completed" else compute_status,
+            "status": "failed",
+            "store_status": "missing",
+            "job_id": job_id,
+            "request_enqueued": False,
+            "error": error_message,
+            "diagnostics": {
+                "code": "E_RUNTIME_INSPECTION",
+                "message": error_message,
+                "node_id": str(preview.get("node_id") or node_id),
+                "path": str(preview.get("path") or view_path or "/"),
+                "runtime_error_type": str(preview.get("runtime_error_type") or ""),
+            },
+        }
+
     def _inspect_sequence_reference_from_store(
         *,
         root_descriptor: dict[str, Any] | None,
@@ -2023,6 +2051,15 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                     page_limit=64,
                 )
                 if isinstance(runtime_cached_preview, dict):
+                    if runtime_cached_preview.get("runtime_error"):
+                        return _attach_and_log(
+                            _runtime_inspection_failure_payload(
+                                preview=runtime_cached_preview,
+                                compute_status="completed",
+                                job_id=tracked_job.get("job_id"),
+                            ),
+                            reason="job-completed-runtime-error",
+                        )
                     preview_payload = _payload_from_runtime_preview(
                         preview=runtime_cached_preview,
                         metadata=transient_metadata,

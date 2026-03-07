@@ -231,6 +231,22 @@ def _append_effect_diagnostic(
     )
 
 
+def _append_unbound_identifier_diagnostic(
+    diagnostics: list[StaticDiagnostic],
+    *,
+    identifier: str,
+    location: str | None,
+) -> None:
+    diagnostics.append(
+        StaticDiagnostic(
+            code="E_UNBOUND_IDENTIFIER",
+            message=f"Unbound identifier '{identifier}' in deferred expression.",
+            location=location,
+            symbol=identifier,
+        )
+    )
+
+
 def _scan_expression_for_effects(
     *,
     expression: Expression,
@@ -297,6 +313,70 @@ def _scan_expression_for_effects(
         )
 
 
+def _scan_expression_for_unbound_identifiers(
+    *,
+    expression: Expression,
+    bound_names: set[str],
+    registry: PrimitiveRegistry,
+    diagnostics: list[StaticDiagnostic],
+    location: str,
+) -> None:
+    if isinstance(expression, ECall):
+        identifier = str(expression.identifier)
+        if identifier not in bound_names and _resolve_spec(registry, identifier) is None:
+            _append_unbound_identifier_diagnostic(
+                diagnostics,
+                identifier=identifier,
+                location=location,
+            )
+        for arg in expression.arguments:
+            _scan_expression_for_unbound_identifiers(
+                expression=arg,
+                bound_names=bound_names,
+                registry=registry,
+                diagnostics=diagnostics,
+                location=location,
+            )
+        return
+
+    if isinstance(expression, EFor):
+        _scan_expression_for_unbound_identifiers(
+            expression=expression.iterable,
+            bound_names=bound_names,
+            registry=registry,
+            diagnostics=diagnostics,
+            location=location,
+        )
+        scoped = set(bound_names)
+        scoped.add(expression.variable)
+        _scan_expression_for_unbound_identifiers(
+            expression=expression.body,
+            bound_names=scoped,
+            registry=registry,
+            diagnostics=diagnostics,
+            location=location,
+        )
+        return
+
+    if isinstance(expression, ELet):
+        _scan_expression_for_unbound_identifiers(
+            expression=expression.value,
+            bound_names=bound_names,
+            registry=registry,
+            diagnostics=diagnostics,
+            location=location,
+        )
+        scoped = set(bound_names)
+        scoped.add(expression.variable)
+        _scan_expression_for_unbound_identifiers(
+            expression=expression.body,
+            bound_names=scoped,
+            registry=registry,
+            diagnostics=diagnostics,
+            location=location,
+        )
+
+
 def _scan_serialized_function_capture(
     *,
     capture_name: str,
@@ -336,6 +416,13 @@ def _scan_serialized_function_capture(
             )
         else:
             _scan_expression_for_effects(
+                expression=parsed_body,
+                bound_names=bound_names,
+                registry=registry,
+                diagnostics=diagnostics,
+                location=location,
+            )
+            _scan_expression_for_unbound_identifiers(
                 expression=parsed_body,
                 bound_names=bound_names,
                 registry=registry,
@@ -432,6 +519,13 @@ def validate_workplan_policy(
                 )
             else:
                 _scan_expression_for_effects(
+                    expression=parsed_body,
+                    bound_names=bound_names,
+                    registry=registry,
+                    diagnostics=diagnostics,
+                    location=node_id,
+                )
+                _scan_expression_for_unbound_identifiers(
                     expression=parsed_body,
                     bound_names=bound_names,
                     registry=registry,

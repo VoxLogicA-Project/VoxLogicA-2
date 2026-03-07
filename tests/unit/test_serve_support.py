@@ -289,6 +289,64 @@ def test_playground_manager_value_resolve_uses_inprocess_future(
 
 
 @pytest.mark.unit
+def test_playground_manager_runtime_inspection_returns_error_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import voxlogica.serve_support as serve_support
+
+    monkeypatch.setattr(serve_support, "PLAYGROUND_JOB_LOG_DIR", tmp_path)
+
+    def _fake_execute(request_payload: dict[str, object], log_path_str: str) -> dict[str, object]:
+        started = time.time()
+        return {
+            "ok": True,
+            "result": {"execution": {"success": True}},
+            "_runtime_goal_values": {"node-1": [10, 11, 12]},
+            "metrics": {"wall_time_s": 0.01, "cpu_time_s": 0.01},
+            "started_at": started,
+            "finished_at": started + 0.01,
+        }
+
+    monkeypatch.setattr(serve_support, "_execute_playground_request", _fake_execute)
+
+    manager = PlaygroundJobManager()
+    manager.ensure_value_job(
+        {
+            "program": "x = 1",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-1",
+            "_program_hash": "prog-1",
+        },
+        program_hash="prog-1",
+        node_id="node-1",
+        execution_strategy="dask",
+    )
+
+    job = manager.get_value_job(
+        program_hash="prog-1",
+        node_id="node-1",
+        execution_strategy="dask",
+    )
+    assert job is not None
+    created = manager._jobs[str(job["job_id"])]
+    inspector = created.runtime_inspectors["node-1"]
+    monkeypatch.setattr(inspector, "preview", lambda **kwargs: (_ for _ in ()).throw(KeyError("Unknown primitive: pflair")))
+
+    preview = manager.inspect_value_job_runtime(
+        program_hash="prog-1",
+        node_id="node-1",
+        execution_strategy="dask",
+        path="/0",
+    )
+    assert preview is not None
+    assert preview["runtime_error"] == "Unknown primitive: pflair"
+    assert preview["runtime_error_type"] == "KeyError"
+
+
+@pytest.mark.unit
 def test_playground_manager_value_resolve_reports_queued_before_thread_start(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
