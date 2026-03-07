@@ -10,7 +10,7 @@
   export let capabilities = {};
 
   const STORAGE_KEY = "voxlogica.start.program.v1";
-  const PRIMARY_VARIABLE_PREFERENCES = ["result", "output", "masks", "vi_sweep_masks"];
+  const PRIMARY_VARIABLE_PREFERENCES = ["vi_sweep_overlays", "result", "output", "masks", "vi_sweep_masks"];
   const COMPLETION_BUILTINS = [
     "map",
     "for",
@@ -54,10 +54,17 @@ sweep_case(pflair) =
   for vi_thr in vi_thresholds do
     let very_intense = smoothen(geq_sv(vi_thr, pflair), 2.0) in
     grow(hyper_intense, very_intense)
+sweep_case_overlays(flair) =
+  let pflair = preprocess_flair(to_intensity(flair)) in
+  let hyper_intense = smoothen(geq_sv(hi_thr, pflair), 5.0) in
+  for vi_thr in vi_thresholds do
+    let very_intense = smoothen(geq_sv(vi_thr, pflair), 2.0) in
+    overlay(flair, grow(hyper_intense, very_intense))
 flair_images = map(read_image, flair_paths)
 flair_intensities = map(to_intensity, flair_images)
 pflair_images = map(preprocess_flair, flair_intensities)
-vi_sweep_masks = map(sweep_case, pflair_images)`;
+vi_sweep_masks = map(sweep_case, pflair_images)
+vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
   let programText = DEFAULT_PROGRAM;
   let symbolTable = {};

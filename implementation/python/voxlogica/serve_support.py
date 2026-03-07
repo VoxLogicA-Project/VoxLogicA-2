@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import base64
+import copy
 import concurrent.futures
 import contextlib
 import multiprocessing as mp
@@ -28,10 +29,13 @@ import xml.etree.ElementTree as ET
 import uuid
 
 from voxlogica.pod_codec import decode_runtime_value
+from voxlogica.execution_strategy.results import SequenceValue
 from voxlogica.storage import ResultRecord
 from voxlogica.value_model import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
+    OverlayLayer,
+    OverlayValue,
     VOX_FORMAT_VERSION,
     UnsupportedVoxValueError,
     VoxMappingValue,
@@ -63,6 +67,187 @@ _PLAYGROUND_COMMENT = re.compile(
 )
 
 testing_jobs_logger = logging.getLogger("voxlogica.testing.jobs")
+
+
+def _is_dask_bag(value: Any) -> bool:
+    try:
+        import dask.bag as db  # type: ignore
+
+        return isinstance(value, db.Bag)
+    except Exception:
+        return False
+
+
+class MemoizedSequenceValue(SequenceValue):
+    """SequenceValue wrapper that memoizes items as they are observed."""
+
+    def __init__(
+        self,
+        iterator_factory,
+        *,
+        total_size: int | None = None,
+    ):
+        super().__init__(self._iter_cached, total_size=total_size)
+        self._source_factory = iterator_factory
+        self._source_iter = None
+        self._cache: list[Any] = []
+        self._exhausted = False
+        self._lock = threading.RLock()
+
+    @classmethod
+    def from_sequence(cls, sequence: SequenceValue) -> "MemoizedSequenceValue":
+        total_size = sequence.total_size
+        return cls(sequence.iter_values, total_size=total_size)
+
+    def _next_value_locked(self) -> Any:
+        if self._exhausted:
+            raise StopIteration
+        if self._source_iter is None:
+            self._source_iter = iter(self._source_factory())
+        try:
+            raw_value = next(self._source_iter)
+        except StopIteration:
+            self._exhausted = True
+            self._source_iter = None
+            if self._total_size is None:
+                self._total_size = len(self._cache)
+            raise
+        value = freeze_runtime_value(raw_value)
+        self._cache.append(value)
+        return value
+
+    def _value_at_locked(self, index: int) -> Any:
+        while len(self._cache) <= index and not self._exhausted:
+            try:
+                self._next_value_locked()
+            except StopIteration:
+                break
+        if index < len(self._cache):
+            return self._cache[index]
+        raise IndexError(index)
+
+    def _iter_cached(self):
+        index = 0
+        while True:
+            with self._lock:
+                if index < len(self._cache):
+                    value = self._cache[index]
+                elif self._exhausted:
+                    break
+                else:
+                    try:
+                        value = self._value_at_locked(index)
+                    except IndexError:
+                        break
+            yield value
+            index += 1
+
+
+def freeze_runtime_value(value: Any) -> Any:
+    """Wrap lazy runtime values so repeated inspection reuses prior work."""
+    if isinstance(value, MemoizedSequenceValue):
+        return value
+    if isinstance(value, SequenceValue):
+        return MemoizedSequenceValue.from_sequence(value)
+    if _is_dask_bag(value):
+        def _iter_bag():
+            for delayed_partition in value.to_delayed():
+                for item in delayed_partition.compute():
+                    yield item
+
+        return MemoizedSequenceValue(_iter_bag, total_size=None)
+    if isinstance(value, OverlayValue):
+        layers = [
+            OverlayLayer(
+                value=freeze_runtime_value(layer.value),
+                label=layer.label,
+                opacity=layer.opacity,
+                colormap=layer.colormap,
+                visible=layer.visible,
+            )
+            for layer in value.layers
+        ]
+        metadata = {str(key): freeze_runtime_value(raw) for key, raw in value.metadata.items()}
+        return OverlayValue(layers=tuple(layers), metadata=metadata)
+    if isinstance(value, dict):
+        return {key: freeze_runtime_value(raw) for key, raw in value.items()}
+    if isinstance(value, list):
+        return [freeze_runtime_value(raw) for raw in value]
+    if isinstance(value, tuple):
+        return tuple(freeze_runtime_value(raw) for raw in value)
+    return value
+
+
+def build_runtime_preview(
+    *,
+    node_id: str,
+    value: Any,
+    path: str = "",
+    page_offset: int = 0,
+    page_limit: int = 64,
+) -> dict[str, Any]:
+    """Build one JSON-safe preview payload for an in-memory runtime value/path."""
+    normalized = _normalize_result_path(path)
+    descriptor_payload = describe_runtime_value(node_id=node_id, value=value, path=normalized)
+    preview: dict[str, Any] = {
+        "path": normalized,
+        "descriptor": descriptor_payload.get("descriptor"),
+        "status": "materialized",
+    }
+    resolved = adapt_runtime_value(value).resolve(path=normalized)
+    preview["vox_type"] = str(resolved.vox_type)
+    if isinstance(resolved, (VoxSequenceValue, VoxMappingValue)):
+        paged = inspect_runtime_value_page(
+            node_id=node_id,
+            value=value,
+            path=normalized,
+            offset=page_offset,
+            limit=page_limit,
+        )
+        page_payload = paged.get("page")
+        if isinstance(page_payload, dict):
+            preview["page"] = page_payload
+    else:
+        with contextlib.suppress(Exception):
+            preview["value"] = resolved.to_json_native()
+    return preview
+
+
+@dataclass
+class RuntimeValueInspector:
+    """Path-aware memoized inspector for completed in-memory goal values."""
+
+    node_id: str
+    value: Any
+    default_page_limit: int = 64
+    _cache: dict[tuple[str, int, int], dict[str, Any]] = field(default_factory=dict)
+    _lock: threading.RLock = field(default_factory=threading.RLock)
+
+    def preview(
+        self,
+        *,
+        path: str = "",
+        page_offset: int = 0,
+        page_limit: int | None = None,
+    ) -> dict[str, Any]:
+        normalized = _normalize_result_path(path)
+        safe_offset = max(0, int(page_offset))
+        safe_limit = max(1, min(int(page_limit or self.default_page_limit), MAX_PAGE_SIZE))
+        key = (normalized, safe_offset, safe_limit)
+        with self._lock:
+            cached = self._cache.get(key)
+            if isinstance(cached, dict):
+                return copy.deepcopy(cached)
+        preview = build_runtime_preview(
+            node_id=self.node_id,
+            value=self.value,
+            path=normalized,
+            page_offset=safe_offset,
+            page_limit=safe_limit,
+        )
+        with self._lock:
+            self._cache[key] = copy.deepcopy(preview)
+        return preview
 
 
 def _iso_utc(ts: float | None) -> str | None:
@@ -1712,6 +1897,7 @@ def _execute_playground_request(request_payload: dict[str, Any], log_path_str: s
     tracemalloc.start()
     packet: dict[str, Any] = {"ok": False, "error": "Unknown worker failure"}
     try:
+        capture_runtime_goal_values = str(request_payload.get("_job_kind", "")).strip().lower() == "value-resolve"
         _append_log(
             {
                 "event": "playground.run.started",
@@ -1726,9 +1912,20 @@ def _execute_playground_request(request_payload: dict[str, Any], log_path_str: s
                 },
             }
         )
-        run_result = handle_run(**request_payload, _include_execution_events=True)
+        run_result = handle_run(
+            **request_payload,
+            _include_execution_events=True,
+            _capture_goal_runtime_values=capture_runtime_goal_values,
+        )
         if run_result.success:
+            runtime_goal_values: dict[str, Any] = {}
             result_payload = run_result.data or {}
+            if capture_runtime_goal_values and isinstance(result_payload, dict) and "payload" in result_payload:
+                payload_candidate = result_payload.get("payload")
+                result_payload = payload_candidate if isinstance(payload_candidate, dict) else {}
+                raw_goal_values = run_result.data.get("_runtime_goal_values") if isinstance(run_result.data, dict) else None
+                if isinstance(raw_goal_values, dict):
+                    runtime_goal_values = raw_goal_values
             execution_payload = result_payload.get("execution", {})
             if not isinstance(execution_payload, dict):
                 execution_payload = {}
@@ -1753,6 +1950,8 @@ def _execute_playground_request(request_payload: dict[str, Any], log_path_str: s
             execution_payload.pop("node_events", None)
             execution_summary.pop("node_events", None)
             packet = {"ok": True, "result": result_payload}
+            if runtime_goal_values:
+                packet["_runtime_goal_values"] = runtime_goal_values
             _append_log(
                 {
                     "event": "playground.run.completed",
@@ -1891,6 +2090,8 @@ class PlaygroundJob:
     future: Any = None
     log_path: Path | None = None
     priority_class: str = "normal"
+    runtime_goal_values: dict[str, Any] = field(default_factory=dict)
+    runtime_inspectors: dict[str, RuntimeValueInspector] = field(default_factory=dict)
 
     def as_public(
         self,
@@ -2052,8 +2253,22 @@ class PlaygroundJobManager:
             job.metrics = dict(packet.get("metrics", {}))
             if bool(packet.get("ok")):
                 job.status = "completed"
+                raw_runtime_goal_values = packet.pop("_runtime_goal_values", None)
                 result = packet.get("result")
                 job.result = result if isinstance(result, dict) else {"payload": result}
+                job.runtime_goal_values = {}
+                job.runtime_inspectors = {}
+                if isinstance(raw_runtime_goal_values, dict):
+                    for raw_node_id, raw_value in raw_runtime_goal_values.items():
+                        node_id = str(raw_node_id).strip()
+                        if not node_id:
+                            continue
+                        frozen_value = freeze_runtime_value(raw_value)
+                        job.runtime_goal_values[node_id] = frozen_value
+                        job.runtime_inspectors[node_id] = RuntimeValueInspector(
+                            node_id=node_id,
+                            value=frozen_value,
+                        )
                 job.error = None
             else:
                 job.status = "failed"
@@ -2061,6 +2276,8 @@ class PlaygroundJobManager:
                 result = packet.get("result")
                 if isinstance(result, dict):
                     job.result = result
+                job.runtime_goal_values = {}
+                job.runtime_inspectors = {}
 
         process = job.process
         recv_conn = job.recv_conn
@@ -2291,6 +2508,40 @@ class PlaygroundJobManager:
                 return None
             self._poll_locked(job)
             return job.as_public(include_result=True, include_log_tail=True, tail_lines=120)
+
+    def inspect_value_job_runtime(
+        self,
+        *,
+        program_hash: str,
+        node_id: str,
+        execution_strategy: str,
+        path: str = "",
+        page_offset: int = 0,
+        page_limit: int = 64,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            self._cleanup_locked()
+            job = self._find_latest_value_job_locked(
+                program_hash=program_hash,
+                node_id=node_id,
+                execution_strategy=execution_strategy,
+            )
+            if job is None:
+                return None
+            self._poll_locked(job)
+            if job.status != "completed":
+                return None
+            inspector = job.runtime_inspectors.get(str(node_id))
+            if inspector is None:
+                return None
+            try:
+                return inspector.preview(
+                    path=path,
+                    page_offset=page_offset,
+                    page_limit=page_limit,
+                )
+            except Exception:
+                return None
 
     def list_jobs(self) -> dict[str, Any]:
         with self._lock:

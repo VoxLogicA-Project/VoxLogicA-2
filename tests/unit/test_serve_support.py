@@ -7,13 +7,16 @@ import time
 
 import pytest
 
+from voxlogica.execution_strategy.results import SequenceValue
 from voxlogica.lazy.hash import hash_sequence_item
 from voxlogica.serve_support import (
     PlaygroundJob,
     PlaygroundJobManager,
+    RuntimeValueInspector,
     build_storage_stats_snapshot,
     build_test_dashboard_snapshot,
     describe_runtime_value,
+    freeze_runtime_value,
     get_lightweight_storage_stats_snapshot,
     inspect_store_result,
     inspect_store_result_page,
@@ -236,6 +239,7 @@ def test_playground_manager_value_resolve_uses_inprocess_future(
         return {
             "ok": True,
             "result": {"execution": {"success": True, "cache_summary": {"computed": 1}}},
+            "_runtime_goal_values": {"node-1": [10, 11, 12]},
             "metrics": {"wall_time_s": 0.01, "cpu_time_s": 0.01},
             "started_at": started,
             "finished_at": started + 0.01,
@@ -273,6 +277,15 @@ def test_playground_manager_value_resolve_uses_inprocess_future(
     assert final is not None
     assert final["status"] == "completed"
     assert calls and str(calls[0]["log_path"]).endswith(f"{created_job_id}.log")
+    preview = manager.inspect_value_job_runtime(
+        program_hash="prog-1",
+        node_id="node-1",
+        execution_strategy="dask",
+        path="/1",
+    )
+    assert preview is not None
+    assert preview["value"] == 11
+    assert preview["descriptor"]["vox_type"] == "integer"
 
 
 @pytest.mark.unit
@@ -355,6 +368,40 @@ def test_playground_manager_value_resolve_reports_queued_before_thread_start(
         time.sleep(0.01)
     else:
         pytest.fail("second value job did not complete after queue release")
+
+
+@pytest.mark.unit
+def test_runtime_value_inspector_memoizes_nested_sequence_paths() -> None:
+    outer_calls = {"count": 0}
+    inner_calls = {"count": 0}
+
+    def _inner_sequence(seed: int) -> SequenceValue:
+        def _inner_iter():
+            inner_calls["count"] += 1
+            for offset in range(3):
+                yield seed + offset
+
+        return SequenceValue(_inner_iter, total_size=3)
+
+    def _outer_iter():
+        outer_calls["count"] += 1
+        yield _inner_sequence(10)
+        yield _inner_sequence(20)
+
+    inspector = RuntimeValueInspector(
+        node_id="node-nested",
+        value=freeze_runtime_value(SequenceValue(_outer_iter, total_size=2)),
+    )
+
+    first = inspector.preview(path="/0/2")
+    second = inspector.preview(path="/0/1")
+    page = inspector.preview(path="/0", page_offset=0, page_limit=3)
+
+    assert first["value"] == 12
+    assert second["value"] == 11
+    assert page["page"]["items"][0]["path"] == "/0/0"
+    assert outer_calls["count"] == 1
+    assert inner_calls["count"] == 1
 
 
 @pytest.mark.unit

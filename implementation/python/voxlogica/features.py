@@ -23,7 +23,6 @@ from voxlogica.policy import (
 from voxlogica.reducer import reduce_program_with_bindings
 from voxlogica.storage import NoCacheStorageBackend, get_storage
 from voxlogica.value_model import adapt_runtime_value, normalize_path
-from voxlogica.value_model import VoxMappingValue, VoxSequenceValue
 
 
 logger = logging.getLogger("voxlogica.features")
@@ -199,67 +198,6 @@ def _materialize_sequence_focus_path(
     except Exception:
         return
 
-
-def _build_runtime_previews_for_goal(
-    *,
-    node_id: str,
-    runtime_value: Any,
-    focus_path: str,
-) -> dict[str, dict[str, Any]]:
-    """Build stable runtime previews for the root and one focused nested path.
-
-    Previews are JSON-safe payloads used by serve-mode value endpoints while
-    persistence is still in progress.
-    """
-    from voxlogica.serve_support import describe_runtime_value, inspect_runtime_value_page
-
-    candidates = [normalize_path("")]
-    normalized_focus = normalize_path(focus_path)
-    if normalized_focus not in {"", "/"}:
-        candidates.append(normalized_focus)
-
-    previews: dict[str, dict[str, Any]] = {}
-    for candidate_path in candidates:
-        key = normalize_path(candidate_path)
-        try:
-            descriptor_payload = describe_runtime_value(node_id=node_id, value=runtime_value, path=key)
-        except Exception as exc:  # noqa: BLE001
-            previews[key] = {
-                "path": key,
-                "error": str(exc),
-            }
-            continue
-
-        preview: dict[str, Any] = {
-            "path": key,
-            "descriptor": descriptor_payload.get("descriptor"),
-            "status": "materialized",
-        }
-        try:
-            resolved = adapt_runtime_value(runtime_value).resolve(path=key)
-            preview["vox_type"] = str(resolved.vox_type)
-            if isinstance(resolved, (VoxSequenceValue, VoxMappingValue)):
-                paged = inspect_runtime_value_page(
-                    node_id=node_id,
-                    value=runtime_value,
-                    path=key,
-                    offset=0,
-                    limit=64,
-                )
-                page_payload = paged.get("page")
-                if isinstance(page_payload, dict):
-                    preview["page"] = page_payload
-            else:
-                try:
-                    preview["value"] = resolved.to_json_native()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        previews[key] = preview
-
-    return previews
-
     try:
         resolved = adapt_runtime_value(root_value).resolve(path=normalized)
     except Exception:
@@ -278,6 +216,41 @@ def _build_runtime_previews_for_goal(
         )
     except Exception:
         return
+
+
+def _build_runtime_previews_for_goal(
+    *,
+    node_id: str,
+    runtime_value: Any,
+    focus_path: str,
+) -> dict[str, dict[str, Any]]:
+    """Build stable runtime previews for the root and one focused nested path.
+
+    Previews are JSON-safe payloads used by serve-mode value endpoints while
+    persistence is still in progress.
+    """
+    from voxlogica.serve_support import build_runtime_preview
+
+    candidates = [normalize_path("")]
+    normalized_focus = normalize_path(focus_path)
+    if normalized_focus not in {"", "/"}:
+        candidates.append(normalized_focus)
+
+    previews: dict[str, dict[str, Any]] = {}
+    for candidate_path in candidates:
+        key = normalize_path(candidate_path)
+        try:
+            previews[key] = build_runtime_preview(
+                node_id=node_id,
+                value=runtime_value,
+                path=key,
+            )
+        except Exception as exc:  # noqa: BLE001
+            previews[key] = {
+                "path": key,
+                "error": str(exc),
+            }
+    return previews
 
 
 def _failed_operation_details(workplan: Any, failed_operations: dict[str, str]) -> dict[str, dict[str, Any]]:
@@ -337,6 +310,7 @@ def handle_run(
     serve_mode: bool = False,
     _include_execution_events: bool = False,
     _include_goal_descriptors: bool = False,
+    _capture_goal_runtime_values: bool = False,
     _goals: list[str] | None = None,
     **kwargs,
 ) -> OperationResult[Dict[str, Any]]:
@@ -351,6 +325,7 @@ def handle_run(
         syntax = _load_syntax(program, filename)
         workplan, declaration_bindings = reduce_program_with_bindings(syntax)
         cli_mode = bool(filename)
+        captured_goal_runtime_values: dict[str, Any] = {}
         effective_goals = list(_goals or [])
         if execute and not effective_goals and cli_mode and not serve_mode:
             # Batch CLI runs should observe all declarations even without save/print goals.
@@ -585,6 +560,8 @@ def handle_run(
                                     from voxlogica.serve_support import describe_runtime_value
 
                                     runtime_value = prepared_plan.materialization_store.get(node_id)
+                                    if _capture_goal_runtime_values:
+                                        captured_goal_runtime_values[str(node_id)] = runtime_value
                                     goal_payload["runtime_descriptor"] = describe_runtime_value(
                                         node_id=node_id,
                                         value=runtime_value,
@@ -619,7 +596,15 @@ def handle_run(
         if saved_files:
             result["saved_files"] = saved_files
 
-        return OperationResult.ok(_json_safe(result))
+        payload = _json_safe(result)
+        if _capture_goal_runtime_values:
+            return OperationResult.ok(
+                {
+                    "payload": payload,
+                    "_runtime_goal_values": captured_goal_runtime_values,
+                }
+            )
+        return OperationResult.ok(payload)
 
     except StaticPolicyError as exc:
         message = exc.diagnostics[0].message if exc.diagnostics else "Static policy violation"

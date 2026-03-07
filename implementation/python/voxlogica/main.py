@@ -1654,6 +1654,39 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             return None, metadata_dict
         return preview, metadata_dict
 
+    def _payload_from_runtime_preview(
+        *,
+        preview: dict[str, Any],
+        metadata: dict[str, Any],
+        compute_status: str,
+        source: str,
+        job_id: Any,
+    ) -> dict[str, Any] | None:
+        preview_descriptor = preview.get("descriptor")
+        if not isinstance(preview_descriptor, dict):
+            return None
+        preview_payload: dict[str, Any] = {
+            "available": True,
+            "status": "materialized",
+            "materialization": "computed",
+            "compute_status": compute_status,
+            "store_status": "missing",
+            "job_id": job_id,
+            "request_enqueued": False,
+            "descriptor": preview_descriptor,
+        }
+        preview_value = preview.get("value")
+        if preview_value is not None:
+            preview_payload["value"] = preview_value
+        preview_page = preview.get("page")
+        if isinstance(preview_page, dict):
+            preview_payload["runtime_preview_page"] = preview_page
+        preview_payload["metadata"] = {
+            **(metadata if isinstance(metadata, dict) else {}),
+            "source": source,
+        }
+        return preview_payload
+
     def _inspect_sequence_reference_from_store(
         *,
         root_descriptor: dict[str, Any] | None,
@@ -1978,33 +2011,38 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                     },
                     reason="job-completed-store-unsupported",
                 )
+            transient_descriptor, transient_metadata = _runtime_descriptor_from_job(tracked_job)
+            inspect_job_runtime = getattr(playground_jobs, "inspect_value_job_runtime", None)
+            if callable(inspect_job_runtime):
+                runtime_cached_preview = inspect_job_runtime(
+                    program_hash=program_hash,
+                    node_id=node_id,
+                    execution_strategy=strategy,
+                    path=view_path,
+                    page_offset=0,
+                    page_limit=64,
+                )
+                if isinstance(runtime_cached_preview, dict):
+                    preview_payload = _payload_from_runtime_preview(
+                        preview=runtime_cached_preview,
+                        metadata=transient_metadata,
+                        compute_status="completed",
+                        source="runtime-cache",
+                        job_id=tracked_job.get("job_id"),
+                    )
+                    if preview_payload is not None:
+                        return _attach_and_log(preview_payload, reason="job-completed-runtime-cache")
             runtime_preview, runtime_preview_metadata = _runtime_preview_from_job(tracked_job)
             if isinstance(runtime_preview, dict):
-                preview_descriptor = runtime_preview.get("descriptor")
-                if isinstance(preview_descriptor, dict):
-                    preview_payload: dict[str, Any] = {
-                        "available": True,
-                        "status": "materialized",
-                        "materialization": "computed",
-                        "compute_status": "persisting",
-                        "store_status": "missing",
-                        "job_id": tracked_job.get("job_id"),
-                        "request_enqueued": False,
-                        "descriptor": preview_descriptor,
-                    }
-                    preview_value = runtime_preview.get("value")
-                    if preview_value is not None:
-                        preview_payload["value"] = preview_value
-                    preview_page = runtime_preview.get("page")
-                    if isinstance(preview_page, dict):
-                        preview_payload["runtime_preview_page"] = preview_page
-                    metadata_payload = runtime_preview_metadata if isinstance(runtime_preview_metadata, dict) else {}
-                    preview_payload["metadata"] = {
-                        **metadata_payload,
-                        "source": "runtime-preview",
-                    }
+                preview_payload = _payload_from_runtime_preview(
+                    preview=runtime_preview,
+                    metadata=runtime_preview_metadata,
+                    compute_status="persisting",
+                    source="runtime-preview",
+                    job_id=tracked_job.get("job_id"),
+                )
+                if preview_payload is not None:
                     return _attach_and_log(preview_payload, reason="job-completed-runtime-preview")
-            transient_descriptor, transient_metadata = _runtime_descriptor_from_job(tracked_job)
             if transient_descriptor is not None and view_path not in {"", "/"}:
                 root_descriptor = transient_descriptor.get("descriptor") if isinstance(transient_descriptor, dict) else None
                 persisted_state = transient_metadata.get("persisted") if isinstance(transient_metadata, dict) else None
@@ -2221,23 +2259,51 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
         )
     path = str(value_payload.get("path") or request.path or "")
     descriptor_payload = value_payload.get("descriptor") if isinstance(value_payload.get("descriptor"), dict) else None
+    runtime_preview_page = _slice_runtime_preview_page(
+        value_payload.get("runtime_preview_page") if isinstance(value_payload.get("runtime_preview_page"), dict) else None,
+        offset=request.offset,
+        limit=request.limit,
+    )
 
     if materialization in {"failed"} or compute_status in {"failed", "killed"}:
         return value_payload
 
-    if materialization in {"pending", "missing"} or compute_status in {"queued", "running", "persisting", "missing"}:
-        runtime_preview_page = _slice_runtime_preview_page(
-            value_payload.get("runtime_preview_page") if isinstance(value_payload.get("runtime_preview_page"), dict) else None,
-            offset=request.offset,
-            limit=request.limit,
+    if runtime_preview_page is not None:
+        return {
+            **value_payload,
+            "path": path,
+            "page": runtime_preview_page,
+            "available": bool(runtime_preview_page.get("items")),
+        }
+
+    inspect_job_runtime = getattr(playground_jobs, "inspect_value_job_runtime", None)
+    if callable(inspect_job_runtime) and str(value_payload.get("store_status", "")) == "missing":
+        runtime_cached_preview = inspect_job_runtime(
+            program_hash=_program_hash(request.program),
+            node_id=node_id,
+            execution_strategy="dask",
+            path=path,
+            page_offset=request.offset,
+            page_limit=request.limit,
         )
-        if runtime_preview_page is not None:
-            return {
+        runtime_cached_page = (
+            runtime_cached_preview.get("page")
+            if isinstance(runtime_cached_preview, dict)
+            else None
+        )
+        if isinstance(runtime_cached_page, dict):
+            updated_payload = {
                 **value_payload,
-                "path": path,
-                "page": runtime_preview_page,
-                "available": bool(runtime_preview_page.get("items")),
+                "path": str(runtime_cached_preview.get("path") or path),
+                "page": runtime_cached_page,
+                "available": bool(runtime_cached_page.get("items")),
             }
+            runtime_cached_descriptor = runtime_cached_preview.get("descriptor")
+            if isinstance(runtime_cached_descriptor, dict):
+                updated_payload["descriptor"] = runtime_cached_descriptor
+            return updated_payload
+
+    if materialization in {"pending", "missing"} or compute_status in {"queued", "running", "persisting", "missing"}:
         container_node_id: str | None = None
         if isinstance(descriptor_payload, dict) and str(descriptor_payload.get("vox_type", "")) == "sequence":
             resolved_node_raw = value_payload.get("resolved_store_node_id")
