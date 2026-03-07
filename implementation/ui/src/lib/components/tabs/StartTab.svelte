@@ -28,6 +28,7 @@
     "leq_sv",
     "geq_sv",
     "index",
+    "overlay",
   ];
 
   const DEFAULT_PROGRAM = `import "simpleitk"
@@ -129,6 +130,8 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let loadToken = 0;
 
   const TYPE_LABELS = {
+    scalar: "value",
+    unknown: "value",
     integer: "number",
     number: "number",
     boolean: "boolean",
@@ -137,8 +140,13 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     ndarray: "array",
     image2d: "image",
     volume3d: "volume",
+    overlay: "overlay",
     mapping: "object",
     sequence: "collection",
+    closure: "function",
+    effect: "effect",
+    dataset: "dataset",
+    tree: "tree",
     unavailable: "pending",
     error: "error",
   };
@@ -327,13 +335,16 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     materializedRecords = next;
   };
 
-  const syncSymbolTypeHints = (symbols) => {
+  const syncSymbolTypeHints = (symbols, staticHints = {}) => {
     const next = {};
     for (const name of Object.keys(symbols || {})) {
-      const hinted = String(symbolTypeHints?.[name] || "").trim();
-      if (hinted) {
+      const hinted = String(staticHints?.[name] || symbolTypeHints?.[name] || "").trim();
+      const materializedType = String(materializedRecords?.[name]?.descriptor?.vox_type || "").trim();
+      if (materializedType && (!hinted || hinted === "scalar" || hinted === "unknown")) {
+        next[name] = materializedType;
+      } else if (hinted) {
         next[name] = hinted;
-      } else if (materializedRecords?.[name]?.descriptor?.vox_type) {
+      } else if (materializedType) {
         next[name] = String(materializedRecords[name].descriptor.vox_type);
       }
     }
@@ -1352,6 +1363,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     if (voxType === "string") return String(summary.value || "");
     if (voxType === "bytes") return `${Number(summary.length || 0)} bytes`;
     if (voxType === "mapping" || voxType === "sequence") return `${Number(summary.length || 0)} values`;
+    if (voxType === "overlay") return `${Number(summary.layer_count || 0)} layers`;
     if (voxType === "ndarray") return Array.isArray(summary.shape) ? summary.shape.join(" x ") : "array";
     if (voxType === "image2d" || voxType === "volume3d") return Array.isArray(summary.size) ? summary.size.join(" x ") : "image";
     if (summary && typeof summary.reason === "string") return summary.reason;
@@ -2006,10 +2018,11 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       const available = payload?.available !== false;
       symbolTable = available ? payload.symbol_table || {} : {};
       symbolDiagnostics = payload?.diagnostics || [];
+      const staticTypeHints = available ? payload?.symbol_output_kinds || {} : {};
       syncSymbolStatuses(symbolTable);
       syncSymbolMaterializations(symbolTable);
       syncMaterializedRecords(symbolTable);
-      syncSymbolTypeHints(symbolTable);
+      syncSymbolTypeHints(symbolTable, staticTypeHints);
       primaryVariable = inferPrimaryVariable(programText, symbolTable);
       ensureSelectedVisualSymbols();
       captionVariable = primaryVariable || "-";

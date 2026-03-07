@@ -9,16 +9,20 @@ import json
 import math
 
 from voxlogica.value_model import (
+    OverlayLayer,
+    OverlayValue,
     VOX_FORMAT_VERSION,
     VoxDaskBagSequenceValue,
     VoxImageValue,
     VoxIteratorSequenceValue,
     VoxMappingValue,
     VoxNdArrayValue,
+    VoxOverlayValue,
     VoxPythonSequenceValue,
     VoxSequenceValue,
     UnsupportedVoxValueError,
     adapt_runtime_value,
+    normalize_overlay_layer,
 )
 
 
@@ -126,23 +130,52 @@ def _image_payload(image_value: VoxImageValue) -> tuple[str, dict[str, Any], byt
     }, payload_bin
 
 
+def _encode_embedded_record(value: Any, *, page_size: int) -> dict[str, Any]:
+    encoded = encode_for_storage(value, page_size=page_size)
+    if encoded.pages:
+        raise UnsupportedVoxValueError(
+            value,
+            "Nested pageable values are not supported in embedded voxpod payloads.",
+        )
+    embedded: dict[str, Any] = {
+        "encoding": "embedded-voxpod-v1",
+        "format_version": encoded.format_version,
+        "vox_type": encoded.vox_type,
+        "descriptor": encoded.descriptor,
+        "payload_json": encoded.payload_json,
+    }
+    if encoded.payload_bin is not None:
+        embedded["payload_bin_b64"] = base64.b64encode(encoded.payload_bin).decode("ascii")
+    return embedded
+
+
+def _decode_embedded_record(payload: dict[str, Any], *, context: str) -> tuple[Any, dict[str, Any] | None]:
+    if str(payload.get("encoding", "")) != "embedded-voxpod-v1":
+        raise UnsupportedVoxValueError(payload, f"{context} uses an unknown embedded encoding.")
+    vox_type = str(payload.get("vox_type", "")).strip()
+    payload_json = payload.get("payload_json")
+    if not vox_type or not isinstance(payload_json, dict):
+        raise UnsupportedVoxValueError(payload, f"{context} is missing embedded voxpod payload fields.")
+    payload_bin: bytes | None = None
+    payload_bin_b64 = payload.get("payload_bin_b64")
+    if isinstance(payload_bin_b64, str) and payload_bin_b64:
+        try:
+            payload_bin = base64.b64decode(payload_bin_b64)
+        except Exception as exc:  # noqa: BLE001
+            raise UnsupportedVoxValueError(payload, f"{context} contains invalid embedded binary data.") from exc
+    descriptor = payload.get("descriptor")
+    return decode_runtime_value(vox_type, payload_json, payload_bin), descriptor if isinstance(descriptor, dict) else None
+
+
 def _encode_sequence_pages(sequence: VoxSequenceValue, *, page_size: int) -> tuple[dict[str, Any], list[EncodedPage]]:
     def _encode_embedded_item(raw_value: Any, descriptor: dict[str, Any]) -> dict[str, Any]:
-        encoded = encode_for_storage(raw_value, page_size=page_size)
-        if encoded.pages:
+        try:
+            embedded = _encode_embedded_record(raw_value, page_size=page_size)
+        except UnsupportedVoxValueError as exc:
             raise UnsupportedVoxValueError(
                 descriptor,
                 "Nested pageable sequence values are not supported in sequence page items.",
-            )
-        embedded: dict[str, Any] = {
-            "encoding": "embedded-voxpod-v1",
-            "format_version": encoded.format_version,
-            "vox_type": encoded.vox_type,
-            "descriptor": encoded.descriptor,
-            "payload_json": encoded.payload_json,
-        }
-        if encoded.payload_bin is not None:
-            embedded["payload_bin_b64"] = base64.b64encode(encoded.payload_bin).decode("ascii")
+            ) from exc
         return {"__vox_page_item__": embedded}
 
     pages: list[EncodedPage] = []
@@ -210,6 +243,31 @@ def _mapping_to_json(mapping: VoxMappingValue) -> dict[str, Any]:
     return out
 
 
+def _overlay_payload(overlay: VoxOverlayValue, *, page_size: int) -> dict[str, Any]:
+    layers: list[dict[str, Any]] = []
+    for index, raw_layer in enumerate(overlay.raw.layers):
+        layer = normalize_overlay_layer(raw_layer, index=index)
+        embedded = _encode_embedded_record(layer.value, page_size=page_size)
+        layer_payload: dict[str, Any] = {
+            "label": str(layer.label or f"Layer {index + 1}"),
+            "visible": bool(layer.visible),
+            "value": embedded,
+        }
+        opacity = layer.opacity
+        if opacity is not None:
+            layer_payload["opacity"] = float(opacity)
+        if layer.colormap:
+            layer_payload["colormap"] = str(layer.colormap)
+        layers.append(layer_payload)
+
+    metadata = _json_native_or_raise(dict(overlay.raw.metadata), context="Overlay metadata")
+    return {
+        "encoding": "overlay-v1",
+        "layers": layers,
+        "metadata": metadata,
+    }
+
+
 def can_serialize_value(value: Any) -> tuple[bool, str | None]:
     """Fast capability check for write-through persistence."""
     try:
@@ -269,6 +327,14 @@ def encode_for_storage(value: Any, *, page_size: int = 128) -> EncodedRecord:
             payload_bin=payload_bin,
         )
 
+    if isinstance(adapted, VoxOverlayValue):
+        return EncodedRecord(
+            format_version=VOX_FORMAT_VERSION,
+            vox_type="overlay",
+            descriptor=descriptor,
+            payload_json=_overlay_payload(adapted, page_size=page_size),
+        )
+
     if isinstance(adapted, VoxMappingValue):
         payload_value = _mapping_to_json(adapted)
         return EncodedRecord(
@@ -311,6 +377,36 @@ def decode_runtime_value(vox_type: str, payload_json: dict[str, Any], payload_bi
         if isinstance(value, dict):
             return value
         raise ValueError("Invalid mapping payload.")
+    if vox_type == "overlay":
+        if encoding != "overlay-v1":
+            raise ValueError(f"Unsupported overlay encoding: {encoding}")
+        raw_layers = payload_json.get("layers")
+        raw_metadata = payload_json.get("metadata")
+        if not isinstance(raw_layers, list):
+            raise ValueError("Invalid overlay payload.")
+        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+        layers: list[OverlayLayer] = []
+        for index, raw_layer in enumerate(raw_layers):
+            if not isinstance(raw_layer, dict):
+                raise ValueError(f"Invalid overlay layer payload at index {index}.")
+            embedded_value = raw_layer.get("value")
+            if not isinstance(embedded_value, dict):
+                raise ValueError(f"Overlay layer {index} is missing embedded value payload.")
+            value, _descriptor = _decode_embedded_record(embedded_value, context=f"Overlay layer {index}")
+            opacity = raw_layer.get("opacity")
+            layers.append(
+                normalize_overlay_layer(
+                    OverlayLayer(
+                    value=value,
+                    label=str(raw_layer.get("label") or ""),
+                    opacity=float(opacity) if opacity is not None else None,
+                    colormap=str(raw_layer["colormap"]) if raw_layer.get("colormap") else None,
+                    visible=bool(raw_layer.get("visible", True)),
+                    ),
+                    index=index,
+                )
+            )
+        return OverlayValue(layers=tuple(layers), metadata={str(key): value for key, value in metadata.items()})
     if vox_type == "sequence":
         return payload_json
     if vox_type == "ndarray":

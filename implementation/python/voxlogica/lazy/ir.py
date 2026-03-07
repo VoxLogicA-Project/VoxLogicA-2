@@ -13,6 +13,7 @@ OutputKind = Literal[
     "tree",
     "dataset",
     "effect",
+    "overlay",
     "closure",
     "unknown",
 ]

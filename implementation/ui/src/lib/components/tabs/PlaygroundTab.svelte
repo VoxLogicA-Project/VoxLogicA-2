@@ -150,6 +150,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     "leq_sv",
     "geq_sv",
     "index",
+    "overlay",
   ];
 
   const formatDiagnostics = (diagnostics) => {

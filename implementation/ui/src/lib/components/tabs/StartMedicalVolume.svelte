@@ -2,6 +2,7 @@
   import { onDestroy } from "svelte";
 
   export let niftiUrl = "";
+  export let layers = [];
   export let label = "value";
 
   let canvasEl = null;
@@ -38,6 +39,41 @@
       variants.push(`${base}.gz`);
     }
     return variants;
+  };
+
+  const normalizeLayerSource = (layer, index) => {
+    const source = layer && typeof layer === "object" ? layer : { nifti_url: layer };
+    const nifti = String(source?.nifti_url || source?.url || "").trim();
+    if (!nifti) return null;
+    const opacityRaw = source?.opacity;
+    const opacity =
+      opacityRaw === null || opacityRaw === undefined || opacityRaw === ""
+        ? index === 0
+          ? 1
+          : 0.42
+        : Number(opacityRaw);
+    return {
+      url: nifti,
+      label: String(source?.label || source?.name || `Layer ${index + 1}`),
+      opacity: Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : index === 0 ? 1 : 0.42,
+      colormap: String(source?.colormap || "").trim(),
+      visible: source?.visible !== false,
+    };
+  };
+
+  const buildLoadAttempts = (sources) => {
+    const variants = sources.map((source) => candidateUrlsFor(source.url));
+    const maxVariants = variants.reduce((max, list) => Math.max(max, list.length), 1);
+    const attempts = [];
+    for (let variantIndex = 0; variantIndex < maxVariants; variantIndex += 1) {
+      attempts.push(
+        sources.map((source, sourceIndex) => ({
+          ...source,
+          url: variants[sourceIndex][Math.min(variantIndex, variants[sourceIndex].length - 1)],
+        })),
+      );
+    }
+    return attempts;
   };
 
   const destroyNiivue = () => {
@@ -80,8 +116,60 @@
     return false;
   };
 
-  const mountVolume = async (url) => {
-    if (!canvasEl || !url) return;
+  const setVolumeOpacity = (nv, index, value) => {
+    if (typeof nv?.setOpacity !== "function") return;
+    try {
+      nv.setOpacity(index, value);
+      return;
+    } catch {
+      // Try alternate signature below.
+    }
+    try {
+      nv.setOpacity(value, index);
+    } catch {
+      // Older APIs differ.
+    }
+  };
+
+  const setVolumeColormap = (nv, index, colormap) => {
+    if (!colormap || typeof nv?.setColormap !== "function") return;
+    try {
+      nv.setColormap(colormap, index);
+      return;
+    } catch {
+      // Try alternate signature below.
+    }
+    try {
+      nv.setColormap(index, colormap);
+    } catch {
+      // Older APIs differ.
+    }
+  };
+
+  const applyVolumeStyles = (nv, ns, sources) => {
+    const fallbackMaps = ["gray", "red", "green", "blue", "winter", "warm", "plasma"];
+    sources.forEach((source, index) => {
+      const opacity = source.visible === false ? 0 : source.opacity;
+      setVolumeOpacity(nv, index, opacity);
+      const desiredMap = source.colormap || fallbackMaps[Math.min(index, fallbackMaps.length - 1)];
+      setVolumeColormap(nv, index, index === 0 ? "gray" : desiredMap);
+    });
+    if (ns.SLICE_TYPE && typeof nv.setSliceType === "function") {
+      nv.setSliceType(ns.SLICE_TYPE.MULTIPLANAR);
+    }
+    if (nv.scene && Array.isArray(nv.scene.crosshairPos)) {
+      nv.scene.crosshairPos = [0.5, 0.5, 0.5];
+    }
+    if (typeof nv.updateGLVolume === "function") {
+      nv.updateGLVolume();
+    }
+    if (typeof nv.drawScene === "function") {
+      nv.drawScene();
+    }
+  };
+
+  const mountVolume = async (sources) => {
+    if (!canvasEl || !Array.isArray(sources) || !sources.length) return;
     const token = mountSeq + 1;
     mountSeq = token;
     loading = true;
@@ -144,20 +232,21 @@
 
       let loaded = false;
       let loadError = null;
-      for (const candidateUrl of candidateUrlsFor(url)) {
+      for (const candidateSources of buildLoadAttempts(sources)) {
         try {
           await withTimeout(
             Promise.resolve(
               nv.loadVolumes([
-                {
-                  url: candidateUrl,
-                  name: candidateUrl.includes(".gz") ? "value.nii.gz" : "value.nii",
-                },
+                ...candidateSources.map((source, index) => ({
+                  url: source.url,
+                  name: source.url.includes(".gz") ? `${source.label || `${label}-${index + 1}`}.nii.gz` : `${source.label || `${label}-${index + 1}`}.nii`,
+                })),
               ]),
             ),
             18000,
             "Niivue load",
           );
+          applyVolumeStyles(nv, ns, candidateSources);
           loaded = true;
           break;
         } catch (error) {
@@ -172,42 +261,13 @@
         throw new Error("Empty volume data.");
       }
 
-      const volume = nv.volumes[0];
-      if (volume && Number.isFinite(volume.global_min) && Number.isFinite(volume.global_max)) {
-        if (!Number.isFinite(volume.cal_min) || !Number.isFinite(volume.cal_max) || volume.cal_max <= volume.cal_min) {
-          volume.cal_min = Number(volume.global_min);
-          volume.cal_max = Math.max(Number(volume.global_max), Number(volume.global_min) + 1.0);
-        }
-      }
-      if (typeof nv.setOpacity === "function") {
-        try {
-          nv.setOpacity(0, 1.0);
-        } catch {
-          // Older APIs differ.
-        }
-      }
-      if (typeof nv.setColormap === "function") {
-        try {
-          nv.setColormap("gray", 0);
-        } catch {
-          try {
-            nv.setColormap(0, "gray");
-          } catch {
-            // Older APIs differ.
+      for (const volume of nv.volumes) {
+        if (volume && Number.isFinite(volume.global_min) && Number.isFinite(volume.global_max)) {
+          if (!Number.isFinite(volume.cal_min) || !Number.isFinite(volume.cal_max) || volume.cal_max <= volume.cal_min) {
+            volume.cal_min = Number(volume.global_min);
+            volume.cal_max = Math.max(Number(volume.global_max), Number(volume.global_min) + 1.0);
           }
         }
-      }
-      if (ns.SLICE_TYPE && typeof nv.setSliceType === "function") {
-        nv.setSliceType(ns.SLICE_TYPE.MULTIPLANAR);
-      }
-      if (nv.scene && Array.isArray(nv.scene.crosshairPos)) {
-        nv.scene.crosshairPos = [0.5, 0.5, 0.5];
-      }
-      if (typeof nv.updateGLVolume === "function") {
-        nv.updateGLVolume();
-      }
-      if (typeof nv.drawScene === "function") {
-        nv.drawScene();
       }
       if (token !== mountSeq) return;
       loading = false;
@@ -221,10 +281,20 @@
   };
 
   $: normalizedUrl = String(niftiUrl || "").trim();
-  $: if (canvasEl && normalizedUrl) {
-    void mountVolume(normalizedUrl);
+  $: normalizedLayers = (
+    Array.isArray(layers)
+      ? layers.map((layer, index) => normalizeLayerSource(layer, index)).filter(Boolean)
+      : []
+  );
+  $: activeSources = normalizedLayers.length
+    ? normalizedLayers
+    : normalizedUrl
+      ? [{ url: normalizedUrl, label, opacity: 1, colormap: "gray", visible: true }]
+      : [];
+  $: if (canvasEl && activeSources.length) {
+    void mountVolume(activeSources);
   }
-  $: if (canvasEl && !normalizedUrl) {
+  $: if (canvasEl && !activeSources.length) {
     mountSeq += 1;
     destroyNiivue();
     loading = false;

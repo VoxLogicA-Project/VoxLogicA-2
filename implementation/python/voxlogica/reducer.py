@@ -495,6 +495,8 @@ def reduce_expression(
                     "load",
                     "default.load",
                 }
+                else "overlay"
+                if expr.identifier in {"overlay", "default.overlay"}
                 else "scalar"
             )
             return _plan_primitive_call(

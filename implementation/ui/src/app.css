@@ -2083,6 +2083,20 @@ body {
   margin: 0;
 }
 
+.viewer-overlay-figure {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background:
+    radial-gradient(circle at 14% 18%, rgba(63, 116, 255, 0.1), transparent 38%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(238, 244, 251, 0.92));
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.8),
+    0 18px 42px rgba(16, 28, 45, 0.12);
+  aspect-ratio: 1 / 1;
+}
+
 .viewer-image {
   display: block;
   width: 100%;
@@ -2091,6 +2105,24 @@ body {
   border-radius: var(--radius-sm);
   border: 1px solid var(--line);
   background: #03090f;
+}
+
+.viewer-overlay-image {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  max-height: none;
+  opacity: var(--layer-opacity, 1);
+  border: none;
+  background: transparent;
+}
+
+.viewer-overlay-image.is-base {
+  mix-blend-mode: normal;
+}
+
+.viewer-overlay-image.is-overlay {
+  mix-blend-mode: screen;
 }
 
 .viewer-niivue-wrap {

@@ -309,6 +309,54 @@
         };
         mountWhenConnected();
       }
+      if (render.kind === "image-overlay" && Array.isArray(render.layers) && render.layers.length) {
+        const figure = create("figure", "viewer-figure viewer-overlay-figure");
+        render.layers.forEach((layer, index) => {
+          if (!layer || !layer.png_url || layer.visible === false) return;
+          const img = create("img", `viewer-image viewer-overlay-image ${index === 0 ? "is-base" : "is-overlay"}`.trim());
+          img.src = this._withCacheBuster(layer.png_url);
+          img.alt = String(layer.label || `Layer ${index + 1}`);
+          const opacity = Number.isFinite(Number(layer.opacity)) ? Number(layer.opacity) : index === 0 ? 1 : 0.4;
+          img.style.setProperty("--layer-opacity", `${opacity}`);
+          figure.append(img);
+        });
+        card.append(figure);
+      }
+      if (render.kind === "medical-overlay" && Array.isArray(render.layers) && render.layers.length) {
+        const wrap = create("div", "viewer-niivue-wrap");
+        const toolbar = create("div", "viewer-toolbar");
+        const openAtPath = create("button", "btn btn-ghost btn-small", "Inspect This Value");
+        openAtPath.addEventListener("click", () => this.onNavigate(path));
+        toolbar.append(openAtPath);
+        const status = create("div", "viewer-load-status muted", "Initializing medical overlay...");
+        const canvas = create("canvas", "viewer-niivue");
+        wrap.append(toolbar, status, canvas);
+        card.append(wrap);
+        const mountWhenConnected = (attempt = 0) => {
+          if (canvas.isConnected) {
+            this._mountNiivue(
+              canvas,
+              render.layers
+                .filter((layer) => layer && layer.nifti_url)
+                .map((layer, index) => ({
+                  url: this._withCacheBuster(layer.nifti_url),
+                  label: String(layer.label || `Layer ${index + 1}`),
+                  opacity: Number.isFinite(Number(layer.opacity)) ? Number(layer.opacity) : index === 0 ? 1 : 0.42,
+                  colormap: String(layer.colormap || ""),
+                  visible: layer.visible !== false,
+                })),
+              status,
+            );
+            return;
+          }
+          if (attempt >= 40) {
+            status.textContent = "Viewer mount failed: canvas not connected.";
+            return;
+          }
+          window.requestAnimationFrame(() => mountWhenConnected(attempt + 1));
+        };
+        mountWhenConnected();
+      }
     }
 
     _descriptorPreviewText(descriptor) {
@@ -320,6 +368,7 @@
       if (voxType === "ndarray") return `ndarray ${Array.isArray(summary.shape) ? summary.shape.join("x") : ""}`.trim();
       if (voxType === "mapping") return `mapping(${fmt(summary.length)})`;
       if (voxType === "sequence") return `sequence(${fmt(summary.length)})`;
+      if (voxType === "overlay") return `overlay(${fmt(summary.layer_count)})`;
       if (voxType === "image2d" || voxType === "volume3d") {
         return `${voxType} ${Array.isArray(summary.size) ? summary.size.join("x") : ""}`.trim();
       }
@@ -451,7 +500,7 @@
       pager.reload();
     }
 
-    async _mountNiivue(canvas, url, statusEl = null) {
+    async _mountNiivue(canvas, urlOrSources, statusEl = null) {
       const setStatus = (message) => {
         if (!statusEl) return;
         statusEl.textContent = message || "";
@@ -479,15 +528,51 @@
         new Promise((resolve) => {
           window.setTimeout(resolve, ms);
         });
-      const candidateUrls = [url];
-      if (typeof url === "string" && url.includes("/render/nii?")) {
-        candidateUrls.push(url.replace("/render/nii?", "/render/nii.gz?"));
-      } else if (typeof url === "string" && url.endsWith("/render/nii")) {
-        candidateUrls.push(`${url}.gz`);
+      const normalizeSource = (source, index) => {
+        if (typeof source === "string") {
+          return {
+            url: source,
+            label: index === 0 ? "stored-volume" : `layer-${index + 1}`,
+            opacity: index === 0 ? 1 : 0.42,
+            colormap: index === 0 ? "gray" : "",
+            visible: true,
+          };
+        }
+        const url = typeof source?.url === "string" ? source.url : "";
+        return {
+          url,
+          label: String(source?.label || `layer-${index + 1}`),
+          opacity: Number.isFinite(Number(source?.opacity)) ? Number(source.opacity) : index === 0 ? 1 : 0.42,
+          colormap: String(source?.colormap || ""),
+          visible: source?.visible !== false,
+        };
+      };
+      const candidateUrlsFor = (url) => {
+        const variants = [url];
+        if (typeof url === "string" && url.includes("/render/nii?")) {
+          variants.push(url.replace("/render/nii?", "/render/nii.gz?"));
+        } else if (typeof url === "string" && url.endsWith("/render/nii")) {
+          variants.push(`${url}.gz`);
+        }
+        return variants;
+      };
+      const normalizedSources = (Array.isArray(urlOrSources) ? urlOrSources : [urlOrSources])
+        .map((source, index) => normalizeSource(source, index))
+        .filter((source) => source && source.url);
+      const sourceVariants = normalizedSources.map((source) => candidateUrlsFor(source.url));
+      const candidateAttempts = [];
+      const maxVariants = sourceVariants.reduce((max, variants) => Math.max(max, variants.length), 1);
+      for (let variantIndex = 0; variantIndex < maxVariants; variantIndex += 1) {
+        candidateAttempts.push(
+          normalizedSources.map((source, sourceIndex) => ({
+            ...source,
+            url: sourceVariants[sourceIndex][Math.min(variantIndex, sourceVariants[sourceIndex].length - 1)],
+          })),
+        );
       }
       try {
         setStatus("Starting viewer...");
-        debugLog("[vox-viewer] niivue mount start", { url });
+        debugLog("[vox-viewer] niivue mount start", { sourceCount: normalizedSources.length });
         debugLog("[vox-viewer] step 1: destroy previous instance");
         this.destroyNiivue();
         debugLog("[vox-viewer] step 2: create mount token");
@@ -577,18 +662,19 @@
         debugLog("[vox-viewer] step 8: load volumes");
         let loaded = false;
         let lastLoadError = null;
-        for (const candidateUrl of candidateUrls) {
+        for (const candidateSources of candidateAttempts) {
           try {
-            setStatus(`Loading volume (${candidateUrl.includes(".gz") ? "gz" : "nii"})...`);
-            debugLog("[vox-viewer] niivue load attempt", { candidateUrl });
+            setStatus(`Loading ${candidateSources.length > 1 ? "overlay" : "volume"}...`);
+            debugLog("[vox-viewer] niivue load attempt", {
+              sources: candidateSources.map((source) => source.url),
+            });
             await withTimeout(
               Promise.resolve(
                 nv.loadVolumes([
-                  {
-                    url: candidateUrl,
-                    // Work around Niivue 0.64 edge-case with bare "nii.gz" URL basenames.
-                    name: candidateUrl.includes(".gz") ? "stored-volume.nii.gz" : "stored-volume.nii",
-                  },
+                  ...candidateSources.map((source, index) => ({
+                    url: source.url,
+                    name: source.url.includes(".gz") ? `${source.label || `stored-volume-${index + 1}`}.nii.gz` : `${source.label || `stored-volume-${index + 1}`}.nii`,
+                  })),
                 ]),
               ),
               18000,
@@ -599,7 +685,7 @@
           } catch (loadErr) {
             lastLoadError = loadErr;
             debugLog("[vox-viewer] niivue load attempt failed", {
-              candidateUrl,
+              sources: candidateSources.map((source) => source.url),
               error: loadErr && loadErr.message ? loadErr.message : String(loadErr),
             });
           }
@@ -616,7 +702,7 @@
         }
         const volume = nv.volumes[0];
         debugLog("[vox-viewer] niivue volume loaded", {
-          url,
+          sources: normalizedSources.map((source) => source.url),
           dims: volume && volume.dims ? volume.dims : null,
           calMin: volume ? volume.cal_min : null,
           calMax: volume ? volume.cal_max : null,
@@ -624,33 +710,42 @@
           globalMax: volume ? volume.global_max : null,
         });
         setStatus("Rendering volume...");
-        if (volume && Number.isFinite(volume.global_min) && Number.isFinite(volume.global_max)) {
-          if (!Number.isFinite(volume.cal_min) || !Number.isFinite(volume.cal_max) || volume.cal_max <= volume.cal_min) {
-            volume.cal_min = Number(volume.global_min);
-            volume.cal_max = Number(volume.global_max);
-          }
-          if (volume.cal_max <= volume.cal_min) {
-            volume.cal_max = volume.cal_min + 1.0;
-          }
-        }
-        if (volume && typeof nv.setOpacity === "function") {
-          try {
-            nv.setOpacity(0, 1.0);
-          } catch (_err) {
-            // Older Niivue signatures vary; continue with defaults.
-          }
-        }
-        if (volume && typeof nv.setColormap === "function") {
-          try {
-            nv.setColormap("gray", 0);
-          } catch (_err) {
-            try {
-              nv.setColormap(0, "gray");
-            } catch (_err2) {
-              // Colormap API varies between releases; continue with defaults.
+        nv.volumes.forEach((entry) => {
+          if (entry && Number.isFinite(entry.global_min) && Number.isFinite(entry.global_max)) {
+            if (!Number.isFinite(entry.cal_min) || !Number.isFinite(entry.cal_max) || entry.cal_max <= entry.cal_min) {
+              entry.cal_min = Number(entry.global_min);
+              entry.cal_max = Number(entry.global_max);
+            }
+            if (entry.cal_max <= entry.cal_min) {
+              entry.cal_max = entry.cal_min + 1.0;
             }
           }
-        }
+        });
+        normalizedSources.forEach((source, index) => {
+          if (typeof nv.setOpacity === "function") {
+            try {
+              nv.setOpacity(index, source.visible === false ? 0 : source.opacity);
+            } catch (_err) {
+              try {
+                nv.setOpacity(source.visible === false ? 0 : source.opacity, index);
+              } catch (_err2) {
+                // Older Niivue signatures vary; continue with defaults.
+              }
+            }
+          }
+          const colormap = source.colormap || (index === 0 ? "gray" : "");
+          if (colormap && typeof nv.setColormap === "function") {
+            try {
+              nv.setColormap(colormap, index);
+            } catch (_err) {
+              try {
+                nv.setColormap(index, colormap);
+              } catch (_err2) {
+                // Colormap API varies between releases; continue with defaults.
+              }
+            }
+          }
+        });
         if (ns.SLICE_TYPE && typeof nv.setSliceType === "function") {
           nv.setSliceType(ns.SLICE_TYPE.MULTIPLANAR);
         }

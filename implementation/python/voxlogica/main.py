@@ -63,7 +63,7 @@ from voxlogica.serve_support import (
     render_store_result_png,
 )
 from voxlogica.storage import get_storage
-from voxlogica.value_model import UnsupportedVoxValueError, VoxValueError, normalize_path
+from voxlogica.value_model import UnsupportedVoxValueError, VoxValueError, adapt_runtime_value, normalize_path
 from voxlogica.version import get_version
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder
 
@@ -356,6 +356,19 @@ def _in_progress_descriptor(*, output_kind: str, path: str, status: str) -> dict
             "navigation": {
                 "path": normalized_path,
                 "pageable": True,
+                "can_descend": True,
+                "default_page_size": 64,
+                "max_page_size": 512,
+            },
+        }
+    if output_kind == "overlay":
+        return {
+            "vox_type": "overlay",
+            "format_version": "voxpod/1",
+            "summary": {"layer_count": None},
+            "navigation": {
+                "path": normalized_path,
+                "pageable": False,
                 "can_descend": True,
                 "default_page_size": 64,
                 "max_page_size": 512,
@@ -1398,12 +1411,23 @@ async def playground_symbols_endpoint(request: PlaygroundSymbolsRequest) -> dict
         legacy=False,
         serve_mode=True,
     )
+    symbol_output_kinds: dict[str, str] = {}
+    for name, node_id in symbol_table.items():
+        node = workplan.nodes.get(node_id)
+        hinted_kind = str(getattr(node, "output_kind", "unknown"))
+        if str(getattr(node, "kind", "")) == "constant":
+            try:
+                hinted_kind = str(adapt_runtime_value(getattr(node, "attrs", {}).get("value")).vox_type)
+            except Exception:
+                pass
+        symbol_output_kinds[str(name)] = hinted_kind
     return {
         "available": True,
         "program_hash": _program_hash(request.program),
         "operations": len(workplan.operations),
         "goals": len(workplan.goals),
         "symbol_table": symbol_table,
+        "symbol_output_kinds": symbol_output_kinds,
         "print_targets": print_targets,
         "diagnostics": diagnostics_payload(diagnostics),
     }
@@ -2119,8 +2143,8 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
         return _attach_and_log(
             {
                 "available": False,
-                "materialization": "pending" if descriptor_vox_type in {"sequence", "mapping"} else "missing",
-                "compute_status": "running" if descriptor_vox_type in {"sequence", "mapping"} else "missing",
+                "materialization": "pending" if descriptor_vox_type in {"sequence", "mapping", "overlay"} else "missing",
+                "compute_status": "running" if descriptor_vox_type in {"sequence", "mapping", "overlay"} else "missing",
                 "store_status": "missing",
                 "request_enqueued": False,
                 "descriptor": descriptor,

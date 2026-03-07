@@ -26,6 +26,7 @@ from voxlogica.serve_support import (
     render_store_result_png,
 )
 from voxlogica.storage import SQLiteResultsDatabase
+from voxlogica.value_model import OverlayValue
 
 
 @pytest.mark.unit
@@ -118,6 +119,27 @@ def test_build_storage_stats_snapshot_summarizes_sqlite_backend(tmp_path: Path):
     assert snapshot["summary"]["total_records"] == 2
     assert snapshot["summary"]["materialized_records"] == 1
     assert snapshot["summary"]["failed_records"] == 1
+
+
+@pytest.mark.unit
+def test_describe_runtime_value_builds_overlay_render_urls() -> None:
+    np = pytest.importorskip("numpy")
+    overlay = OverlayValue.from_layers(
+        [
+            np.zeros((4, 4, 4), dtype=np.float32),
+            np.ones((4, 4, 4), dtype=np.float32),
+        ]
+    )
+    payload = describe_runtime_value(node_id="node-overlay", value=overlay)
+    descriptor = payload["descriptor"]
+    assert descriptor["vox_type"] == "overlay"
+    assert descriptor["render"]["kind"] == "medical-overlay"
+    layers = descriptor["render"]["layers"]
+    assert len(layers) == 2
+    assert layers[0]["path"] == "/0"
+    assert layers[0]["label"] == "Base"
+    assert layers[0]["colormap"] == "gray"
+    assert layers[0]["nifti_url"].endswith("/api/v1/results/store/node-overlay/render/nii?path=%2F0")
 
 
 @pytest.mark.unit

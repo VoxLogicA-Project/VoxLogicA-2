@@ -134,6 +134,25 @@ describe("StartTab", () => {
     expect(resolvePlaygroundValueMock).not.toHaveBeenCalled();
   });
 
+  it("shows static symbol types on hover before computation", async () => {
+    window.localStorage.setItem("voxlogica.start.program.v1", "ov = overlay(1, 2)");
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { ov: "node-ov" },
+      symbol_output_kinds: { ov: "overlay" },
+      diagnostics: [],
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      const tag = container.querySelector(".start-value-tag");
+      expect(tag?.getAttribute("title") || "").toContain("ov (overlay)");
+    });
+
+    const editorSymbol = container.querySelector('.vx-editor__symbol[title="ov (overlay)"]');
+    expect(editorSymbol).not.toBeNull();
+  });
+
   it("surfaces concrete execution error details instead of generic failure counts", async () => {
     getProgramSymbolsMock.mockResolvedValue({
       available: true,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator, Sequence
 import math
 
@@ -11,6 +11,8 @@ import math
 VOX_FORMAT_VERSION = "voxpod/1"
 DEFAULT_PAGE_SIZE = 64
 MAX_PAGE_SIZE = 512
+OVERLAY_BASE_COLORMAP = "gray"
+OVERLAY_ACCENT_COLORMAPS = ("red", "green", "blue", "warm", "winter", "plasma")
 
 
 class VoxValueError(RuntimeError):
@@ -80,6 +82,68 @@ class VoxPage:
     has_more: bool
     next_offset: int | None
     total: int | None
+
+
+@dataclass(frozen=True)
+class OverlayLayer:
+    """One overlay layer with optional viewer metadata."""
+
+    value: Any
+    label: str | None = None
+    opacity: float | None = None
+    colormap: str | None = None
+    visible: bool = True
+
+
+@dataclass(frozen=True)
+class OverlayValue:
+    """Composite image-like value rendered as a layered viewer."""
+
+    layers: tuple[OverlayLayer, ...]
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_layers(
+        cls,
+        layers: Iterable[Any],
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> "OverlayValue":
+        normalized: list[OverlayLayer] = []
+        for index, layer in enumerate(layers):
+            normalized.append(normalize_overlay_layer(layer, index=index))
+        return cls(layers=tuple(normalized), metadata=dict(metadata or {}))
+
+
+def default_overlay_label(index: int) -> str:
+    return "Base" if index == 0 else f"Overlay {index}"
+
+
+def default_overlay_opacity(index: int) -> float:
+    return 1.0 if index == 0 else 0.42
+
+
+def default_overlay_colormap(index: int) -> str:
+    if index == 0:
+        return OVERLAY_BASE_COLORMAP
+    return OVERLAY_ACCENT_COLORMAPS[(index - 1) % len(OVERLAY_ACCENT_COLORMAPS)]
+
+
+def normalize_overlay_layer(layer: Any, *, index: int) -> OverlayLayer:
+    raw = layer if isinstance(layer, OverlayLayer) else OverlayLayer(value=layer)
+    opacity = _safe_float(raw.opacity)
+    if opacity is None:
+        opacity = default_overlay_opacity(index)
+    opacity = max(0.0, min(1.0, opacity))
+    label = str(raw.label or default_overlay_label(index))
+    colormap = str(raw.colormap or default_overlay_colormap(index))
+    return OverlayLayer(
+        value=raw.value,
+        label=label,
+        opacity=opacity,
+        colormap=colormap,
+        visible=bool(raw.visible),
+    )
 
 
 class VoxValue(ABC):
@@ -260,6 +324,86 @@ class VoxImageValue(VoxValue):
     @property
     def vox_type(self) -> str:  # type: ignore[override]
         return "image2d" if int(self.raw.GetDimension()) == 2 else "volume3d"
+
+
+class VoxOverlayValue(VoxValue):
+    vox_type = "overlay"
+
+    def __init__(self, raw: OverlayValue):
+        super().__init__(raw)
+        self._overlay = raw
+
+    def describe(self, *, path: str = "") -> dict[str, Any]:
+        payload = self.descriptor_base(path=path, can_descend=True)
+        layer_summaries: list[dict[str, Any]] = []
+        render_kinds: list[str] = []
+        for index, raw_layer in enumerate(self._overlay.layers):
+            layer = normalize_overlay_layer(raw_layer, index=index)
+            descriptor = adapt_runtime_value(layer.value).describe(path=append_path(path, str(index)))
+            layer_vox_type = str(descriptor.get("vox_type", "unknown"))
+            render = descriptor.get("render")
+            render_kind = str(render.get("kind", "")) if isinstance(render, dict) else ""
+            if render_kind:
+                render_kinds.append(render_kind)
+            layer_summaries.append(
+                {
+                    "index": index,
+                    "label": str(layer.label or f"Layer {index + 1}"),
+                    "vox_type": layer_vox_type,
+                    "opacity": _safe_float(layer.opacity) if layer.opacity is not None else None,
+                    "colormap": str(layer.colormap) if layer.colormap else None,
+                    "visible": bool(layer.visible),
+                }
+            )
+
+        render_kind: str | None = None
+        unique_render_kinds = {kind for kind in render_kinds if kind}
+        if unique_render_kinds == {"medical-volume"} and len(render_kinds) == len(layer_summaries):
+            render_kind = "medical-overlay"
+        elif unique_render_kinds == {"image2d"} and len(render_kinds) == len(layer_summaries):
+            render_kind = "image-overlay"
+
+        payload["summary"] = {
+            "layer_count": len(layer_summaries),
+            "layer_labels": [layer["label"] for layer in layer_summaries],
+            "layer_types": [layer["vox_type"] for layer in layer_summaries],
+            "metadata_keys": sorted(str(key) for key in self._overlay.metadata.keys()),
+            "layers": layer_summaries,
+        }
+        if render_kind is not None:
+            payload["render"] = {"kind": render_kind}
+        return payload
+
+    def resolve(self, *, path: str = "") -> "VoxValue":
+        tokens = _path_tokens(path)
+        if not tokens:
+            return self
+
+        head = tokens[0]
+        if head == "layers":
+            if len(tokens) == 1:
+                return adapt_runtime_value([layer.value for layer in self._overlay.layers])
+            return self._resolve_layer(tokens[1:], path=path)
+        if head == "metadata":
+            if len(tokens) == 1:
+                return adapt_runtime_value(dict(self._overlay.metadata))
+            metadata_value = adapt_runtime_value(dict(self._overlay.metadata))
+            remainder = "/" + "/".join(_encode_path_token(token) for token in tokens[1:])
+            return metadata_value.resolve(path=remainder)
+        return self._resolve_layer(tokens, path=path)
+
+    def _resolve_layer(self, tokens: list[str], *, path: str) -> "VoxValue":
+        try:
+            index = int(tokens[0])
+        except ValueError as exc:
+            raise VoxValueError(f"Invalid overlay layer index '{tokens[0]}' in path '{path}'") from exc
+        if index < 0 or index >= len(self._overlay.layers):
+            raise VoxValueError(f"Overlay layer index out of range in path '{path}'")
+        child = adapt_runtime_value(self._overlay.layers[index].value)
+        if len(tokens) == 1:
+            return child
+        remainder = "/" + "/".join(_encode_path_token(token) for token in tokens[1:])
+        return child.resolve(path=remainder)
 
 
 class VoxMappingValue(VoxValue):
@@ -545,6 +689,8 @@ def adapt_runtime_value(value: Any) -> VoxValue:
         return VoxStringValue(value)
     if isinstance(value, bytes):
         return VoxBytesValue(value)
+    if isinstance(value, OverlayValue):
+        return VoxOverlayValue(value)
     if np is not None and isinstance(value, np.ndarray):
         return VoxNdArrayValue(value)
     if _is_simpleitk_image_like(value):

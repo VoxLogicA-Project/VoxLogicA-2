@@ -112,8 +112,11 @@
   $: renderKind = String(render?.kind || "").toLowerCase();
   $: renderPngUrl = String(render?.png_url || "");
   $: renderNiftiUrl = String(render?.nifti_url || "");
+  $: renderLayers = Array.isArray(render?.layers) ? render.layers.filter((layer) => layer && typeof layer === "object") : [];
   $: renderableImage = Boolean(renderPngUrl) && renderKind === "image2d";
   $: renderableVolume = Boolean(renderNiftiUrl) && renderKind === "medical-volume";
+  $: renderableImageOverlay = renderKind === "image-overlay" && renderLayers.some((layer) => layer?.png_url);
+  $: renderableVolumeOverlay = renderKind === "medical-overlay" && renderLayers.some((layer) => layer?.nifti_url);
 
   $: page = (recordPages, recordPagePointers, isCollection ? pageForRecord(record, path) : null);
   $: loading = (recordPagesLoading, isCollection ? pageLoadingForRecord(record, path) : false);
@@ -247,6 +250,25 @@
   {:else if renderableVolume}
     <div class="start-value-media-shell">
       <StartMedicalVolume niftiUrl={renderNiftiUrl} label={label || "value"} />
+    </div>
+  {:else if renderableImageOverlay}
+    <div class="start-value-centered">
+      <div class="start-overlay-image-shell" aria-label={`${label || "value"} overlay`}>
+        {#each renderLayers as layer, layerIndex}
+          {#if layer?.png_url && layer?.visible !== false}
+            <img
+              class={`start-overlay-image-layer ${layerIndex === 0 ? "is-base" : "is-overlay"}`.trim()}
+              src={layer.png_url}
+              alt={layer?.label || `Layer ${layerIndex + 1}`}
+              style={`--layer-opacity:${Number.isFinite(Number(layer?.opacity)) ? Number(layer.opacity) : layerIndex === 0 ? 1 : 0.4}`}
+            />
+          {/if}
+        {/each}
+      </div>
+    </div>
+  {:else if renderableVolumeOverlay}
+    <div class="start-value-media-shell">
+      <StartMedicalVolume layers={renderLayers} label={label || "value"} />
     </div>
   {:else if isCollection}
     {#if level > 0 && !items.length && !loading && !error}
@@ -387,3 +409,40 @@
     </div>
   {/if}
 </div>
+
+<style>
+  .start-overlay-image-shell {
+    position: relative;
+    width: min(100%, 900px);
+    aspect-ratio: 1 / 1;
+    min-height: 280px;
+    border-radius: 18px;
+    overflow: hidden;
+    border: 1px solid rgba(83, 97, 120, 0.16);
+    background:
+      radial-gradient(circle at 14% 18%, rgba(63, 116, 255, 0.1), transparent 38%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(238, 244, 251, 0.92));
+    box-shadow:
+      inset 0 1px rgba(255, 255, 255, 0.8),
+      0 18px 42px rgba(16, 28, 45, 0.12);
+  }
+
+  .start-overlay-image-layer {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    opacity: var(--layer-opacity, 1);
+  }
+
+  .start-overlay-image-layer.is-base {
+    mix-blend-mode: normal;
+    filter: saturate(1.02) contrast(1.02);
+  }
+
+  .start-overlay-image-layer.is-overlay {
+    mix-blend-mode: screen;
+    filter: saturate(1.14) contrast(1.05);
+  }
+</style>

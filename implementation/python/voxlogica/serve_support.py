@@ -1195,12 +1195,18 @@ def _decorate_descriptor_render(descriptor: dict[str, Any], *, node_id: str, pat
     vox_type = str(payload.get("vox_type", "unavailable"))
     summary = payload.get("summary")
     summary_dict = summary if isinstance(summary, dict) else {}
+    render = payload.get("render")
+    render_dict = render if isinstance(render, dict) else {}
 
     render_kind: str | None = None
     if vox_type in {"image2d"}:
         render_kind = "image2d"
     elif vox_type in {"volume3d"}:
         render_kind = "medical-volume"
+    elif vox_type == "overlay":
+        candidate = str(render_dict.get("kind", "")).strip().lower()
+        if candidate in {"medical-overlay", "image-overlay"}:
+            render_kind = candidate
     elif vox_type == "ndarray":
         shape = summary_dict.get("shape")
         if isinstance(shape, list):
@@ -1218,6 +1224,37 @@ def _decorate_descriptor_render(descriptor: dict[str, Any], *, node_id: str, pat
         payload["render"] = {
             "kind": "medical-volume",
             "nifti_url": _build_render_url(node_id, "nii", path),
+        }
+    elif render_kind in {"medical-overlay", "image-overlay"}:
+        raw_layers = summary_dict.get("layers")
+        layers_payload: list[dict[str, Any]] = []
+        if isinstance(raw_layers, list):
+            for index, raw_layer in enumerate(raw_layers):
+                layer = raw_layer if isinstance(raw_layer, dict) else {}
+                layer_path = append_path(path, str(index))
+                layer_payload: dict[str, Any] = {
+                    "index": index,
+                    "path": layer_path,
+                    "label": str(layer.get("label") or f"Layer {index + 1}"),
+                    "vox_type": str(layer.get("vox_type") or ""),
+                    "visible": bool(layer.get("visible", True)),
+                }
+                opacity = layer.get("opacity")
+                if opacity is not None:
+                    try:
+                        layer_payload["opacity"] = float(opacity)
+                    except Exception:
+                        pass
+                if layer.get("colormap"):
+                    layer_payload["colormap"] = str(layer.get("colormap"))
+                if render_kind == "medical-overlay":
+                    layer_payload["nifti_url"] = _build_render_url(node_id, "nii", layer_path)
+                else:
+                    layer_payload["png_url"] = _build_render_url(node_id, "png", layer_path)
+                layers_payload.append(layer_payload)
+        payload["render"] = {
+            "kind": render_kind,
+            "layers": layers_payload,
         }
     return payload
 

@@ -1466,6 +1466,24 @@ def test_playground_symbols_reports_static_diagnostics(monkeypatch: pytest.Monke
 
 
 @pytest.mark.unit
+def test_playground_symbols_reports_static_type_hints(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    with TestClient(main_mod.api_app) as client:
+        resp = client.post(
+            "/api/v1/playground/symbols",
+            json={"program": "\n".join(["k = 10", "xs = range(0, 2)", "ov = overlay(k, k)"])},
+        )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["available"] is True
+        assert payload["symbol_output_kinds"]["k"] in {"integer", "number"}
+        assert payload["symbol_output_kinds"]["xs"] == "sequence"
+        assert payload["symbol_output_kinds"]["ov"] == "overlay"
+
+
+@pytest.mark.unit
 def test_playground_symbols_enforces_read_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
     monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)

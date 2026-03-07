@@ -28,6 +28,7 @@
     "leq_sv",
     "geq_sv",
     "index",
+    "overlay",
   ];
 
   const DEFAULT_PROGRAM = `import "simpleitk"

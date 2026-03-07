@@ -8,7 +8,7 @@ from typing import Any, Callable, Literal, TYPE_CHECKING
 if TYPE_CHECKING:
     from voxlogica.lazy.ir import NodeSpec
 
-PrimitiveKind = Literal["scalar", "sequence", "tree", "dataset", "effect"]
+PrimitiveKind = Literal["scalar", "sequence", "tree", "dataset", "effect", "overlay"]
 AttrType = type[Any] | tuple[type[Any], ...]
 NodeId = str
 
@@ -103,5 +103,5 @@ def validate_spec(spec: PrimitiveSpec) -> None:
         raise ValueError("Primitive namespace cannot be empty")
     if not spec.kernel_name:
         raise ValueError("Primitive kernel_name cannot be empty")
-    if spec.kind not in {"scalar", "sequence", "tree", "dataset", "effect"}:
+    if spec.kind not in {"scalar", "sequence", "tree", "dataset", "effect", "overlay"}:
         raise ValueError(f"Invalid primitive kind: {spec.kind}")

@@ -129,6 +129,7 @@ export const summarizeDescriptor = (descriptor) => {
   if (voxType === "string") return `string(${summary.length || 0}): ${summary?.value || ""}`;
   if (voxType === "ndarray") return `ndarray ${(summary.shape || []).join("x")} ${summary.dtype || ""}`.trim();
   if (["image2d", "volume3d"].includes(voxType)) return `${voxType} ${(summary.size || []).join("x")} ${summary.pixel_id || ""}`.trim();
+  if (voxType === "overlay") return `overlay layers=${summary.layer_count || 0}`;
   if (voxType === "sequence") return `sequence length=${summary.length || 0}`;
   if (voxType === "mapping") return `mapping length=${summary.length || 0}`;
   return voxType;
