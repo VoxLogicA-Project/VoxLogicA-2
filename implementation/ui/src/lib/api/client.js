@@ -137,11 +137,16 @@ export const getProgramSymbols = (program) =>
     body: JSON.stringify({ program }),
   });
 
-export const createPlaygroundJob = (program) =>
+export const createPlaygroundJob = (program, { backgroundFill = true } = {}) =>
   apiRequest("/api/v1/playground/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ program, execute: true, execution_strategy: "dask" }),
+    body: JSON.stringify({
+      program,
+      execute: true,
+      execution_strategy: "dask",
+      background_fill: Boolean(backgroundFill),
+    }),
   });
 
 export const listPlaygroundJobs = () => apiRequest("/api/v1/playground/jobs");

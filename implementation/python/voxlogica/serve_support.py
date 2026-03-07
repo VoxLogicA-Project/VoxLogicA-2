@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import base64
 import concurrent.futures
+import contextlib
 import multiprocessing as mp
 import json
 import logging
@@ -1851,6 +1853,7 @@ class PlaygroundJob:
     recv_conn: Any = None
     future: Any = None
     log_path: Path | None = None
+    priority_class: str = "normal"
 
     def as_public(
         self,
@@ -1871,6 +1874,7 @@ class PlaygroundJob:
                 "no_cache": bool(self.request_payload.get("no_cache", False)),
                 "job_kind": self.request_payload.get("_job_kind", "run"),
                 "priority_node": self.request_payload.get("_priority_node"),
+                "priority_class": self.priority_class,
             },
             "metrics": self.metrics,
             "error": self.error,
@@ -1899,12 +1903,107 @@ class PlaygroundJobManager:
         self._stale_seconds = stale_seconds
         self._retain_seconds = retain_seconds
         self._max_jobs = max_jobs
+        self._background_queue: deque[str] = deque()
+        self._background_active_job_id: str | None = None
         # Value-resolve jobs are frequent and latency-sensitive; keep them in a
         # warm in-process worker to avoid per-request process spawn overhead.
         self._value_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="vox-playground-value",
         )
+
+    def _priority_class_for_payload(self, payload: dict[str, Any]) -> str:
+        job_kind = str(payload.get("_job_kind", "")).strip().lower()
+        if job_kind == "value-resolve":
+            return "interactive"
+        if job_kind in {"background-fill", "background"} or bool(payload.get("_background_fill")):
+            return "background"
+        return "normal"
+
+    def _is_background_job(self, job: PlaygroundJob) -> bool:
+        return str(job.priority_class) == "background"
+
+    def _has_active_interactive_locked(self) -> bool:
+        for job in self._jobs.values():
+            if str(job.priority_class) != "interactive":
+                continue
+            if job.status in {"queued", "running"}:
+                return True
+        return False
+
+    def _start_process_job_locked(self, job: PlaygroundJob) -> None:
+        payload = dict(job.request_payload)
+        recv_conn, send_conn = self._ctx.Pipe(duplex=False)
+        process = self._ctx.Process(
+            target=_playground_worker,
+            args=(send_conn, payload, str(job.log_path or "")),
+            daemon=False,
+        )
+        try:
+            process.start()
+        except Exception:
+            send_conn.close()
+            recv_conn.close()
+            raise
+        send_conn.close()
+        job.process = process
+        job.recv_conn = recv_conn
+        job.status = "running"
+        job.started_at = time.time()
+        job.finished_at = None
+
+    def _dispatch_background_locked(self) -> None:
+        if self._background_active_job_id:
+            active = self._jobs.get(self._background_active_job_id)
+            if active is not None and active.status in {"queued", "running"}:
+                return
+            self._background_active_job_id = None
+        if self._has_active_interactive_locked():
+            return
+        while self._background_queue:
+            next_job_id = self._background_queue.popleft()
+            job = self._jobs.get(next_job_id)
+            if job is None or not self._is_background_job(job):
+                continue
+            if job.status in {"completed", "failed", "killed"}:
+                continue
+            self._start_process_job_locked(job)
+            self._background_active_job_id = job.job_id
+            return
+
+    def _pause_background_job_locked(self, job: PlaygroundJob, reason: str) -> None:
+        if not self._is_background_job(job):
+            return
+        process = job.process
+        if process is not None and process.is_alive():
+            process.terminate()
+            process.join(timeout=2.0)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=1.0)
+        if job.recv_conn is not None:
+            with contextlib.suppress(Exception):
+                job.recv_conn.close()
+        job.process = None
+        job.recv_conn = None
+        job.future = None
+        job.status = "queued"
+        job.started_at = None
+        job.finished_at = None
+        job.error = None
+        preemptions = int(job.metrics.get("preemptions", 0))
+        job.metrics["preemptions"] = preemptions + 1
+        job.metrics["last_preempt_reason"] = reason
+        if job.job_id not in self._background_queue:
+            self._background_queue.appendleft(job.job_id)
+        if self._background_active_job_id == job.job_id:
+            self._background_active_job_id = None
+
+    def _preempt_background_for_interactive_locked(self) -> None:
+        if self._background_active_job_id:
+            active = self._jobs.get(self._background_active_job_id)
+            if active is not None and active.status == "running":
+                self._pause_background_job_locked(active, reason="Preempted by interactive value resolve")
 
     def _poll_locked(self, job: PlaygroundJob) -> None:
         if job.status in {"completed", "failed", "killed"}:
@@ -1943,6 +2042,8 @@ class PlaygroundJobManager:
             except Exception:
                 pass
             job.recv_conn = None
+            if self._background_active_job_id == job.job_id and job.status in {"completed", "failed", "killed"}:
+                self._background_active_job_id = None
 
         if process is not None and not process.is_alive():
             process.join(timeout=0.0)
@@ -1951,6 +2052,8 @@ class PlaygroundJobManager:
                 job.error = f"Execution process terminated with exit code {process.exitcode}"
                 job.finished_at = time.time()
             job.process = None
+            if self._background_active_job_id == job.job_id and job.status in {"completed", "failed", "killed"}:
+                self._background_active_job_id = None
 
         future = job.future
         if future is not None:
@@ -2011,6 +2114,14 @@ class PlaygroundJobManager:
 
         for job_id in removable:
             self._jobs.pop(job_id, None)
+        if removable:
+            removable_set = set(removable)
+            self._background_queue = deque(
+                [job_id for job_id in self._background_queue if job_id not in removable_set]
+            )
+            if self._background_active_job_id in removable_set:
+                self._background_active_job_id = None
+        self._dispatch_background_locked()
 
     def _kill_locked(self, job: PlaygroundJob, reason: str) -> None:
         future = job.future
@@ -2046,6 +2157,7 @@ class PlaygroundJobManager:
         created_at = time.time()
         PLAYGROUND_JOB_LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = PLAYGROUND_JOB_LOG_DIR / f"{job_id}.log"
+        priority_class = self._priority_class_for_payload(payload)
         if str(payload.get("_job_kind", "")).strip().lower() == "value-resolve":
             future = self._value_executor.submit(_execute_playground_request, payload, str(log_path))
             job = PlaygroundJob(
@@ -2056,37 +2168,25 @@ class PlaygroundJobManager:
                 started_at=None,
                 future=future,
                 log_path=log_path,
+                priority_class=priority_class,
             )
             self._jobs[job_id] = job
             self._poll_locked(job)
             return job
-
-        recv_conn, send_conn = self._ctx.Pipe(duplex=False)
-        process = self._ctx.Process(
-            target=_playground_worker,
-            args=(send_conn, payload, str(log_path)),
-            daemon=False,
-        )
         job = PlaygroundJob(
             job_id=job_id,
             request_payload=payload,
             created_at=created_at,
             status="queued",
-            process=process,
-            recv_conn=recv_conn,
             log_path=log_path,
+            priority_class=priority_class,
         )
         self._jobs[job_id] = job
-        try:
-            process.start()
-        except Exception:
-            self._jobs.pop(job_id, None)
-            send_conn.close()
-            recv_conn.close()
-            raise
-        send_conn.close()
-        job.status = "running"
-        job.started_at = time.time()
+        if priority_class == "background":
+            self._background_queue.append(job_id)
+            self._dispatch_background_locked()
+            return job
+        self._start_process_job_locked(job)
         return job
 
     def _find_latest_value_job_locked(
@@ -2125,6 +2225,7 @@ class PlaygroundJobManager:
     ) -> dict[str, Any]:
         with self._lock:
             self._cleanup_locked()
+            self._preempt_background_for_interactive_locked()
             existing = self._find_latest_value_job_locked(
                 program_hash=program_hash,
                 node_id=node_id,
@@ -2183,8 +2284,13 @@ class PlaygroundJobManager:
             job = self._jobs.get(job_id)
             if job is None:
                 return None
-            if job.status == "running":
+            if job_id in self._background_queue:
+                self._background_queue = deque([queued for queued in self._background_queue if queued != job_id])
+            if self._background_active_job_id == job_id:
+                self._background_active_job_id = None
+            if job.status in {"running", "queued"}:
                 self._kill_locked(job, reason="Killed by user request")
+            self._dispatch_background_locked()
             return job.as_public(include_result=True, include_log_tail=True, tail_lines=180)
 
 

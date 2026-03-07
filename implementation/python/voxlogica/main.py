@@ -103,6 +103,7 @@ class RunRequest(BaseModel):
     verbose: Optional[bool] = False
     dask_dashboard: Optional[bool] = False
     execution_strategy: Optional[str] = "dask"
+    background_fill: Optional[bool] = False
 
 
 class TestRunRequest(BaseModel):
@@ -196,6 +197,25 @@ def _prepare_serve_run_payload(request: RunRequest) -> dict[str, Any]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         payload["filename"] = loaded["absolute_path"]
     return payload
+
+
+def _background_fill_goal_ids(program_text: str) -> list[str]:
+    """Collect stable declaration goal ids for background materialization."""
+    _workplan, symbol_table, _print_targets = _program_introspection(
+        program_text,
+        legacy=False,
+        serve_mode=True,
+        enforce_policy=True,
+    )
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for node_id in symbol_table.values():
+        resolved = str(node_id or "").strip()
+        if not resolved or resolved in seen:
+            continue
+        seen.add(resolved)
+        ordered.append(resolved)
+    return ordered
 
 
 def _program_introspection(
@@ -2316,6 +2336,11 @@ async def create_playground_job_endpoint(request: RunRequest) -> dict[str, Any]:
     """Start an asynchronous playground execution job."""
     payload = _prepare_serve_run_payload(request)
     payload["execution_strategy"] = "dask"
+    if bool(request.background_fill):
+        payload["_background_fill"] = True
+        payload["_job_kind"] = "background-fill"
+        payload["_include_goal_descriptors"] = True
+        payload["_goals"] = _background_fill_goal_ids(str(request.program or ""))
     return playground_jobs.create_job(payload)
 
 

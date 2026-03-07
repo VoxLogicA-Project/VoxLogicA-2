@@ -349,6 +349,23 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             assert created_job_payloads[-1]["execution_strategy"] == "dask"
             assert created_job_payloads[-1]["legacy"] is False
             assert created_job_payloads[-1]["serve_mode"] is True
+            assert created_job_payloads[-1].get("_job_kind") is None
+            assert created_job_payloads[-1].get("_background_fill") is None
+
+            background_created = client.post(
+                "/api/v1/playground/jobs",
+                json={
+                    "program": "a = 1\nb = a + 2",
+                    "background_fill": True,
+                },
+            )
+            assert background_created.status_code == 200
+            assert created_job_payloads[-1]["_job_kind"] == "background-fill"
+            assert created_job_payloads[-1]["_background_fill"] is True
+            assert created_job_payloads[-1]["_include_goal_descriptors"] is True
+            background_goals = created_job_payloads[-1]["_goals"]
+            assert isinstance(background_goals, list)
+            assert len(background_goals) >= 2
             blocked_job = client.post(
                 "/api/v1/playground/jobs",
                 json={"program": 'print "x" 1', "save_syntax": "/tmp/syntax.txt"},
@@ -463,6 +480,59 @@ def test_playground_value_failed_job_exposes_diagnostics(monkeypatch: pytest.Mon
             assert payload["execution_errors"]["abc123deadbeef"] == "kernel boom"
             assert payload["execution_error_details"]["abc123deadbeef"]["operator"] == "default.load"
             assert "playground.node" in str(payload.get("log_tail", ""))
+    finally:
+        fake_storage.close()
+
+
+@pytest.mark.unit
+def test_playground_job_background_fill_payload(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    class FakeRegistry:
+        @staticmethod
+        def get_feature(name: str):
+            if name == "version":
+                return SimpleNamespace(handler=lambda: OperationResult.ok({"version": "2.0.0"}))
+            if name == "run":
+                return SimpleNamespace(handler=lambda **kwargs: OperationResult.ok({"ok": True, "args": kwargs}))
+            return None
+
+    monkeypatch.setattr(main_mod, "FeatureRegistry", FakeRegistry)
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+    created_payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            create_job=lambda payload: (created_payloads.append(dict(payload)), {"job_id": "p-bg", "status": "queued"})[1],
+            list_jobs=lambda: {"jobs": [], "total_jobs": 0, "generated_at": "-"},
+            get_job=lambda job_id: {"job_id": job_id, "status": "completed", "result": {}, "log_tail": ""},
+            kill_job=lambda job_id: {"job_id": job_id, "status": "killed", "log_tail": ""},
+            get_value_job=lambda **kwargs: None,
+            ensure_value_job=lambda payload, **kwargs: {"job_id": "vp1", "status": "running", "log_tail": ""},
+        ),
+    )
+    try:
+        with TestClient(main_mod.api_app) as client:
+            response = client.post(
+                "/api/v1/playground/jobs",
+                json={
+                    "program": "a = 1\nb = a + 2",
+                    "background_fill": True,
+                },
+            )
+            assert response.status_code == 200
+            assert created_payloads
+            payload = created_payloads[-1]
+            assert payload["execution_strategy"] == "dask"
+            assert payload["_job_kind"] == "background-fill"
+            assert payload["_background_fill"] is True
+            assert payload["_include_goal_descriptors"] is True
+            goals = payload.get("_goals")
+            assert isinstance(goals, list)
+            assert len(goals) >= 2
+            assert all(isinstance(goal, str) and goal for goal in goals)
     finally:
         fake_storage.close()
 

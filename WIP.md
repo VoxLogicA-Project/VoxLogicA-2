@@ -218,6 +218,68 @@ Implemented a runtime-preview bridge so `/playground/value` and `/playground/val
 
 - `.venv/bin/python -m pytest tests/unit/test_main_entrypoints.py -k 'runtime_preview_while_persisting or paging_works_while_sequence_is_persisting or completed_pending_persistence_status'`
   - Passed.
+
+## Update: Background Fill Scheduler + Interactive Preemption
+
+This section documents the new serve-side execution contract for background computation.
+
+### Backend queue model
+
+File: `implementation/python/voxlogica/serve_support.py`
+
+- `PlaygroundJob` now exposes `priority_class` (`interactive`, `background`, `normal`) in public payloads.
+- `PlaygroundJobManager` now has:
+  - `_background_queue` (`deque[str]`)
+  - `_background_active_job_id`
+  - priority classification helper `_priority_class_for_payload(...)`
+- Background jobs (`_job_kind == "background-fill"` or `_background_fill == true`) are **queued** and only dispatched when no interactive value-resolve is active.
+- Interactive value jobs (`_job_kind == "value-resolve"`) trigger preemption via `_preempt_background_for_interactive_locked()`:
+  - active background process is terminated
+  - job state returns to `queued`
+  - `metrics.preemptions` increments
+  - background job is requeued for later resume.
+
+### API contract for full background materialization
+
+File: `implementation/python/voxlogica/main.py`
+
+- `RunRequest` now supports `background_fill: bool = false`.
+- `POST /api/v1/playground/jobs` behavior:
+  - default request: unchanged (`run` semantics)
+  - with `background_fill=true`:
+    - `_job_kind = "background-fill"`
+    - `_background_fill = true`
+    - `_include_goal_descriptors = true`
+    - `_goals` is set to all declaration node ids resolved from `_program_introspection(...)`.
+
+Helper:
+- `_background_fill_goal_ids(program_text)` derives stable declaration goals from symbol bindings.
+
+### UI request shape
+
+File: `implementation/ui/src/lib/api/client.js`
+
+- `createPlaygroundJob(program, { backgroundFill = true } = {})` now sends:
+  - `background_fill` in POST body
+  - default is `true` for run-triggered background materialization behavior.
+
+### Tests
+
+File: `tests/unit/test_main_entrypoints.py`
+
+- Added `test_playground_job_background_fill_payload`:
+  - validates that background-fill requests map to:
+    - `_job_kind = "background-fill"`
+    - `_background_fill = true`
+    - `_include_goal_descriptors = true`
+    - non-empty `_goals`.
+
+### Validation notes
+
+- `python -m py_compile implementation/python/voxlogica/main.py implementation/python/voxlogica/serve_support.py` passes.
+- Targeted new test passes:
+  - `.venv/bin/python -m pytest tests/unit/test_main_entrypoints.py -k playground_job_background_fill_payload`
+- Full `test_main_entrypoints.py` currently has a pre-existing unrelated failure in `test_list_primitives_and_repl_and_serve` (bind permission in sandbox, and an existing `integer` vs `number` expectation mismatch in another path).
 - `npm --prefix implementation/ui run test`
   - Passed.
 - `npm --prefix implementation/ui run build`
