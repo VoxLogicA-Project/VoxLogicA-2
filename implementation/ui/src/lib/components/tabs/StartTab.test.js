@@ -411,8 +411,21 @@ describe("StartTab", () => {
           has_more: false,
           next_offset: null,
           items: [
-            { index: 0, label: "[0]", path: "/0", status: "pending", descriptor: { vox_type: "unavailable", summary: {} } },
-            { index: 1, label: "[1]", path: "/1", status: "pending", descriptor: { vox_type: "unavailable", summary: {} } },
+            {
+              index: 0,
+              label: "[0]",
+              path: "/0",
+              state: "blocked",
+              blocked_on: "/source/0",
+              descriptor: { vox_type: "unavailable", summary: {} },
+            },
+            {
+              index: 1,
+              label: "[1]",
+              path: "/1",
+              state: "running",
+              descriptor: { vox_type: "unavailable", summary: {} },
+            },
           ],
         },
       })
@@ -446,6 +459,87 @@ describe("StartTab", () => {
       expect(resolvePlaygroundValuePageMock.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
     vi.useRealTimers();
+  });
+
+  it("renders exact collection item states from page payloads", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-xs",
+      path: "/",
+      descriptor: {
+        vox_type: "sequence",
+        format_version: "voxpod/1",
+        summary: { length: 3 },
+        navigation: {
+          path: "/",
+          pageable: true,
+          can_descend: true,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    });
+    resolvePlaygroundValuePageMock.mockResolvedValue({
+      materialization: "running",
+      compute_status: "running",
+      page: {
+        offset: 0,
+        limit: 8,
+        has_more: false,
+        next_offset: null,
+        items: [
+          {
+            index: 0,
+            label: "[0]",
+            path: "/0",
+            state: "queued",
+            descriptor: { vox_type: "unavailable", summary: {} },
+          },
+          {
+            index: 1,
+            label: "[1]",
+            path: "/1",
+            state: "blocked",
+            blocked_on: "/0",
+            state_reason: "waiting-on-upstream",
+            descriptor: { vox_type: "unavailable", summary: {} },
+          },
+          {
+            index: 2,
+            label: "[2]",
+            path: "/2",
+            state: "ready",
+            descriptor: { vox_type: "integer", summary: { value: 7 } },
+          },
+        ],
+      },
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("queued");
+      expect(container.textContent).toContain("blocked");
+      expect(container.textContent).toContain("ready");
+    });
+
+    const blockedButton = Array.from(container.querySelectorAll(".start-collection-item")).find((button) =>
+      (button.textContent || "").includes("[1]"),
+    );
+    expect(blockedButton?.getAttribute("title") || "").toContain("blocked on /0");
   });
 
   it("renders nested sequence pages for ready sequence-of-sequences items", async () => {

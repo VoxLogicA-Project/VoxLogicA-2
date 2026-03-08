@@ -258,6 +258,63 @@ Key points:
 - Added per-item page snapshots and on-demand `ensure_item`/`resolve_item`.
 - Added adapters so existing sequence wrappers can consume `page_snapshot`.
 
+## Step 4 In Progress: Exact UI Item States
+
+Problem:
+- backend page payloads now carry exact per-item states (`not_loaded`, `queued`, `blocked`, `running`, `persisting`, `ready`, `failed`)
+- Start UI still collapses those into old vague labels (`waiting`, `pending`, `materialized`, `upstream`)
+- result: the feature is technically advancing while the user still cannot tell what a visible collection item is doing
+
+Files to change:
+- `implementation/ui/src/lib/components/tabs/StartValueCanvas.svelte`
+- `implementation/ui/src/lib/components/tabs/StartTab.svelte`
+- `implementation/ui/src/app.css`
+- `implementation/ui/src/lib/components/tabs/StartTab.test.js`
+
+Planned slice:
+1. Make collection cards consume backend `item.state` directly when present.
+2. Keep backward compatibility with older `item.status` payloads by normalizing:
+   - `materialized/cached/computed/completed -> ready`
+   - `pending/missing -> not_loaded`
+3. Stop using UI-only state labels `waiting` and `upstream`.
+4. Update the page polling heuristic to look for the new exact states instead of `unavailable` descriptors.
+5. Add focused tests proving:
+   - visible items render `blocked`, `queued`, `running`, `persisting`, `ready`, `failed`
+   - ready nested items stay clickable
+   - pending pages continue polling while any visible item remains non-terminal
+
+Non-goal for this slice:
+- no websocket protocol changes yet
+- no child-task scheduler yet
+
+### Step 4 completed
+
+Commit:
+- pending commit after validation of this slice
+
+Implemented:
+- `StartValueCanvas.svelte` now consumes the backend item-state contract directly.
+- Legacy page payloads remain compatible through normalization:
+  - `materialized/computed/completed/cached -> ready`
+  - `pending/missing -> not_loaded`
+- Removed UI-only visible item labels `waiting` and `upstream` from collection rows.
+- Collection item tooltips now include `blocked_on`, `state_reason`, and item-level `error` when provided.
+- `StartTab.svelte` page polling heuristic now keys off exact item states instead of inferred `unavailable` descriptors.
+
+Validation:
+- `npm --prefix implementation/ui run test -- src/lib/components/tabs/StartTab.test.js`
+- `npm --prefix implementation/ui run build`
+
+Focused tests added:
+- exact item states render as `queued`, `blocked`, `ready`
+- blocked item tooltip surfaces upstream dependency
+- page polling still continues while visible items are non-terminal
+
+Remaining gap after step 4:
+- page updates are still timer-driven from the client side
+- websocket transport is still focused on value-path updates, not page subscriptions
+- per-item states are now visible, but they are not yet pushed live from the backend
+
 Important design note:
 - This step does **not** explode the symbolic DAG.
 - The reducer still emits one sequence-producing node for `map`/`for`.

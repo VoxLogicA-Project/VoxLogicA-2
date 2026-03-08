@@ -54,29 +54,35 @@
     return voxType === "sequence" || voxType === "mapping";
   };
 
-  const collectionItemState = (item) => {
-    const descriptor = item?.descriptor && typeof item.descriptor === "object" ? item.descriptor : {};
+  const normalizeCollectionItemState = (rawState, descriptor = null) => {
+    const normalized = String(rawState || "").trim().toLowerCase();
+    if (["ready", "queued", "blocked", "running", "persisting", "failed", "not_loaded"].includes(normalized)) {
+      return normalized;
+    }
+    if (["materialized", "computed", "completed", "cached"].includes(normalized)) return "ready";
+    if (["pending", "missing"].includes(normalized)) return "not_loaded";
+    if (["error", "killed"].includes(normalized)) return "failed";
     const voxType = String(descriptor?.vox_type || "").toLowerCase();
-    const status = String(item?.status || "").toLowerCase();
-    if (["failed", "killed", "error"].includes(status) || voxType === "error") return "failed";
-    if (["pending", "missing", "queued", "running", "persisting"].includes(status)) return "pending";
-    if (!voxType || voxType === "unavailable") return "pending";
-    return "materialized";
+    if (!voxType || voxType === "unavailable") return "not_loaded";
+    return "ready";
   };
+
+  const itemStateClass = (item) => effectiveStateForItem(item);
 
   const itemStateLabel = (item) => {
     const state = effectiveStateForItem(item);
-    const descriptor = effectiveDescriptorForItem(item);
-    if (state === "materialized") return "ready";
-    if (state === "failed") return "failed";
-    if (state === "upstream") return "upstream";
-    const rawStatus = String(item?.status || "").toLowerCase();
-    if (rawStatus === "queued") return "queued";
-    if (rawStatus === "persisting") return "persisting";
-    if (rawStatus === "running") return "running";
-    if (collectionDescriptor(descriptor)) return "upstream";
-    if (rawStatus === "pending" || rawStatus === "missing") return "waiting";
-    return "waiting";
+    return state.replaceAll("_", " ");
+  };
+
+  const itemStateDetails = (item) => {
+    const details = [];
+    const error = String(item?.error || "").trim();
+    const blockedOn = String(item?.blocked_on || "").trim();
+    const stateReason = String(item?.state_reason || "").trim();
+    if (blockedOn) details.push(`blocked on ${blockedOn}`);
+    if (stateReason) details.push(stateReason);
+    if (error) details.push(error);
+    return details.join(" · ");
   };
 
   const resolvedItemRecord = (item) => {
@@ -101,12 +107,13 @@
       const materialization = String(resolved?.materialization || "").toLowerCase();
       const computeStatus = String(resolved?.compute_status || "").toLowerCase();
       if (materialization === "failed" || computeStatus === "failed" || computeStatus === "killed") return "failed";
-      if ((materialization === "computed" || materialization === "cached") && resolved?.descriptor) return "materialized";
-      if (["pending", "missing"].includes(materialization) || ["queued", "running", "persisting"].includes(computeStatus)) {
-        return collectionDescriptor(effectiveDescriptorForItem(item)) ? "upstream" : "pending";
+      if ((materialization === "computed" || materialization === "cached") && resolved?.descriptor) return "ready";
+      if (["queued", "running", "persisting"].includes(computeStatus)) return computeStatus;
+      if (["pending", "missing"].includes(materialization)) {
+        return normalizeCollectionItemState(item?.state || item?.status, effectiveDescriptorForItem(item));
       }
     }
-    return collectionItemState(item);
+    return normalizeCollectionItemState(item?.state || item?.status, effectiveDescriptorForItem(item));
   };
 
   $: descriptor = recordDescriptor(record);
@@ -329,10 +336,13 @@
           <div class="start-collection-list">
             {#each items as item, itemIndex}
               {@const itemDescriptor = effectiveDescriptorForItem(item)}
+              {@const itemState = itemStateClass(item)}
+              {@const itemLabel = itemStateLabel(item)}
+              {@const itemDetails = itemStateDetails(item)}
               <button
-                class={`start-collection-item start-collection-item--${effectiveStateForItem(item)} ${selectedIndex === itemIndex ? "is-selected" : ""}`.trim()}
+                class={`start-collection-item start-collection-item--${itemState} ${selectedIndex === itemIndex ? "is-selected" : ""}`.trim()}
                 type="button"
-                title={`${String(item?.label || `[${Number(page?.offset || 0) + itemIndex}]`)} (${typeLabelFromDescriptor(itemDescriptor)}) · ${itemStateLabel(item)}`}
+                title={`${String(item?.label || `[${Number(page?.offset || 0) + itemIndex}]`)} (${typeLabelFromDescriptor(itemDescriptor)}) · ${itemLabel}${itemDetails ? ` · ${itemDetails}` : ""}`}
                 on:click={() =>
                   setCollectionSelection(record, path, {
                     selectedIndex: itemIndex,
@@ -343,8 +353,8 @@
                 <span class="start-collection-item-index">
                   {item?.label || `[${Number(page?.offset || 0) + itemIndex}]`}
                 </span>
-                <span class={`start-collection-item-state start-collection-item-state--${itemStateLabel(item)}`.trim()}>
-                  {itemStateLabel(item)}
+                <span class={`start-collection-item-state start-collection-item-state--${itemState}`.trim()}>
+                  {itemLabel}
                 </span>
                 <span class="start-collection-item-preview">{previewText(itemDescriptor)}</span>
               </button>

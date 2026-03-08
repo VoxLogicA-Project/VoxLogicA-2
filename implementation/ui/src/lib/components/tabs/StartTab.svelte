@@ -250,6 +250,19 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     return "unresolved";
   };
 
+  const normalizeCollectionItemState = (item) => {
+    const rawState = String(item?.state || item?.status || "").trim().toLowerCase();
+    if (["ready", "queued", "blocked", "running", "persisting", "failed", "not_loaded"].includes(rawState)) {
+      return rawState;
+    }
+    if (["materialized", "computed", "completed", "cached"].includes(rawState)) return "ready";
+    if (["pending", "missing"].includes(rawState)) return "not_loaded";
+    if (["error", "killed"].includes(rawState)) return "failed";
+    const itemType = String(item?.descriptor?.vox_type || "").trim().toLowerCase();
+    if (!itemType || itemType === "unavailable") return "not_loaded";
+    return "ready";
+  };
+
   const typeLabelFromDescriptor = (descriptor) => {
     const rawType = String(descriptor?.vox_type || "").trim().toLowerCase();
     if (!rawType) return "value";
@@ -1289,6 +1302,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           ? payload.page
           : { offset: resolvedOffset, limit: resolvedLimit, items: [], has_more: false, next_offset: null };
       const pendingStatuses = new Set(["queued", "running", "persisting", "pending", "missing"]);
+      const activeItemStates = new Set(["not_loaded", "queued", "blocked", "running", "persisting"]);
       const payloadMaterialization = String(payload?.materialization || "").toLowerCase();
       const payloadStatus = String(payload?.compute_status || "").toLowerCase();
       const expectedLength = Number(descriptor?.summary?.length || 0);
@@ -1328,15 +1342,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       const pageStatus = String(payload?.compute_status || "").toLowerCase();
       const pagePending = pendingStatuses.has(pageMaterialization) || pendingStatuses.has(pageStatus);
       const pageItems = Array.isArray(page?.items) ? page.items : [];
-      const hasPendingItems = pageItems.some((item) => {
-        const itemStatus = String(item?.status || "").toLowerCase();
-        const itemType = String(item?.descriptor?.vox_type || "").toLowerCase();
-        return (
-          ["pending", "missing", "queued", "running", "persisting"].includes(itemStatus) ||
-          itemType === "unavailable" ||
-          !itemType
-        );
-      });
+      const hasPendingItems = pageItems.some((item) => activeItemStates.has(normalizeCollectionItemState(item)));
       if (hasPendingItems || (pagePending && (!Array.isArray(page?.items) || page.items.length === 0))) {
         scheduleRecordPagePoll(record, {
           path: resolvedPath,

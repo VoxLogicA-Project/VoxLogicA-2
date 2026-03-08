@@ -1353,18 +1353,30 @@ body {
   filter: saturate(0.98);
 }
 
-.start-collection-item--pending {
+.start-collection-item--not_loaded,
+.start-collection-item--queued,
+.start-collection-item--blocked {
   opacity: 0.62;
   filter: saturate(0.85);
 }
 
-.start-collection-item--pending .start-collection-item-preview {
+.start-collection-item--not_loaded .start-collection-item-preview,
+.start-collection-item--queued .start-collection-item-preview,
+.start-collection-item--blocked .start-collection-item-preview,
+.start-collection-item--running .start-collection-item-preview,
+.start-collection-item--persisting .start-collection-item-preview {
   background: linear-gradient(90deg, rgba(219, 229, 244, 0.5), rgba(236, 242, 251, 0.9), rgba(219, 229, 244, 0.5));
   background-size: 220% 100%;
   animation: startShelfLoading 1.2s ease-in-out infinite;
   border-radius: 6px;
 }
 
+.start-collection-item--running,
+.start-collection-item--persisting {
+  opacity: 0.78;
+}
+
+.start-collection-item--ready,
 .start-collection-item--materialized {
   animation: valueMaterialize 240ms ease-out;
 }
@@ -1395,6 +1407,18 @@ body {
   background: rgba(238, 244, 253, 0.9);
 }
 
+.start-collection-item-state--not_loaded {
+  color: #5f6f88;
+  border-color: rgba(129, 144, 171, 0.34);
+  background: rgba(233, 239, 248, 0.92);
+}
+
+.start-collection-item-state--blocked {
+  color: #6b4e13;
+  border-color: rgba(180, 132, 45, 0.34);
+  background: rgba(249, 239, 213, 0.92);
+}
+
 .start-collection-item-state--ready {
   color: #0f6247;
   border-color: rgba(5, 150, 105, 0.36);
@@ -1413,12 +1437,6 @@ body {
   color: #2a4c8f;
   border-color: rgba(63, 116, 255, 0.36);
   background: rgba(221, 233, 255, 0.9);
-}
-
-.start-collection-item-state--waiting {
-  color: #5f6f88;
-  border-color: rgba(129, 144, 171, 0.34);
-  background: rgba(233, 239, 248, 0.92);
 }
 
 .start-collection-item-state--failed {
