@@ -8,8 +8,10 @@ import time
 import pytest
 
 from voxlogica.execution_strategy.results import SequenceValue
+from voxlogica.inspectable_sequence import InspectableRangeSequence
 from voxlogica.lazy.hash import hash_sequence_item
 from voxlogica.serve_support import (
+    LiveRuntimeValueInspector,
     PlaygroundJob,
     PlaygroundJobManager,
     RuntimeValueInspector,
@@ -18,6 +20,7 @@ from voxlogica.serve_support import (
     describe_runtime_value,
     freeze_runtime_value,
     get_lightweight_storage_stats_snapshot,
+    inspect_runtime_value_page,
     inspect_store_result,
     inspect_store_result_page,
     list_playground_programs,
@@ -28,7 +31,7 @@ from voxlogica.serve_support import (
     render_store_result_nifti_gz,
     render_store_result_png,
 )
-from voxlogica.storage import SQLiteResultsDatabase
+from voxlogica.storage import MaterializationStore, SQLiteResultsDatabase
 from voxlogica.value_model import OverlayValue
 
 
@@ -228,8 +231,13 @@ def test_playground_manager_value_resolve_uses_inprocess_future(
 
     calls: list[dict[str, object]] = []
 
-    def _fake_execute(request_payload: dict[str, object], log_path_str: str) -> dict[str, object]:
+    def _fake_execute(
+        request_payload: dict[str, object],
+        log_path_str: str,
+        live_inspector: object | None = None,
+    ) -> dict[str, object]:
         started = time.time()
+        del live_inspector
         calls.append(
             {
                 "request_payload": dict(request_payload),
@@ -297,8 +305,13 @@ def test_playground_manager_runtime_inspection_returns_error_payload(
 
     monkeypatch.setattr(serve_support, "PLAYGROUND_JOB_LOG_DIR", tmp_path)
 
-    def _fake_execute(request_payload: dict[str, object], log_path_str: str) -> dict[str, object]:
+    def _fake_execute(
+        request_payload: dict[str, object],
+        log_path_str: str,
+        live_inspector: object | None = None,
+    ) -> dict[str, object]:
         started = time.time()
+        del request_payload, log_path_str, live_inspector
         return {
             "ok": True,
             "result": {"execution": {"success": True}},
@@ -358,9 +371,17 @@ def test_playground_manager_value_resolve_reports_queued_before_thread_start(
     first_started = threading.Event()
     release_first = threading.Event()
 
-    def _fake_execute(request_payload: dict[str, object], log_path_str: str) -> dict[str, object]:
+    def _fake_execute(
+        request_payload: dict[str, object],
+        log_path_str: str,
+        live_inspector: LiveRuntimeValueInspector | None = None,
+    ) -> dict[str, object]:
         started = time.time()
         if str(request_payload.get("_priority_node", "")) == "node-1":
+            if live_inspector is not None:
+                store = MaterializationStore(backend=None, read_through=False, write_through=False)
+                store.put("node-1", [10, 11, 12], metadata={"source": "runtime"})
+                live_inspector.attach_materialization_store(store)
             first_started.set()
             release_first.wait(timeout=2.0)
         return {
@@ -426,6 +447,92 @@ def test_playground_manager_value_resolve_reports_queued_before_thread_start(
         time.sleep(0.01)
     else:
         pytest.fail("second value job did not complete after queue release")
+
+
+@pytest.mark.unit
+def test_playground_manager_inspects_live_runtime_for_running_value_job(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import voxlogica.serve_support as serve_support
+
+    monkeypatch.setattr(serve_support, "PLAYGROUND_JOB_LOG_DIR", tmp_path)
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _fake_execute(
+        request_payload: dict[str, object],
+        log_path_str: str,
+        live_inspector: LiveRuntimeValueInspector | None = None,
+    ) -> dict[str, object]:
+        del request_payload, log_path_str
+        store = MaterializationStore(backend=None, read_through=False, write_through=False)
+        store.put("node-live", InspectableRangeSequence(parent_ref="node-live", start=80, stop=82), metadata={"source": "runtime"})
+        if live_inspector is not None:
+            live_inspector.attach_materialization_store(store)
+        started.set()
+        release.wait(timeout=2.0)
+        finished = time.time()
+        return {
+            "ok": True,
+            "result": {"execution": {"success": True}},
+            "_runtime_goal_values": {"node-live": [80, 81]},
+            "metrics": {"wall_time_s": 0.01, "cpu_time_s": 0.01},
+            "started_at": finished - 0.01,
+            "finished_at": finished,
+        }
+
+    monkeypatch.setattr(serve_support, "_execute_playground_request", _fake_execute)
+
+    manager = PlaygroundJobManager()
+    manager.ensure_value_job(
+        {
+            "program": "xs = range(80,82)",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-live",
+            "_program_hash": "prog-live",
+        },
+        program_hash="prog-live",
+        node_id="node-live",
+        execution_strategy="dask",
+    )
+
+    try:
+        assert started.wait(timeout=1.0) is True
+        preview = manager.inspect_value_job_runtime(
+            program_hash="prog-live",
+            node_id="node-live",
+            execution_strategy="dask",
+            path="/1",
+        )
+        assert preview is not None
+        assert preview["value"] == 81
+
+        page_preview = manager.inspect_value_job_runtime(
+            program_hash="prog-live",
+            node_id="node-live",
+            execution_strategy="dask",
+            path="/",
+            page_offset=0,
+            page_limit=2,
+        )
+        assert page_preview is not None
+        assert page_preview["page"]["items"][0]["status"] == "ready"
+        assert page_preview["page"]["items"][0]["node_id"] == hash_sequence_item("node-live", 0)
+    finally:
+        release.set()
+
+
+@pytest.mark.unit
+def test_inspect_runtime_value_page_reports_inspectable_item_states() -> None:
+    sequence = InspectableRangeSequence(parent_ref="node-seq", start=80, stop=82)
+    page = inspect_runtime_value_page(node_id="node-seq", value=sequence, path="/", offset=0, limit=2)
+    assert page["page"]["items"][0]["status"] == "ready"
+    assert page["page"]["items"][0]["state"] == "ready"
+    assert page["page"]["items"][0]["node_id"] == hash_sequence_item("node-seq", 0)
 
 
 @pytest.mark.unit

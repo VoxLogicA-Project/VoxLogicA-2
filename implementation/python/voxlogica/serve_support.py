@@ -30,6 +30,7 @@ import uuid
 
 from voxlogica.pod_codec import decode_runtime_value
 from voxlogica.execution_strategy.results import SequenceValue
+from voxlogica.inspectable_sequence import InspectableSequenceValue
 from voxlogica.storage import ResultRecord
 from voxlogica.value_model import (
     DEFAULT_PAGE_SIZE,
@@ -67,6 +68,23 @@ _PLAYGROUND_COMMENT = re.compile(
 )
 
 testing_jobs_logger = logging.getLogger("voxlogica.testing.jobs")
+
+
+def _progress_descriptor(*, path: str, status: str) -> dict[str, Any]:
+    normalized_status = str(status or "pending").strip().lower() or "pending"
+    return {
+        "vox_type": "unavailable",
+        "format_version": VOX_FORMAT_VERSION,
+        "summary": {"state": normalized_status},
+        "navigation": {
+            "path": normalize_path(path),
+            "pageable": False,
+            "can_descend": False,
+            "default_page_size": DEFAULT_PAGE_SIZE,
+            "max_page_size": MAX_PAGE_SIZE,
+        },
+        "materialization": {"status": normalized_status},
+    }
 
 
 def _is_dask_bag(value: Any) -> bool:
@@ -248,6 +266,49 @@ class RuntimeValueInspector:
         with self._lock:
             self._cache[key] = copy.deepcopy(preview)
         return preview
+
+
+@dataclass
+class LiveRuntimeValueInspector:
+    """Thread-safe inspector over a live materialization store during execution."""
+
+    materialization_store: Any | None = None
+    default_page_limit: int = 64
+    _lock: threading.RLock = field(default_factory=threading.RLock)
+
+    def attach_materialization_store(self, materialization_store: Any) -> None:
+        with self._lock:
+            self.materialization_store = materialization_store
+
+    def preview(
+        self,
+        *,
+        node_id: str,
+        path: str = "",
+        page_offset: int = 0,
+        page_limit: int | None = None,
+    ) -> dict[str, Any] | None:
+        safe_node_id = str(node_id or "").strip()
+        if not safe_node_id:
+            return None
+        safe_limit = max(1, min(int(page_limit or self.default_page_limit), MAX_PAGE_SIZE))
+        normalized_path = _normalize_result_path(path)
+        with self._lock:
+            if self.materialization_store is None:
+                return None
+            try:
+                if not bool(getattr(self.materialization_store, "has")(safe_node_id)):
+                    return None
+                value = self.materialization_store.get(safe_node_id)
+            except Exception:
+                return None
+        return build_runtime_preview(
+            node_id=safe_node_id,
+            value=value,
+            path=normalized_path,
+            page_offset=page_offset,
+            page_limit=safe_limit,
+        )
 
 
 def _iso_utc(ts: float | None) -> str | None:
@@ -1685,11 +1746,12 @@ def inspect_runtime_value_page(
     normalized_path = _normalize_result_path(path)
     safe_offset = max(0, int(offset))
     safe_limit = max(1, min(int(limit), MAX_PAGE_SIZE))
-    root = adapt_runtime_value(value).resolve(path=normalized_path)
+    resolved = adapt_runtime_value(value).resolve(path=normalized_path)
+    root = resolved
     if not isinstance(root, (VoxSequenceValue, VoxMappingValue)):
         raise ValueError(f"Path '{normalized_path or '/'}' is not pageable (vox_type={root.vox_type}).")
 
-    page = root.page(offset=safe_offset, limit=safe_limit)
+    raw_root = getattr(resolved, "raw", None)
     payload = {
         "available": True,
         "node_id": node_id,
@@ -1706,6 +1768,54 @@ def inspect_runtime_value_page(
             path=normalized_path,
         ),
     }
+
+    if isinstance(raw_root, InspectableSequenceValue):
+        snapshot = raw_root.page_snapshot(safe_offset, safe_limit, priority="visible-page")
+        items_out: list[dict[str, Any]] = []
+        for item in snapshot.get("items", []):
+            item_index = int(getattr(item, "index", 0))
+            item_path = append_path(normalized_path, str(item_index))
+            item_state = str(getattr(item, "state", "not_loaded") or "not_loaded")
+            item_value = getattr(item, "value", None)
+            if item_state == "ready":
+                item_descriptor = _canonical_descriptor(
+                    adapt_runtime_value(item_value).describe(path=item_path),
+                    node_id=getattr(getattr(item, "child_ref", None), "child_id", node_id),
+                    path=item_path,
+                )
+            else:
+                item_descriptor = _progress_descriptor(path=item_path, status=item_state)
+            item_payload = {
+                "index": item_index,
+                "label": f"[{item_index}]",
+                "path": item_path,
+                "node_id": getattr(getattr(item, "child_ref", None), "child_id", None),
+                "descriptor": item_descriptor,
+                "status": item_state,
+                "state": item_state,
+            }
+            state_reason = getattr(item, "state_reason", None)
+            blocked_on = getattr(item, "blocked_on", None)
+            error = getattr(item, "error", None)
+            if state_reason:
+                item_payload["state_reason"] = str(state_reason)
+            if blocked_on:
+                item_payload["blocked_on"] = str(blocked_on)
+            if error:
+                item_payload["error"] = str(error)
+            items_out.append(item_payload)
+
+        payload["page"] = {
+            "offset": int(snapshot.get("offset", safe_offset)),
+            "limit": int(snapshot.get("limit", safe_limit)),
+            "items": items_out,
+            "next_offset": snapshot.get("next_offset"),
+            "has_more": bool(snapshot.get("has_more", False)),
+            "total": snapshot.get("total"),
+        }
+        return payload
+
+    page = root.page(offset=safe_offset, limit=safe_limit)
 
     items_out: list[dict[str, Any]] = []
     for index, item in enumerate(page.items):
@@ -1877,7 +1987,11 @@ def _ru_maxrss_bytes() -> int:
     return int(value * 1024.0)
 
 
-def _execute_playground_request(request_payload: dict[str, Any], log_path_str: str) -> dict[str, Any]:
+def _execute_playground_request(
+    request_payload: dict[str, Any],
+    log_path_str: str,
+    live_inspector: LiveRuntimeValueInspector | None = None,
+) -> dict[str, Any]:
     from voxlogica.features import handle_run
 
     log_path = Path(log_path_str)
@@ -1916,6 +2030,7 @@ def _execute_playground_request(request_payload: dict[str, Any], log_path_str: s
             **request_payload,
             _include_execution_events=True,
             _capture_goal_runtime_values=capture_runtime_goal_values,
+            _live_runtime_inspector=live_inspector,
         )
         if run_result.success:
             runtime_goal_values: dict[str, Any] = {}
@@ -2092,6 +2207,7 @@ class PlaygroundJob:
     priority_class: str = "normal"
     runtime_goal_values: dict[str, Any] = field(default_factory=dict)
     runtime_inspectors: dict[str, RuntimeValueInspector] = field(default_factory=dict)
+    live_runtime_inspector: LiveRuntimeValueInspector | None = None
 
     def as_public(
         self,
@@ -2413,7 +2529,13 @@ class PlaygroundJobManager:
         log_path = PLAYGROUND_JOB_LOG_DIR / f"{job_id}.log"
         priority_class = self._priority_class_for_payload(payload)
         if str(payload.get("_job_kind", "")).strip().lower() == "value-resolve":
-            future = self._value_executor.submit(_execute_playground_request, payload, str(log_path))
+            live_runtime_inspector = LiveRuntimeValueInspector()
+            future = self._value_executor.submit(
+                _execute_playground_request,
+                payload,
+                str(log_path),
+                live_runtime_inspector,
+            )
             job = PlaygroundJob(
                 job_id=job_id,
                 request_payload=payload,
@@ -2423,6 +2545,7 @@ class PlaygroundJobManager:
                 future=future,
                 log_path=log_path,
                 priority_class=priority_class,
+                live_runtime_inspector=live_runtime_inspector,
             )
             self._jobs[job_id] = job
             self._poll_locked(job)
@@ -2529,12 +2652,21 @@ class PlaygroundJobManager:
             if job is None:
                 return None
             self._poll_locked(job)
-            if job.status != "completed":
-                return None
-            inspector = job.runtime_inspectors.get(str(node_id))
+            inspector: RuntimeValueInspector | LiveRuntimeValueInspector | None = None
+            if job.status == "completed":
+                inspector = job.runtime_inspectors.get(str(node_id))
+            elif job.status in {"queued", "running"}:
+                inspector = job.live_runtime_inspector
             if inspector is None:
                 return None
             try:
+                if isinstance(inspector, LiveRuntimeValueInspector):
+                    return inspector.preview(
+                        node_id=node_id,
+                        path=path,
+                        page_offset=page_offset,
+                        page_limit=page_limit,
+                    )
                 return inspector.preview(
                     path=path,
                     page_offset=page_offset,

@@ -142,6 +142,22 @@ class ExecutionEngine:
         self._last_prepared = prepared
         return prepared
 
+    def run_prepared(
+        self,
+        prepared: PreparedPlan,
+        *,
+        goals: list[NodeId] | None = None,
+        strategy: str | None = None,
+    ) -> ExecutionResult:
+        selected = strategy or prepared.strategy_name
+        if selected not in self._strategies:
+            raise ValueError(
+                f"Unknown execution strategy '{selected}'. "
+                f"Available: {sorted(self._strategies.keys())}"
+            )
+        self._last_prepared = prepared
+        return self._strategies[selected].run(prepared, goals=goals)
+
     def stream(
         self,
         prepared: PreparedPlan,

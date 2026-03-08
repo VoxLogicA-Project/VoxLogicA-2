@@ -312,6 +312,7 @@ def handle_run(
     _include_goal_descriptors: bool = False,
     _capture_goal_runtime_values: bool = False,
     _goals: list[str] | None = None,
+    _live_runtime_inspector: Any = None,
     **kwargs,
 ) -> OperationResult[Dict[str, Any]]:
     """Run parse/reduce/export/execute pipeline for a VoxLogicA program."""
@@ -359,22 +360,21 @@ def handle_run(
             if no_cache:
                 logger.info("No-cache mode enabled - results are not persisted")
                 engine = ExecutionEngine(storage_backend=NoCacheStorageBackend())
-                with runtime_policy_scope(serve_mode=bool(serve_mode)):
-                    execution_result, prepared_plan = engine.execute_with_prepared(
-                        workplan,
-                        dask_dashboard=dask_dashboard,
-                        strategy=execution_strategy,
-                        goals=effective_goals or None,
-                    )
             else:
                 engine = ExecutionEngine()
-                with runtime_policy_scope(serve_mode=bool(serve_mode)):
-                    execution_result, prepared_plan = engine.execute_with_prepared(
-                        workplan,
-                        dask_dashboard=dask_dashboard,
-                        strategy=execution_strategy,
-                        goals=effective_goals or None,
-                    )
+
+            prepared_plan = engine.compile_plan(workplan, strategy=execution_strategy)
+            if _live_runtime_inspector is not None and hasattr(_live_runtime_inspector, "attach_materialization_store"):
+                try:
+                    _live_runtime_inspector.attach_materialization_store(prepared_plan.materialization_store)
+                except Exception:
+                    pass
+            with runtime_policy_scope(serve_mode=bool(serve_mode)):
+                execution_result = engine.run_prepared(
+                    prepared_plan,
+                    strategy=execution_strategy,
+                    goals=effective_goals or None,
+                )
 
             if (
                 prepared_plan is not None

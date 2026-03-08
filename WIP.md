@@ -320,6 +320,53 @@ What this step still does **not** solve:
 Planned next step:
 - introduce a serve/runtime child-state registry and page-aware page snapshots so visible items can move through `not_loaded / queued / blocked / running / persisting / ready / failed` without waiting for whole-parent completion
 
+## Step 3 Completed: Live Runtime Inspection for Running Value Jobs
+
+This step extends serve-mode value inspection so running in-process value jobs can expose the current runtime state before job completion.
+
+Files:
+- `implementation/python/voxlogica/serve_support.py`
+- `implementation/python/voxlogica/features.py`
+- `implementation/python/voxlogica/execution.py`
+- `implementation/python/voxlogica/main.py`
+- `tests/unit/test_serve_support.py`
+- `tests/unit/test_main_entrypoints.py`
+
+What changed:
+- Added `LiveRuntimeValueInspector`, attached to thread-based `value-resolve` jobs.
+- `handle_run(...)` now accepts a hidden live inspector hook and attaches the compiled plan’s `materialization_store` before execution starts.
+- `ExecutionEngine` now exposes `run_prepared(...)` so `handle_run(...)` can compile first, publish the live store, then execute.
+- `/playground/value` now attempts live runtime inspection for `queued/running` value jobs before falling back to generic progress descriptors.
+- `inspect_runtime_value_page(...)` now recognizes `InspectableSequenceValue` and emits per-item payloads with:
+  - `node_id`
+  - `path`
+  - `status`
+  - `state`
+  - optional `error`
+  - optional `state_reason`
+  - optional `blocked_on`
+- Ready child items now carry deterministic child node ids derived from the inspectable child refs.
+
+Important scope note:
+- This is **live inspection**, not yet live scheduling.
+- Visible page requests can inspect and materialize inspectable items while the value job is still running because value-resolve jobs execute in-process on a thread.
+- This does not yet provide explicit queue/blocked/running transitions for individual children via websocket pushes.
+
+Validation:
+- `python -m py_compile implementation/python/voxlogica/serve_support.py implementation/python/voxlogica/features.py implementation/python/voxlogica/execution.py tests/unit/test_serve_support.py tests/unit/test_main_entrypoints.py`
+- `PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_serve_support.py tests/unit/test_main_entrypoints.py -q -k 'live_runtime or runtime_preview or value/page or value_resolve_uses_inprocess_future or runtime_inspection'`
+- `PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_serve_support.py tests/unit/test_main_entrypoints.py --cov=voxlogica.serve_support --cov=voxlogica.main --cov=voxlogica.features --cov=voxlogica.execution --cov-report=term-missing -q -k 'live_runtime or runtime_preview or value/page or value_resolve_uses_inprocess_future or runtime_inspection'`
+
+Tests added in this step:
+- running value job can be inspected live via `PlaygroundJobManager.inspect_value_job_runtime(...)`
+- runtime page inspection emits inspectable per-item states and deterministic child node ids
+- `/api/v1/playground/value/page` uses runtime-live preview payloads while the job status is `running`
+
+Remaining gap after step 3:
+- the websocket still subscribes to a single value path, not a page window
+- the UI still maps many item states through old `waiting/upstream/materialized` heuristics
+- visible-page warmup is still driven by client-side polling helpers rather than page-aware server push
+
 ## Update: Inspectable Sequence Semantics Trace (2026-03-08)
 
 This section records the findings behind the next architectural change: **sequences must become inspectable before full computation/persistence**.

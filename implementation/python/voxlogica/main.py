@@ -1978,6 +1978,35 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
     if tracked_job is not None:
         job_status = str(tracked_job.get("status", "unknown"))
         if job_status in {"queued", "running"}:
+            inspect_job_runtime = getattr(playground_jobs, "inspect_value_job_runtime", None)
+            if callable(inspect_job_runtime):
+                runtime_live_preview = inspect_job_runtime(
+                    program_hash=program_hash,
+                    node_id=node_id,
+                    execution_strategy=strategy,
+                    path=view_path,
+                    page_offset=0,
+                    page_limit=64,
+                )
+                if isinstance(runtime_live_preview, dict):
+                    if runtime_live_preview.get("runtime_error"):
+                        return _attach_and_log(
+                            _runtime_inspection_failure_payload(
+                                preview=runtime_live_preview,
+                                compute_status=job_status,
+                                job_id=tracked_job.get("job_id"),
+                            ),
+                            reason=f"job-{job_status}-runtime-error",
+                        )
+                    preview_payload = _payload_from_runtime_preview(
+                        preview=runtime_live_preview,
+                        metadata={"source": "runtime-live", "persisted": "pending"},
+                        compute_status=job_status,
+                        source="runtime-live",
+                        job_id=tracked_job.get("job_id"),
+                    )
+                    if preview_payload is not None:
+                        return _attach_and_log(preview_payload, reason=f"job-{job_status}-runtime-live")
             progress_descriptor = _in_progress_descriptor(
                 output_kind=node_output_kind,
                 path=view_path,
