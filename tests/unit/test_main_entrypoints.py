@@ -2400,3 +2400,221 @@ def test_playground_value_resolves_runtime_nested_overlay_without_persisted_chil
             )
     finally:
         fake_storage.close()
+
+
+@pytest.mark.unit
+def test_playground_value_page_uses_runtime_inspector_for_cached_runtime_backed_nested_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    root_node_id = "root-sequence-node"
+    nested_descriptor = {
+        "vox_type": "sequence",
+        "format_version": "voxpod/1",
+        "summary": {"length": 9, "page_size": 128},
+        "navigation": {
+            "path": "/0",
+            "pageable": True,
+            "can_descend": True,
+            "default_page_size": 64,
+            "max_page_size": 512,
+        },
+    }
+
+    async def _fake_value_endpoint(_request):  # noqa: ANN001
+        return {
+            "available": True,
+            "node_id": root_node_id,
+            "status": "materialized",
+            "runtime_version": "2.0.0a2",
+            "metadata": {
+                "source": "runtime",
+                "persisted": "pending",
+            },
+            "error": None,
+            "path": "/0",
+            "descriptor": nested_descriptor,
+            "materialization": "cached",
+            "compute_status": "cached",
+            "execution_strategy": "dask",
+            "variable": "vi_sweep_overlays",
+        }
+
+    runtime_calls: list[dict[str, object]] = []
+
+    def _fake_runtime_page(**kwargs):  # noqa: ANN003
+        runtime_calls.append(dict(kwargs))
+        return {
+            "path": "/0",
+            "descriptor": nested_descriptor,
+            "page": {
+                "offset": 0,
+                "limit": 8,
+                "items": [
+                    {
+                        "index": 0,
+                        "label": "[0]",
+                        "path": "/0/0",
+                        "node_id": hash_sequence_item(hash_sequence_item(root_node_id, 0), 0),
+                        "status": "ready",
+                        "state": "ready",
+                        "descriptor": {
+                            "vox_type": "overlay",
+                            "format_version": "voxpod/1",
+                            "summary": {"layer_count": 2},
+                            "navigation": {
+                                "path": "/0/0",
+                                "pageable": False,
+                                "can_descend": False,
+                                "default_page_size": 64,
+                                "max_page_size": 512,
+                            },
+                        },
+                    }
+                ],
+                "next_offset": None,
+                "has_more": False,
+                "total": 9,
+            },
+        }
+
+    monkeypatch.setattr(main_mod, "playground_value_endpoint", _fake_value_endpoint)
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            inspect_value_job_runtime=_fake_runtime_page,
+        ),
+    )
+
+    def _unexpected_store_page(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("inspect_store_result_page should not be used for runtime-backed nested sequence pages")
+
+    monkeypatch.setattr(main_mod, "inspect_store_result_page", _unexpected_store_page)
+
+    payload = asyncio.run(
+        main_mod.playground_value_page_endpoint(
+            main_mod.PlaygroundValuePageRequest(
+                program="xs = range(0,1)",
+                variable="vi_sweep_overlays",
+                path="/0",
+                offset=0,
+                limit=8,
+                enqueue=False,
+            )
+        )
+    )
+
+    assert runtime_calls
+    assert payload["available"] is True
+    assert payload["path"] == "/0"
+    assert payload["page"]["items"][0]["path"] == "/0/0"
+    assert payload["page"]["items"][0]["descriptor"]["vox_type"] == "overlay"
+
+
+@pytest.mark.unit
+def test_playground_value_page_enqueues_and_falls_back_for_runtime_backed_nested_sequence_without_runtime_page(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    root_node_id = "root-sequence-node"
+    nested_descriptor = {
+        "vox_type": "sequence",
+        "format_version": "voxpod/1",
+        "summary": {"length": 9, "page_size": 128},
+        "navigation": {
+            "path": "/0",
+            "pageable": True,
+            "can_descend": True,
+            "default_page_size": 64,
+            "max_page_size": 512,
+        },
+    }
+
+    async def _fake_value_endpoint(_request):  # noqa: ANN001
+        return {
+            "available": True,
+            "node_id": root_node_id,
+            "status": "materialized",
+            "runtime_version": "2.0.0a2",
+            "metadata": {
+                "source": "runtime",
+                "persisted": "pending",
+            },
+            "error": None,
+            "path": "/0",
+            "descriptor": nested_descriptor,
+            "materialization": "cached",
+            "compute_status": "cached",
+            "execution_strategy": "dask",
+            "variable": "vi_sweep_overlays",
+        }
+
+    enqueued_payloads: list[dict[str, object]] = []
+
+    monkeypatch.setattr(main_mod, "playground_value_endpoint", _fake_value_endpoint)
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            inspect_value_job_runtime=lambda **kwargs: None,
+            ensure_value_job=lambda payload, **kwargs: enqueued_payloads.append(dict(payload))
+            or {"job_id": "nested-page-job", "status": "queued", "log_tail": ""},
+        ),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_transient_sequence_page_from_store",
+        lambda **kwargs: {
+            "offset": 0,
+            "limit": 8,
+            "items": [
+                {
+                    "index": 0,
+                    "label": "[0]",
+                    "path": "/0/0",
+                    "status": "pending",
+                    "state": "pending",
+                    "descriptor": {
+                        "vox_type": "unavailable",
+                        "format_version": "voxpod/1",
+                        "summary": {"reason": "not loaded yet"},
+                        "navigation": {
+                            "path": "/0/0",
+                            "pageable": False,
+                            "can_descend": False,
+                            "default_page_size": 64,
+                            "max_page_size": 512,
+                        },
+                    },
+                }
+            ],
+            "has_more": True,
+            "next_offset": 1,
+            "total": 9,
+        },
+    )
+
+    def _unexpected_store_page(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("inspect_store_result_page should not be used when runtime-backed nested page falls back")
+
+    monkeypatch.setattr(main_mod, "inspect_store_result_page", _unexpected_store_page)
+
+    payload = asyncio.run(
+        main_mod.playground_value_page_endpoint(
+            main_mod.PlaygroundValuePageRequest(
+                program="xs = range(0,1)",
+                variable="vi_sweep_overlays",
+                path="/0",
+                offset=0,
+                limit=8,
+                enqueue=False,
+            )
+        )
+    )
+
+    assert enqueued_payloads
+    assert enqueued_payloads[0]["_goal_path"] == "/0"
+    assert payload["request_enqueued"] is True
+    assert payload["job_id"] == "nested-page-job"
+    assert payload["compute_status"] == "queued"
+    assert payload["materialization"] == "pending"
+    assert payload["page"]["items"][0]["path"] == "/0/0"

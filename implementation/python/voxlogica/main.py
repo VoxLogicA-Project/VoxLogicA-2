@@ -2312,6 +2312,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
 @api_router.post("/playground/value/page")
 async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) -> dict[str, Any]:
     """Resolve one pageable value lazily and return one page slice."""
+    program_hash = _program_hash(request.program)
     value_payload = await playground_value_endpoint(
         PlaygroundValueRequest(
             program=request.program,
@@ -2333,6 +2334,7 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
         )
     path = str(value_payload.get("path") or request.path or "")
     descriptor_payload = value_payload.get("descriptor") if isinstance(value_payload.get("descriptor"), dict) else None
+    metadata_payload = value_payload.get("metadata") if isinstance(value_payload.get("metadata"), dict) else {}
     runtime_preview_page = _slice_runtime_preview_page(
         value_payload.get("runtime_preview_page") if isinstance(value_payload.get("runtime_preview_page"), dict) else None,
         offset=request.offset,
@@ -2351,9 +2353,20 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
         }
 
     inspect_job_runtime = getattr(playground_jobs, "inspect_value_job_runtime", None)
-    if callable(inspect_job_runtime) and str(value_payload.get("store_status", "")) == "missing":
+    runtime_source = str(metadata_payload.get("source", "")).strip().lower()
+    runtime_persisted_state = str(metadata_payload.get("persisted", "")).strip().lower()
+    runtime_backed_page_candidate = runtime_source in {
+        "runtime",
+        "runtime-cache",
+        "runtime-live",
+        "runtime-preview",
+    } or runtime_persisted_state == "pending"
+    runtime_page_available = False
+    if callable(inspect_job_runtime) and (
+        str(value_payload.get("store_status", "")) == "missing" or runtime_backed_page_candidate
+    ):
         runtime_cached_preview = inspect_job_runtime(
-            program_hash=_program_hash(request.program),
+            program_hash=program_hash,
             node_id=node_id,
             execution_strategy="dask",
             path=path,
@@ -2366,6 +2379,7 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
             else None
         )
         if isinstance(runtime_cached_page, dict):
+            runtime_page_available = True
             updated_payload = {
                 **value_payload,
                 "path": str(runtime_cached_preview.get("path") or path),
@@ -2377,7 +2391,45 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
                 updated_payload["descriptor"] = runtime_cached_descriptor
             return updated_payload
 
-    if materialization in {"pending", "missing"} or compute_status in {"queued", "running", "persisting", "missing"}:
+    if runtime_backed_page_candidate and not runtime_page_available:
+        try:
+            value_job = playground_jobs.ensure_value_job(
+                {
+                    "program": request.program,
+                    "execute": True,
+                    "no_cache": False,
+                    "execution_strategy": "dask",
+                    "legacy": False,
+                    "serve_mode": True,
+                    "_include_goal_descriptors": True,
+                    "_goals": [node_id],
+                    "_job_kind": "value-resolve",
+                    "_priority_node": node_id,
+                    "_program_hash": program_hash,
+                    "_goal_path": path,
+                },
+                program_hash=program_hash,
+                node_id=node_id,
+                execution_strategy="dask",
+            )
+            value_payload = {
+                **value_payload,
+                "job_id": value_job.get("job_id"),
+                "request_enqueued": True,
+                "compute_status": str(value_job.get("status", "queued") or "queued"),
+                "materialization": "pending",
+                "store_status": str(value_payload.get("store_status", "materialized") or "materialized"),
+            }
+            materialization = str(value_payload.get("materialization", "pending"))
+            compute_status = str(value_payload.get("compute_status", "queued"))
+        except Exception:
+            pass
+
+    if (
+        materialization in {"pending", "missing"}
+        or compute_status in {"queued", "running", "persisting", "missing"}
+        or runtime_backed_page_candidate
+    ):
         container_node_id: str | None = None
         if isinstance(descriptor_payload, dict) and str(descriptor_payload.get("vox_type", "")) == "sequence":
             resolved_node_raw = value_payload.get("resolved_store_node_id")

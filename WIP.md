@@ -956,3 +956,66 @@ Validation:
 python -m py_compile implementation/python/voxlogica/serve_support.py tests/unit/test_serve_support.py
 PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_serve_support.py -q -k 'inspect_runtime_value_page_reports_inspectable_item_states or uses_root_node_for_runtime_overlay_render_urls'
 ```
+
+## Follow-up fix: nested `/value/page` must honor runtime-backed cached children
+
+Date: 2026-03-08
+
+Proven reproduction against a live local server on `127.0.0.1:8001`:
+
+- `POST /api/v1/playground/value` for `vi_sweep_overlays` path `/0` succeeds and returns:
+  - `materialization="cached"`
+  - `compute_status="cached"`
+  - `metadata.source="runtime"`
+  - `metadata.persisted="pending"`
+- `POST /api/v1/playground/value` for `/0/0` also succeeds and returns an `overlay`.
+- but `POST /api/v1/playground/value/page` for `/0` fails with:
+  - `Unknown store result: 7a2c2dc848ed...`
+
+Root cause:
+
+- `playground_value_page_endpoint()` only asked `inspect_value_job_runtime(...)` for a page when `store_status == "missing"`.
+- In this failure shape, the nested child `/0` is surfaced as `materialization="cached"` from the root store hit, but the nested sequence itself is still runtime-backed:
+  - `metadata.source="runtime"`
+  - `metadata.persisted="pending"`
+- The page endpoint therefore skipped runtime paging and rebased to:
+  - `inspect_store_result_page(node_id=hash_sequence_item(root, 0), path="")`
+- that child hash is not yet a persisted store record, so store paging raises `Unknown store result`.
+
+Planned fix:
+
+- teach `playground_value_page_endpoint()` to treat
+  - `metadata.source in {"runtime", "runtime-cache", "runtime-live", "runtime-preview"}`
+  - or `metadata.persisted == "pending"`
+  as sufficient reason to ask the runtime inspector for a page, even when `store_status != "missing"`.
+- keep the store-page path only for genuinely persisted nested containers.
+
+Regression target:
+
+- add an endpoint test where `/playground/value` for `/0` is `cached` and runtime-backed, and `/playground/value/page` for `/0` must return a runtime page instead of rebasing to a missing child store hash.
+
+### Additional proven issue
+
+After implementing the runtime-page preference, the live server still failed for `/playground/value/page` on `/0` in one important case:
+
+- there was no matching runtime page available yet
+- `/playground/value` for `/0` still returned `cached`
+- `loadRecordPage()` in the UI asked page `enqueue=false` first
+- `playground_value_page_endpoint()` then had no runtime page, and without a focused job it could only fail or fall back to empty/transient pages
+
+Live proof on a fresh local debug server:
+
+- `POST /api/v1/playground/value/page` for `/0` now returns
+  - `materialization="pending"`
+  - `compute_status="running"` or `queued`
+  - `request_enqueued=true`
+  - a transient pending page for `/0/0`, `/0/1`, ...
+- `POST /api/v1/playground/value` for `/0/0` still resolves as `overlay`
+
+Final fix for this slice:
+
+- if `/playground/value/page` sees a runtime-backed nested sequence but no runtime page is currently available,
+  it now ensures a focused `value-resolve` job itself and returns a transient pending page instead of raising
+  `Unknown store result: <child-hash>`.
+
+This is the correct behavior for the Start tab interaction path because the initial nested page request is the user's first explicit request to inspect that nested collection.
