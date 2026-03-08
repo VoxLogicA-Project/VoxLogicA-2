@@ -2163,3 +2163,109 @@ def test_playground_value_websocket_supports_page_subscriptions(monkeypatch: pyt
         "limit": 8,
         "enqueue": False,
     }
+
+
+@pytest.mark.unit
+def test_playground_value_websocket_waits_for_runtime_page_changes(monkeypatch: pytest.MonkeyPatch):
+    requests: list[dict[str, object]] = []
+    wait_calls: list[dict[str, object]] = []
+    payloads = [
+        {
+            "node_id": "node-xs",
+            "materialization": "pending",
+            "compute_status": "running",
+            "status": "materialized",
+            "sequence_version": 1,
+            "page": {
+                "offset": 0,
+                "limit": 2,
+                "has_more": True,
+                "next_offset": 2,
+                "items": [
+                    {
+                        "index": 0,
+                        "label": "[0]",
+                        "path": "/0",
+                        "node_id": "child-0",
+                        "state": "queued",
+                        "status": "queued",
+                        "descriptor": {"vox_type": "integer"},
+                    }
+                ],
+            },
+        },
+        {
+            "node_id": "node-xs",
+            "materialization": "computed",
+            "compute_status": "completed",
+            "status": "materialized",
+            "sequence_version": 2,
+            "page": {
+                "offset": 0,
+                "limit": 2,
+                "has_more": False,
+                "next_offset": None,
+                "items": [
+                    {
+                        "index": 0,
+                        "label": "[0]",
+                        "path": "/0",
+                        "node_id": "child-0",
+                        "state": "ready",
+                        "status": "ready",
+                        "descriptor": {"vox_type": "integer", "summary": {"value": 9}},
+                    }
+                ],
+            },
+        },
+    ]
+
+    async def fake_page_endpoint(request):  # noqa: ANN001
+        requests.append(
+            {
+                "variable": request.variable,
+                "path": request.path,
+                "offset": request.offset,
+                "limit": request.limit,
+                "enqueue": request.enqueue,
+            }
+        )
+        return payloads.pop(0)
+
+    class _FakeManager:
+        def wait_for_value_job_runtime_change(self, **kwargs):  # noqa: ANN003
+            wait_calls.append(dict(kwargs))
+            return 2
+
+    monkeypatch.setattr(main_mod, "playground_value_page_endpoint", fake_page_endpoint)
+    monkeypatch.setattr(main_mod, "playground_jobs", _FakeManager())
+
+    with TestClient(main_mod.api_app) as client:
+        with client.websocket_connect("/ws/playground/value") as ws:
+            ws.send_json(
+                {
+                    "type": "subscribe",
+                    "mode": "page",
+                    "request": {
+                        "program": "xs = range(0, 1)",
+                        "variable": "xs",
+                        "path": "/",
+                        "offset": 0,
+                        "limit": 2,
+                        "enqueue": True,
+                    },
+                }
+            )
+
+            assert ws.receive_json() == {"type": "subscribed", "mode": "page"}
+            first = ws.receive_json()
+            second = ws.receive_json()
+            terminal = ws.receive_json()
+
+    assert first["payload"]["page"]["items"][0]["state"] == "queued"
+    assert second["payload"]["page"]["items"][0]["state"] == "ready"
+    assert terminal["type"] == "terminal"
+    assert len(wait_calls) == 1
+    assert wait_calls[0]["node_id"] == "node-xs"
+    assert wait_calls[0]["path"] == "/"
+    assert wait_calls[0]["since_version"] == 1

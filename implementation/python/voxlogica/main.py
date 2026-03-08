@@ -654,9 +654,17 @@ def _is_terminal_value_payload(payload: dict[str, Any]) -> bool:
         return True
     if materialization in {"cached", "computed"}:
         return True
-    if status_name == "materialized":
-        return True
     return False
+
+
+def _payload_sequence_version(payload: dict[str, Any]) -> int | None:
+    raw_version = payload.get("sequence_version")
+    if raw_version is None:
+        return None
+    try:
+        return int(raw_version)
+    except Exception:
+        return None
 
 
 class ElapsedMsFormatter(logging.Formatter):
@@ -2798,6 +2806,37 @@ async def playground_value_stream_endpoint(websocket: WebSocket) -> None:
         except Exception:
             return None
 
+    async def _await_subscription_or_change(payload: dict[str, Any]) -> tuple[str, str | None]:
+        if active_request is None:
+            return ("idle", None)
+        if active_mode != "page":
+            try:
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=0.8)
+                return ("message", message)
+            except TimeoutError:
+                return ("tick", None)
+            except asyncio.TimeoutError:
+                return ("tick", None)
+        sequence_version = _payload_sequence_version(payload)
+        if sequence_version is None:
+            try:
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=0.8)
+                return ("message", message)
+            except TimeoutError:
+                return ("tick", None)
+            except asyncio.TimeoutError:
+                return ("tick", None)
+        await asyncio.to_thread(
+            playground_jobs.wait_for_value_job_runtime_change,
+            program_hash=_program_hash(active_request.program),
+            node_id=str(payload.get("node_id", active_request.node_id or "")),
+            execution_strategy="dask",
+            path=active_request.path or "",
+            since_version=sequence_version,
+            timeout=15.0,
+        )
+        return ("tick", None)
+
     try:
         while True:
             if active_request is None:
@@ -2850,7 +2889,9 @@ async def playground_value_stream_endpoint(websocket: WebSocket) -> None:
                 last_signature = ""
 
             try:
-                message = await asyncio.wait_for(websocket.receive_text(), timeout=0.8)
+                wait_kind, message = await _await_subscription_or_change(payload)
+                if wait_kind != "message":
+                    continue
                 parsed = _parse_subscribe_payload(message)
                 if parsed is not None:
                     active_mode, active_request = parsed

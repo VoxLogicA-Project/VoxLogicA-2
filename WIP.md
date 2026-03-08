@@ -907,3 +907,26 @@ Step 7 is now the transport layer:
 - replace websocket timeout-loop snapshotting with `wait_for_change(...)` on the active runtime sequence when page subscriptions target an inspectable sequence
 - keep HTTP snapshot endpoints unchanged
 - preserve timer polling only as browser fallback
+
+## Step 7 in progress: event-driven page streaming
+
+Date: 2026-03-08
+
+Current slice goals:
+
+- make `/ws/playground/value` page subscriptions wait on actual runtime sequence changes instead of re-snapshotting every 800ms
+- keep HTTP value/page endpoints unchanged
+- preserve browser-side timer fallback only for no-WebSocket environments
+
+Implementation notes for this slice:
+
+- `inspect_runtime_value_page(...)` now includes `sequence_version` when the resolved runtime root is an `InspectableSequenceValue`.
+- `RuntimeValueInspector` and `LiveRuntimeValueInspector` now expose `wait_for_change(...)`.
+- `PlaygroundJobManager` now exposes `wait_for_value_job_runtime_change(...)`.
+- page-mode websocket subscriptions now block on runtime sequence change notifications via `wait_for_change(...)` instead of the old fixed timeout snapshot loop.
+- `_is_terminal_value_payload(...)` was tightened so generic `status="materialized"` on page payloads does not incorrectly terminate the websocket stream.
+
+Validation target for this slice:
+
+- py_compile on `main.py`, `serve_support.py`, `test_main_entrypoints.py`
+- websocket page subscription regressions in `tests/unit/test_main_entrypoints.py`

@@ -267,6 +267,22 @@ class RuntimeValueInspector:
             self._cache[key] = copy.deepcopy(preview)
         return preview
 
+    def wait_for_change(
+        self,
+        *,
+        path: str = "",
+        since_version: int = 0,
+        timeout: float | None = None,
+    ) -> int:
+        """Completed runtime values do not change; return the current sequence version when available."""
+        del timeout
+        normalized = _normalize_result_path(path)
+        resolved = adapt_runtime_value(self.value).resolve(path=normalized)
+        raw_value = getattr(resolved, "raw", None)
+        if isinstance(raw_value, InspectableSequenceValue):
+            return raw_value.version()
+        return int(since_version)
+
 
 @dataclass
 class LiveRuntimeValueInspector:
@@ -309,6 +325,36 @@ class LiveRuntimeValueInspector:
             page_offset=page_offset,
             page_limit=safe_limit,
         )
+
+    def wait_for_change(
+        self,
+        *,
+        node_id: str,
+        path: str = "",
+        since_version: int = 0,
+        timeout: float | None = None,
+    ) -> int:
+        safe_node_id = str(node_id or "").strip()
+        if not safe_node_id:
+            return int(since_version)
+        normalized_path = _normalize_result_path(path)
+        with self._lock:
+            if self.materialization_store is None:
+                return int(since_version)
+            try:
+                if not bool(getattr(self.materialization_store, "has")(safe_node_id)):
+                    return int(since_version)
+                value = self.materialization_store.get(safe_node_id)
+            except Exception:
+                return int(since_version)
+        try:
+            resolved = adapt_runtime_value(value).resolve(path=normalized_path)
+        except Exception:
+            return int(since_version)
+        raw_value = getattr(resolved, "raw", None)
+        if isinstance(raw_value, InspectableSequenceValue):
+            return raw_value.wait_for_change(since_version, timeout=timeout)
+        return int(since_version)
 
 
 def _iso_utc(ts: float | None) -> str | None:
@@ -1770,6 +1816,7 @@ def inspect_runtime_value_page(
     }
 
     if isinstance(raw_root, InspectableSequenceValue):
+        payload["sequence_version"] = raw_root.version()
         snapshot = raw_root.page_snapshot(safe_offset, safe_limit, priority="visible-page")
         items_out: list[dict[str, Any]] = []
         for item in snapshot.get("items", []):
@@ -2682,6 +2729,49 @@ class PlaygroundJobManager:
                     "path": str(path or ""),
                     "node_id": str(node_id or ""),
                 }
+
+    def wait_for_value_job_runtime_change(
+        self,
+        *,
+        program_hash: str,
+        node_id: str,
+        execution_strategy: str,
+        path: str = "",
+        since_version: int = 0,
+        timeout: float | None = None,
+    ) -> int:
+        with self._lock:
+            self._cleanup_locked()
+            job = self._find_latest_value_job_locked(
+                program_hash=program_hash,
+                node_id=node_id,
+                execution_strategy=execution_strategy,
+            )
+            if job is None:
+                return int(since_version)
+            self._poll_locked(job)
+            inspector: RuntimeValueInspector | LiveRuntimeValueInspector | None = None
+            if job.status == "completed":
+                inspector = job.runtime_inspectors.get(str(node_id))
+            elif job.status in {"queued", "running"}:
+                inspector = job.live_runtime_inspector
+            if inspector is None:
+                return int(since_version)
+        try:
+            if isinstance(inspector, LiveRuntimeValueInspector):
+                return inspector.wait_for_change(
+                    node_id=node_id,
+                    path=path,
+                    since_version=since_version,
+                    timeout=timeout,
+                )
+            return inspector.wait_for_change(
+                path=path,
+                since_version=since_version,
+                timeout=timeout,
+            )
+        except Exception:
+            return int(since_version)
 
     def list_jobs(self) -> dict[str, Any]:
         with self._lock:
