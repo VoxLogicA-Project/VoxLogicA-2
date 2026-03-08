@@ -234,10 +234,91 @@ File: `implementation/python/voxlogica/serve_support.py`
   - priority classification helper `_priority_class_for_payload(...)`
 - Background jobs (`_job_kind == "background-fill"` or `_background_fill == true`) are **queued** and only dispatched when no interactive value-resolve is active.
 - Interactive value jobs (`_job_kind == "value-resolve"`) trigger preemption via `_preempt_background_for_interactive_locked()`:
-  - active background process is terminated
-  - job state returns to `queued`
-  - `metrics.preemptions` increments
-  - background job is requeued for later resume.
+- active background process is terminated
+- job state returns to `queued`
+- `metrics.preemptions` increments
+- background job is requeued for later resume.
+
+## Step 1 Completed: Inspectable Sequence Foundations
+
+Commit: `deee772` (`runtime: add inspectable sequence foundations`)
+
+This step introduced the runtime-side data model for inspectable sequences without yet changing executor semantics.
+
+Files:
+- `implementation/python/voxlogica/inspectable_sequence.py`
+- `implementation/python/voxlogica/lazy/hash.py`
+- `implementation/python/voxlogica/value_model.py`
+- `tests/unit/test_inspectable_sequence.py`
+
+Key points:
+- Added first-class inspectable containers with deterministic child refs.
+- Added generic `hash_child_ref(parent, family, token)`.
+- Kept `hash_sequence_item(parent, index)` as a compatibility wrapper.
+- Added per-item page snapshots and on-demand `ensure_item`/`resolve_item`.
+- Added adapters so existing sequence wrappers can consume `page_snapshot`.
+
+Important design note:
+- This step does **not** explode the symbolic DAG.
+- The reducer still emits one sequence-producing node for `map`/`for`.
+- Dynamic child identity is introduced at runtime, not during symbolic planning.
+
+Validation:
+- `python -m py_compile implementation/python/voxlogica/inspectable_sequence.py implementation/python/voxlogica/lazy/hash.py implementation/python/voxlogica/value_model.py`
+- `PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_inspectable_sequence.py tests/unit/test_hash_determinism.py tests/unit/test_hash_properties.py -q`
+
+## Step 2 Completed: Strict Executor Integration
+
+This step wires inspectable sequences into the executor layer while deliberately keeping the scope limited:
+- strict execution is upgraded to return inspectable containers for core sequence forms
+- Dask is patched for compatibility only
+- no scheduler/page websocket/live child-state push yet
+
+Files:
+- `implementation/python/voxlogica/execution_strategy/strict.py`
+- `implementation/python/voxlogica/execution_strategy/dask.py`
+- `implementation/python/voxlogica/execution_strategy/__init__.py`
+- `implementation/python/voxlogica/inspectable_sequence.py`
+- `tests/unit/test_execution_trace.py`
+
+What changed:
+- `StrictExecutionStrategy` now returns inspectable containers for:
+  - `range`
+  - `map`
+  - `for_loop`
+  - sequence-like `load`
+- Runtime closures/functions now propagate a `__vox_runtime_ref__`.
+- Nested mapped items derive stable per-item runtime refs, so nested inspectable sequences do not all share one parent identity.
+- Runtime `for ... do ...` expressions now build an inspectable mapped container instead of an opaque iterator-only `SequenceValue`.
+- `_coerce_sequence(...)` now upgrades sequence-like runtime values into inspectable containers.
+- `execution_strategy.__init__` now lazily exposes strict/dask strategy classes to avoid circular import through `inspectable_sequence -> results -> package __init__`.
+- `DaskExecutionStrategy` now accepts the widened strict helper signatures and preserves runtime-closure fallback.
+
+Tests added in this step:
+- strict range goal returns `InspectableRangeSequence`
+- strict `map(range, range(...))` yields nested inspectable sequences with distinct child refs
+- strict `for ... do ...` matches `map` semantics at runtime
+- Dask runtime-closure path still works after the signature changes
+
+Validation:
+- `python -m py_compile implementation/python/voxlogica/inspectable_sequence.py implementation/python/voxlogica/execution_strategy/strict.py implementation/python/voxlogica/execution_strategy/dask.py tests/unit/test_execution_trace.py`
+- `PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_execution_trace.py tests/unit/test_inspectable_sequence.py tests/unit/test_hash_determinism.py tests/unit/test_hash_properties.py -q`
+- `PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_execution_trace.py tests/unit/test_inspectable_sequence.py --cov=voxlogica.execution_strategy.strict --cov=voxlogica.execution_strategy.dask --cov=voxlogica.inspectable_sequence --cov=voxlogica.lazy.hash --cov-report=term-missing -q`
+
+Focused coverage after step 2:
+- `voxlogica.execution_strategy.strict`: 57%
+- `voxlogica.execution_strategy.dask`: 53%
+- `voxlogica.inspectable_sequence`: 84%
+- `voxlogica.lazy.hash`: 93%
+- total across targeted step-2 modules: 67%
+
+What this step still does **not** solve:
+- visible sequence pages do not yet receive live per-item status updates during a running job
+- child items are not yet independently scheduled/persisted while the parent job is still active
+- websocket/page subscriptions are still not page-aware
+
+Planned next step:
+- introduce a serve/runtime child-state registry and page-aware page snapshots so visible items can move through `not_loaded / queued / blocked / running / persisting / ready / failed` without waiting for whole-parent completion
 
 ## Update: Inspectable Sequence Semantics Trace (2026-03-08)
 

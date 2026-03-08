@@ -1,9 +1,9 @@
 """Execution strategy implementations."""
 
+from __future__ import annotations
+
 from voxlogica.execution_strategy.base import ExecutionStrategy
-from voxlogica.execution_strategy.dask import DaskExecutionStrategy
 from voxlogica.execution_strategy.results import ExecutionResult, PageResult, PreparedPlan, SequenceValue
-from voxlogica.execution_strategy.strict import StrictExecutionStrategy
 
 __all__ = [
     "ExecutionResult",
@@ -14,3 +14,15 @@ __all__ = [
     "SequenceValue",
     "StrictExecutionStrategy",
 ]
+
+
+def __getattr__(name: str):
+    if name == "DaskExecutionStrategy":
+        from voxlogica.execution_strategy.dask import DaskExecutionStrategy
+
+        return DaskExecutionStrategy
+    if name == "StrictExecutionStrategy":
+        from voxlogica.execution_strategy.strict import StrictExecutionStrategy
+
+        return StrictExecutionStrategy
+    raise AttributeError(name)

@@ -17,6 +17,14 @@ from voxlogica.execution_strategy.results import (
     PreparedPlan,
     SequenceValue,
 )
+from voxlogica.inspectable_sequence import (
+    InspectableIteratorSequence,
+    InspectableMappedSequence,
+    InspectableRangeSequence,
+    InspectableSequenceValue,
+    as_inspectable_sequence,
+)
+from voxlogica.lazy.hash import hash_child_ref
 from voxlogica.lazy.ir import NodeId, NodeSpec, SymbolicPlan
 from voxlogica.parser import EBool, ECall, EFor, ELet, ENumber, EString, Expression, parse_expression_content
 from voxlogica.policy import enforce_runtime_read_path_policy
@@ -33,7 +41,7 @@ class RuntimeFunction:
     captures: dict[str, Any]
     evaluator: "StrictExecutionStrategy"
 
-    def invoke(self, args: list[Any]) -> Any:
+    def invoke(self, args: list[Any], *, runtime_ref: str | None = None) -> Any:
         if len(args) != len(self.parameters):
             raise ValueError(
                 f"Function expects {len(self.parameters)} args, got {len(args)}"
@@ -41,6 +49,9 @@ class RuntimeFunction:
         env = dict(self.captures)
         for parameter, value in zip(self.parameters, args, strict=True):
             env[parameter] = value
+        env["__vox_runtime_ref__"] = str(
+            runtime_ref or self.captures.get("__vox_runtime_ref__", "runtime")
+        )
         return self.evaluator._evaluate_runtime_expression(self.expression, env)
 
 
@@ -54,8 +65,14 @@ class RuntimeClosure:
     evaluator: "StrictExecutionStrategy"
 
     def apply(self, value: Any) -> Any:
+        return self.apply_with_ref(value)
+
+    def apply_with_ref(self, value: Any, *, runtime_ref: str | None = None) -> Any:
         env = dict(self.captures)
         env[self.parameter] = value
+        env["__vox_runtime_ref__"] = str(
+            runtime_ref or self.captures.get("__vox_runtime_ref__", "runtime")
+        )
         return self.evaluator._evaluate_runtime_expression(self.body_expression, env)
 
     def __call__(self, value: Any) -> Any:
@@ -202,7 +219,7 @@ class StrictExecutionStrategy(ExecutionStrategy):
             elif node.kind == "closure":
                 value = self._build_runtime_closure(prepared, node)
             elif node.kind == "primitive":
-                value = self._execute_primitive(prepared, node)
+                value = self._execute_primitive(prepared, node, node_id=node_id)
             else:
                 raise ValueError(f"Unsupported node kind: {node.kind}")
 
@@ -289,6 +306,15 @@ class StrictExecutionStrategy(ExecutionStrategy):
             name: self._evaluate_node(prepared, node_id)
             for name, node_id in zip(capture_names, node.args, strict=True)
         }
+        captures["__vox_runtime_ref__"] = hash_child_ref(
+            str(node.attrs.get("closure_ref", "runtime-closure")),
+            family="runtime-closure",
+            token={
+                "parameter": parameter,
+                "body": str(body),
+                "captures": capture_names,
+            },
+        )
 
         function_captures = dict(node.attrs.get("function_captures", {}))
         for name, func_spec in function_captures.items():
@@ -307,6 +333,14 @@ class StrictExecutionStrategy(ExecutionStrategy):
             name: self._evaluate_node(prepared, node_id)
             for name, node_id in dict(spec.get("captures", {})).items()
         }
+        captures["__vox_runtime_ref__"] = hash_child_ref(
+            str(spec.get("name", "runtime-function")),
+            family="runtime-function",
+            token={
+                "parameters": list(spec.get("parameters", [])),
+                "body": str(expression),
+            },
+        )
 
         nested = dict(spec.get("functions", {}))
         for name, nested_spec in nested.items():
@@ -319,7 +353,7 @@ class StrictExecutionStrategy(ExecutionStrategy):
             evaluator=self,
         )
 
-    def _execute_primitive(self, prepared: PreparedPlan, node: NodeSpec) -> Any:
+    def _execute_primitive(self, prepared: PreparedPlan, node: NodeSpec, *, node_id: str) -> Any:
         operator = self._normalize_operator(node.operator)
 
         args = [self._evaluate_node(prepared, arg_id) for arg_id in node.args]
@@ -329,43 +363,31 @@ class StrictExecutionStrategy(ExecutionStrategy):
         }
 
         if operator in {"map", "for_loop"}:
-            return self._evaluate_map(args, kwargs)
+            return self._evaluate_map(args, kwargs, parent_ref=node_id)
 
         if operator == "range":
-            return self._evaluate_range(args, kwargs)
+            return self._evaluate_range(args, kwargs, parent_ref=node_id)
 
         if operator == "load":
-            return self._evaluate_load(args, kwargs)
+            return self._evaluate_load(args, kwargs, parent_ref=node_id)
 
         kernel = self.registry.load_kernel(node.operator)
         enforce_runtime_read_path_policy(node.operator, args)
         return self._invoke_kernel(kernel, args, kwargs)
 
-    def _evaluate_map(self, args: list[Any], kwargs: dict[str, Any]) -> SequenceValue:
+    def _evaluate_map(self, args: list[Any], kwargs: dict[str, Any], *, parent_ref: str) -> SequenceValue:
         if not args:
             raise ValueError("map/for_loop requires a sequence argument")
 
-        sequence = self._coerce_sequence(args[0])
+        sequence = self._coerce_sequence(args[0], parent_ref=f"{parent_ref}:source")
         closure = kwargs.get("closure")
         if closure is None and len(args) > 1:
             closure = args[1]
         if closure is None:
             raise ValueError("map/for_loop requires closure argument")
+        return InspectableMappedSequence(parent_ref=parent_ref, source=sequence, mapper=closure)
 
-        total_size = sequence.total_size
-
-        def iterator_factory() -> Iterable[Any]:
-            for item in sequence.iter_values():
-                if hasattr(closure, "apply") and callable(closure.apply):
-                    yield closure.apply(item)
-                elif callable(closure):
-                    yield closure(item)
-                else:
-                    raise ValueError("map closure is not callable")
-
-        return SequenceValue(iterator_factory, total_size=total_size)
-
-    def _evaluate_range(self, args: list[Any], kwargs: dict[str, Any]) -> Any:
+    def _evaluate_range(self, args: list[Any], kwargs: dict[str, Any], *, parent_ref: str) -> Any:
         if not args:
             raise ValueError("range requires at least one argument")
 
@@ -376,20 +398,19 @@ class StrictExecutionStrategy(ExecutionStrategy):
             start = int(args[0])
             stop = int(args[1])
 
-        size = max(0, stop - start)
-        return SequenceValue(lambda: iter(range(start, stop)), total_size=size)
+        return InspectableRangeSequence(parent_ref=parent_ref, start=start, stop=stop)
 
-    def _evaluate_load(self, args: list[Any], kwargs: dict[str, Any]) -> Any:
+    def _evaluate_load(self, args: list[Any], kwargs: dict[str, Any], *, parent_ref: str) -> Any:
         if not args:
             raise ValueError("load requires one dataset argument")
 
         source = args[0]
         enforce_runtime_read_path_policy("load", [source])
         if isinstance(source, SequenceValue):
-            return source
+            return self._coerce_sequence(source, parent_ref=parent_ref)
 
         if isinstance(source, (list, tuple, range)):
-            return SequenceValue(lambda: iter(source), total_size=len(source))
+            return self._coerce_sequence(source, parent_ref=parent_ref)
 
         path = Path(str(source))
         if not path.exists():
@@ -401,17 +422,18 @@ class StrictExecutionStrategy(ExecutionStrategy):
                 with path.open("r", encoding="utf-8") as handle:
                     for line in handle:
                         yield line.rstrip("\n")
-            return SequenceValue(line_iterator, total_size=None)
+            return InspectableIteratorSequence(parent_ref=parent_ref, iterator_factory=line_iterator, total_size=None)
 
         if suffix == ".json":
             payload = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(payload, list):
-                return SequenceValue(lambda: iter(payload), total_size=len(payload))
+                return self._coerce_sequence(payload, parent_ref=parent_ref)
             return payload
 
         return path.read_bytes()
 
     def _evaluate_runtime_expression(self, expression: Expression, env: dict[str, Any]) -> Any:
+        runtime_ref = str(env.get("__vox_runtime_ref__", "runtime"))
         if isinstance(expression, ENumber):
             return expression.value
 
@@ -433,15 +455,46 @@ class StrictExecutionStrategy(ExecutionStrategy):
 
             function_value = env.get(expression.identifier)
             if isinstance(function_value, RuntimeFunction):
-                return function_value.invoke(arg_values)
+                return function_value.invoke(
+                    arg_values,
+                    runtime_ref=hash_child_ref(
+                        runtime_ref,
+                        family="runtime-call",
+                        token={"identifier": expression.identifier, "arity": len(arg_values)},
+                    ),
+                )
 
             operator = self._normalize_operator(expression.identifier)
             if operator in {"map", "for_loop"} and len(arg_values) == 2:
-                return self._evaluate_map(arg_values, {})
+                return self._evaluate_map(
+                    arg_values,
+                    {},
+                    parent_ref=hash_child_ref(
+                        runtime_ref,
+                        family=operator,
+                        token={"identifier": expression.identifier, "arity": len(arg_values)},
+                    ),
+                )
             if operator == "range":
-                return self._evaluate_range(arg_values, {})
+                return self._evaluate_range(
+                    arg_values,
+                    {},
+                    parent_ref=hash_child_ref(
+                        runtime_ref,
+                        family="range",
+                        token={"identifier": expression.identifier, "args": arg_values},
+                    ),
+                )
             if operator == "load":
-                return self._evaluate_load(arg_values, {})
+                return self._evaluate_load(
+                    arg_values,
+                    {},
+                    parent_ref=hash_child_ref(
+                        runtime_ref,
+                        family="load",
+                        token={"identifier": expression.identifier, "args": [str(arg) for arg in arg_values]},
+                    ),
+                )
 
             kernel = self.registry.load_kernel(expression.identifier)
             enforce_runtime_read_path_policy(expression.identifier, arg_values)
@@ -455,34 +508,54 @@ class StrictExecutionStrategy(ExecutionStrategy):
 
         if isinstance(expression, EFor):
             sequence = self._coerce_sequence(
-                self._evaluate_runtime_expression(expression.iterable, env)
+                self._evaluate_runtime_expression(expression.iterable, env),
+                parent_ref=hash_child_ref(
+                    runtime_ref,
+                    family="for-loop-source",
+                    token={"variable": expression.variable, "iterable": str(expression.iterable)},
+                ),
             )
-
-            def iterator_factory() -> Iterable[Any]:
-                for item in sequence.iter_values():
-                    scoped = dict(env)
-                    scoped[expression.variable] = item
-                    yield self._evaluate_runtime_expression(expression.body, scoped)
-
-            return SequenceValue(iterator_factory, total_size=sequence.total_size)
+            closure = RuntimeClosure(
+                parameter=expression.variable,
+                body_expression=expression.body,
+                captures={
+                    **env,
+                    "__vox_runtime_ref__": hash_child_ref(
+                        runtime_ref,
+                        family="for-loop-body",
+                        token={"variable": expression.variable, "body": str(expression.body)},
+                    ),
+                },
+                evaluator=self,
+            )
+            return InspectableMappedSequence(
+                parent_ref=hash_child_ref(
+                    runtime_ref,
+                    family="for-loop",
+                    token={"variable": expression.variable, "body": str(expression.body)},
+                ),
+                source=sequence,
+                mapper=closure,
+            )
 
         raise ValueError(f"Unsupported runtime expression: {type(expression).__name__}")
 
-    def _coerce_sequence(self, value: Any) -> SequenceValue:
-        if isinstance(value, SequenceValue):
+    def _coerce_sequence(self, value: Any, *, parent_ref: str = "runtime") -> SequenceValue:
+        if isinstance(value, InspectableSequenceValue):
             return value
 
+        if isinstance(value, SequenceValue):
+            return as_inspectable_sequence(value, parent_ref=parent_ref)
+
         if isinstance(value, (list, tuple, range)):
-            return SequenceValue(lambda: iter(value), total_size=len(value))
+            return as_inspectable_sequence(value, parent_ref=parent_ref)
 
         if hasattr(value, "compute") and callable(value.compute):
             computed = value.compute()
-            if isinstance(computed, list):
-                return SequenceValue(lambda: iter(computed), total_size=len(computed))
-            return SequenceValue(lambda: iter(computed), total_size=None)
+            return as_inspectable_sequence(computed, parent_ref=parent_ref)
 
         if hasattr(value, "__iter__"):
-            return SequenceValue(lambda: iter(value), total_size=None)
+            return as_inspectable_sequence(value, parent_ref=parent_ref)
 
         raise ValueError(f"Value is not a sequence: {type(value).__name__}")
 

@@ -18,7 +18,8 @@ class DaskExecutionStrategy(StrictExecutionStrategy):
 
     name = "dask"
 
-    def _evaluate_range(self, args: list[Any], kwargs: dict[str, Any]) -> db.Bag:
+    def _evaluate_range(self, args: list[Any], kwargs: dict[str, Any], *, parent_ref: str) -> db.Bag:
+        del parent_ref
         if not args:
             raise ValueError("range requires at least one argument")
 
@@ -33,7 +34,8 @@ class DaskExecutionStrategy(StrictExecutionStrategy):
         npartitions = max(1, min(32, len(values) or 1))
         return db.from_sequence(values, npartitions=npartitions)
 
-    def _evaluate_load(self, args: list[Any], kwargs: dict[str, Any]) -> Any:
+    def _evaluate_load(self, args: list[Any], kwargs: dict[str, Any], *, parent_ref: str) -> Any:
+        del parent_ref
         if not args:
             raise ValueError("load requires one dataset argument")
 
@@ -63,7 +65,7 @@ class DaskExecutionStrategy(StrictExecutionStrategy):
 
         return path.read_bytes()
 
-    def _evaluate_map(self, args: list[Any], kwargs: dict[str, Any]) -> Any:
+    def _evaluate_map(self, args: list[Any], kwargs: dict[str, Any], *, parent_ref: str) -> Any:
         if not args:
             raise ValueError("map/for_loop requires sequence argument")
 
@@ -78,19 +80,19 @@ class DaskExecutionStrategy(StrictExecutionStrategy):
             # Runtime closures capture evaluator state that is not safely picklable for
             # Dask task transport; use strict iterator semantics in that case.
             if hasattr(closure, "evaluator"):
-                return super()._evaluate_map(args, kwargs)
+                return super()._evaluate_map(args, kwargs, parent_ref=parent_ref)
             if hasattr(closure, "apply") and callable(closure.apply):
                 return sequence.map(closure.apply)
             if callable(closure):
                 return sequence.map(closure)
             raise ValueError("map closure is not callable")
 
-        return super()._evaluate_map(args, kwargs)
+        return super()._evaluate_map(args, kwargs, parent_ref=parent_ref)
 
-    def _coerce_sequence(self, value: Any) -> SequenceValue:
+    def _coerce_sequence(self, value: Any, *, parent_ref: str = "runtime") -> SequenceValue:
         if isinstance(value, db.Bag):
             return SequenceValue(self._iter_dask_bag(value), total_size=None)
-        return super()._coerce_sequence(value)
+        return super()._coerce_sequence(value, parent_ref=parent_ref)
 
     def _iter_dask_bag(self, bag: db.Bag):
         def iterator_factory() -> Iterable[Any]:

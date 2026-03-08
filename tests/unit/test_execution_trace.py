@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
+from voxlogica.inspectable_sequence import (
+    InspectableMappedSequence,
+    InspectableRangeSequence,
+    InspectableSequenceValue,
+)
 from voxlogica.execution_strategy.strict import StrictExecutionStrategy
+from voxlogica.execution_strategy.dask import DaskExecutionStrategy
 from voxlogica.parser import parse_program_content
 from voxlogica.reducer import reduce_program, reduce_program_with_bindings
 from voxlogica.storage import SQLiteResultsDatabase
@@ -81,5 +87,113 @@ def test_map_primitive_callable_persists_without_reparse_errors(tmp_path: Path) 
         value = prepared.materialization_store.get(mapped_id)
         rows = [list(item.iter_values()) for item in value.iter_values()]
         assert rows == [[0, 1], [0, 1, 2], [0, 1, 2, 3]]
+    finally:
+        db.close()
+
+
+@pytest.mark.unit
+def test_strict_strategy_range_goal_is_inspectable(tmp_path: Path) -> None:
+    source = parse_program_content('let xs = range(2,5)')
+    workplan, bindings = reduce_program_with_bindings(source)
+    xs_id = bindings["xs"]
+    plan = workplan.to_symbolic_plan()
+
+    db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    try:
+        strategy = StrictExecutionStrategy(results_database=db)
+        prepared = strategy.compile(plan)
+        result = strategy.run(prepared, goals=[xs_id])
+        assert result.success is True
+
+        value = prepared.materialization_store.get(xs_id)
+        assert isinstance(value, InspectableRangeSequence)
+        assert value.page(offset=0, limit=3) == [2, 3, 4]
+        assert value.child_ref(1).child_id != value.child_ref(2).child_id
+    finally:
+        db.close()
+
+
+@pytest.mark.unit
+def test_strict_strategy_map_produces_nested_inspectable_sequences(tmp_path: Path) -> None:
+    source = parse_program_content(
+        """
+        let mapped = map(range, range(2,4))
+        """
+    )
+    workplan, bindings = reduce_program_with_bindings(source)
+    mapped_id = bindings["mapped"]
+    plan = workplan.to_symbolic_plan()
+
+    db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    try:
+        strategy = StrictExecutionStrategy(results_database=db)
+        prepared = strategy.compile(plan)
+        result = strategy.run(prepared, goals=[mapped_id])
+        assert result.success is True
+
+        value = prepared.materialization_store.get(mapped_id)
+        assert isinstance(value, InspectableMappedSequence)
+
+        first = value.resolve_item(0)
+        second = value.resolve_item(1)
+        assert isinstance(first, InspectableSequenceValue)
+        assert isinstance(second, InspectableSequenceValue)
+        assert first.page(offset=0, limit=5) == [0, 1]
+        assert second.page(offset=0, limit=5) == [0, 1, 2]
+        assert first.child_ref(0).child_id != second.child_ref(0).child_id
+    finally:
+        db.close()
+
+
+@pytest.mark.unit
+def test_strict_strategy_for_expression_matches_map_semantics(tmp_path: Path) -> None:
+    source = parse_program_content(
+        """
+        let mapped =
+          for x in range(2,4) do
+             range(0,x)
+        """
+    )
+    workplan, bindings = reduce_program_with_bindings(source)
+    mapped_id = bindings["mapped"]
+    plan = workplan.to_symbolic_plan()
+
+    db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    try:
+        strategy = StrictExecutionStrategy(results_database=db)
+        prepared = strategy.compile(plan)
+        result = strategy.run(prepared, goals=[mapped_id])
+        assert result.success is True
+
+        value = prepared.materialization_store.get(mapped_id)
+        assert isinstance(value, InspectableMappedSequence)
+        rows = [value.resolve_item(index).page(offset=0, limit=5) for index in range(2)]
+        assert rows == [[0, 1], [0, 1, 2]]
+    finally:
+        db.close()
+
+
+@pytest.mark.unit
+def test_dask_strategy_runtime_closure_map_still_works(tmp_path: Path) -> None:
+    source = parse_program_content(
+        """
+        let mapped =
+          for x in range(2,4) do
+             x + 1
+        """
+    )
+    workplan, bindings = reduce_program_with_bindings(source)
+    mapped_id = bindings["mapped"]
+    plan = workplan.to_symbolic_plan()
+
+    db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    try:
+        strategy = DaskExecutionStrategy(results_database=db)
+        prepared = strategy.compile(plan)
+        result = strategy.run(prepared, goals=[mapped_id])
+        assert result.success is True
+
+        value = prepared.materialization_store.get(mapped_id)
+        assert list(value.iter_values()) == [3, 4]
     finally:
         db.close()

@@ -316,7 +316,15 @@ class InspectableMappedSequence(InspectableSequenceValue):
         super().__init__(parent_ref=parent_ref, total_size=self._source.length_hint())
 
     def _compute_item(self, index: int) -> Any:
-        upstream = self._source.resolve_item(index)
+        upstream_snapshot = self._source.ensure_item(index)
+        if upstream_snapshot.state != "ready":
+            raise IndexError(index)
+        upstream = upstream_snapshot.value
+        item_runtime_ref = hash_child_ref(self.parent_ref, family="mapped-item", token=int(index))
+        if hasattr(self._mapper, "apply_with_ref") and callable(self._mapper.apply_with_ref):
+            return self._mapper.apply_with_ref(upstream, runtime_ref=item_runtime_ref)
+        if hasattr(self._mapper, "invoke") and callable(self._mapper.invoke):
+            return self._mapper.invoke([upstream], runtime_ref=item_runtime_ref)
         if hasattr(self._mapper, "apply") and callable(self._mapper.apply):
             return self._mapper.apply(upstream)
         if callable(self._mapper):
