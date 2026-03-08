@@ -315,6 +315,41 @@ Remaining gap after step 4:
 - websocket transport is still focused on value-path updates, not page subscriptions
 - per-item states are now visible, but they are not yet pushed live from the backend
 
+## Step 5 Completed: Page-Aware Value Websocket
+
+Commit:
+- pending commit after validation of this slice
+
+Implemented:
+- `/ws/playground/value` now accepts `mode: "page"` subscriptions in addition to focused value subscriptions.
+- Page websocket subscriptions carry `variable`, `path`, `offset`, `limit`, and preserve first-tick `enqueue=true` semantics.
+- Start tab now treats page websocket updates as the primary collection refresh path when `WebSocket` is available.
+- Existing page timer polling remains only as fallback:
+  - test mode
+  - environments without `WebSocket`
+  - request failure/timeout fallback paths
+- Page failure behavior still preserves the collection shell by synthesizing a fallback page instead of collapsing the viewer.
+
+Files changed in this slice:
+- `implementation/python/voxlogica/main.py`
+- `implementation/ui/src/lib/components/tabs/StartTab.svelte`
+- `tests/unit/test_main_entrypoints.py`
+
+Validation:
+- `python -m py_compile implementation/python/voxlogica/main.py`
+- `PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_main_entrypoints.py -q -k 'playground_value_websocket_supports_page_subscriptions'`
+- `npm --prefix implementation/ui run test -- src/lib/components/tabs/StartTab.test.js`
+- `npm --prefix implementation/ui run build`
+
+Focused tests added:
+- page websocket subscribe/stream/terminal contract for `/ws/playground/value`
+- UI regression coverage retained for collection failure preservation and exact item states
+
+Remaining gap after step 5:
+- backend websocket loop still snapshots on a timed cadence rather than reacting to child-state events
+- path-level child value subscriptions still use the older path polling fallback
+- scheduler-level child task prioritization is still separate from live page subscriptions
+
 Important design note:
 - This step does **not** explode the symbolic DAG.
 - The reducer still emits one sequence-producing node for `map`/`for`.

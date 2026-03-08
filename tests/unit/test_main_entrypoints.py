@@ -2050,3 +2050,116 @@ def test_reload_handler_and_livereload_websocket(monkeypatch: pytest.MonkeyPatch
             ws.send_text('{"type":"error","message":"e"}')
             ws.send_text('{"type":"info","message":"i"}')
             ws.send_text("not-json")
+
+
+@pytest.mark.unit
+def test_playground_value_websocket_supports_page_subscriptions(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    requests: list[dict[str, object]] = []
+    payloads = [
+        {
+            "materialization": "pending",
+            "compute_status": "running",
+            "page": {
+                "offset": 0,
+                "limit": 8,
+                "has_more": True,
+                "next_offset": 8,
+                "items": [
+                    {
+                        "index": 0,
+                        "label": "[0]",
+                        "path": "/0",
+                        "node_id": "child-0",
+                        "state": "queued",
+                        "status": "queued",
+                        "descriptor": {"vox_type": "unavailable", "summary": {}},
+                    }
+                ],
+            },
+        },
+        {
+            "materialization": "computed",
+            "compute_status": "completed",
+            "page": {
+                "offset": 0,
+                "limit": 8,
+                "has_more": False,
+                "next_offset": None,
+                "items": [
+                    {
+                        "index": 0,
+                        "label": "[0]",
+                        "path": "/0",
+                        "node_id": "child-0",
+                        "state": "ready",
+                        "status": "ready",
+                        "descriptor": {"vox_type": "integer", "summary": {"value": 7}},
+                    }
+                ],
+            },
+        },
+    ]
+
+    async def fake_page_endpoint(request):  # noqa: ANN001
+        requests.append(
+            {
+                "variable": request.variable,
+                "path": request.path,
+                "offset": request.offset,
+                "limit": request.limit,
+                "enqueue": request.enqueue,
+            }
+        )
+        return payloads.pop(0)
+
+    monkeypatch.setattr(main_mod, "playground_value_page_endpoint", fake_page_endpoint)
+
+    with TestClient(main_mod.api_app) as client:
+        with client.websocket_connect("/ws/playground/value") as ws:
+            ws.send_json(
+                {
+                    "type": "subscribe",
+                    "mode": "page",
+                    "request": {
+                        "program": "xs = range(0, 2)",
+                        "variable": "xs",
+                        "path": "/",
+                        "offset": 0,
+                        "limit": 8,
+                        "enqueue": True,
+                    },
+                }
+            )
+
+            subscribed = ws.receive_json()
+            assert subscribed == {"type": "subscribed", "mode": "page"}
+
+            first = ws.receive_json()
+            assert first["type"] == "page"
+            assert first["payload"]["page"]["items"][0]["state"] == "queued"
+
+            second = ws.receive_json()
+            assert second["type"] == "page"
+            assert second["payload"]["page"]["items"][0]["state"] == "ready"
+
+            terminal = ws.receive_json()
+            assert terminal["type"] == "terminal"
+            assert terminal["mode"] == "page"
+
+    assert requests[0] == {
+        "variable": "xs",
+        "path": "/",
+        "offset": 0,
+        "limit": 8,
+        "enqueue": True,
+    }
+    assert requests[1] == {
+        "variable": "xs",
+        "path": "/",
+        "offset": 0,
+        "limit": 8,
+        "enqueue": False,
+    }

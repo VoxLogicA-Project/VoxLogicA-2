@@ -98,6 +98,10 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   let recordPagesErrors = {};
   let collectionSelections = {};
   let recordPagePollTimers = {};
+  let recordPageSockets = {};
+  let recordPageSocketReconnectTimers = {};
+  let recordPageSocketAttempts = {};
+  let recordPageSubscriptions = {};
   let pathRecords = {};
   let pathRecordsLoading = {};
   let pathRecordsErrors = {};
@@ -133,6 +137,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   const COLLECTION_PAGE_SIZE = 18;
   const SPLIT_MIN = 0.32;
   const SPLIT_MAX = 0.68;
+  const ACTIVE_COLLECTION_ITEM_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting"]);
 
   let loadToken = 0;
 
@@ -262,6 +267,11 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     if (!itemType || itemType === "unavailable") return "not_loaded";
     return "ready";
   };
+
+  const pageSocketsEnabled = () =>
+    typeof window !== "undefined" &&
+    typeof window.WebSocket === "function" &&
+    String(import.meta?.env?.MODE || "").trim().toLowerCase() !== "test";
 
   const typeLabelFromDescriptor = (descriptor) => {
     const rawType = String(descriptor?.vox_type || "").trim().toLowerCase();
@@ -517,6 +527,50 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         // ignore close errors
       }
     }
+  };
+
+  const stopRecordPageSocket = (baseKey = "", { dropSubscription = true } = {}) => {
+    const key = String(baseKey || "");
+    if (!key) return;
+    const reconnectTimer = recordPageSocketReconnectTimers?.[key];
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+    }
+    const socket = recordPageSockets?.[key] || null;
+    const nextSockets = { ...recordPageSockets };
+    delete nextSockets[key];
+    recordPageSockets = nextSockets;
+    const nextReconnectTimers = { ...recordPageSocketReconnectTimers };
+    delete nextReconnectTimers[key];
+    recordPageSocketReconnectTimers = nextReconnectTimers;
+    const nextAttempts = { ...recordPageSocketAttempts };
+    delete nextAttempts[key];
+    recordPageSocketAttempts = nextAttempts;
+    if (dropSubscription) {
+      const nextSubscriptions = { ...recordPageSubscriptions };
+      delete nextSubscriptions[key];
+      recordPageSubscriptions = nextSubscriptions;
+    }
+    if (socket) {
+      try {
+        socket.close();
+      } catch {
+        // ignore close errors
+      }
+    }
+  };
+
+  const stopAllRecordPageSockets = () => {
+    for (const baseKey of Object.keys(recordPageSockets || {})) {
+      stopRecordPageSocket(baseKey);
+    }
+    for (const timer of Object.values(recordPageSocketReconnectTimers || {})) {
+      clearTimeout(timer);
+    }
+    recordPageSockets = {};
+    recordPageSocketReconnectTimers = {};
+    recordPageSocketAttempts = {};
+    recordPageSubscriptions = {};
   };
 
   const applyStreamValuePayload = (payload = null) => {
@@ -894,7 +948,122 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     return Object.keys(recordPagesLoading || {}).some((cacheKey) => cacheKey.startsWith(prefix));
   };
 
-  const pagePollingForRecord = (record, path = "") => Boolean(recordPagePollTimers?.[pageKey(record, path)]);
+  const pagePollingForRecord = (record, path = "") =>
+    Boolean(recordPagePollTimers?.[pageKey(record, path)] || recordPageSubscriptions?.[pageKey(record, path)]);
+
+  const ensureRecordPageSocket = (
+    record,
+    { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, sourceVariable = "", enqueue = false } = {},
+  ) => {
+    if (!pageSocketsEnabled()) return false;
+    if (!record || !collectionRecord(record)) return false;
+    const resolvedPath = String(path || recordPath(record) || "");
+    const baseKey = pageKey(record, resolvedPath);
+    const variableName = String(sourceVariable || sourceVariableForRecord(record, 0) || "").trim();
+    const subscription = {
+      program: programText,
+      variable: variableName,
+      path: resolvedPath,
+      offset: Math.max(0, Number(offset || 0)),
+      limit: Math.max(1, Number(limit || COLLECTION_PAGE_SIZE)),
+      enqueue: Boolean(enqueue),
+    };
+    recordPageSubscriptions = {
+      ...recordPageSubscriptions,
+      [baseKey]: subscription,
+    };
+
+    const sendSubscribe = (socket) => {
+      socket.send(
+        JSON.stringify({
+          type: "subscribe",
+          mode: "page",
+          request: {
+            program: subscription.program,
+            execution_strategy: "dask",
+            node_id: "",
+            variable: subscription.variable,
+            path: subscription.path,
+            offset: subscription.offset,
+            limit: subscription.limit,
+            enqueue: subscription.enqueue,
+          },
+        }),
+      );
+    };
+
+    const existing = recordPageSockets?.[baseKey];
+    if (existing && existing.readyState === WebSocket.OPEN) {
+      sendSubscribe(existing);
+      return true;
+    }
+    if (existing && existing.readyState === WebSocket.CONNECTING) {
+      return true;
+    }
+
+    stopRecordPageSocket(baseKey, { dropSubscription: false });
+    const socket = new WebSocket(`${wsBaseUrl()}/ws/playground/value`);
+    recordPageSockets = {
+      ...recordPageSockets,
+      [baseKey]: socket,
+    };
+    socket.onopen = () => {
+      recordPageSocketAttempts = {
+        ...recordPageSocketAttempts,
+        [baseKey]: 0,
+      };
+      sendSubscribe(socket);
+    };
+    socket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(String(event.data || "{}"));
+        const messageType = String(message?.type || "").toLowerCase();
+        const messageMode = String(message?.mode || "page").toLowerCase();
+        if (messageMode !== "page") return;
+        if (messageType !== "page" && messageType !== "terminal") return;
+        applyRecordPagePayload(record, {
+          path: resolvedPath,
+          offset: subscription.offset,
+          limit: subscription.limit,
+          payload: message?.payload || null,
+        });
+        if (messageType === "terminal") {
+          stopRecordPageSocket(baseKey);
+        }
+      } catch {
+        // ignore malformed ws messages
+      }
+    };
+    socket.onclose = () => {
+      const nextSockets = { ...recordPageSockets };
+      delete nextSockets[baseKey];
+      recordPageSockets = nextSockets;
+      if (!recordPageSubscriptions?.[baseKey]) return;
+      const nextAttempt = Math.max(0, Number(recordPageSocketAttempts?.[baseKey] || 0)) + 1;
+      recordPageSocketAttempts = {
+        ...recordPageSocketAttempts,
+        [baseKey]: nextAttempt,
+      };
+      const delay = wsReconnectDelayMs(nextAttempt);
+      const timer = setTimeout(() => {
+        const current = recordPageSubscriptions?.[baseKey];
+        if (!current) return;
+        ensureRecordPageSocket(record, current);
+      }, delay);
+      recordPageSocketReconnectTimers = {
+        ...recordPageSocketReconnectTimers,
+        [baseKey]: timer,
+      };
+    };
+    socket.onerror = () => {
+      try {
+        socket.close();
+      } catch {
+        // ignore
+      }
+    };
+    return true;
+  };
 
   const cacheRecordPage = (record, path = "", page = null) => {
     if (!record || !page || typeof page !== "object") return null;
@@ -920,6 +1089,107 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       [baseKey]: cacheKey,
     };
     return normalizedPage;
+  };
+
+  const syncSelectionForRecordPage = (record, resolvedPath = "", page = null) => {
+    const items = collectionItemsForPage(page, recordType(record));
+    const currentSelection = collectionSelectionFor(record, resolvedPath);
+    let selectedIndex = Math.max(0, Number(currentSelection?.selectedIndex || 0));
+    let selectedAbsoluteIndex = Math.max(0, Number(currentSelection?.selectedAbsoluteIndex || 0));
+    let selectedPath = String(currentSelection?.selectedPath || "");
+    const resolvedOffset = Math.max(0, Number(page?.offset || 0));
+    if (!items.length) {
+      selectedIndex = 0;
+      selectedAbsoluteIndex = 0;
+      selectedPath = "";
+    } else {
+      const byAbsolute = selectedAbsoluteIndex >= resolvedOffset ? selectedAbsoluteIndex - resolvedOffset : -1;
+      if (byAbsolute >= 0 && byAbsolute < items.length) {
+        selectedIndex = byAbsolute;
+        selectedAbsoluteIndex = resolvedOffset + byAbsolute;
+      } else {
+        const byPathIndex = selectedPath ? items.findIndex((item) => String(item?.path || "") === selectedPath) : -1;
+        if (byPathIndex >= 0) {
+          selectedIndex = byPathIndex;
+          selectedAbsoluteIndex = resolvedOffset + byPathIndex;
+        } else if (selectedIndex >= items.length) {
+          selectedIndex = 0;
+          selectedAbsoluteIndex = resolvedOffset;
+        } else {
+          selectedAbsoluteIndex = resolvedOffset + selectedIndex;
+        }
+      }
+      if (selectedIndex >= items.length) {
+        const byAbsoluteIndex = selectedAbsoluteIndex >= resolvedOffset ? selectedAbsoluteIndex - resolvedOffset : -1;
+        selectedIndex = byAbsoluteIndex >= 0 && byAbsoluteIndex < items.length ? byAbsoluteIndex : 0;
+      }
+      selectedPath = String(items[selectedIndex]?.path || "");
+    }
+    setCollectionSelection(record, resolvedPath, { selectedIndex, selectedAbsoluteIndex, selectedPath });
+  };
+
+  const applyRecordPagePayload = (record, { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, payload = null } = {}) => {
+    if (!record || !payload) return null;
+    const resolvedPath = String(path || recordPath(record) || "");
+    const baseKey = pageKey(record, resolvedPath);
+    const cacheKey = pageCacheKey(record, resolvedPath, offset, limit);
+    const descriptor = recordDescriptor(record);
+    const payloadFailed =
+      String(payload?.materialization || "").toLowerCase() === "failed" ||
+      ["failed", "killed"].includes(String(payload?.compute_status || "").toLowerCase());
+    if (payloadFailed) {
+      const details = buildFailureDetailsText(payload, {
+        nodeId: String(payload?.node_id || record?.node_id || ""),
+        path: resolvedPath,
+      });
+      statusValue = "failed";
+      statusText = String(payload?.error || "Value resolution failed.");
+      errorText = details;
+      stopRecordPageSocket(baseKey);
+      const fallbackPage =
+        recordPages?.[cacheKey] || fallbackCollectionPage(descriptor, resolvedPath, offset, limit, "failed");
+      if (fallbackPage) {
+        cacheRecordPage(record, resolvedPath, fallbackPage);
+        syncSelectionForRecordPage(record, resolvedPath, fallbackPage);
+        const nextErrors = { ...recordPagesErrors };
+        delete nextErrors[baseKey];
+        recordPagesErrors = nextErrors;
+      } else {
+        recordPagesErrors = {
+          ...recordPagesErrors,
+          [baseKey]: String(details || payload?.error || "Unable to load collection values."),
+        };
+      }
+      return fallbackPage;
+    }
+    const page =
+      payload?.page && typeof payload.page === "object"
+        ? payload.page
+        : { offset, limit, items: [], has_more: false, next_offset: null };
+    const incomingItems = Array.isArray(page?.items) ? page.items : [];
+    const payloadMaterialization = String(payload?.materialization || "").toLowerCase();
+    const payloadStatus = String(payload?.compute_status || "").toLowerCase();
+    const keepPrevious =
+      Boolean(recordPages?.[cacheKey]) &&
+      ["pending", "missing", "queued", "running", "persisting"].includes(payloadMaterialization || payloadStatus) &&
+      incomingItems.length === 0;
+    const effectivePage = keepPrevious ? recordPages[cacheKey] : page;
+    const cachedPage = cacheRecordPage(record, resolvedPath, effectivePage);
+    const nextErrors = { ...recordPagesErrors };
+    delete nextErrors[baseKey];
+    recordPagesErrors = nextErrors;
+    syncSelectionForRecordPage(record, resolvedPath, cachedPage);
+    const hasPendingItems = collectionItemsForPage(cachedPage, recordType(record)).some((item) =>
+      ACTIVE_COLLECTION_ITEM_STATES.has(normalizeCollectionItemState(item)),
+    );
+    const pagePending =
+      ["pending", "missing"].includes(payloadMaterialization) ||
+      ["queued", "running", "persisting"].includes(payloadStatus);
+    if (!hasPendingItems && !pagePending) {
+      clearRecordPagePoll(baseKey);
+      stopRecordPageSocket(baseKey);
+    }
+    return cachedPage;
   };
 
   const collectionSelectionFor = (record, path = "") => {
@@ -1276,134 +1546,72 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         });
 
       let payload = await requestPage(false);
-      const payloadFailed =
-        String(payload?.materialization || "").toLowerCase() === "failed" ||
-        ["failed", "killed"].includes(String(payload?.compute_status || "").toLowerCase());
-      if (payloadFailed) {
-        clearRecordPagePoll(baseKey);
-        const details = buildFailureDetailsText(payload, {
-          nodeId: variableName || String(record?.node_id || ""),
-          path: resolvedPath,
-        });
-        statusValue = "failed";
-        statusText = String(payload?.error || "Value resolution failed.");
-        errorText = details;
-        const fallbackPage =
-          recordPages?.[cacheKey] || fallbackCollectionPage(descriptor, resolvedPath, resolvedOffset, resolvedLimit, "failed");
-        if (fallbackPage) {
-          recordPages = { ...recordPages, [cacheKey]: fallbackPage };
-          recordPagePointers = { ...recordPagePointers, [baseKey]: cacheKey };
-          return fallbackPage;
-        }
-        return null;
-      }
-      let page =
-        payload?.page && typeof payload.page === "object"
-          ? payload.page
-          : { offset: resolvedOffset, limit: resolvedLimit, items: [], has_more: false, next_offset: null };
       const pendingStatuses = new Set(["queued", "running", "persisting", "pending", "missing"]);
-      const activeItemStates = new Set(["not_loaded", "queued", "blocked", "running", "persisting"]);
       const payloadMaterialization = String(payload?.materialization || "").toLowerCase();
       const payloadStatus = String(payload?.compute_status || "").toLowerCase();
       const expectedLength = Number(descriptor?.summary?.length || 0);
+      const firstPage =
+        payload?.page && typeof payload.page === "object"
+          ? payload.page
+          : { offset: resolvedOffset, limit: resolvedLimit, items: [], has_more: false, next_offset: null };
       const likelyPending = pendingStatuses.has(payloadMaterialization) || pendingStatuses.has(payloadStatus);
-      const needsFallback = !Array.isArray(page?.items) || page.items.length === 0;
+      const needsFallback = !Array.isArray(firstPage?.items) || firstPage.items.length === 0;
 
       if (enqueueFallback && needsFallback && (likelyPending || expectedLength > 0)) {
         payload = await requestPage(true);
-        const fallbackFailed =
-          String(payload?.materialization || "").toLowerCase() === "failed" ||
-          ["failed", "killed"].includes(String(payload?.compute_status || "").toLowerCase());
-        if (fallbackFailed) {
-          clearRecordPagePoll(baseKey);
-          const details = buildFailureDetailsText(payload, {
-            nodeId: variableName || String(record?.node_id || ""),
-            path: resolvedPath,
-          });
-          statusValue = "failed";
-          statusText = String(payload?.error || "Value resolution failed.");
-          errorText = details;
-          const fallbackPage =
-            recordPages?.[cacheKey] || fallbackCollectionPage(descriptor, resolvedPath, resolvedOffset, resolvedLimit, "failed");
-          if (fallbackPage) {
-            recordPages = { ...recordPages, [cacheKey]: fallbackPage };
-            recordPagePointers = { ...recordPagePointers, [baseKey]: cacheKey };
-            return fallbackPage;
-          }
-          return null;
-        }
-        page =
-          payload?.page && typeof payload.page === "object"
-            ? payload.page
-            : { offset: resolvedOffset, limit: resolvedLimit, items: [], has_more: false, next_offset: null };
       }
 
-      const pageMaterialization = String(payload?.materialization || "").toLowerCase();
-      const pageStatus = String(payload?.compute_status || "").toLowerCase();
-      const pagePending = pendingStatuses.has(pageMaterialization) || pendingStatuses.has(pageStatus);
-      const pageItems = Array.isArray(page?.items) ? page.items : [];
-      const hasPendingItems = pageItems.some((item) => activeItemStates.has(normalizeCollectionItemState(item)));
-      if (hasPendingItems || (pagePending && (!Array.isArray(page?.items) || page.items.length === 0))) {
-        scheduleRecordPagePoll(record, {
+      const effectivePage = applyRecordPagePayload(record, {
+        path: resolvedPath,
+        offset: resolvedOffset,
+        limit: resolvedLimit,
+        payload,
+      });
+      const effectiveItems = collectionItemsForPage(effectivePage, recordType(record));
+      const pagePending =
+        pendingStatuses.has(String(payload?.materialization || "").toLowerCase()) ||
+        pendingStatuses.has(String(payload?.compute_status || "").toLowerCase());
+      const hasPendingItems = effectiveItems.some((item) => ACTIVE_COLLECTION_ITEM_STATES.has(normalizeCollectionItemState(item)));
+      if (hasPendingItems || (pagePending && (!Array.isArray(effectivePage?.items) || effectivePage.items.length === 0))) {
+        if (!ensureRecordPageSocket(record, {
           path: resolvedPath,
           offset: resolvedOffset,
           limit: resolvedLimit,
           sourceVariable: variableName,
-          delayMs: 950,
-        });
+          enqueue: false,
+        })) {
+          scheduleRecordPagePoll(record, {
+            path: resolvedPath,
+            offset: resolvedOffset,
+            limit: resolvedLimit,
+            sourceVariable: variableName,
+            delayMs: 950,
+          });
+        } else {
+          clearRecordPagePoll(baseKey);
+        }
       } else {
         clearRecordPagePoll(baseKey);
+        stopRecordPageSocket(baseKey);
       }
-
-      const previousPage = recordPages?.[cacheKey];
-      const incomingItems = Array.isArray(page?.items) ? page.items : [];
-      const keepPrevious = Boolean(previousPage) && pagePending && incomingItems.length === 0;
-      const effectivePage = keepPrevious ? previousPage : page;
-      recordPages = { ...recordPages, [cacheKey]: effectivePage };
-      recordPagePointers = { ...recordPagePointers, [baseKey]: cacheKey };
-      const items = collectionItemsForPage(effectivePage, recordType(record));
-      const currentSelection = collectionSelectionFor(record, resolvedPath);
-      let selectedIndex = Math.max(0, Number(currentSelection?.selectedIndex || 0));
-      let selectedAbsoluteIndex = Math.max(0, Number(currentSelection?.selectedAbsoluteIndex || 0));
-      let selectedPath = String(currentSelection?.selectedPath || "");
-      if (!items.length) {
-        selectedIndex = 0;
-        selectedAbsoluteIndex = 0;
-        selectedPath = "";
-      } else {
-        const byAbsolute = selectedAbsoluteIndex >= resolvedOffset ? selectedAbsoluteIndex - resolvedOffset : -1;
-        if (byAbsolute >= 0 && byAbsolute < items.length) {
-          selectedIndex = byAbsolute;
-          selectedAbsoluteIndex = resolvedOffset + byAbsolute;
-        } else {
-          const byPathIndex = selectedPath ? items.findIndex((item) => String(item?.path || "") === selectedPath) : -1;
-          if (byPathIndex >= 0) {
-            selectedIndex = byPathIndex;
-            selectedAbsoluteIndex = resolvedOffset + byPathIndex;
-          } else if (selectedIndex >= items.length) {
-            selectedIndex = 0;
-            selectedAbsoluteIndex = resolvedOffset;
-          } else {
-            selectedAbsoluteIndex = resolvedOffset + selectedIndex;
-          }
-        }
-        if (selectedIndex >= items.length) {
-          const byAbsolute = selectedAbsoluteIndex >= resolvedOffset ? selectedAbsoluteIndex - resolvedOffset : -1;
-          selectedIndex = byAbsolute >= 0 && byAbsolute < items.length ? byAbsolute : 0;
-        }
-        selectedPath = String(items[selectedIndex]?.path || "");
-      }
-      setCollectionSelection(record, resolvedPath, { selectedIndex, selectedAbsoluteIndex, selectedPath });
       return effectivePage;
     } catch (error) {
       if (isTimeoutError(error)) {
-        scheduleRecordPagePoll(record, {
+        if (!ensureRecordPageSocket(record, {
           path: resolvedPath,
           offset: resolvedOffset,
           limit: resolvedLimit,
           sourceVariable: variableName,
-          delayMs: 1100,
-        });
+          enqueue: false,
+        })) {
+          scheduleRecordPagePoll(record, {
+            path: resolvedPath,
+            offset: resolvedOffset,
+            limit: resolvedLimit,
+            sourceVariable: variableName,
+            delayMs: 1100,
+          });
+        }
         const cached = recordPages?.[cacheKey] || null;
         if (cached) {
           recordPagePointers = { ...recordPagePointers, [baseKey]: cacheKey };
@@ -1623,6 +1831,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     for (const timer of Object.values(recordPagePollTimers || {})) {
       clearTimeout(timer);
     }
+    stopAllRecordPageSockets();
     for (const timer of Object.values(pathRecordPollTimers || {})) {
       clearTimeout(timer);
     }
@@ -1636,6 +1845,10 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     recordPagesErrors = {};
     collectionSelections = {};
     recordPagePollTimers = {};
+    recordPageSockets = {};
+    recordPageSocketReconnectTimers = {};
+    recordPageSocketAttempts = {};
+    recordPageSubscriptions = {};
     pathRecords = {};
     pathRecordsLoading = {};
     pathRecordsErrors = {};
@@ -2378,6 +2591,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     for (const timer of Object.values(recordPagePollTimers || {})) {
       clearTimeout(timer);
     }
+    stopAllRecordPageSockets();
     for (const timer of Object.values(pathRecordPollTimers || {})) {
       clearTimeout(timer);
     }

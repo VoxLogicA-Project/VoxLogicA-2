@@ -2772,11 +2772,12 @@ async def playground_value_stream_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     stream_logger = logging.getLogger("voxlogica.ws.value")
 
-    active_request: PlaygroundValueRequest | None = None
+    active_request: PlaygroundValueRequest | PlaygroundValuePageRequest | None = None
+    active_mode = "value"
     first_tick = True
     last_signature = ""
 
-    def _parse_subscribe_payload(raw_message: str) -> PlaygroundValueRequest | None:
+    def _parse_subscribe_payload(raw_message: str) -> tuple[str, PlaygroundValueRequest | PlaygroundValuePageRequest] | None:
         try:
             payload = json.loads(raw_message)
         except json.JSONDecodeError:
@@ -2789,8 +2790,11 @@ async def playground_value_stream_endpoint(websocket: WebSocket) -> None:
         request_payload = payload.get("request", payload)
         if not isinstance(request_payload, dict):
             return None
+        requested_mode = str(payload.get("mode", "value")).strip().lower()
         try:
-            return PlaygroundValueRequest(**request_payload)
+            if requested_mode == "page":
+                return ("page", PlaygroundValuePageRequest(**request_payload))
+            return ("value", PlaygroundValueRequest(**request_payload))
         except Exception:
             return None
 
@@ -2798,46 +2802,61 @@ async def playground_value_stream_endpoint(websocket: WebSocket) -> None:
         while True:
             if active_request is None:
                 subscribe_message = await websocket.receive_text()
-                request = _parse_subscribe_payload(subscribe_message)
-                if request is None:
+                parsed = _parse_subscribe_payload(subscribe_message)
+                if parsed is None:
                     await websocket.send_json({"type": "error", "message": "Invalid subscribe payload."})
                     continue
-                active_request = request
+                active_mode, active_request = parsed
                 first_tick = True
                 last_signature = ""
-                await websocket.send_json({"type": "subscribed"})
+                await websocket.send_json({"type": "subscribed", "mode": active_mode})
                 continue
 
             enqueue_now = bool(active_request.enqueue) if first_tick else False
             first_tick = False
-            payload = await playground_value_endpoint(
-                PlaygroundValueRequest(
-                    program=active_request.program,
-                    execution_strategy="dask",
-                    node_id=active_request.node_id,
-                    variable=active_request.variable,
-                    path=active_request.path,
-                    enqueue=enqueue_now,
+            if active_mode == "page":
+                payload = await playground_value_page_endpoint(
+                    PlaygroundValuePageRequest(
+                        program=active_request.program,
+                        execution_strategy="dask",
+                        node_id=active_request.node_id,
+                        variable=active_request.variable,
+                        path=active_request.path,
+                        offset=active_request.offset,
+                        limit=active_request.limit,
+                        enqueue=enqueue_now,
+                    )
                 )
-            )
+            else:
+                payload = await playground_value_endpoint(
+                    PlaygroundValueRequest(
+                        program=active_request.program,
+                        execution_strategy="dask",
+                        node_id=active_request.node_id,
+                        variable=active_request.variable,
+                        path=active_request.path,
+                        enqueue=enqueue_now,
+                    )
+                )
             signature = hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
             if signature != last_signature:
-                await websocket.send_json({"type": "value", "payload": payload})
+                await websocket.send_json({"type": active_mode, "payload": payload})
                 last_signature = signature
             if _is_terminal_value_payload(payload):
-                await websocket.send_json({"type": "terminal", "payload": payload})
+                await websocket.send_json({"type": "terminal", "mode": active_mode, "payload": payload})
                 active_request = None
+                active_mode = "value"
                 first_tick = True
                 last_signature = ""
 
             try:
                 message = await asyncio.wait_for(websocket.receive_text(), timeout=0.8)
-                request = _parse_subscribe_payload(message)
-                if request is not None:
-                    active_request = request
+                parsed = _parse_subscribe_payload(message)
+                if parsed is not None:
+                    active_mode, active_request = parsed
                     first_tick = True
                     last_signature = ""
-                    await websocket.send_json({"type": "subscribed"})
+                    await websocket.send_json({"type": "subscribed", "mode": active_mode})
             except TimeoutError:
                 continue
             except asyncio.TimeoutError:
