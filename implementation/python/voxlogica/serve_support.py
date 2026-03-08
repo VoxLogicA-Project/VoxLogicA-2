@@ -1827,7 +1827,7 @@ def inspect_runtime_value_page(
             if item_state == "ready":
                 item_descriptor = _canonical_descriptor(
                     adapt_runtime_value(item_value).describe(path=item_path),
-                    node_id=getattr(getattr(item, "child_ref", None), "child_id", node_id),
+                    node_id=node_id,
                     path=item_path,
                 )
             else:

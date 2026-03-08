@@ -930,3 +930,29 @@ Validation target for this slice:
 
 - py_compile on `main.py`, `serve_support.py`, `test_main_entrypoints.py`
 - websocket page subscription regressions in `tests/unit/test_main_entrypoints.py`
+
+## Follow-up fix: runtime nested overlay render URLs
+
+Date: 2026-03-08
+
+Observed issue after Steps 6-7:
+
+- nested sequence pages for runtime-only values could show ready collection items, but selecting a ready overlay child triggered:
+  - `Unknown store result: <child-hash>`
+- root cause:
+  - runtime page items used the child ref hash as `node_id` both for identity and for descriptor render URL decoration
+  - overlay/image render URLs then targeted `/api/v1/results/store/<child-hash>/render/...`
+  - that child hash is a live runtime child ref, not necessarily a persisted store record yet
+
+Fix:
+
+- keep `item.node_id` as the deterministic child ref for identity/status
+- but decorate runtime item descriptors with the root sequence `node_id` plus the full child `path`, matching store-page behavior
+- this keeps runtime render URLs path-based and valid before child persistence finishes
+
+Validation:
+
+```bash
+python -m py_compile implementation/python/voxlogica/serve_support.py tests/unit/test_serve_support.py
+PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_serve_support.py -q -k 'inspect_runtime_value_page_reports_inspectable_item_states or uses_root_node_for_runtime_overlay_render_urls'
+```

@@ -5,10 +5,11 @@ from pathlib import Path
 import threading
 import time
 
+import numpy as np
 import pytest
 
 from voxlogica.execution_strategy.results import SequenceValue
-from voxlogica.inspectable_sequence import InspectableRangeSequence
+from voxlogica.inspectable_sequence import InspectableListSequence, InspectableRangeSequence
 from voxlogica.lazy.hash import hash_sequence_item
 from voxlogica.serve_support import (
     LiveRuntimeValueInspector,
@@ -533,6 +534,26 @@ def test_inspect_runtime_value_page_reports_inspectable_item_states() -> None:
     assert page["page"]["items"][0]["status"] == "ready"
     assert page["page"]["items"][0]["state"] == "ready"
     assert page["page"]["items"][0]["node_id"] == hash_sequence_item("node-seq", 0)
+
+
+@pytest.mark.unit
+def test_inspect_runtime_value_page_uses_root_node_for_runtime_overlay_render_urls() -> None:
+    overlay = OverlayValue.from_layers(
+        [
+            np.zeros((2, 2, 2), dtype=np.float32),
+            np.ones((2, 2, 2), dtype=np.float32),
+        ]
+    )
+    sequence = InspectableListSequence(parent_ref="node-overlay-seq", values=[overlay])
+
+    page = inspect_runtime_value_page(node_id="node-overlay-seq", value=sequence, path="/", offset=0, limit=1)
+
+    item = page["page"]["items"][0]
+    assert item["node_id"] == hash_sequence_item("node-overlay-seq", 0)
+    render = item["descriptor"]["render"]
+    assert render["kind"] == "medical-overlay"
+    assert render["layers"][0]["nifti_url"].startswith("/api/v1/results/store/node-overlay-seq/render/nii?path=%2F0%2F0")
+    assert render["layers"][1]["nifti_url"].startswith("/api/v1/results/store/node-overlay-seq/render/nii?path=%2F0%2F1")
 
 
 @pytest.mark.unit
