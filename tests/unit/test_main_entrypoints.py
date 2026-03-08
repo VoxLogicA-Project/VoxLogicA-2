@@ -8,6 +8,7 @@ import threading
 import time
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 import typer
@@ -15,7 +16,10 @@ import typer
 from voxlogica.features import OperationResult
 from voxlogica.lazy.hash import hash_sequence_item
 from voxlogica import main as main_mod
+from voxlogica.inspectable_sequence import InspectableListSequence
+from voxlogica.serve_support import RuntimeValueInspector, freeze_runtime_value
 from voxlogica.storage import SQLiteResultsDatabase
+from voxlogica.value_model import OverlayValue
 
 
 @pytest.mark.unit
@@ -2269,3 +2273,130 @@ def test_playground_value_websocket_waits_for_runtime_page_changes(monkeypatch: 
     assert wait_calls[0]["node_id"] == "node-xs"
     assert wait_calls[0]["path"] == "/"
     assert wait_calls[0]["since_version"] == 1
+
+
+@pytest.mark.unit
+def test_playground_value_resolves_runtime_nested_overlay_without_persisted_child_store_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeRegistry:
+        @staticmethod
+        def get_feature(name: str):
+            if name == "version":
+                return SimpleNamespace(handler=lambda: OperationResult.ok({"version": "2.0.0"}))
+            if name == "run":
+                return SimpleNamespace(handler=lambda **kwargs: OperationResult.ok({"ok": True, "args": kwargs}))
+            return None
+
+    monkeypatch.setattr(main_mod, "FeatureRegistry", FakeRegistry)
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    program = "xs = range(0,1)"
+    root_node_holder: dict[str, str] = {}
+
+    overlay = OverlayValue.from_layers(
+        [
+            np.zeros((2, 2, 2), dtype=np.float32),
+            np.ones((2, 2, 2), dtype=np.float32),
+        ]
+    )
+
+    def _make_runtime_root(root_node_id: str):
+        return InspectableListSequence(
+            parent_ref=root_node_id,
+            values=[
+                InspectableListSequence(
+                    parent_ref=f"{root_node_id}:outer:0",
+                    values=[overlay],
+                )
+            ],
+        )
+
+    def _job_payload(node_id: str) -> dict[str, object]:
+        root_node_holder["node_id"] = node_id
+        return {
+            "job_id": "value-runtime-nested-overlay",
+            "status": "completed",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "result": {
+                "goal_results": [
+                    {
+                        "node_id": node_id,
+                        "status": "materialized",
+                        "metadata": {"persisted": "pending"},
+                        "runtime_descriptor": {
+                            "available": True,
+                            "node_id": node_id,
+                            "status": "materialized",
+                            "runtime_version": "runtime",
+                            "path": "",
+                            "descriptor": {
+                                "vox_type": "sequence",
+                                "format_version": "voxpod/1",
+                                "summary": {"length": 1},
+                                "navigation": {
+                                    "path": "",
+                                    "pageable": True,
+                                    "can_descend": True,
+                                    "default_page_size": 64,
+                                    "max_page_size": 512,
+                                },
+                            },
+                        },
+                    }
+                ]
+            },
+            "log_tail": "",
+        }
+
+    def _inspect_runtime(**kwargs):  # noqa: ANN003
+        node_id = str(kwargs.get("node_id", ""))
+        inspector = RuntimeValueInspector(node_id=node_id, value=freeze_runtime_value(_make_runtime_root(node_id)))
+        return inspector.preview(
+            path=str(kwargs.get("path", "")),
+            page_offset=int(kwargs.get("page_offset", 0)),
+            page_limit=int(kwargs.get("page_limit", 64)),
+        )
+
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            get_value_job=lambda **kwargs: _job_payload(str(kwargs.get("node_id", ""))),
+            inspect_value_job_runtime=_inspect_runtime,
+            ensure_value_job=lambda payload, **kwargs: {"job_id": "unused", "status": "running", "log_tail": ""},
+            wait_for_value_job_runtime_change=lambda **kwargs: int(kwargs.get("since_version", 0)),
+        ),
+    )
+
+    try:
+        with TestClient(main_mod.api_app) as client:
+            symbols = client.post("/api/v1/playground/symbols", json={"program": program})
+            assert symbols.status_code == 200
+            root_node_id = symbols.json()["symbol_table"]["xs"]
+            assert root_node_holder.get("node_id", root_node_id) == root_node_id
+
+            item_resp = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": program,
+                    "variable": "xs",
+                    "path": "/0/0",
+                    "enqueue": False,
+                },
+            )
+            assert item_resp.status_code == 200
+            item_payload = item_resp.json()
+            assert item_payload["materialization"] == "computed"
+            assert item_payload["compute_status"] == "completed"
+            assert item_payload["descriptor"]["vox_type"] == "overlay"
+            assert item_payload["descriptor"]["render"]["kind"] == "medical-overlay"
+            assert item_payload["descriptor"]["render"]["layers"][0]["nifti_url"].startswith(
+                f"/api/v1/results/store/{root_node_id}/render/nii?path=%2F0%2F0%2F0"
+            )
+    finally:
+        fake_storage.close()
