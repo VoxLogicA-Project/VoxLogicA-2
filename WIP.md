@@ -239,6 +239,351 @@ File: `implementation/python/voxlogica/serve_support.py`
   - `metrics.preemptions` increments
   - background job is requeued for later resume.
 
+## Update: Inspectable Sequence Semantics Trace (2026-03-08)
+
+This section records the findings behind the next architectural change: **sequences must become inspectable before full computation/persistence**.
+
+### Current execution model
+
+Reducer and runtime files inspected:
+
+- `implementation/python/voxlogica/reducer.py`
+- `implementation/python/voxlogica/execution_strategy/strict.py`
+- `implementation/python/voxlogica/execution_strategy/dask.py`
+- `implementation/python/voxlogica/execution_strategy/results.py`
+
+Findings:
+
+1. `map(f, xs)` and `for x in xs do body` already converge semantically:
+   - both lower to one sequence-producing node plus one closure node
+   - there is **no per-item node fanout** in the symbolic plan
+2. `StrictExecutionStrategy._evaluate_map(...)` returns a plain `SequenceValue`
+3. `StrictExecutionStrategy._evaluate_runtime_expression(EFor)` also returns a plain `SequenceValue`
+4. `DaskExecutionStrategy._evaluate_map(...)` either:
+   - keeps a `dask.bag`
+   - or falls back to the strict iterator path
+
+Consequence:
+- planner/IR currently treats a sequence as one opaque runtime artifact
+- per-item materialization cannot come from plan nodes because those nodes do not exist yet
+
+### Current per-item identity model
+
+Files inspected:
+
+- `implementation/python/voxlogica/lazy/hash.py`
+- `implementation/python/voxlogica/storage.py`
+- `implementation/python/voxlogica/value_model.py`
+
+Findings:
+
+1. Before persistence, child identity is effectively **path-based only** (`/0`, `/0/3`, ...)
+2. Deterministic hashed child ids are introduced by persistence:
+   - `hash_sequence_item(parent_node_id, index)`
+   - used inside `SQLiteResultsDatabase._persist_sequence_child_locked(...)`
+3. `adapt_runtime_value(...)` currently wraps runtime iterators as `VoxIteratorSequenceValue`, which:
+   - pages by iterating raw values
+   - knows nothing about child state / blocked-on dependencies / running items
+
+Consequence:
+- UI page inspection has no first-class live child state model
+- store references work only after persistence
+
+### Current serve-mode bottlenecks
+
+Files inspected:
+
+- `implementation/python/voxlogica/main.py`
+- `implementation/python/voxlogica/serve_support.py`
+- `implementation/python/voxlogica/features.py`
+- `implementation/python/voxlogica/storage.py`
+
+Findings:
+
+1. `StrictExecutionStrategy._evaluate_node(...)` always calls `prepared.materialization_store.put(...)`
+2. `MaterializationStore.put(...)` eagerly enqueues persistence for any serializable value
+3. For sequences, `SQLiteResultsDatabase.put_success(...)` routes to `_persist_sequence_with_refs_locked(...)`, which walks the entire sequence
+4. `/ws/playground/value` still uses a timeout loop (`asyncio.wait_for(..., timeout=0.8)`) and compares payload hashes
+5. Start tab still has timer-based page/path polling (`pendingPoll`, `scheduleRecordPagePoll`, path/record poll timers)
+6. `PlaygroundJobManager.inspect_value_job_runtime(...)` only exposes runtime previews when the whole value job is already `completed`
+
+Consequence:
+- selecting a sequence variable still couples “inspect container” to “compute/persist full sequence”
+- UI polling obscures the real backend state
+- nested sequences cannot materialize one-by-one during the running phase
+
+### Target implementation shape
+
+The next implementation slice should introduce:
+
+1. a first-class **inspectable sequence runtime** above `SequenceValue`
+2. a **child scheduler** with priorities:
+   - click/focused child
+   - visible-page warmup
+   - background fill
+3. per-item live state:
+   - `not_loaded`
+   - `queued`
+   - `blocked`
+   - `running`
+   - `persisting`
+   - `ready`
+   - `failed`
+4. page snapshots from runtime while the parent container is still active
+5. websocket page subscriptions driven by runtime/job change notifications instead of timeout polling
+
+### Dynamic DAG fanout: considered alternative
+
+This was explicitly considered and should be preserved for handover.
+
+Question raised:
+
+- should `map` / `for ... do ...` dynamically inject one computation node per sequence item into the DAG?
+
+Current conclusion:
+
+- **not in the reducer / symbolic plan layer**
+- keep parser and reducer semantics stable:
+  - one container node for the sequence-producing operator
+  - one closure/function node
+- introduce per-item child refs/tasks at **runtime**, not as eagerly expanded symbolic nodes
+
+Rationale:
+
+1. The current language semantics already make `map` and `for ... do ...` equivalent sequence constructors.
+2. Expanding a symbolic node per item in the reducer would:
+   - destroy laziness for large or infinite sequences
+   - make plan size depend on runtime cardinality
+   - require cardinality knowledge too early
+3. The UI requirement is not “more static nodes”, but:
+   - inspect the container immediately
+   - expose child items and their state before the whole sequence is computed
+   - materialize items independently
+4. That is better modeled as:
+   - a stable parent sequence node in the plan
+   - deterministic runtime child refs/tasks (`parent node id + child token/index`)
+   - runtime scheduling and persistence per child
+
+So the intended semantics change is:
+
+- `map` and `for ... do ...` remain equivalent at the language surface
+- both produce a first-class **inspectable sequence container**
+- the container can spawn and track child computations dynamically at runtime
+- this is runtime task fanout, **not** reducer-time DAG explosion
+
+If a later distributed scheduler wants first-class item-level task identities, those should be derived from:
+
+- parent node id
+- child family
+- child token/index
+
+and surfaced consistently in API/UI payloads, without changing source-level syntax.
+
+### Additional design decisions not to lose
+
+The following points were discussed/decided during analysis and should remain explicit for future agents.
+
+#### 1) Root/container phase vs child/item phase
+
+Sequence-producing evaluation should be split conceptually into two phases:
+
+1. **container phase**
+   - establish that a node is an inspectable sequence
+   - expose descriptor, optional length hint, and child addressing rules
+2. **item phase**
+   - compute child values independently and incrementally
+
+This is important because the current implementation conflates:
+
+- “sequence container exists”
+- “all sequence items are persisted”
+
+Those need to become separate states.
+
+#### 2) Child-state vocabulary should replace ambiguous `waiting`
+
+The UI should stop using `waiting` as a catch-all for nested values.
+
+Target per-item state vocabulary:
+
+- `not_loaded`
+- `queued`
+- `blocked`
+- `running`
+- `persisting`
+- `ready`
+- `failed`
+
+Important semantic distinction:
+
+- `blocked` means “this child is waiting on upstream dependency”
+- `queued` means “this child has been requested/scheduled but not started”
+- `not_loaded` means “visible container slot exists but this child has not yet been explicitly requested or warmed”
+
+#### 3) `map(f, g(x))[i]` should depend on upstream child `i`, not the whole upstream sequence
+
+This is a semantic requirement, not just a UI requirement.
+
+For transformed sequences:
+
+- child `i` of `map(f, xs)` should depend on child `i` of `xs`
+- child `i` should not wait for full completion of `xs`
+
+Equivalent rule for `for_loop`:
+
+- the loop body instantiated at item `i` depends only on input item `i`
+
+This is what allows:
+
+- outer sequences to become inspectable immediately
+- nested sequences to materialize one-by-one
+
+#### 4) Page visibility should drive low-priority warmup, not forced eager computation
+
+When a collection page is visible:
+
+- visible items may be enqueued at low priority
+- a clicked item must outrank warmup work
+- background fill must be lower priority than visible-page warmup
+
+This is the intended priority order:
+
+- focused click / selected path
+- visible page warmup
+- background fill
+
+We explicitly did **not** assume preemptive kernel interruption; priority is primarily:
+
+- queue admission order
+- dispatch order
+
+#### 5) Ready child values should be served from memory before persistence completes
+
+This is broader than the already implemented runtime preview bridge.
+
+The durable requirement is:
+
+- if child `[i]` has already completed in memory, reopening `[i]` should be immediate
+- this must hold even if parent/root persistence is still ongoing
+- this should work for nested paths (`/6/1`, etc.), not just top-level children
+
+So the runtime child cache must be path-aware and not root-only.
+
+#### 6) Websocket contract should become page-aware, not only focused-value-aware
+
+Current websocket shape is still focused-value polling.
+
+Desired change:
+
+- page subscriptions should include:
+  - `program`
+  - `node_id` or `variable`
+  - `path`
+  - `offset`
+  - `limit`
+- backend should push page deltas or fresh page snapshots on actual child-state changes
+
+The page websocket is the core mechanism for:
+
+- progressive outer sequence materialization
+- progressive nested sequence materialization
+- removal of UI polling flicker
+
+#### 7) Sequence persistence should become incremental
+
+The persistence model should change from:
+
+- persist entire sequence root/pages as one long traversal
+
+to:
+
+- persist ready child items as they complete
+- make child refs visible early
+- allow parent/root descriptor to exist before full sequence traversal completes
+
+This is necessary so cached child values appear instantly for large sequences.
+
+#### 8) Initial migration scope should stay narrow
+
+The first inspectable runtime implementations should target only the sequence producers needed by the current workflows:
+
+- `range`
+- `dir`
+- `subsequence`
+- `map`
+- `for_loop`
+
+Other sequence-producing mechanisms can keep the current opaque fallback until the runtime contract is proven.
+
+## Step 1 completed: inspectable runtime contract foundations
+
+Files added/changed:
+
+- `implementation/python/voxlogica/inspectable_sequence.py`
+- `implementation/python/voxlogica/lazy/hash.py`
+- `implementation/python/voxlogica/value_model.py`
+- `tests/unit/test_inspectable_sequence.py`
+
+What this step implements:
+
+1. A first-class runtime contract for inspectable sequences:
+   - `length_hint()`
+   - `child_ref(index)`
+   - `peek_item(index)`
+   - `ensure_item(index, priority=...)`
+   - `resolve_item(index, priority=...)`
+   - `page_snapshot(offset, limit, priority=...)`
+2. Foundational runtime implementations:
+   - `InspectableRangeSequence`
+   - `InspectableListSequence`
+   - `InspectableIteratorSequence`
+   - `InspectableMappedSequence`
+   - `InspectableSubsequence`
+3. A generic deterministic child-ref hash helper:
+   - `hash_child_ref(parent_node_id, family=..., token=...)`
+   - `hash_sequence_item(...)` now delegates to it as compatibility wrapper
+4. `VoxIteratorSequenceValue` can now exploit:
+   - `length_hint()`
+   - `page_snapshot(...)`
+   when present on the underlying runtime sequence
+
+What this step does **not** yet implement:
+
+- no backend child scheduler yet
+- no live page websocket yet
+- no UI status model changes yet
+- no integration into `StrictExecutionStrategy` / `DaskExecutionStrategy` yet
+
+Why this step matters:
+
+- it establishes the runtime abstraction needed for incremental inspection
+- it provides deterministic child refs before persistence is involved
+- it keeps the next steps small: execution integration, then serve/API, then UI
+
+Validation for this step:
+
+```bash
+python -m py_compile implementation/python/voxlogica/inspectable_sequence.py implementation/python/voxlogica/lazy/hash.py implementation/python/voxlogica/value_model.py
+PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_inspectable_sequence.py tests/unit/test_hash_determinism.py tests/unit/test_hash_properties.py -q
+PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_inspectable_sequence.py --cov=voxlogica.inspectable_sequence --cov=voxlogica.lazy.hash --cov=voxlogica.value_model --cov-report=term-missing -q
+```
+
+### Immediate implementation boundary
+
+The first migrated sequence producers should be:
+
+- `range`
+- `dir`
+- `subsequence`
+- `map`
+- `for_loop`
+
+The language surface should remain unchanged:
+
+- no parser changes
+- no user-level reimplementation of `map` over `for`
+- reducer remains one container node + closure node, with inspectability handled in runtime semantics
+
 ### API contract for full background materialization
 
 File: `implementation/python/voxlogica/main.py`

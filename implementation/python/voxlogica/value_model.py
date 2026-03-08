@@ -568,6 +568,17 @@ class VoxIteratorSequenceValue(VoxSequenceValue):
         self._total_size = getattr(raw, "total_size", None)
 
     def _len(self) -> int | None:
+        length_hint = getattr(self.raw, "length_hint", None)
+        if callable(length_hint):
+            try:
+                hinted = length_hint()
+            except Exception:
+                hinted = None
+            if hinted is not None:
+                try:
+                    return int(hinted)
+                except Exception:
+                    pass
         if self._total_size is None:
             return None
         try:
@@ -576,6 +587,20 @@ class VoxIteratorSequenceValue(VoxSequenceValue):
             return None
 
     def _iter_window(self, offset: int, limit: int) -> tuple[list[Any], bool]:
+        page_snapshot = getattr(self.raw, "page_snapshot", None)
+        if callable(page_snapshot):
+            try:
+                snapshot = page_snapshot(offset, limit)
+            except Exception:
+                snapshot = None
+            if isinstance(snapshot, dict):
+                items = []
+                for item in snapshot.get("items", []):
+                    value = getattr(item, "value", None)
+                    state = str(getattr(item, "state", ""))
+                    if state == "ready":
+                        items.append(value)
+                return items, bool(snapshot.get("has_more", False))
         values: list[Any] = []
         consumed = 0
         seen_more = False
