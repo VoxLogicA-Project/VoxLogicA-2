@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+
 from voxlogica.inspectable_sequence import (
     InspectableIteratorSequence,
     InspectableMappedSequence,
@@ -8,6 +11,15 @@ from voxlogica.inspectable_sequence import (
 )
 from voxlogica.lazy.hash import hash_child_ref, hash_sequence_item
 from voxlogica.value_model import adapt_runtime_value
+
+
+def _wait_until(predicate, *, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("Timed out waiting for predicate")
 
 
 def test_hash_child_ref_matches_sequence_item_compatibility_wrapper() -> None:
@@ -39,12 +51,15 @@ def test_inspectable_iterator_sequence_materializes_items_incrementally() -> Non
     assert first.state == "not_loaded"
 
     second = sequence.ensure_item(1)
-    assert second.state == "ready"
-    assert second.value == 5
+    assert second.state in {"queued", "running"}
+
+    assert sequence.resolve_item(1) == 5
     assert produced == [3, 5]
 
     page = sequence.page_snapshot(0, 4)
-    assert [item.value for item in page["items"]] == [3, 5, 8]
+    _wait_until(lambda: sequence.peek_item(2).state == "ready" or sequence.peek_item(3).state == "failed")
+    page = sequence.page_snapshot(0, 4)
+    assert [item.value for item in page["items"] if item.state == "ready"] == [3, 5, 8]
     assert page["total"] == 3
     assert page["has_more"] is False
 
@@ -60,13 +75,38 @@ def test_inspectable_mapped_sequence_keeps_per_item_laziness() -> None:
     mapped = InspectableMappedSequence(parent_ref="mapped", source=source, mapper=_double)
 
     item = mapped.ensure_item(2)
-    assert item.state == "ready"
-    assert item.value == 6
+    assert item.state in {"queued", "running"}
+    assert mapped.resolve_item(2) == 6
     assert calls == [3]
 
     page = mapped.page_snapshot(0, 2)
-    assert [entry.value for entry in page["items"]] == [2, 4]
+    _wait_until(lambda: all(mapped.peek_item(index).state == "ready" for index in (0, 1, 2)))
+    assert [mapped.peek_item(index).value for index in (0, 1)] == [2, 4]
     assert calls == [3, 1, 2]
+    assert page["items"][0].child_ref.child_id != page["items"][1].child_ref.child_id
+
+
+def test_inspectable_mapped_sequence_reports_blocked_on_upstream_child() -> None:
+    release = threading.Event()
+
+    def _iterator():
+        release.wait(0.2)
+        yield 11
+
+    source = InspectableIteratorSequence(parent_ref="source", iterator_factory=_iterator, total_size=1)
+    mapped = InspectableMappedSequence(parent_ref="mapped", source=source, mapper=lambda value: value * 2)
+
+    initial = mapped.ensure_item(0, priority="click")
+    assert initial.state in {"queued", "running"}
+
+    _wait_until(lambda: mapped.peek_item(0).state == "blocked")
+    blocked = mapped.peek_item(0)
+    assert blocked.blocked_on == source.child_ref(0).child_id
+    assert blocked.state_reason in {"upstream:not_loaded", "upstream:queued", "upstream:running"}
+
+    release.set()
+    _wait_until(lambda: mapped.peek_item(0).state == "ready")
+    assert mapped.peek_item(0).value == 22
 
 
 def test_inspectable_subsequence_shares_upstream_items_by_index() -> None:
@@ -74,8 +114,10 @@ def test_inspectable_subsequence_shares_upstream_items_by_index() -> None:
     sliced = InspectableSubsequence(parent_ref="slice", source=source, start=3, stop=6)
 
     page = sliced.page_snapshot(0, 5)
+    _wait_until(lambda: all(sliced.peek_item(index).state == "ready" for index in (0, 1, 2)))
+    page = sliced.page_snapshot(0, 5)
 
-    assert [item.value for item in page["items"]] == [23, 24, 25]
+    assert [item.value for item in page["items"] if item.state == "ready"] == [23, 24, 25]
     assert page["total"] == 3
     assert page["has_more"] is False
 
@@ -88,3 +130,12 @@ def test_vox_iterator_sequence_uses_page_snapshot_when_available() -> None:
     assert [item["value"] for item in page.items] == [5, 6, 7]
     assert page.has_more is True
     assert page.total == 5
+
+
+def test_wait_for_change_advances_runtime_version() -> None:
+    sequence = InspectableIteratorSequence(parent_ref="change", iterator_factory=lambda: iter([1, 2]), total_size=2)
+    version = sequence.version()
+    snapshot = sequence.ensure_item(0)
+    assert snapshot.state in {"queued", "running"}
+    changed = sequence.wait_for_change(version, timeout=1.0)
+    assert changed > version

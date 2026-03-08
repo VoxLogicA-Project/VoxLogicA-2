@@ -849,3 +849,61 @@ File: `tests/unit/test_main_entrypoints.py`
   - Passed.
 - `npm --prefix implementation/ui run build`
   - Passed.
+
+## Step 6 in progress: non-blocking child scheduling and change versions
+
+Date: 2026-03-08
+
+Current slice goals:
+
+- stop `InspectableSequenceValue.page_snapshot(...)` from computing visible items inline to completion
+- introduce a per-item state machine inside runtime inspectable sequences
+- introduce a versioned change-notification primitive so websocket page subscriptions can wait on actual runtime changes instead of timeout loops
+- make `InspectableMappedSequence` and `InspectableSubsequence` report `blocked` on upstream child refs instead of collapsing into generic pending behavior
+
+Implementation notes for this slice:
+
+- `InspectableSequenceValue` now carries:
+  - `_item_states`
+  - `_version`
+  - `_change_condition`
+  - `add_change_listener(...)`
+  - `wait_for_change(...)`
+- child work is dispatched through a small internal priority scheduler for now.
+- this scheduler is intentionally local and minimal; it is a stepping stone toward the later backend-integrated scheduler abstraction.
+- `ensure_item(...)` is being changed from "compute now" to "schedule and return current state" for non-inline sequence kinds.
+- cheap random-access sequences (`range`, known lists) remain inline so basic runtime behavior stays deterministic.
+- transformed sequences now express dependency on upstream child items explicitly:
+  - mapped child `i` asks upstream child `i`
+  - if upstream child `i` is not ready, the mapped item becomes `blocked` with `blocked_on=<upstream-child-ref>`
+- blocked mapped/subsequence items subscribe to source-sequence changes and reschedule themselves when the upstream child becomes ready or fails.
+
+Validation target for this slice:
+
+- focused unit coverage in `tests/unit/test_inspectable_sequence.py`
+- no regressions in `tests/unit/test_execution_trace.py`
+- py_compile on the runtime modules changed in this step
+
+Step 6 result:
+
+- non-inline inspectable sequences now schedule child work instead of computing visible page items synchronously inside `page_snapshot(...)`
+- inspectable sequences now expose:
+  - `version()`
+  - `wait_for_change(...)`
+  - `add_change_listener(...)`
+- mapped and subsequence children now surface explicit `blocked` states tied to upstream child refs
+- cheap random-access roots (`range`, known list-backed sequences) remain inline for determinism
+
+Validation completed for Step 6:
+
+```bash
+python -m py_compile implementation/python/voxlogica/inspectable_sequence.py tests/unit/test_inspectable_sequence.py tests/unit/test_execution_trace.py
+PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_inspectable_sequence.py tests/unit/test_execution_trace.py -q
+PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_inspectable_sequence.py tests/unit/test_execution_trace.py --cov=voxlogica.inspectable_sequence --cov=voxlogica.execution_strategy.strict --cov=voxlogica.execution_strategy.dask --cov-report=term-missing -q
+```
+
+Step 7 is now the transport layer:
+
+- replace websocket timeout-loop snapshotting with `wait_for_change(...)` on the active runtime sequence when page subscriptions target an inspectable sequence
+- keep HTTP snapshot endpoints unchanged
+- preserve timer polling only as browser fallback
