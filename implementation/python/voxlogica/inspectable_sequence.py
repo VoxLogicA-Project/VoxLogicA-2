@@ -30,6 +30,15 @@ _PRIORITY_RANKS = {
 }
 
 
+def _normalize_priority(priority: str | None) -> str:
+    text = str(priority or _DEFAULT_PRIORITY).strip().lower()
+    return text if text in _PRIORITY_RANKS else _DEFAULT_PRIORITY
+
+
+def _priority_rank(priority: str | None) -> int:
+    return _PRIORITY_RANKS[_normalize_priority(priority)]
+
+
 class BlockedComputation(RuntimeError):
     """Signal that a child cannot compute until an upstream dependency changes."""
 
@@ -114,6 +123,7 @@ class InspectableSequenceValue(SequenceValue, ABC):
         self._item_states: dict[int, dict[str, Any]] = {}
         self._version = 0
         self._listeners: list[Callable[[], None]] = []
+        self._schedule_tokens = itertools.count()
         super().__init__(self.iter_values, total_size=total_size)
 
     def length_hint(self) -> int | None:
@@ -156,7 +166,7 @@ class InspectableSequenceValue(SequenceValue, ABC):
         safe_index = int(index)
         with self._state_lock:
             current = self._snapshot_locked(safe_index)
-            if current.state in {"ready", "failed", "queued", "running"}:
+            if current.state in {"ready", "failed"}:
                 return current
             if current.state == "blocked":
                 self._schedule_locked(safe_index, priority)
@@ -294,6 +304,8 @@ class InspectableSequenceValue(SequenceValue, ABC):
                 "state": "blocked",
                 "blocked_on": exc.blocked_on,
                 "state_reason": exc.state_reason,
+                "_requested_priority": _DEFAULT_PRIORITY,
+                "_requested_rank": _priority_rank(_DEFAULT_PRIORITY),
             }
             self._notify_change_locked()
             return self._snapshot_locked(index)
@@ -311,21 +323,58 @@ class InspectableSequenceValue(SequenceValue, ABC):
     def _schedule_locked(self, index: int, priority: str) -> None:
         current = self._item_states.get(index, {})
         state = str(current.get("state") or "not_loaded")
-        if state in {"queued", "running"}:
+        normalized_priority = _normalize_priority(priority)
+        requested_rank = _priority_rank(normalized_priority)
+        current_rank = int(current.get("_requested_rank", _PRIORITY_RANKS[_DEFAULT_PRIORITY]))
+        if state == "running":
+            if requested_rank < current_rank:
+                self._item_states[index] = {
+                    **current,
+                    "_requested_priority": normalized_priority,
+                    "_requested_rank": requested_rank,
+                    "state_reason": f"priority:{normalized_priority}",
+                }
+                self._notify_change_locked()
             return
-        self._item_states[index] = {"state": "queued", "state_reason": f"priority:{priority}"}
+        if state == "queued" and requested_rank >= current_rank:
+            return
+        token = next(self._schedule_tokens)
+        self._item_states[index] = {
+            **current,
+            "state": "queued",
+            "state_reason": f"priority:{normalized_priority}",
+            "_requested_priority": normalized_priority,
+            "_requested_rank": requested_rank,
+            "_schedule_token": token,
+        }
         self._notify_change_locked()
-        _SCHEDULER.submit(priority=priority, callback=lambda: self._run_scheduled_item(index, priority))
+        _SCHEDULER.submit(
+            priority=normalized_priority,
+            callback=lambda: self._run_scheduled_item(index, normalized_priority, token),
+        )
 
-    def _run_scheduled_item(self, index: int, priority: str) -> None:
+    def _run_scheduled_item(self, index: int, priority: str, token: int) -> None:
         with self._state_lock:
             current = self._snapshot_locked(index)
             if current.state in {"ready", "failed"}:
                 return
-            self._item_states[index] = {"state": "running", "state_reason": f"priority:{priority}"}
+            meta = self._item_states.get(index, {})
+            current_token = meta.get("_schedule_token")
+            if current_token is not None and int(current_token) != int(token):
+                return
+            requested_priority = _normalize_priority(meta.get("_requested_priority", priority))
+            requested_rank = int(meta.get("_requested_rank", _priority_rank(requested_priority)))
+            self._item_states[index] = {
+                **meta,
+                "state": "running",
+                "state_reason": f"priority:{requested_priority}",
+                "_requested_priority": requested_priority,
+                "_requested_rank": requested_rank,
+                "_schedule_token": token,
+            }
             self._notify_change_locked()
         try:
-            value = self._compute_item(index, priority)
+            value = self._compute_item(index, requested_priority)
         except IndexError:
             with self._state_lock:
                 if self._total_size is None:
@@ -336,6 +385,8 @@ class InspectableSequenceValue(SequenceValue, ABC):
                     "state": "failed",
                     "state_reason": "out-of-range",
                     "error": "index out of range",
+                    "_requested_priority": requested_priority,
+                    "_requested_rank": requested_rank,
                 }
                 self._reconcile_materialized_locked()
                 self._notify_change_locked()
@@ -346,6 +397,8 @@ class InspectableSequenceValue(SequenceValue, ABC):
                     "state": "blocked",
                     "blocked_on": exc.blocked_on,
                     "state_reason": exc.state_reason,
+                    "_requested_priority": requested_priority,
+                    "_requested_rank": requested_rank,
                 }
                 self._notify_change_locked()
             return
@@ -353,13 +406,23 @@ class InspectableSequenceValue(SequenceValue, ABC):
             message = str(exc).strip() or exc.__class__.__name__
             with self._state_lock:
                 self._errors[index] = message
-                self._item_states[index] = {"state": "failed", "error": message}
+                self._item_states[index] = {
+                    "state": "failed",
+                    "error": message,
+                    "_requested_priority": requested_priority,
+                    "_requested_rank": requested_rank,
+                }
                 self._reconcile_materialized_locked()
                 self._notify_change_locked()
             return
 
         with self._state_lock:
-            self._item_states[index] = {"state": "persisting", "state_reason": "runtime-cache"}
+            self._item_states[index] = {
+                "state": "persisting",
+                "state_reason": "runtime-cache",
+                "_requested_priority": requested_priority,
+                "_requested_rank": requested_rank,
+            }
             self._notify_change_locked()
             self._cache[index] = value
             self._reconcile_materialized_locked()
@@ -524,16 +587,16 @@ class InspectableMappedSequence(InspectableSequenceValue):
         )
 
     def _on_source_change(self) -> None:
-        to_resume: list[int] = []
+        to_resume: list[tuple[int, str]] = []
         with self._state_lock:
             for index, meta in self._item_states.items():
                 if str(meta.get("state")) != "blocked":
                     continue
                 upstream_snapshot = self._source.peek_item(index)
                 if upstream_snapshot.state in {"ready", "failed"}:
-                    to_resume.append(int(index))
-        for index in to_resume:
-            self.ensure_item(index, priority=_DEFAULT_PRIORITY)
+                    to_resume.append((int(index), _normalize_priority(meta.get("_requested_priority", _DEFAULT_PRIORITY))))
+        for index, priority in to_resume:
+            self.ensure_item(index, priority=priority)
 
 
 class InspectableSubsequence(InspectableSequenceValue):
@@ -578,7 +641,7 @@ class InspectableSubsequence(InspectableSequenceValue):
         )
 
     def _on_source_change(self) -> None:
-        to_resume: list[int] = []
+        to_resume: list[tuple[int, str]] = []
         with self._state_lock:
             for index, meta in self._item_states.items():
                 if str(meta.get("state")) != "blocked":
@@ -586,6 +649,6 @@ class InspectableSubsequence(InspectableSequenceValue):
                 absolute_index = self._start + int(index)
                 upstream_snapshot = self._source.peek_item(absolute_index)
                 if upstream_snapshot.state in {"ready", "failed"}:
-                    to_resume.append(int(index))
-        for index in to_resume:
-            self.ensure_item(index, priority=_DEFAULT_PRIORITY)
+                    to_resume.append((int(index), _normalize_priority(meta.get("_requested_priority", _DEFAULT_PRIORITY))))
+        for index, priority in to_resume:
+            self.ensure_item(index, priority=priority)

@@ -3,10 +3,12 @@ from __future__ import annotations
 import threading
 import time
 
+import voxlogica.inspectable_sequence as inspectable_sequence_mod
 from voxlogica.inspectable_sequence import (
     InspectableIteratorSequence,
     InspectableMappedSequence,
     InspectableRangeSequence,
+    InspectableSequenceValue,
     InspectableSubsequence,
 )
 from voxlogica.lazy.hash import hash_child_ref, hash_sequence_item
@@ -139,3 +141,77 @@ def test_wait_for_change_advances_runtime_version() -> None:
     assert snapshot.state in {"queued", "running"}
     changed = sequence.wait_for_change(version, timeout=1.0)
     assert changed > version
+
+
+def test_click_priority_promotes_already_queued_item(monkeypatch: pytest.MonkeyPatch) -> None:
+    submissions: list[tuple[str, callable]] = []
+
+    class _FakeScheduler:
+        def submit(self, *, priority: str, callback) -> None:  # noqa: ANN001
+            submissions.append((priority, callback))
+
+    class _RecordingSequence(InspectableSequenceValue):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            super().__init__(parent_ref="recording-sequence", total_size=1)
+
+        def _compute_item(self, index: int, priority: str) -> int:
+            self.calls.append(priority)
+            assert index == 0
+            return 99
+
+    monkeypatch.setattr(inspectable_sequence_mod, "_SCHEDULER", _FakeScheduler())
+    sequence = _RecordingSequence()
+
+    first = sequence.ensure_item(0, priority="visible-page")
+    assert first.state == "queued"
+    assert [priority for priority, _callback in submissions] == ["visible-page"]
+
+    second = sequence.ensure_item(0, priority="click")
+    assert second.state == "queued"
+    assert [priority for priority, _callback in submissions] == ["visible-page", "click"]
+
+    submissions[0][1]()
+    assert sequence.peek_item(0).state == "queued"
+    assert sequence.calls == []
+
+    submissions[1][1]()
+    assert sequence.peek_item(0).state == "ready"
+    assert sequence.peek_item(0).value == 99
+    assert sequence.calls == ["click"]
+
+
+def test_blocked_mapped_item_resumes_with_requested_priority(monkeypatch: pytest.MonkeyPatch) -> None:
+    submissions: list[tuple[str, callable]] = []
+
+    class _FakeScheduler:
+        def submit(self, *, priority: str, callback) -> None:  # noqa: ANN001
+            submissions.append((priority, callback))
+
+    monkeypatch.setattr(inspectable_sequence_mod, "_SCHEDULER", _FakeScheduler())
+
+    release = threading.Event()
+    source = InspectableIteratorSequence(
+        parent_ref="source-sequence",
+        iterator_factory=lambda: iter([7]) if release.is_set() else iter(()),
+        total_size=1,
+    )
+    mapped = InspectableMappedSequence(parent_ref="mapped-sequence", source=source, mapper=lambda value: value * 2)
+
+    initial = mapped.ensure_item(0, priority="click")
+    assert initial.state == "queued"
+    assert submissions[0][0] == "click"
+
+    submissions[0][1]()
+    blocked = mapped.peek_item(0)
+    assert blocked.state == "blocked"
+    assert blocked.blocked_on == source.child_ref(0).child_id
+    assert submissions[1][0] == "click"
+
+    release.set()
+    submissions[1][1]()
+
+    assert [priority for priority, _callback in submissions] == ["click", "click", "click"]
+    submissions[2][1]()
+    assert mapped.peek_item(0).state == "ready"
+    assert mapped.peek_item(0).value == 14

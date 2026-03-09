@@ -1110,3 +1110,53 @@ Final fix for this slice:
   `Unknown store result: <child-hash>`.
 
 This is the correct behavior for the Start tab interaction path because the initial nested page request is the user's first explicit request to inspect that nested collection.
+
+## Follow-up fix: focused child requests must promote queued inspectable items
+
+Date: 2026-03-09
+
+Live proof from `tests/reports/serve/voxlogica-main.log` while opening `vi_sweep_overlays`:
+
+- explicit inner child clicks did arrive with `enqueue=True`, for example:
+  - `variable=vi_sweep_overlays ... path=/1/0`
+  - `path=/1/1`
+  - `path=/1/2`
+- later probes for those same child paths kept reporting:
+  - `materialization=pending`
+  - `compute_status=queued`
+  - `job-completed-runtime-cache`
+
+That proved the UI was issuing focused child requests, but the backend was not promoting already-queued child work.
+
+Root cause, backend:
+
+- `InspectableSequenceValue.ensure_item(...)` returned immediately for items already in `queued` or `running`.
+- `_schedule_locked(...)` also returned immediately when an item was already `queued`.
+- visible-page warmup could therefore queue child items at low priority, and a later focused click had no effect.
+
+Root cause, UI:
+
+- `loadPathRecord(...)` reused any cached path record, even if it was still a pending concrete placeholder.
+- collection row clicks only changed selection; they did not force a focused re-resolve of the clicked child.
+
+Fix:
+
+- `implementation/python/voxlogica/inspectable_sequence.py`
+  - added normalized priority helpers
+  - added per-item schedule tokens and requested-priority metadata
+  - a higher-priority request now supersedes a stale lower-priority queued task
+  - stale queued callbacks no-op deterministically when they eventually run
+  - blocked mapped/subsequence items now resume using their stored requested priority rather than defaulting back to `visible-page`
+- `implementation/ui/src/lib/components/tabs/StartTab.svelte`
+  - cached path records are only reused when they are already concrete/failed or when the caller is not asking for enqueue fallback
+- `implementation/ui/src/lib/components/tabs/StartValueCanvas.svelte`
+  - clicking an active collection item (`not_loaded/queued/blocked/running/persisting`) now forces an immediate focused `loadPathRecord(...)`
+
+Validation:
+
+```bash
+PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_inspectable_sequence.py -q
+PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_inspectable_sequence.py --cov=voxlogica.inspectable_sequence --cov-report=term-missing -q
+npm --prefix implementation/ui run test -- src/lib/components/tabs/StartTab.test.js
+npm --prefix implementation/ui run build
+```

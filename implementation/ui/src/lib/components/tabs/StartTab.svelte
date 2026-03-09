@@ -1382,6 +1382,17 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
   const pathRecordPollingFor = (sourceVariable = "", path = "") => Boolean(pathRecordPollTimers?.[pathRecordKey(sourceVariable, path)]);
 
+  const shouldReuseCachedPathRecord = (payload = null, { enqueueFallback = true } = {}) => {
+    if (!payload || typeof payload !== "object") return false;
+    const failed =
+      String(payload?.materialization || "").trim().toLowerCase() === "failed" ||
+      ["failed", "killed"].includes(String(payload?.compute_status || "").trim().toLowerCase());
+    if (failed) return true;
+    if (hasConcreteDescriptor(payload?.descriptor)) return true;
+    if (!enqueueFallback) return true;
+    return false;
+  };
+
   const cachePathRecord = (sourceVariable = "", path = "", payload = null) => {
     if (!sourceVariable || !payload) return;
     const key = pathRecordKey(sourceVariable, path);
@@ -1438,7 +1449,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     const targetPath = String(path || "");
     if (!variableName) return null;
     const key = pathRecordKey(variableName, targetPath);
-    if (!force && pathRecords?.[key]) return pathRecords[key];
+    if (!force && pathRecords?.[key] && shouldReuseCachedPathRecord(pathRecords[key], { enqueueFallback })) {
+      return pathRecords[key];
+    }
     if (pathRecordsLoading?.[key]) return null;
     clearPathRecordPoll(key);
 

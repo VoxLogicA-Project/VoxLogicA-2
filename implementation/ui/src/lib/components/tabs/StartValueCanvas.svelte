@@ -41,6 +41,7 @@
 
   const MAX_DEPTH = 7;
   const DEFAULT_LIMIT = 18;
+  const ACTIVE_COLLECTION_ITEM_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting"]);
   let stageExpanded = false;
 
   const safeText = (value) => {
@@ -358,12 +359,22 @@
                 class={`start-collection-item start-collection-item--${itemState} ${selectedIndex === itemIndex ? "is-selected" : ""}`.trim()}
                 type="button"
                 title={`${String(item?.label || `[${Number(page?.offset || 0) + itemIndex}]`)} (${typeLabelFromDescriptor(itemDescriptor)}) · ${itemLabel}${itemDetails ? ` · ${itemDetails}` : ""}`}
-                on:click={() =>
+                on:click={() => {
+                  const nextPath = String(item?.path || "");
                   setCollectionSelection(record, path, {
                     selectedIndex: itemIndex,
                     selectedAbsoluteIndex: Math.max(0, Number(page?.offset || 0)) + itemIndex,
-                    selectedPath: String(item?.path || ""),
-                  })}
+                    selectedPath: nextPath,
+                  });
+                  if (sourceVariable && nextPath && ACTIVE_COLLECTION_ITEM_STATES.has(itemState)) {
+                    void loadPathRecord({
+                      sourceVariable,
+                      path: nextPath,
+                      enqueueFallback: true,
+                      force: true,
+                    });
+                  }
+                }}
               >
                 <span class="start-collection-item-index">
                   {item?.label || `[${Number(page?.offset || 0) + itemIndex}]`}
