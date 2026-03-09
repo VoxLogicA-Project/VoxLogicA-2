@@ -1,5 +1,61 @@
 # WIP: Lazy Sequence Materialization Debug/Handover
 
+## Update: Inspectable Child Paths Must Preserve Progress State
+
+New bug found after inspectable per-item scheduling landed:
+
+- direct path inspection for inspectable sequence children (for example `/5`) could raise
+  `Sequence index out of range in path '/5'`
+- even when neighboring items existed and the child was merely `queued`, `running`, `blocked`, or `persisting`
+
+### Root cause
+
+Files:
+- `implementation/python/voxlogica/value_model.py`
+- `implementation/python/voxlogica/serve_support.py`
+- `implementation/python/voxlogica/main.py`
+
+Problem:
+- generic runtime child-path resolution still used `adapt_runtime_value(...).resolve(path=...)`
+- for `InspectableSequenceValue`, the compatibility wrapper `VoxIteratorSequenceValue._iter_window(...)` only returns items whose snapshot state is `ready`
+- `VoxSequenceValue.resolve(...)` interprets an empty one-item window as **index out of range**
+- therefore “item exists but is not ready yet” collapsed into a false terminal failure
+
+### Correct behavior
+
+- inspectable child paths must preserve runtime progress semantics:
+  - `not_loaded`
+  - `queued`
+  - `blocked`
+  - `running`
+  - `persisting`
+  - `ready`
+  - `failed`
+- direct path inspection should only report out-of-range when the inspectable sequence itself proves the index is absent
+
+### Implemented fix
+
+- added a dedicated runtime path resolver in `implementation/python/voxlogica/serve_support.py`
+  - `_resolve_runtime_value_or_progress(...)`
+- it walks inspectable sequence paths token-by-token
+- when a child snapshot is not ready, it returns a progress payload instead of forcing generic sequence resolution
+- updated:
+  - `describe_runtime_value(...)`
+  - `build_runtime_preview(...)`
+  - `RuntimeValueInspector.wait_for_change(...)`
+  - `LiveRuntimeValueInspector.wait_for_change(...)`
+  - `inspect_runtime_value_page(...)`
+- updated `implementation/python/voxlogica/main.py`
+  - `_payload_from_runtime_preview(...)` now preserves preview status instead of hard-coding runtime previews as `computed`
+
+### Regression tests
+
+- `tests/unit/test_serve_support.py`
+  - blocked inspectable child path stays blocked
+  - runtime inspector preview does not fabricate out-of-range for blocked child
+- `tests/unit/test_main_entrypoints.py`
+  - `/api/v1/playground/value` keeps a blocked runtime child as `materialization=pending`, `compute_status=blocked`
+
 ## Scope
 This note documents the current investigation around **lazy sequence progress** in serve-mode Start tab, specifically why `vi_sweep_masks` can appear stuck in `persisting/pending` without clear per-item materialization.
 

@@ -9,7 +9,12 @@ import numpy as np
 import pytest
 
 from voxlogica.execution_strategy.results import SequenceValue
-from voxlogica.inspectable_sequence import InspectableListSequence, InspectableRangeSequence
+from voxlogica.inspectable_sequence import (
+    BlockedComputation,
+    InspectableListSequence,
+    InspectableRangeSequence,
+    InspectableSequenceValue,
+)
 from voxlogica.lazy.hash import hash_sequence_item
 from voxlogica.serve_support import (
     LiveRuntimeValueInspector,
@@ -534,6 +539,55 @@ def test_inspect_runtime_value_page_reports_inspectable_item_states() -> None:
     assert page["page"]["items"][0]["status"] == "ready"
     assert page["page"]["items"][0]["state"] == "ready"
     assert page["page"]["items"][0]["node_id"] == hash_sequence_item("node-seq", 0)
+
+
+@pytest.mark.unit
+def test_describe_runtime_value_preserves_blocked_inspectable_child_state() -> None:
+    class _BlockedSequence(InspectableSequenceValue):
+        def __init__(self) -> None:
+            super().__init__(parent_ref="node-blocked", total_size=8)
+
+        def _compute_item(self, index: int, priority: str) -> int:
+            del priority
+            if index == 5:
+                raise BlockedComputation(blocked_on="upstream:/5", state_reason="upstream:running")
+            return index
+
+    sequence = _BlockedSequence()
+
+    payload = describe_runtime_value(node_id="node-blocked", value=sequence, path="/5")
+
+    assert payload["status"] == "blocked"
+    assert payload["path"] == "/5"
+    assert payload["descriptor"]["vox_type"] == "unavailable"
+    assert payload["blocked_on"] == "upstream:/5"
+    assert payload["state_reason"] == "upstream:running"
+    assert payload["error"] is None
+
+
+@pytest.mark.unit
+def test_runtime_value_inspector_preview_does_not_report_out_of_range_for_blocked_child() -> None:
+    class _BlockedSequence(InspectableSequenceValue):
+        def __init__(self) -> None:
+            super().__init__(parent_ref="node-blocked-preview", total_size=8)
+
+        def _compute_item(self, index: int, priority: str) -> int:
+            del priority
+            if index == 5:
+                raise BlockedComputation(blocked_on="upstream:/5", state_reason="upstream:running")
+            return index
+
+    inspector = RuntimeValueInspector(
+        node_id="node-blocked-preview",
+        value=freeze_runtime_value(_BlockedSequence()),
+    )
+
+    preview = inspector.preview(path="/5")
+
+    assert preview["path"] == "/5"
+    assert preview["status"] == "blocked"
+    assert preview["descriptor"]["vox_type"] == "unavailable"
+    assert "error" not in preview
 
 
 @pytest.mark.unit

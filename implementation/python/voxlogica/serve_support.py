@@ -87,6 +87,90 @@ def _progress_descriptor(*, path: str, status: str) -> dict[str, Any]:
     }
 
 
+def _decode_runtime_path_token(token: str) -> str:
+    return str(token).replace("~1", "/").replace("~0", "~")
+
+
+def _encode_runtime_path_token(token: str) -> str:
+    return str(token).replace("~", "~0").replace("/", "~1")
+
+
+def _runtime_path_tokens(path: str) -> list[str]:
+    normalized = normalize_path(path)
+    if not normalized:
+        return []
+    return [_decode_runtime_path_token(token) for token in normalized.split("/") if token]
+
+
+def _runtime_remainder_path(tokens: list[str]) -> str:
+    if not tokens:
+        return ""
+    return "/" + "/".join(_encode_runtime_path_token(token) for token in tokens)
+
+
+def _resolve_runtime_value_or_progress(
+    *,
+    node_id: str,
+    value: Any,
+    path: str = "",
+    priority: str = "focused-child",
+) -> dict[str, Any]:
+    """Resolve one runtime path, preserving inspectable child progress states."""
+    normalized = _normalize_result_path(path)
+    if normalized in {"", "/"}:
+        return {
+            "kind": "resolved",
+            "path": normalized,
+            "resolved": adapt_runtime_value(value),
+        }
+
+    tokens = _runtime_path_tokens(normalized)
+    current_value = value
+    current_path = ""
+
+    while tokens:
+        current = adapt_runtime_value(current_value)
+        raw_current = getattr(current, "raw", None)
+        if isinstance(raw_current, InspectableSequenceValue):
+            token = tokens.pop(0)
+            try:
+                index = int(token)
+            except ValueError as exc:
+                raise ValueError(f"Invalid sequence index '{token}' in path '{path}'.") from exc
+            if index < 0:
+                raise ValueError(f"Invalid negative sequence index '{index}' in path '{path}'.")
+            snapshot = raw_current.ensure_item(index, priority=priority)
+            current_path = append_path(current_path, str(index))
+            if snapshot.state == "ready":
+                current_value = snapshot.value
+                continue
+            return {
+                "kind": "progress",
+                "path": current_path,
+                "status": str(snapshot.state or "not_loaded"),
+                "descriptor": _progress_descriptor(path=current_path, status=str(snapshot.state or "pending")),
+                "error": snapshot.error,
+                "blocked_on": snapshot.blocked_on,
+                "state_reason": snapshot.state_reason,
+                "wait_target": raw_current,
+            }
+
+        remainder = _runtime_remainder_path(tokens)
+        resolved = current.resolve(path=remainder)
+        resolved_path = current_path if not remainder else f"{current_path}{remainder}"
+        return {
+            "kind": "resolved",
+            "path": resolved_path or normalized,
+            "resolved": resolved,
+        }
+
+    return {
+        "kind": "resolved",
+        "path": current_path or normalized,
+        "resolved": adapt_runtime_value(current_value),
+    }
+
+
 def _is_dask_bag(value: Any) -> bool:
     try:
         import dask.bag as db  # type: ignore
@@ -210,9 +294,19 @@ def build_runtime_preview(
     preview: dict[str, Any] = {
         "path": normalized,
         "descriptor": descriptor_payload.get("descriptor"),
-        "status": "materialized",
+        "status": str(descriptor_payload.get("status") or "materialized"),
     }
-    resolved = adapt_runtime_value(value).resolve(path=normalized)
+    if descriptor_payload.get("error") is not None:
+        preview["error"] = descriptor_payload.get("error")
+    if descriptor_payload.get("blocked_on") is not None:
+        preview["blocked_on"] = descriptor_payload.get("blocked_on")
+    if descriptor_payload.get("state_reason") is not None:
+        preview["state_reason"] = descriptor_payload.get("state_reason")
+
+    resolution = _resolve_runtime_value_or_progress(node_id=node_id, value=value, path=normalized)
+    if resolution.get("kind") != "resolved":
+        return preview
+    resolved = resolution["resolved"]
     preview["vox_type"] = str(resolved.vox_type)
     if isinstance(resolved, (VoxSequenceValue, VoxMappingValue)):
         paged = inspect_runtime_value_page(
@@ -277,8 +371,8 @@ class RuntimeValueInspector:
         """Completed runtime values do not change; return the current sequence version when available."""
         del timeout
         normalized = _normalize_result_path(path)
-        resolved = adapt_runtime_value(self.value).resolve(path=normalized)
-        raw_value = getattr(resolved, "raw", None)
+        resolution = _resolve_runtime_value_or_progress(node_id=self.node_id, value=self.value, path=normalized)
+        raw_value = getattr(resolution.get("resolved"), "raw", None) if resolution.get("kind") == "resolved" else resolution.get("wait_target")
         if isinstance(raw_value, InspectableSequenceValue):
             return raw_value.version()
         return int(since_version)
@@ -348,10 +442,10 @@ class LiveRuntimeValueInspector:
             except Exception:
                 return int(since_version)
         try:
-            resolved = adapt_runtime_value(value).resolve(path=normalized_path)
+            resolution = _resolve_runtime_value_or_progress(node_id=safe_node_id, value=value, path=normalized_path)
         except Exception:
             return int(since_version)
-        raw_value = getattr(resolved, "raw", None)
+        raw_value = getattr(resolution.get("resolved"), "raw", None) if resolution.get("kind") == "resolved" else resolution.get("wait_target")
         if isinstance(raw_value, InspectableSequenceValue):
             return raw_value.wait_for_change(since_version, timeout=timeout)
         return int(since_version)
@@ -1761,7 +1855,31 @@ def inspect_store_result_page(
 def describe_runtime_value(*, node_id: str, value: Any, path: str = "") -> dict[str, Any]:
     """Describe an in-memory value using the canonical voxpod descriptor contract."""
     normalized = _normalize_result_path(path)
-    resolved = adapt_runtime_value(value).resolve(path=normalized)
+    resolution = _resolve_runtime_value_or_progress(node_id=node_id, value=value, path=normalized)
+    if resolution.get("kind") == "progress":
+        status = str(resolution.get("status") or "pending")
+        payload = {
+            "available": False,
+            "node_id": node_id,
+            "status": status,
+            "runtime_version": "runtime",
+            "created_at": _iso_utc(time.time()),
+            "updated_at": _iso_utc(time.time()),
+            "metadata": {"source": "runtime"},
+            "error": resolution.get("error"),
+            "path": normalized,
+            "descriptor": _canonical_descriptor(
+                resolution.get("descriptor") if isinstance(resolution.get("descriptor"), dict) else _progress_descriptor(path=normalized, status=status),
+                node_id=node_id,
+                path=normalized,
+            ),
+        }
+        if resolution.get("state_reason") is not None:
+            payload["state_reason"] = str(resolution.get("state_reason"))
+        if resolution.get("blocked_on") is not None:
+            payload["blocked_on"] = str(resolution.get("blocked_on"))
+        return payload
+    resolved = resolution["resolved"]
     return {
         "available": True,
         "node_id": node_id,
@@ -1792,7 +1910,10 @@ def inspect_runtime_value_page(
     normalized_path = _normalize_result_path(path)
     safe_offset = max(0, int(offset))
     safe_limit = max(1, min(int(limit), MAX_PAGE_SIZE))
-    resolved = adapt_runtime_value(value).resolve(path=normalized_path)
+    resolution = _resolve_runtime_value_or_progress(node_id=node_id, value=value, path=normalized_path)
+    if resolution.get("kind") != "resolved":
+        raise ValueError(f"Path '{normalized_path or '/'}' is not pageable while child status is {resolution.get('status', 'pending')}.")
+    resolved = resolution["resolved"]
     root = resolved
     if not isinstance(root, (VoxSequenceValue, VoxMappingValue)):
         raise ValueError(f"Path '{normalized_path or '/'}' is not pageable (vox_type={root.vox_type}).")

@@ -1673,11 +1673,27 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
         preview_descriptor = preview.get("descriptor")
         if not isinstance(preview_descriptor, dict):
             return None
+        preview_status = str(preview.get("status", "materialized") or "materialized").strip().lower()
+        pending_states = {"not_loaded", "queued", "blocked", "running", "persisting", "pending", "missing"}
+        failed_states = {"failed", "killed", "error"}
+        ready_states = {"materialized", "computed", "completed", "cached", "ready"}
+        if preview_status in failed_states:
+            materialization = "failed"
+            resolved_compute_status = "failed"
+            available = False
+        elif preview_status in pending_states:
+            materialization = "pending"
+            resolved_compute_status = "pending" if preview_status == "not_loaded" else preview_status
+            available = False
+        else:
+            materialization = "computed" if preview_status in ready_states else "pending"
+            resolved_compute_status = compute_status if materialization == "computed" else preview_status
+            available = materialization == "computed"
         preview_payload: dict[str, Any] = {
-            "available": True,
-            "status": "materialized",
-            "materialization": "computed",
-            "compute_status": compute_status,
+            "available": available,
+            "status": "materialized" if materialization == "computed" else preview_status,
+            "materialization": materialization,
+            "compute_status": resolved_compute_status,
             "store_status": "missing",
             "job_id": job_id,
             "request_enqueued": False,
@@ -1689,6 +1705,12 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
         preview_page = preview.get("page")
         if isinstance(preview_page, dict):
             preview_payload["runtime_preview_page"] = preview_page
+        if preview.get("error") is not None:
+            preview_payload["error"] = str(preview.get("error"))
+        if preview.get("state_reason") is not None:
+            preview_payload["state_reason"] = str(preview.get("state_reason"))
+        if preview.get("blocked_on") is not None:
+            preview_payload["blocked_on"] = str(preview.get("blocked_on"))
         preview_payload["metadata"] = {
             **(metadata if isinstance(metadata, dict) else {}),
             "source": source,
