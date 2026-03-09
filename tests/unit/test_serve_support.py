@@ -592,6 +592,14 @@ def test_runtime_value_inspector_preview_does_not_report_out_of_range_for_blocke
 
 
 @pytest.mark.unit
+def test_freeze_runtime_value_preserves_inspectable_sequences() -> None:
+    sequence = InspectableRangeSequence(parent_ref="node-freeze", start=10, stop=13)
+    frozen = freeze_runtime_value(sequence)
+
+    assert frozen is sequence
+
+
+@pytest.mark.unit
 def test_inspect_runtime_value_page_uses_root_node_for_runtime_overlay_render_urls() -> None:
     overlay = OverlayValue.from_layers(
         [

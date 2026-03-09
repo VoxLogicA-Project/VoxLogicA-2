@@ -249,6 +249,8 @@ def freeze_runtime_value(value: Any) -> Any:
     """Wrap lazy runtime values so repeated inspection reuses prior work."""
     if isinstance(value, MemoizedSequenceValue):
         return value
+    if isinstance(value, InspectableSequenceValue):
+        return value
     if isinstance(value, SequenceValue):
         return MemoizedSequenceValue.from_sequence(value)
     if _is_dask_bag(value):
