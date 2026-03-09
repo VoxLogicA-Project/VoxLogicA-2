@@ -1465,6 +1465,65 @@ def test_playground_value_page_uses_runtime_live_preview_while_running(
 
 
 @pytest.mark.unit
+def test_playground_value_does_not_infer_root_sequence_type_for_unresolved_nested_child(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeRegistry:
+        @staticmethod
+        def get_feature(name: str):
+            if name == "version":
+                return SimpleNamespace(handler=lambda: OperationResult.ok({"version": "2.0.0"}))
+            if name == "run":
+                return SimpleNamespace(handler=lambda **kwargs: OperationResult.ok({"ok": True, "args": kwargs}))
+            return None
+
+    monkeypatch.setattr(main_mod, "FeatureRegistry", FakeRegistry)
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    def _job_payload(node_id: str) -> dict[str, object]:
+        return {
+            "job_id": "value-runtime-nested-pending",
+            "status": "running",
+            "result": {"goal_results": [{"node_id": node_id, "status": "materialized"}]},
+            "log_tail": "",
+        }
+
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            get_value_job=lambda **kwargs: _job_payload(str(kwargs.get("node_id", ""))),
+            inspect_value_job_runtime=lambda **kwargs: None,
+            ensure_value_job=lambda payload, **kwargs: {"job_id": "unused", "status": "running", "log_tail": ""},
+        ),
+    )
+
+    try:
+        with TestClient(main_mod.api_app) as client:
+            value_resp = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "xs = range(0,2)",
+                    "variable": "xs",
+                    "path": "/0/0",
+                    "enqueue": False,
+                },
+            )
+            assert value_resp.status_code == 200
+            payload = value_resp.json()
+            assert payload["materialization"] == "pending"
+            assert payload["compute_status"] == "running"
+            assert payload["descriptor"]["vox_type"] == "unavailable"
+            assert payload["descriptor"]["summary"]["reason"] == "status=running"
+    finally:
+        fake_storage.close()
+
+
+@pytest.mark.unit
 def test_playground_value_keeps_blocked_runtime_child_pending_instead_of_failing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

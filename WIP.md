@@ -56,6 +56,41 @@ Problem:
 - `tests/unit/test_main_entrypoints.py`
   - `/api/v1/playground/value` keeps a blocked runtime child as `materialization=pending`, `compute_status=blocked`
 
+## Update: Nested Pending Child Paths Must Not Inherit Root Sequence Type
+
+New viewer bug found with `vi_sweep_overlays`:
+
+- the real semantic shape is `sequence(case -> sequence(threshold -> overlay))`
+- but unresolved nested child paths like `/0/0` could be reported as another `sequence`
+- the UI then opened a fake third collection level, which looked like `seq -> seq -> seq`
+
+### Root cause
+
+File:
+- `implementation/python/voxlogica/main.py`
+
+Problem:
+- `_in_progress_descriptor(...)` used the **root node output kind** for every path
+- for a root sequence variable, unresolved nested child paths inherited `vox_type="sequence"`
+- this was only a placeholder, but the UI treated it as a real collection descriptor
+
+### Correct behavior
+
+- root unresolved value may still use root output kind for the top-level placeholder
+- nested unresolved child paths must stay `unavailable` unless runtime/store inspection proves they are pageable
+
+### Implemented fix
+
+- `implementation/python/voxlogica/main.py`
+  - `_in_progress_descriptor(...)` now returns `_pending_descriptor(...)` for non-root paths
+  - only root path placeholders use the symbolic output kind
+
+### Regression test
+
+- `tests/unit/test_main_entrypoints.py`
+  - unresolved nested child path `/0/0` under a running root sequence must return `vox_type="unavailable"`
+  - it must not inherit the root `sequence` type
+
 ## Scope
 This note documents the current investigation around **lazy sequence progress** in serve-mode Start tab, specifically why `vi_sweep_masks` can appear stuck in `persisting/pending` without clear per-item materialization.
 

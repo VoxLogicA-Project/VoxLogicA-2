@@ -335,6 +335,8 @@ def _pending_descriptor(*, path: str, reason: str) -> dict[str, Any]:
 
 def _in_progress_descriptor(*, output_kind: str, path: str, status: str) -> dict[str, Any]:
     normalized_path = str(path or "").strip()
+    if normalized_path not in {"", "/"}:
+        return _pending_descriptor(path=normalized_path, reason=f"status={status}")
     if output_kind == "sequence":
         return {
             "vox_type": "sequence",
