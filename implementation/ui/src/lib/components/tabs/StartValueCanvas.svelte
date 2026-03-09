@@ -93,8 +93,17 @@
     return resolved && typeof resolved === "object" ? resolved : null;
   };
 
+  const displayRecordForItem = (item) => {
+    const itemPath = String(item?.path || "");
+    if (!itemPath) return null;
+    if (selectedRecordDetail && itemPath === selectedPath) {
+      return selectedRecordDetail;
+    }
+    return resolvedItemRecord(item);
+  };
+
   const effectiveDescriptorForItem = (item) => {
-    const resolved = resolvedItemRecord(item);
+    const resolved = displayRecordForItem(item);
     if (resolved?.descriptor && typeof resolved.descriptor === "object") {
       return resolved.descriptor;
     }
@@ -102,7 +111,7 @@
   };
 
   const effectiveStateForItem = (item) => {
-    const resolved = resolvedItemRecord(item);
+    const resolved = displayRecordForItem(item);
     if (resolved) {
       const materialization = String(resolved?.materialization || "").toLowerCase();
       const computeStatus = String(resolved?.compute_status || "").toLowerCase();
