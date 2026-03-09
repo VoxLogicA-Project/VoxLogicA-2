@@ -388,54 +388,56 @@
               {stageExpanded ? "Restore" : "Maximize"}
             </button>
           </header>
-          <div class="start-collection-stage-body">
-            {#if selectedDetailError}
-              <div class="viewer-error">{selectedDetailError}</div>
-            {:else if selectedDetailLoading && !selectedRecordDetail}
-              <div class="start-collection-stage-loading">
-                <span></span>
-              </div>
-            {:else if level >= MAX_DEPTH}
-              <div class="start-pure-array">{previewText(selectedDescriptor)}</div>
-            {:else}
-              <svelte:self
-                record={selectedRecord}
-                label={selectedItem?.label || label}
-                {sourceVariable}
-                level={level + 1}
-                {collectionRecord}
-                {recordDescriptor}
-                {recordType}
-                {recordPath}
-                {previewText}
-                {typeLabelFromDescriptor}
-                {pageForRecord}
-                {pageErrorForRecord}
-                {pageLoadingForRecord}
-                {pagePollingForRecord}
-                {loadRecordPage}
-                {collectionItemsForPage}
-                {collectionSelectionFor}
-                {setCollectionSelection}
-                {loadCollectionPrev}
-                {loadCollectionNext}
-                {nestedRecordFromItem}
-                {pathRecordFor}
-                {pathRecordLoadingFor}
-                {pathRecordErrorFor}
-                {pathRecordPollingFor}
-                {loadPathRecord}
-                {recordPages}
-                {recordPagePointers}
-                {recordPagesLoading}
-                {recordPagesErrors}
-                {collectionSelections}
-                {pathRecords}
-                {pathRecordsLoading}
-                {pathRecordsErrors}
-              />
-            {/if}
-          </div>
+          {#key `${selectedPath}|${selectedDetailLoading ? "loading" : "idle"}|${selectedDetailError}`.trim()}
+            <div class="start-collection-stage-body">
+              {#if selectedDetailError}
+                <div class="viewer-error">{selectedDetailError}</div>
+              {:else if selectedDetailLoading && !selectedRecordDetail}
+                <div class="start-collection-stage-loading">
+                  <span></span>
+                </div>
+              {:else if level >= MAX_DEPTH}
+                <div class="start-pure-array">{previewText(selectedDescriptor)}</div>
+              {:else}
+                <svelte:self
+                  record={selectedRecord}
+                  label={selectedItem?.label || label}
+                  {sourceVariable}
+                  level={level + 1}
+                  {collectionRecord}
+                  {recordDescriptor}
+                  {recordType}
+                  {recordPath}
+                  {previewText}
+                  {typeLabelFromDescriptor}
+                  {pageForRecord}
+                  {pageErrorForRecord}
+                  {pageLoadingForRecord}
+                  {pagePollingForRecord}
+                  {loadRecordPage}
+                  {collectionItemsForPage}
+                  {collectionSelectionFor}
+                  {setCollectionSelection}
+                  {loadCollectionPrev}
+                  {loadCollectionNext}
+                  {nestedRecordFromItem}
+                  {pathRecordFor}
+                  {pathRecordLoadingFor}
+                  {pathRecordErrorFor}
+                  {pathRecordPollingFor}
+                  {loadPathRecord}
+                  {recordPages}
+                  {recordPagePointers}
+                  {recordPagesLoading}
+                  {recordPagesErrors}
+                  {collectionSelections}
+                  {pathRecords}
+                  {pathRecordsLoading}
+                  {pathRecordsErrors}
+                />
+              {/if}
+            </div>
+          {/key}
         {:else}
           <div class="start-viewer-message">No selected value</div>
         {/if}
