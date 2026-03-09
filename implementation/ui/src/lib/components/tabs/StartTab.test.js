@@ -671,6 +671,135 @@ describe("StartTab", () => {
     });
   });
 
+  it("promotes a row to ready when a pending path resolve already carries a concrete value descriptor", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockImplementation(async ({ path = "" }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-xs",
+          path: "/",
+          descriptor: {
+            vox_type: "sequence",
+            format_version: "voxpod/1",
+            summary: { length: 8 },
+            navigation: {
+              path: "/",
+              pageable: true,
+              can_descend: true,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      if (path === "/5") {
+        return {
+          materialization: "pending",
+          compute_status: "missing",
+          node_id: "node-xs",
+          path: "/5",
+          descriptor: {
+            vox_type: "number",
+            format_version: "voxpod/1",
+            summary: { value: 0.88 },
+            navigation: {
+              path: "/5",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      return {
+        materialization: "pending",
+        compute_status: "running",
+        node_id: "node-xs",
+        path,
+        descriptor: {
+          vox_type: "unavailable",
+          format_version: "voxpod/1",
+          summary: { reason: "status=pending" },
+          navigation: {
+            path,
+            pageable: false,
+            can_descend: false,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
+        },
+      };
+    });
+    resolvePlaygroundValuePageMock.mockResolvedValue({
+      materialization: "pending",
+      compute_status: "running",
+      path: "/",
+      page: {
+        offset: 0,
+        limit: 18,
+        has_more: false,
+        next_offset: null,
+        items: Array.from({ length: 8 }, (_, index) => ({
+          index,
+          label: `[${index}]`,
+          path: `/${index}`,
+          status: "pending",
+          descriptor: {
+            vox_type: "unavailable",
+            format_version: "voxpod/1",
+            summary: { reason: "status=pending" },
+            navigation: {
+              path: `/${index}`,
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        })),
+      },
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(resolvePlaygroundValuePageMock).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(container.querySelectorAll(".start-collection-item").length).toBeGreaterThanOrEqual(6);
+    });
+    const rowFive = Array.from(container.querySelectorAll(".start-collection-item"))[5];
+    expect(rowFive).not.toBeUndefined();
+    await fireEvent.click(rowFive);
+
+    await waitFor(() => {
+      expect(resolvePlaygroundValueMock.mock.calls.some(([payload]) => payload?.path === "/5")).toBe(true);
+      expect(container.textContent).toContain("0.88");
+    });
+
+    await waitFor(() => {
+      const updatedRowFive = Array.from(container.querySelectorAll(".start-collection-item"))[5];
+      expect(updatedRowFive?.textContent || "").toContain("ready");
+      expect(updatedRowFive?.textContent || "").toContain("0.88");
+      expect(updatedRowFive?.getAttribute("title") || "").toContain("[5] (number) · ready");
+    });
+  });
+
   it("renders nested sequence pages for ready sequence-of-sequences items", async () => {
     getProgramSymbolsMock.mockResolvedValue({
       available: true,

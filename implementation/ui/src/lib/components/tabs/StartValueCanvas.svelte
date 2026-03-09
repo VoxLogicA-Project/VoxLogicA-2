@@ -54,6 +54,11 @@
     return voxType === "sequence" || voxType === "mapping";
   };
 
+  const concreteDescriptor = (descriptor) => {
+    const voxType = String(descriptor?.vox_type || "").trim().toLowerCase();
+    return Boolean(voxType) && voxType !== "unavailable" && voxType !== "error";
+  };
+
   const normalizeCollectionItemState = (rawState, descriptor = null) => {
     const normalized = String(rawState || "").trim().toLowerCase();
     if (["ready", "queued", "blocked", "running", "persisting", "failed", "not_loaded"].includes(normalized)) {
@@ -116,6 +121,7 @@
       const materialization = String(resolved?.materialization || "").toLowerCase();
       const computeStatus = String(resolved?.compute_status || "").toLowerCase();
       if (materialization === "failed" || computeStatus === "failed" || computeStatus === "killed") return "failed";
+      if (concreteDescriptor(resolved?.descriptor)) return "ready";
       if ((materialization === "computed" || materialization === "cached") && resolved?.descriptor) return "ready";
       if (["queued", "running", "persisting"].includes(computeStatus)) return computeStatus;
       if (["pending", "missing"].includes(materialization)) {

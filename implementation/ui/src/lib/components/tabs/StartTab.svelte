@@ -94,6 +94,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   let viewerErrorMessage = "";
   let recordPages = {};
   let recordPagePointers = {};
+  let recordPageSources = {};
   let recordPagesLoading = {};
   let recordPagesErrors = {};
   let collectionSelections = {};
@@ -266,6 +267,40 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     const itemType = String(item?.descriptor?.vox_type || "").trim().toLowerCase();
     if (!itemType || itemType === "unavailable") return "not_loaded";
     return "ready";
+  };
+
+  const hasConcreteDescriptor = (descriptor) => {
+    const voxType = String(descriptor?.vox_type || "").trim().toLowerCase();
+    return Boolean(voxType) && voxType !== "unavailable" && voxType !== "error";
+  };
+
+  const collectionItemStateFromPayload = (payload = null) => {
+    const materialization = String(payload?.materialization || "").trim().toLowerCase();
+    const computeStatus = String(payload?.compute_status || "").trim().toLowerCase();
+    if (materialization === "failed" || ["failed", "killed"].includes(computeStatus)) {
+      return "failed";
+    }
+    if (hasConcreteDescriptor(payload?.descriptor)) {
+      return "ready";
+    }
+    if (["queued", "blocked", "running", "persisting"].includes(computeStatus)) {
+      return computeStatus;
+    }
+    if (["computed", "cached", "materialized", "completed"].includes(materialization)) {
+      return "ready";
+    }
+    if (["pending", "missing"].includes(materialization)) {
+      return "not_loaded";
+    }
+    return "not_loaded";
+  };
+
+  const collectionItemStatusFromState = (state = "not_loaded") => {
+    const normalized = String(state || "not_loaded").trim().toLowerCase();
+    if (normalized === "ready") return "materialized";
+    if (normalized === "failed") return "failed";
+    if (["queued", "blocked", "running", "persisting"].includes(normalized)) return normalized;
+    return "pending";
   };
 
   const pageSocketsEnabled = () =>
@@ -1088,7 +1123,53 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       ...recordPagePointers,
       [baseKey]: cacheKey,
     };
+    recordPageSources = {
+      ...recordPageSources,
+      [cacheKey]: sourceVariableForRecord(record, 0),
+    };
     return normalizedPage;
+  };
+
+  const syncPathRecordIntoCachedPages = (sourceVariable = "", path = "", payload = null) => {
+    const variableName = String(sourceVariable || "").trim();
+    const targetPath = String(path || "").trim();
+    if (!variableName || !targetPath || !payload || typeof payload !== "object") return;
+    const nextPages = {};
+    let changed = false;
+    for (const [cacheKey, page] of Object.entries(recordPages || {})) {
+      if (String(recordPageSources?.[cacheKey] || "").trim() !== variableName) {
+        nextPages[cacheKey] = page;
+        continue;
+      }
+      const items = Array.isArray(page?.items) ? page.items : null;
+      if (!items?.length) {
+        nextPages[cacheKey] = page;
+        continue;
+      }
+      let pageChanged = false;
+      const nextItems = items.map((item) => {
+        if (String(item?.path || "") !== targetPath) return item;
+        pageChanged = true;
+        const nextState = collectionItemStateFromPayload(payload);
+        const nextStatus = collectionItemStatusFromState(nextState);
+        const nextDescriptor =
+          payload?.descriptor && typeof payload.descriptor === "object" ? payload.descriptor : item?.descriptor;
+        return {
+          ...item,
+          descriptor: nextDescriptor,
+          state: nextState,
+          status: nextStatus,
+          error: String(payload?.error || item?.error || ""),
+          blocked_on: String(payload?.blocked_on || item?.blocked_on || ""),
+          state_reason: String(payload?.state_reason || item?.state_reason || ""),
+        };
+      });
+      nextPages[cacheKey] = pageChanged ? { ...page, items: nextItems } : page;
+      changed = changed || pageChanged;
+    }
+    if (changed) {
+      recordPages = nextPages;
+    }
   };
 
   const syncSelectionForRecordPage = (record, resolvedPath = "", page = null) => {
@@ -1308,6 +1389,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       ...pathRecords,
       [key]: payload,
     };
+    syncPathRecordIntoCachedPages(sourceVariable, String(payload?.path || path || "/"), payload);
     const inlinePage =
       payload?.runtime_preview_page && typeof payload.runtime_preview_page === "object"
         ? payload.runtime_preview_page
@@ -1378,6 +1460,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       const firstMaterialization = String(first?.materialization || "").toLowerCase();
       const firstStatus = String(first?.compute_status || "").toLowerCase();
       const firstFailed = firstMaterialization === "failed" || ["failed", "killed"].includes(firstStatus);
+      const firstConcrete = hasConcreteDescriptor(first?.descriptor);
       const firstMaterialized = (firstMaterialization === "computed" || firstMaterialization === "cached") && Boolean(first?.descriptor);
       const firstPending = ["pending", "missing", "queued", "running", "persisting"].includes(firstMaterialization) ||
         ["queued", "running", "persisting"].includes(firstStatus);
@@ -1393,6 +1476,15 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         clearPathRecordPoll(key);
         return first;
       }
+      if (firstConcrete) {
+        cachePathRecord(variableName, targetPath, first);
+        if (firstPending && ["sequence", "mapping"].includes(String(first?.descriptor?.vox_type || "").toLowerCase())) {
+          schedulePathRecordPoll({ sourceVariable: variableName, path: targetPath, delayMs: 900 });
+        } else {
+          clearPathRecordPoll(key);
+        }
+        return first;
+      }
       if (firstMaterialized) {
         cachePathRecord(variableName, targetPath, first);
         clearPathRecordPoll(key);
@@ -1404,7 +1496,10 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         const secondMaterialization = String(second?.materialization || "").toLowerCase();
         const secondStatus = String(second?.compute_status || "").toLowerCase();
         const secondFailed = secondMaterialization === "failed" || ["failed", "killed"].includes(secondStatus);
+        const secondConcrete = hasConcreteDescriptor(second?.descriptor);
         const secondMaterialized = (secondMaterialization === "computed" || secondMaterialization === "cached") && Boolean(second?.descriptor);
+        const secondPending = ["pending", "missing", "queued", "running", "persisting"].includes(secondMaterialization) ||
+          ["queued", "running", "persisting"].includes(secondStatus);
         if (secondFailed) {
           cachePathRecord(variableName, targetPath, second);
           pathRecordsErrors = {
@@ -1417,13 +1512,23 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           clearPathRecordPoll(key);
           return second;
         }
+        if (secondConcrete) {
+          cachePathRecord(variableName, targetPath, second);
+          if (
+            secondPending &&
+            ["sequence", "mapping"].includes(String(second?.descriptor?.vox_type || "").toLowerCase())
+          ) {
+            schedulePathRecordPoll({ sourceVariable: variableName, path: targetPath, delayMs: 900 });
+          } else {
+            clearPathRecordPoll(key);
+          }
+          return second;
+        }
         if (secondMaterialized) {
           cachePathRecord(variableName, targetPath, second);
           clearPathRecordPoll(key);
           return second;
         }
-        const secondPending = ["pending", "missing", "queued", "running", "persisting"].includes(secondMaterialization) ||
-          ["queued", "running", "persisting"].includes(secondStatus);
         if (secondPending) {
           schedulePathRecordPoll({ sourceVariable: variableName, path: targetPath, delayMs: 900 });
           return null;
@@ -1841,6 +1946,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     viewerErrorMessage = "";
     recordPages = {};
     recordPagePointers = {};
+    recordPageSources = {};
     recordPagesLoading = {};
     recordPagesErrors = {};
     collectionSelections = {};
