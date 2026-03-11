@@ -769,6 +769,42 @@ def test_sequence_pages_preserve_non_json_items_for_descriptor_and_rendering(tmp
         db.close()
 
 
+@pytest.mark.unit
+def test_nested_inspectable_sequence_persistence_preserves_child_pages_and_overlay_rendering(
+    tmp_path: Path,
+) -> None:
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("SimpleITK")
+    db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    overlay = OverlayValue.from_layers(
+        [
+            np.zeros((4, 4, 4), dtype=np.float32),
+            np.ones((4, 4, 4), dtype=np.float32),
+        ]
+    )
+    nested = InspectableListSequence(
+        parent_ref="outer-seq",
+        values=[InspectableListSequence(parent_ref="outer-seq:0", values=[overlay])],
+    )
+    db.put_success("outer-seq", nested)
+    try:
+        child_node_id = hash_sequence_item("outer-seq", 0)
+        child_record = db.get_record(child_node_id)
+        assert child_record is not None
+        assert child_record.vox_type == "sequence"
+        assert child_record.payload_json.get("encoding") == "sequence-node-refs-v1"
+        assert child_record.payload_json.get("length") == 1
+
+        child_page = inspect_store_result_page(db, node_id=child_node_id, offset=0, limit=1)
+        nested_item = child_page["page"]["items"][0]
+        assert nested_item["descriptor"]["vox_type"] == "overlay"
+
+        nii = render_store_result_nifti_gz(db, node_id="outer-seq", path="/0/0/0")
+        assert nii.startswith(b"\x1f\x8b")
+    finally:
+        db.close()
+
+
 class _DuckSimpleITKImage:
     def GetDimension(self) -> int:
         return 3

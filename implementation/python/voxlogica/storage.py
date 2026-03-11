@@ -313,13 +313,24 @@ class SQLiteResultsDatabase(ResultsDatabase):
                 "sequence_index": int(index),
             }
         )
-        child_encoded = encode_for_storage(value, page_size=page_size)
-        self._persist_encoded_success_locked(
-            node_id=item_node_id,
-            encoded=child_encoded,
-            metadata_json=self._encode_metadata(child_metadata),
-            now=now,
-        )
+        child_metadata_json = self._encode_metadata(child_metadata)
+        adapted = adapt_runtime_value(value)
+        if isinstance(adapted, VoxSequenceValue):
+            self._persist_sequence_with_refs_locked(
+                node_id=item_node_id,
+                sequence=adapted,
+                metadata=child_metadata,
+                metadata_json=child_metadata_json,
+                now=now,
+            )
+        else:
+            child_encoded = encode_for_storage(value, page_size=page_size)
+            self._persist_encoded_success_locked(
+                node_id=item_node_id,
+                encoded=child_encoded,
+                metadata_json=child_metadata_json,
+                now=now,
+            )
         ref_payload: dict[str, Any] = {"node_id": item_node_id}
         if isinstance(descriptor, dict):
             ref_payload["descriptor"] = descriptor

@@ -1,5 +1,73 @@
 # WIP: Lazy Sequence Materialization Debug/Handover
 
+## Update: Nested Inspectable Sequence Persistence Was Corrupting Overlay Trees
+
+New proven bug in the `vi_sweep_overlays` path:
+
+- outer sequence values could become `ready`
+- nested page inspection `/0` could expose overlay descriptors from runtime
+- but the viewer render URL `/api/v1/results/store/<root>/render/nii?path=/0/0/0` returned `404`
+
+### Root cause
+
+Files:
+- `implementation/python/voxlogica/storage.py`
+- `implementation/python/voxlogica/pod_codec.py`
+- `implementation/python/voxlogica/inspectable_sequence.py`
+
+Problem:
+- `_persist_sequence_child_locked(...)` persisted child values through `encode_for_storage(...)`
+- when the child value was itself an `InspectableSequenceValue`, `adapt_runtime_value(...)` downgraded it to `VoxIteratorSequenceValue`
+- generic sequence encoding in `pod_codec._encode_sequence_pages(...)` uses `sequence.page(...)`
+- inspectable `page(...)` only returns already-ready child values, and for a fresh nested sequence that can be empty even though the sequence exists
+- result: nested child sequence records were written as bogus
+  `{"encoding":"sequence-pages-v1","length":0,...}`
+- root page items still pointed at those child node ids, so deep render path resolution descended into empty child records and the layer render endpoint returned `404`
+
+### Proof
+
+Reproduced against the overlay workflow on a clean server using a fresh results DB:
+
+- before fix:
+  - root `vi_sweep_overlays` stored as `sequence-node-refs-v1`
+  - child `/0` store record existed but was `sequence-pages-v1` with `length=0`
+  - overlay child record for `/0/0` did not exist
+  - `GET /api/v1/results/store/<root>/render/nii?path=/0/0/0` returned `404`
+- after fix:
+  - child `/0` store record is `sequence-node-refs-v1` with `length=9`
+  - overlay child record exists and is persisted as `overlay`
+  - the same render URL returns `200` with NIfTI payload
+
+Important operational note:
+- old corrupted entries remain in an existing `results.db`
+- a clean DB or recomputation is required to observe the fix on previously cached node ids
+
+### Implemented fix
+
+File:
+- `implementation/python/voxlogica/storage.py`
+
+Change:
+- `_persist_sequence_child_locked(...)` now detects when the child value adapts to `VoxSequenceValue`
+- instead of passing it through `encode_for_storage(...)`, it recursively persists that child sequence with `_persist_sequence_with_refs_locked(...)`
+- non-sequence children still use the normal `encode_for_storage(...)` path
+
+Effect:
+- nested inspectable sequences preserve child refs and child pages
+- sequence-of-sequences-of-overlays stays navigable in durable storage
+- root path render URLs can resolve down to persisted overlay layers correctly
+
+### Regression test
+
+File:
+- `tests/unit/test_serve_support.py`
+
+Coverage:
+- persist `InspectableListSequence([InspectableListSequence([overlay])])`
+- assert child sequence record is `sequence-node-refs-v1` with `length=1`
+- assert child page exposes the overlay item
+- assert `render_store_result_nifti_gz(..., path="/0/0/0")` succeeds
+
 ## Update: Inspectable Child Paths Must Preserve Progress State
 
 New bug found after inspectable per-item scheduling landed:
