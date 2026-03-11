@@ -2,6 +2,7 @@
   import { onDestroy } from "svelte";
   import { getPlaygroundJob, listPlaygroundJobs } from "$lib/api/client.js";
   import StatusChip from "$lib/components/shared/StatusChip.svelte";
+  import { computeActivity, clearComputeActivity } from "$lib/stores/computeActivity.js";
 
   export let active = false;
 
@@ -162,6 +163,36 @@
           <pre class="mono-scroll compute-log-text">{String(selectedJob.log_tail || selectedJob.error || "No log output yet.")}</pre>
         {:else}
           <p class="muted">Select a job to inspect its compute log.</p>
+        {/if}
+      </section>
+
+      <section class="compute-log-activity">
+        <header class="compute-log-activity-head">
+          <h3>Activity</h3>
+          <button class="btn btn-ghost btn-small" type="button" on:click={clearComputeActivity}>Clear</button>
+        </header>
+        {#if !$computeActivity.length}
+          <p class="muted">No activity yet.</p>
+        {:else}
+          <div class="compute-log-activity-list">
+            {#each $computeActivity as entry}
+              <div class="compute-log-activity-item">
+                <div class="compute-log-activity-row">
+                  <span class="compute-log-activity-type">{entry.type}</span>
+                  <span class="compute-log-activity-ts">{new Date(entry.ts).toLocaleTimeString()}</span>
+                </div>
+                <div class="compute-log-activity-detail">
+                  {entry.variable ? `${entry.variable} ${entry.path || ""}`.trim() : entry.path || "-"}
+                </div>
+                <div class="compute-log-activity-meta">
+                  {entry.materialization ? entry.materialization : entry.status || ""}
+                </div>
+                {#if entry.detail}
+                  <div class="compute-log-activity-note">{entry.detail}</div>
+                {/if}
+              </div>
+            {/each}
+          </div>
         {/if}
       </section>
     </div>

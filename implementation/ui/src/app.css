@@ -1802,12 +1802,13 @@ body {
   min-height: 0;
   height: 100%;
   display: grid;
-  grid-template-columns: minmax(280px, 0.34fr) minmax(0, 1fr);
+  grid-template-columns: minmax(260px, 0.28fr) minmax(0, 0.52fr) minmax(220px, 0.2fr);
   gap: 0.65rem;
 }
 
 .compute-log-jobs,
-.compute-log-detail {
+.compute-log-detail,
+.compute-log-activity {
   min-height: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -1856,6 +1857,176 @@ body {
   min-height: 0;
   max-height: none;
   height: 100%;
+}
+
+.compute-log-activity {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.5rem;
+  overflow: hidden;
+}
+
+.compute-log-activity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.compute-log-activity-list {
+  overflow: auto;
+  display: grid;
+  gap: 0.45rem;
+  min-height: 0;
+}
+
+.compute-log-activity-item {
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  padding: 0.5rem 0.6rem;
+  background: rgba(255, 255, 255, 0.92);
+  display: grid;
+  gap: 0.2rem;
+}
+
+.compute-log-activity-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.compute-log-activity-type {
+  font-weight: 600;
+  font-size: 0.76rem;
+  color: #1a2a3a;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.compute-log-activity-ts {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.compute-log-activity-detail {
+  font-size: 0.82rem;
+  color: #243548;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.compute-log-activity-meta,
+.compute-log-activity-note {
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.dream-shell,
+.graph-shell {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.6rem;
+}
+
+.dream-head,
+.graph-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.dream-stage {
+  position: relative;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: radial-gradient(circle at top, rgba(227, 236, 255, 0.8), rgba(250, 252, 255, 0.95));
+  overflow: hidden;
+}
+
+.dream-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.graph-meta {
+  display: flex;
+  gap: 1.1rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.graph-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(220px, 1fr);
+  gap: 0.85rem;
+  overflow: auto;
+  padding-bottom: 0.2rem;
+}
+
+.graph-column {
+  display: grid;
+  gap: 0.6rem;
+  min-width: 220px;
+}
+
+.graph-column-head {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.graph-node {
+  border: 1px solid var(--line);
+  border-radius: 0.9rem;
+  padding: 0.6rem 0.7rem;
+  background: rgba(255, 255, 255, 0.92);
+  display: grid;
+  gap: 0.3rem;
+}
+
+.graph-node-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.graph-node-op {
+  font-weight: 600;
+  font-size: 0.82rem;
+}
+
+.graph-node-hash {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.graph-node-meta {
+  display: flex;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.graph-node-vars {
+  font-size: 0.8rem;
+  color: #213246;
+}
+
+.graph-node-deps {
+  font-size: 0.72rem;
+  color: var(--muted);
 }
 
 .start-shell {

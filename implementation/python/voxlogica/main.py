@@ -143,6 +143,12 @@ class PlaygroundValuePageRequest(BaseModel):
     enqueue: bool = True
 
 
+class PlaygroundGraphRequest(BaseModel):
+    """Payload to fetch a symbolic compute graph for a program."""
+
+    program: str
+
+
 class ClientLogEvent(BaseModel):
     """One browser-originated log event."""
 
@@ -1438,6 +1444,72 @@ async def playground_symbols_endpoint(request: PlaygroundSymbolsRequest) -> dict
         "goals": len(workplan.goals),
         "symbol_table": symbol_table,
         "symbol_output_kinds": symbol_output_kinds,
+        "print_targets": print_targets,
+        "diagnostics": diagnostics_payload(diagnostics),
+    }
+
+
+@api_router.post("/playground/graph")
+async def playground_graph_endpoint(request: PlaygroundGraphRequest) -> dict[str, Any]:
+    """Return symbolic compute graph nodes and dependencies for the program."""
+    try:
+        workplan, symbol_table, print_targets = _program_introspection(
+            request.program,
+            legacy=False,
+            serve_mode=True,
+            enforce_policy=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "available": False,
+            "program_hash": _program_hash(request.program),
+            "nodes": [],
+            "goals": [],
+            "symbol_table": {},
+            "print_targets": [],
+            "diagnostics": diagnostics_from_exception(exc),
+        }
+
+    diagnostics = validate_workplan_policy(
+        workplan,
+        legacy=False,
+        serve_mode=True,
+    )
+    names_by_node: dict[str, list[str]] = {}
+    for name, node_id in symbol_table.items():
+        names_by_node.setdefault(str(node_id), []).append(str(name))
+
+    nodes: list[dict[str, Any]] = []
+    for node_id, node in workplan.nodes.items():
+        deps = [str(dep) for dep in getattr(node, "args", ()) or ()]
+        for _key, dep in getattr(node, "kwargs", ()) or ():
+            deps.append(str(dep))
+        nodes.append(
+            {
+                "node_id": str(node_id),
+                "operator": str(getattr(node, "operator", "")),
+                "kind": str(getattr(node, "kind", "")),
+                "output_kind": str(getattr(node, "output_kind", "")),
+                "variables": sorted(names_by_node.get(str(node_id), [])),
+                "dependencies": deps,
+            }
+        )
+
+    goals = [
+        {
+            "name": str(goal.name),
+            "node_id": str(goal.id),
+            "operation": str(goal.operation),
+        }
+        for goal in getattr(workplan, "goals", [])
+    ]
+
+    return {
+        "available": True,
+        "program_hash": _program_hash(request.program),
+        "nodes": nodes,
+        "goals": goals,
+        "symbol_table": symbol_table,
         "print_targets": print_targets,
         "diagnostics": diagnostics_payload(diagnostics),
     }

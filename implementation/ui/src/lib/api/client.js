@@ -1,3 +1,5 @@
+import { pushComputeActivity } from "$lib/stores/computeActivity.js";
+
 const toErrorMessage = (status, statusText, detail) => {
   if (detail && typeof detail === "object") {
     if (typeof detail.message === "string") return detail.message;
@@ -15,11 +17,32 @@ const traceValueRequests = () => String(import.meta?.env?.VITE_VOXLOGICA_TRACE_V
 const nowMs = () =>
   typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
 
+const activityContext = (init = {}) => {
+  const body = init?.body;
+  if (!body || typeof body !== "string") return {};
+  try {
+    const payload = JSON.parse(body);
+    return {
+      variable: String(payload?.variable || ""),
+      path: String(payload?.path || ""),
+      detail:
+        typeof payload?.offset === "number" || typeof payload?.limit === "number"
+          ? `offset=${payload?.offset ?? 0} limit=${payload?.limit ?? 0}`
+          : "",
+    };
+  } catch {
+    return {};
+  }
+};
+
 export const apiRequest = async (path, init = {}) => {
   const traceValueRequest = traceValueRequests() && isPlaygroundValueRequest(path);
   const method = String(init?.method || "GET").toUpperCase();
   const timeoutMsRaw = Number(init?.timeoutMs ?? (traceValueRequest ? 15000 : 0));
   const timeoutMs = Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0 ? Math.floor(timeoutMsRaw) : 0;
+  const trackActivity = isPlaygroundValueRequest(path);
+  const activityKind = path.includes("/page") ? "page" : "value";
+  const activityMeta = trackActivity ? activityContext(init) : {};
   const requestInit = { ...init };
   delete requestInit.timeoutMs;
   const started = nowMs();
@@ -42,6 +65,14 @@ export const apiRequest = async (path, init = {}) => {
       timeoutMs,
     });
   }
+  if (trackActivity) {
+    pushComputeActivity({
+      type: `${activityKind}.request`,
+      status: method,
+      ...activityMeta,
+      source: "http",
+    });
+  }
   let response;
   try {
     response = await fetch(path, requestInit);
@@ -57,7 +88,23 @@ export const apiRequest = async (path, init = {}) => {
       });
     }
     if (timedOut || String(error?.name || "").toLowerCase() === "aborterror") {
+      if (trackActivity) {
+        pushComputeActivity({
+          type: `${activityKind}.timeout`,
+          detail: String(error?.message || error || "timeout"),
+          ...activityMeta,
+          source: "http",
+        });
+      }
       throw new Error(`Value request timed out after ${timeoutMs} ms.`);
+    }
+    if (trackActivity) {
+      pushComputeActivity({
+        type: `${activityKind}.error`,
+        detail: String(error?.message || error || "request-failed"),
+        ...activityMeta,
+        source: "http",
+      });
     }
     throw error;
   } finally {
@@ -105,6 +152,15 @@ export const apiRequest = async (path, init = {}) => {
         detail: payload?.detail || null,
       });
     }
+    if (trackActivity) {
+      pushComputeActivity({
+        type: `${activityKind}.error`,
+        status: `${response.status}`,
+        detail: toErrorMessage(response.status, response.statusText, payload?.detail),
+        ...activityMeta,
+        source: "http",
+      });
+    }
     throw new Error(toErrorMessage(response.status, response.statusText, payload?.detail));
   }
   if (traceValueRequest) {
@@ -113,6 +169,16 @@ export const apiRequest = async (path, init = {}) => {
       path,
       method,
       elapsedMs: Number(elapsedMs.toFixed(1)),
+    });
+  }
+  if (trackActivity) {
+    pushComputeActivity({
+      type: `${activityKind}.response`,
+      status: String(payload?.compute_status || ""),
+      materialization: String(payload?.materialization || ""),
+      detail: String(payload?.error || ""),
+      ...activityMeta,
+      source: "http",
     });
   }
   return payload;
@@ -132,6 +198,13 @@ export const loadProgramFile = (relativePath) =>
   apiRequest(`/api/v1/playground/files/${encodePath(relativePath)}`);
 export const getProgramSymbols = (program) =>
   apiRequest("/api/v1/playground/symbols", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ program }),
+  });
+
+export const getPlaygroundGraph = (program) =>
+  apiRequest("/api/v1/playground/graph", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ program }),

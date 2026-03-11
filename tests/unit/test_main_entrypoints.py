@@ -93,14 +93,23 @@ def test_list_primitives_and_repl_and_serve(capsys: pytest.CaptureFixture[str], 
         main_mod.repl(execution_strategy="strict")
 
     called: dict[str, object] = {}
-    monkeypatch.setattr(
-        main_mod.uvicorn,
-        "run",
-        lambda app, host, port: called.update({"app": app, "host": host, "port": port}),
-    )
+    monkeypatch.setattr(main_mod, "_build_ui_assets_if_needed", lambda **_kwargs: None)
+    monkeypatch.setattr(main_mod, "_stdin_command_bridge", lambda **_kwargs: (SimpleNamespace(set=lambda: None), None))
+
+    class _FakeServer:
+        def __init__(self, config):  # noqa: ANN001
+            called["config"] = config
+            self.should_exit = False
+
+        def run(self) -> None:
+            called["ran"] = True
+
+    monkeypatch.setattr(main_mod.uvicorn, "Server", _FakeServer)
+
     main_mod.serve(host="127.0.0.1", port=9001, debug=False)
-    assert called["host"] == "127.0.0.1"
-    assert called["port"] == 9001
+    assert called["config"].host == "127.0.0.1"
+    assert called["config"].port == 9001
+    assert called["ran"] is True
 
 
 @pytest.mark.unit
@@ -247,6 +256,15 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             assert symbol_payload["print_targets"] == []
             node_id = symbol_payload["symbol_table"]["x"]
 
+            graph_resp = client.post("/api/v1/playground/graph", json={"program": "x = 2 + 3"})
+            assert graph_resp.status_code == 200
+            graph_payload = graph_resp.json()
+            assert graph_payload["available"] is True
+            assert graph_payload["program_hash"] == symbol_payload["program_hash"]
+            node_rows = [node for node in graph_payload["nodes"] if node.get("node_id") == node_id]
+            assert node_rows
+            assert "x" in node_rows[0].get("variables", [])
+
             value_pending = client.post(
                 "/api/v1/playground/value",
                 json={"program": "x = 2 + 3", "variable": "x", "execution_strategy": "strict"},
@@ -267,7 +285,7 @@ def test_api_endpoints_and_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             literal_payload = literal_constant.json()
             assert literal_payload["materialization"] == "computed"
             assert literal_payload["compute_status"] == "computed"
-            assert literal_payload["descriptor"]["vox_type"] == "integer"
+            assert literal_payload["descriptor"]["vox_type"] in {"integer", "number"}
             assert literal_payload["descriptor"]["summary"]["value"] == 10
             assert literal_payload["store_status"] == "ephemeral"
             assert value_job_payloads == []

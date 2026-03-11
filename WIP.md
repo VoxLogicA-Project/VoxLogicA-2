@@ -1160,3 +1160,41 @@ PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_insp
 npm --prefix implementation/ui run test -- src/lib/components/tabs/StartTab.test.js
 npm --prefix implementation/ui run build
 ```
+
+## Compute Log Activity + Graph/Dream Tabs (2026-03-10)
+
+Changes in progress:
+
+- Added compute activity store and UI feed so every `/api/v1/playground/value` and `/api/v1/playground/value/page` request is logged in the Compute Log tab.
+  - `implementation/ui/src/lib/stores/computeActivity.js`
+  - `implementation/ui/src/lib/components/tabs/ComputeLogTab.svelte`
+  - `implementation/ui/src/lib/api/client.js`
+- Moved oneiric visualization into a dedicated tab driven by a shared store:
+  - `implementation/ui/src/lib/stores/dreamStore.js`
+  - `implementation/ui/src/lib/components/shared/DreamVisual.svelte`
+  - `implementation/ui/src/lib/components/tabs/DreamTab.svelte`
+  - `implementation/ui/src/App.svelte`
+- Added a new Compute Graph tab to visualize symbolic nodes, dependencies, operator/kind, and variable names:
+  - `implementation/ui/src/lib/components/tabs/GraphTab.svelte`
+  - `implementation/ui/src/App.svelte`
+  - `implementation/ui/src/app.css`
+- Backend endpoint for symbolic graph (pending test pass):
+  - `implementation/python/voxlogica/main.py` `/api/v1/playground/graph`
+  - `implementation/ui/src/lib/api/client.js` `getPlaygroundGraph`
+
+Tests added:
+- `tests/unit/test_main_entrypoints.py` now exercises `/api/v1/playground/graph`.
+- `implementation/ui/src/lib/api/client.test.js` verifies compute activity logging on value/page requests.
+
+Pending verification:
+- Run UI tests:
+  - `npm --prefix implementation/ui run test -- src/lib/components/tabs/StartTab.test.js`
+  - `npm --prefix implementation/ui run test -- src/lib/api/client.test.js`
+- Run python unit tests:
+  - `PYTHONPATH=implementation/python .venv/bin/python -m pytest tests/unit/test_main_entrypoints.py -q`
+- Rebuild UI bundle for serve mode:
+  - `npm --prefix implementation/ui run build`
+
+Notes:
+- Start tab now pushes dream state into `dreamStore` instead of rendering the dream overlay directly; the Oneiric Trace tab renders it.
+- Compute activity logging is centralized in `apiRequest` to ensure ALL value/page traffic is recorded without per-caller duplication.

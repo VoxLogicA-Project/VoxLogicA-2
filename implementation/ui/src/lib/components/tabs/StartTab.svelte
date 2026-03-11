@@ -5,6 +5,8 @@
   import { buildFailureDetailsText, normalizedExecutionErrors } from "$lib/utils/playground-value.js";
   import VoxCodeEditor from "$lib/components/editor/VoxCodeEditor.svelte";
   import StartValueCanvas from "$lib/components/tabs/StartValueCanvas.svelte";
+  import { dreamState, showDream, dissolveDream as storeDissolveDream, clearDream } from "$lib/stores/dreamStore.js";
+  import { pushComputeActivity } from "$lib/stores/computeActivity.js";
 
   export let active = false;
   export let capabilities = {};
@@ -110,9 +112,6 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   let resolutionActivityRows = [];
   let resolutionActivitySummary = "No resolution activity yet.";
   let activitySeenKeys = new Set();
-  let dreamNodeIds = [];
-  let dreamVisible = false;
-  let dreamDissolving = false;
   let pendingDreamCleanup = null;
   let currentPath = "";
   let pendingPoll = null;
@@ -670,6 +669,15 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         const message = JSON.parse(String(event.data || "{}"));
         if (message?.type === "value" || message?.type === "terminal") {
           applyStreamValuePayload(message?.payload || null);
+          logComputeActivity({
+            type: "value.ws",
+            variable: String(message?.payload?.variable || activeValueSubscription?.variable || ""),
+            path: String(message?.payload?.path || activeValueSubscription?.path || ""),
+            status: String(message?.type || ""),
+            materialization: String(message?.payload?.materialization || ""),
+            detail: String(message?.payload?.error || ""),
+            source: "primary-ws",
+          });
         }
       } catch {
         // ignore malformed ws messages
@@ -722,6 +730,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   };
 
   const isTimeoutError = (error) => /timed out/i.test(String(error?.message || error || ""));
+
+  const logComputeActivity = (entry = {}) => {
+    try {
+      pushComputeActivity(entry);
+    } catch {
+      // ignore logging failures
+    }
+  };
   const isUnknownNodeSelectionError = (error) => /unknown node selection/i.test(String(error?.message || error || ""));
 
   const ensurePendingPoll = ({ traceId = 0, variable = "", path = "" } = {}) => {
@@ -1061,6 +1077,15 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           offset: subscription.offset,
           limit: subscription.limit,
           payload: message?.payload || null,
+        });
+        logComputeActivity({
+          type: "page.ws",
+          variable: subscription.variable,
+          path: subscription.path,
+          status: messageType,
+          materialization: String(message?.payload?.materialization || ""),
+          detail: `items=${Array.isArray(message?.payload?.page?.items) ? message.payload.page.items.length : 0}`,
+          source: "record-page",
         });
         if (messageType === "terminal") {
           stopRecordPageSocket(baseKey);
@@ -1450,6 +1475,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     if (!variableName) return null;
     const key = pathRecordKey(variableName, targetPath);
     if (!force && pathRecords?.[key] && shouldReuseCachedPathRecord(pathRecords[key], { enqueueFallback })) {
+      logComputeActivity({
+        type: "value.cache",
+        variable: variableName,
+        path: targetPath,
+        status: String(pathRecords?.[key]?.compute_status || ""),
+        materialization: String(pathRecords?.[key]?.materialization || ""),
+        source: "path-record",
+      });
       return pathRecords[key];
     }
     if (pathRecordsLoading?.[key]) return null;
@@ -1644,6 +1677,13 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         ...recordPagePointers,
         [baseKey]: cacheKey,
       };
+      logComputeActivity({
+        type: "page.cache",
+        variable: variableName,
+        path: resolvedPath,
+        status: "cached",
+        source: "record-page",
+      });
       return recordPages[cacheKey];
     }
     if (recordPagesLoading?.[cacheKey]) return null;
@@ -1893,20 +1933,16 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       clearTimeout(pendingDreamCleanup);
       pendingDreamCleanup = null;
     }
-    dreamVisible = true;
-    dreamDissolving = false;
     const ids = collectDreamIds(payload);
-    dreamNodeIds = ids.length ? ids : [String(symbolTable?.[primaryVariable] || primaryVariable || "node")];
+    showDream(ids.length ? ids : [String(symbolTable?.[primaryVariable] || primaryVariable || "node")]);
   };
 
   const dissolveDream = () => {
-    if (!dreamVisible) return;
-    dreamDissolving = true;
+    if (!$dreamState.visible) return;
+    storeDissolveDream();
     if (pendingDreamCleanup) clearTimeout(pendingDreamCleanup);
     pendingDreamCleanup = setTimeout(() => {
-      dreamVisible = false;
-      dreamDissolving = false;
-      dreamNodeIds = [];
+      clearDream();
       pendingDreamCleanup = null;
     }, 1200);
   };
@@ -2761,14 +2797,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
       <section class="start-prime-visual">
         <div class="start-viewer-wrap start-prime-viewer-wrap">
-          <div class={`start-pure-viewer ${dreamVisible ? "is-under-dream" : ""}`}>
+          <div class="start-pure-viewer">
             {#if viewerMode === "error"}
               <div class="viewer-error">{viewerErrorMessage || "Unable to visualize value."}</div>
-            {:else if viewerMode === "loading" && !dreamVisible}
+            {:else if viewerMode === "loading"}
               <div class="start-viewer-message">{viewerMessage || "Computing..."}</div>
             {:else if viewerMode === "value" && viewerRecords.length}
               <div
-                class={`start-value-grid ${viewerRecords.length > 1 ? "is-multi" : "is-single"} ${maximizedViewerIndex >= 0 ? "has-maximized" : ""} ${dreamVisible ? "is-materializing" : ""}`.trim()}
+                class={`start-value-grid ${viewerRecords.length > 1 ? "is-multi" : "is-single"} ${maximizedViewerIndex >= 0 ? "has-maximized" : ""}`.trim()}
               >
                 {#each viewerRecords as record, index (`${record?.node_id || "value"}-${index}`)}
                   {#if maximizedViewerIndex < 0 || maximizedViewerIndex === index}
@@ -2836,16 +2872,6 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
             {/if}
           </div>
 
-          {#if dreamVisible}
-            <div class={`start-compute-dream ${dreamDissolving ? "is-dissolving" : ""}`}>
-              <div class="start-compute-mist"></div>
-              <div class="start-compute-ids">
-                {#each dreamNodeIds as nodeId, nodeIndex (`${nodeId}-${nodeIndex}`)}
-                  <span class="start-compute-id" style={`--node-index:${nodeIndex}`}>{shortNodeId(nodeId)}</span>
-                {/each}
-              </div>
-            </div>
-          {/if}
         </div>
 
         <div class="start-prime-controls">

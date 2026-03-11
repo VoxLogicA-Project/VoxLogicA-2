@@ -4,6 +4,8 @@
   import StartTab from "$lib/components/tabs/StartTab.svelte";
   import ComputeLogTab from "$lib/components/tabs/ComputeLogTab.svelte";
   import StartTechnicalTab from "$lib/components/tabs/StartTechnicalTab.svelte";
+  import DreamTab from "$lib/components/tabs/DreamTab.svelte";
+  import GraphTab from "$lib/components/tabs/GraphTab.svelte";
   import PlaygroundTab from "$lib/components/tabs/PlaygroundTab.svelte";
   import ResultsTab from "$lib/components/tabs/ResultsTab.svelte";
   import GalleryTab from "$lib/components/tabs/GalleryTab.svelte";
@@ -12,6 +14,8 @@
   const tabs = [
     { id: "start", label: "Start" },
     { id: "compute-log", label: "Compute Log" },
+    { id: "dream", label: "Oneiric Trace" },
+    { id: "graph", label: "Compute Graph" },
     { id: "start-tech", label: "Start Technical" },
     { id: "playground", label: "Playground" },
     { id: "results", label: "Results Explorer" },
@@ -226,6 +230,8 @@
     <StartTab bind:this={startTabRef} active={activeTab === "start"} {capabilities} />
     <ComputeLogTab active={activeTab === "compute-log"} />
     <StartTechnicalTab active={activeTab === "start-tech"} {capabilities} />
+    <DreamTab active={activeTab === "dream"} />
+    <GraphTab active={activeTab === "graph"} />
     <PlaygroundTab active={activeTab === "playground"} {capabilities} />
     <ResultsTab active={activeTab === "results"} {capabilities} />
     <GalleryTab active={activeTab === "gallery"} on:load={onGalleryLoad} />
