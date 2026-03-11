@@ -1311,3 +1311,32 @@ Validation:
 ```bash
 npm --prefix implementation/ui run test -- src/lib/components/tabs/StartTab.test.js
 ```
+
+## Fresh API verification: nested `vi_sweep_overlays` is healthy on the backend
+
+Date: 2026-03-11
+
+Rechecked on a fresh debug server and clean HOME-backed results DB:
+
+- submitted the exact `vi_sweep_overlays` workflow through `/api/v1/playground/jobs`
+- resolved:
+  - `/api/v1/playground/value` for `/`, `/0`, `/0/0`, `/1`, `/1/0`
+  - `/api/v1/playground/value/page` for `/`, `/0`, `/1`
+
+Proven backend behavior:
+
+- root value `/` is `sequence`, `materialization="cached"`, `compute_status="cached"`
+- nested `/0` and `/1` are `sequence`
+- leaf `/0/0` and `/1/0` are `overlay`
+- nested page items under `/0` and `/1` are already `state="ready"` with `descriptor.vox_type="overlay"`
+- overlay descriptors emit `render.kind="medical-overlay"`
+- layer render URLs point to the root node store path with descendant child paths, e.g.
+  - `/api/v1/results/store/<root>/render/nii?path=/0/0/0`
+  - `/api/v1/results/store/<root>/render/nii?path=/0/0/1`
+- direct GETs on those emitted render URLs return `200`
+
+Conclusion:
+
+- if the UI still shows `Not Found` for these overlay leaves after this point, the fault is no longer in
+  backend materialization or overlay URL generation on a fresh DB
+- remaining candidates are frontend state/view reconciliation, stale browser state, or viewer-specific rendering behavior
