@@ -989,6 +989,27 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     return recordPages[fallbackCacheKey] || null;
   };
 
+  const mergePathRecordIntoPageItem = (item, sourceVariable = "") => {
+    const itemPath = String(item?.path || "").trim();
+    const variableName = String(sourceVariable || "").trim();
+    if (!itemPath || !variableName) return item;
+    const cached = pathRecordFor(variableName, itemPath);
+    if (!cached || typeof cached !== "object") return item;
+    const nextState = collectionItemStateFromPayload(cached);
+    const nextStatus = collectionItemStatusFromState(nextState);
+    const nextDescriptor =
+      cached?.descriptor && typeof cached.descriptor === "object" ? cached.descriptor : item?.descriptor;
+    return {
+      ...item,
+      descriptor: nextDescriptor,
+      state: nextState,
+      status: nextStatus,
+      error: String(cached?.error || item?.error || ""),
+      blocked_on: String(cached?.blocked_on || item?.blocked_on || ""),
+      state_reason: String(cached?.state_reason || item?.state_reason || ""),
+    };
+  };
+
   const pageErrorForRecord = (record, path = "") => recordPagesErrors?.[pageKey(record, path)] || "";
 
   const pageLoadingForRecord = (record, path = "") => {
@@ -1125,18 +1146,19 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     return true;
   };
 
-  const cacheRecordPage = (record, path = "", page = null) => {
+  const cacheRecordPage = (record, path = "", page = null, sourceVariable = "") => {
     if (!record || !page || typeof page !== "object") return null;
     const rawItems = Array.isArray(page?.items) ? page.items : null;
     if (!rawItems) return null;
     const resolvedPath = String(path || recordPath(record) || "/");
     const safeOffset = Math.max(0, Number(page?.offset || 0));
     const safeLimit = Math.max(1, Number(page?.limit || COLLECTION_PAGE_SIZE));
+    const variableName = String(sourceVariable || sourceVariableForRecord(record, 0) || "").trim();
     const normalizedPage = {
       ...page,
       offset: safeOffset,
       limit: safeLimit,
-      items: rawItems,
+      items: rawItems.map((item) => mergePathRecordIntoPageItem(item, variableName)),
     };
     const baseKey = pageKey(record, resolvedPath);
     const cacheKey = pageCacheKey(record, resolvedPath, safeOffset, safeLimit);
@@ -1150,7 +1172,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     };
     recordPageSources = {
       ...recordPageSources,
-      [cacheKey]: sourceVariableForRecord(record, 0),
+      [cacheKey]: variableName,
     };
     return normalizedPage;
   };
@@ -1234,12 +1256,16 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     setCollectionSelection(record, resolvedPath, { selectedIndex, selectedAbsoluteIndex, selectedPath });
   };
 
-  const applyRecordPagePayload = (record, { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, payload = null } = {}) => {
+  const applyRecordPagePayload = (
+    record,
+    { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, payload = null, sourceVariable = "" } = {},
+  ) => {
     if (!record || !payload) return null;
     const resolvedPath = String(path || recordPath(record) || "");
     const baseKey = pageKey(record, resolvedPath);
     const cacheKey = pageCacheKey(record, resolvedPath, offset, limit);
     const descriptor = recordDescriptor(record);
+    const variableName = String(sourceVariable || sourceVariableForRecord(record, 0) || "").trim();
     const payloadFailed =
       String(payload?.materialization || "").toLowerCase() === "failed" ||
       ["failed", "killed"].includes(String(payload?.compute_status || "").toLowerCase());
@@ -1255,7 +1281,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       const fallbackPage =
         recordPages?.[cacheKey] || fallbackCollectionPage(descriptor, resolvedPath, offset, limit, "failed");
       if (fallbackPage) {
-        cacheRecordPage(record, resolvedPath, fallbackPage);
+        cacheRecordPage(record, resolvedPath, fallbackPage, variableName);
         syncSelectionForRecordPage(record, resolvedPath, fallbackPage);
         const nextErrors = { ...recordPagesErrors };
         delete nextErrors[baseKey];
@@ -1280,7 +1306,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       ["pending", "missing", "queued", "running", "persisting"].includes(payloadMaterialization || payloadStatus) &&
       incomingItems.length === 0;
     const effectivePage = keepPrevious ? recordPages[cacheKey] : page;
-    const cachedPage = cacheRecordPage(record, resolvedPath, effectivePage);
+    const cachedPage = cacheRecordPage(record, resolvedPath, effectivePage, variableName);
     const nextErrors = { ...recordPagesErrors };
     delete nextErrors[baseKey];
     recordPagesErrors = nextErrors;
@@ -1433,7 +1459,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           ? payload.page
           : null;
     if (inlinePage) {
-      cacheRecordPage(payload, String(payload?.path || path || "/"), inlinePage);
+      cacheRecordPage(payload, String(payload?.path || path || "/"), inlinePage, sourceVariable);
     }
   };
 
@@ -1724,6 +1750,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         offset: resolvedOffset,
         limit: resolvedLimit,
         payload,
+        sourceVariable: variableName,
       });
       const effectiveItems = collectionItemsForPage(effectivePage, recordType(record));
       const pagePending =

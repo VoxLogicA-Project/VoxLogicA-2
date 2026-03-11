@@ -800,6 +800,142 @@ describe("StartTab", () => {
     });
   });
 
+  it("does not let a later pending page snapshot overwrite a concrete child that is already cached", async () => {
+    vi.useFakeTimers();
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockImplementation(async ({ path = "" }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-xs",
+          path: "/",
+          descriptor: {
+            vox_type: "sequence",
+            format_version: "voxpod/1",
+            summary: { length: 8 },
+            navigation: {
+              path: "/",
+              pageable: true,
+              can_descend: true,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      if (path === "/5") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-xs",
+          path: "/5",
+          descriptor: {
+            vox_type: "number",
+            format_version: "voxpod/1",
+            summary: { value: 0.88 },
+            navigation: {
+              path: "/5",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      return {
+        materialization: "pending",
+        compute_status: "running",
+        node_id: "node-xs",
+        path,
+        descriptor: {
+          vox_type: "unavailable",
+          format_version: "voxpod/1",
+          summary: { reason: "status=pending" },
+          navigation: {
+            path,
+            pageable: false,
+            can_descend: false,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
+        },
+      };
+    });
+
+    const pendingRootPage = {
+      materialization: "pending",
+      compute_status: "running",
+      path: "/",
+      page: {
+        offset: 0,
+        limit: 18,
+        has_more: false,
+        next_offset: null,
+        items: Array.from({ length: 8 }, (_, index) => ({
+          index,
+          label: `[${index}]`,
+          path: `/${index}`,
+          status: "pending",
+          descriptor: {
+            vox_type: "unavailable",
+            format_version: "voxpod/1",
+            summary: { reason: "status=pending" },
+            navigation: {
+              path: `/${index}`,
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        })),
+      },
+    };
+    resolvePlaygroundValuePageMock.mockImplementation(async () => pendingRootPage);
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(resolvePlaygroundValuePageMock).toHaveBeenCalledTimes(1);
+      expect(container.querySelectorAll(".start-collection-item").length).toBeGreaterThanOrEqual(6);
+    });
+
+    const rowFive = Array.from(container.querySelectorAll(".start-collection-item"))[5];
+    expect(rowFive).not.toBeUndefined();
+    await fireEvent.click(rowFive);
+
+    await waitFor(() => {
+      const updatedRowFive = Array.from(container.querySelectorAll(".start-collection-item"))[5];
+      expect(updatedRowFive?.textContent || "").toContain("ready");
+      expect(updatedRowFive?.textContent || "").toContain("0.88");
+    });
+
+    vi.advanceTimersByTime(1200);
+
+    await waitFor(() => {
+      expect(resolvePlaygroundValuePageMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+      const updatedRowFive = Array.from(container.querySelectorAll(".start-collection-item"))[5];
+      expect(updatedRowFive?.textContent || "").toContain("ready");
+      expect(updatedRowFive?.textContent || "").toContain("0.88");
+      expect(updatedRowFive?.getAttribute("title") || "").toContain("[5] (number) · ready");
+    });
+
+    vi.useRealTimers();
+  });
+
   it("re-resolves a clicked pending child even when a cached pending descriptor already exists", async () => {
     const pathCounts = new Map();
     getProgramSymbolsMock.mockResolvedValue({

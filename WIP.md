@@ -1266,3 +1266,48 @@ Pending verification:
 Notes:
 - Start tab now pushes dream state into `dreamStore` instead of rendering the dream overlay directly; the Oneiric Trace tab renders it.
 - Compute activity logging is centralized in `apiRequest` to ensure ALL value/page traffic is recorded without per-caller duplication.
+
+## Follow-up fix: Start tab must not let stale pending page snapshots clobber already-resolved children
+
+Date: 2026-03-11
+
+Proven issue:
+
+- in the Start tab, some collection rows could still render as `not_loaded` / `status=pending`
+  even though clicking the row immediately revealed the real concrete value in the stage
+- this was reproducible for cached sequence items such as `flair_images[5]`
+- backend inspection on a fresh DB proved the child value itself was already concrete/cached,
+  so the remaining fault was in frontend page-state reconciliation
+
+Root cause:
+
+- `StartTab.svelte` keeps two related caches:
+  - path records for concrete child resolves (`/5`, `/6`, ...)
+  - page snapshots for collection views (`/`)
+- a later pending page snapshot from `/playground/value/page` could overwrite a row that had
+  already been concretely resolved through `/playground/value`
+- the page merge path was not reusing the stronger child record when rebuilding page rows
+
+Secondary regression caught while fixing it:
+
+- `applyRecordPagePayload(...)` called `cacheRecordPage(..., variableName)` without defining
+  `variableName` in scope
+- this caused a Start tab runtime failure (`variableName is not defined`) and collection panes
+  could disappear entirely
+
+Fix:
+
+- `implementation/ui/src/lib/components/tabs/StartTab.svelte`
+  - added `mergePathRecordIntoPageItem(...)`
+  - page rows are now merged with any already-cached concrete child record before caching
+  - `cacheRecordPage(...)` and `applyRecordPagePayload(...)` now carry the explicit source variable
+    through the page caching path, so row/path reconciliation uses the correct variable namespace
+- `implementation/ui/src/lib/components/tabs/StartTab.test.js`
+  - added a regression test ensuring a later pending page snapshot does not overwrite a concrete
+    child already cached from `/playground/value`
+
+Validation:
+
+```bash
+npm --prefix implementation/ui run test -- src/lib/components/tabs/StartTab.test.js
+```
