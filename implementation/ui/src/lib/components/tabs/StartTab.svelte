@@ -302,6 +302,62 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     return "pending";
   };
 
+  const descriptorPriority = (descriptor) => {
+    const voxType = String(descriptor?.vox_type || "").trim().toLowerCase();
+    if (!voxType || voxType === "unavailable" || voxType === "error") return 0;
+    let score = 10;
+    if (["sequence", "mapping"].includes(voxType)) score += 10;
+    const summary = descriptor?.summary && typeof descriptor.summary === "object" ? descriptor.summary : {};
+    if (summary.length !== null && summary.length !== undefined && summary.length !== "") score += 6;
+    if (Array.isArray(summary.size) && summary.size.length) score += 6;
+    if (summary.value !== undefined) score += 4;
+    const render = descriptor?.render && typeof descriptor.render === "object" ? descriptor.render : {};
+    if (String(render?.kind || "").trim()) score += 8;
+    return score;
+  };
+
+  const preferDescriptor = (left = null, right = null) =>
+    descriptorPriority(left) >= descriptorPriority(right) ? left : right;
+
+  const mergeCollectionItemRecords = (baseItem = null, preferredItem = null) => {
+    if (!baseItem && !preferredItem) return null;
+    if (!baseItem) return preferredItem;
+    if (!preferredItem) return baseItem;
+    const baseState = normalizeCollectionItemState(baseItem);
+    const preferredState = normalizeCollectionItemState(preferredItem);
+    const failedBase = baseState === "failed";
+    const failedPreferred = preferredState === "failed";
+    let nextState = preferredState;
+    let nextStatus = collectionItemStatusFromState(preferredState);
+    let nextError = String(preferredItem?.error || baseItem?.error || "");
+    let nextBlockedOn = String(preferredItem?.blocked_on || baseItem?.blocked_on || "");
+    let nextStateReason = String(preferredItem?.state_reason || baseItem?.state_reason || "");
+
+    if (failedBase && !failedPreferred) {
+      nextState = baseState;
+      nextStatus = collectionItemStatusFromState(baseState);
+      nextError = String(baseItem?.error || nextError || "");
+    }
+    if (hasConcreteDescriptor(baseItem?.descriptor) && !hasConcreteDescriptor(preferredItem?.descriptor) && !failedPreferred) {
+      nextState = baseState;
+      nextStatus = collectionItemStatusFromState(baseState);
+      nextError = String(baseItem?.error || nextError || "");
+      nextBlockedOn = String(baseItem?.blocked_on || nextBlockedOn || "");
+      nextStateReason = String(baseItem?.state_reason || nextStateReason || "");
+    }
+
+    return {
+      ...baseItem,
+      ...preferredItem,
+      descriptor: preferDescriptor(baseItem?.descriptor, preferredItem?.descriptor) || preferredItem?.descriptor || baseItem?.descriptor,
+      state: nextState,
+      status: nextStatus,
+      error: nextError,
+      blocked_on: nextBlockedOn,
+      state_reason: nextStateReason,
+    };
+  };
+
   const pageSocketsEnabled = () =>
     typeof window !== "undefined" &&
     typeof window.WebSocket === "function" &&
@@ -996,18 +1052,15 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     const cached = pathRecordFor(variableName, itemPath);
     if (!cached || typeof cached !== "object") return item;
     const nextState = collectionItemStateFromPayload(cached);
-    const nextStatus = collectionItemStatusFromState(nextState);
-    const nextDescriptor =
-      cached?.descriptor && typeof cached.descriptor === "object" ? cached.descriptor : item?.descriptor;
-    return {
+    return mergeCollectionItemRecords(item, {
       ...item,
-      descriptor: nextDescriptor,
+      descriptor: cached?.descriptor && typeof cached.descriptor === "object" ? cached.descriptor : item?.descriptor,
       state: nextState,
-      status: nextStatus,
+      status: collectionItemStatusFromState(nextState),
       error: String(cached?.error || item?.error || ""),
       blocked_on: String(cached?.blocked_on || item?.blocked_on || ""),
       state_reason: String(cached?.state_reason || item?.state_reason || ""),
-    };
+    });
   };
 
   const pageErrorForRecord = (record, path = "") => recordPagesErrors?.[pageKey(record, path)] || "";
@@ -1154,11 +1207,19 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     const safeOffset = Math.max(0, Number(page?.offset || 0));
     const safeLimit = Math.max(1, Number(page?.limit || COLLECTION_PAGE_SIZE));
     const variableName = String(sourceVariable || sourceVariableForRecord(record, 0) || "").trim();
+    const priorPage = pageForRecord(record, resolvedPath);
+    const priorItemsByPath = new Map(
+      Array.isArray(priorPage?.items) ? priorPage.items.map((item) => [String(item?.path || ""), item]) : [],
+    );
     const normalizedPage = {
       ...page,
       offset: safeOffset,
       limit: safeLimit,
-      items: rawItems.map((item) => mergePathRecordIntoPageItem(item, variableName)),
+      items: rawItems.map((item) => {
+        const itemPath = String(item?.path || "");
+        const merged = mergeCollectionItemRecords(priorItemsByPath.get(itemPath) || null, item);
+        return mergePathRecordIntoPageItem(merged, variableName);
+      }),
     };
     const baseKey = pageKey(record, resolvedPath);
     const cacheKey = pageCacheKey(record, resolvedPath, safeOffset, safeLimit);
@@ -1198,18 +1259,15 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         if (String(item?.path || "") !== targetPath) return item;
         pageChanged = true;
         const nextState = collectionItemStateFromPayload(payload);
-        const nextStatus = collectionItemStatusFromState(nextState);
-        const nextDescriptor =
-          payload?.descriptor && typeof payload.descriptor === "object" ? payload.descriptor : item?.descriptor;
-        return {
+        return mergeCollectionItemRecords(item, {
           ...item,
-          descriptor: nextDescriptor,
+          descriptor: payload?.descriptor && typeof payload.descriptor === "object" ? payload.descriptor : item?.descriptor,
           state: nextState,
-          status: nextStatus,
+          status: collectionItemStatusFromState(nextState),
           error: String(payload?.error || item?.error || ""),
           blocked_on: String(payload?.blocked_on || item?.blocked_on || ""),
           state_reason: String(payload?.state_reason || item?.state_reason || ""),
-        };
+        });
       });
       nextPages[cacheKey] = pageChanged ? { ...page, items: nextItems } : page;
       changed = changed || pageChanged;

@@ -936,7 +936,7 @@ describe("StartTab", () => {
     vi.useRealTimers();
   });
 
-  it("re-resolves a clicked pending child even when a cached pending descriptor already exists", async () => {
+  it("clicking a pending child resolves it once and then opens its nested page without extra path churn", async () => {
     const pathCounts = new Map();
     getProgramSymbolsMock.mockResolvedValue({
       available: true,
@@ -1094,9 +1094,7 @@ describe("StartTab", () => {
     expect(runButton).not.toBeNull();
     await fireEvent.click(runButton);
 
-    await waitFor(() => {
-      expect(pathCounts.get("/5") || 0).toBeGreaterThanOrEqual(1);
-    });
+    expect(pathCounts.get("/5") || 0).toBe(0);
 
     const rowFive = () => Array.from(container.querySelectorAll(".start-collection-item"))[5];
     await waitFor(() => {
@@ -1105,7 +1103,7 @@ describe("StartTab", () => {
     await fireEvent.click(rowFive());
 
     await waitFor(() => {
-      expect(pathCounts.get("/5") || 0).toBeGreaterThanOrEqual(2);
+      expect(pathCounts.get("/5") || 0).toBeGreaterThanOrEqual(1);
     });
     await waitFor(() => {
       expect(container.textContent).toContain("[0]");
@@ -1349,10 +1347,10 @@ describe("StartTab", () => {
                 path: "/0",
                 status: "materialized",
                 descriptor: {
-                  vox_type: "sequence",
+                  vox_type: "unavailable",
                   format_version: "voxpod/1",
-                  summary: { length: null },
-                  navigation: { path: "/0", pageable: true, can_descend: true, default_page_size: 64, max_page_size: 512 },
+                  summary: { reason: "queued" },
+                  navigation: { path: "/0", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
                 },
               },
               {
@@ -1361,10 +1359,10 @@ describe("StartTab", () => {
                 path: "/1",
                 status: "materialized",
                 descriptor: {
-                  vox_type: "sequence",
+                  vox_type: "unavailable",
                   format_version: "voxpod/1",
-                  summary: { length: null },
-                  navigation: { path: "/1", pageable: true, can_descend: true, default_page_size: 64, max_page_size: 512 },
+                  summary: { reason: "queued" },
+                  navigation: { path: "/1", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
                 },
               },
               {
@@ -1373,10 +1371,10 @@ describe("StartTab", () => {
                 path: "/2",
                 status: "materialized",
                 descriptor: {
-                  vox_type: "sequence",
+                  vox_type: "unavailable",
                   format_version: "voxpod/1",
-                  summary: { length: null },
-                  navigation: { path: "/2", pageable: true, can_descend: true, default_page_size: 64, max_page_size: 512 },
+                  summary: { reason: "queued" },
+                  navigation: { path: "/2", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
                 },
               },
             ],
@@ -1573,10 +1571,10 @@ describe("StartTab", () => {
                 path: "/0",
                 status: "materialized",
                 descriptor: {
-                  vox_type: "sequence",
+                  vox_type: "unavailable",
                   format_version: "voxpod/1",
-                  summary: { length: null },
-                  navigation: { path: "/0", pageable: true, can_descend: true, default_page_size: 64, max_page_size: 512 },
+                  summary: { reason: "queued" },
+                  navigation: { path: "/0", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
                 },
               },
               {
@@ -1585,10 +1583,10 @@ describe("StartTab", () => {
                 path: "/1",
                 status: "materialized",
                 descriptor: {
-                  vox_type: "sequence",
+                  vox_type: "unavailable",
                   format_version: "voxpod/1",
-                  summary: { length: null },
-                  navigation: { path: "/1", pageable: true, can_descend: true, default_page_size: 64, max_page_size: 512 },
+                  summary: { reason: "queued" },
+                  navigation: { path: "/1", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
                 },
               },
               {
@@ -1597,10 +1595,10 @@ describe("StartTab", () => {
                 path: "/2",
                 status: "materialized",
                 descriptor: {
-                  vox_type: "sequence",
+                  vox_type: "unavailable",
                   format_version: "voxpod/1",
-                  summary: { length: null },
-                  navigation: { path: "/2", pageable: true, can_descend: true, default_page_size: 64, max_page_size: 512 },
+                  summary: { reason: "queued" },
+                  navigation: { path: "/2", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
                 },
               },
             ],
@@ -1666,9 +1664,503 @@ describe("StartTab", () => {
     await fireEvent.click(outerThird);
 
     await waitFor(() => {
-      expect(container.textContent).toContain("1221");
+      expect(container.textContent).toContain("1201");
       expect(resolvePlaygroundValuePageMock.mock.calls.some(([payload]) => payload?.path === "/2")).toBe(false);
     });
+  });
+
+  it("opens nested collection pages directly from page snapshots without child path resolve churn", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockImplementation(async ({ path = "" }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-xs",
+          path: "/",
+          descriptor: {
+            vox_type: "sequence",
+            format_version: "voxpod/1",
+            summary: { length: 2 },
+            navigation: {
+              path: "/",
+              pageable: true,
+              can_descend: true,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      return {
+        materialization: "pending",
+        compute_status: "queued",
+        node_id: "node-xs",
+        path,
+        descriptor: {
+          vox_type: "unavailable",
+          format_version: "voxpod/1",
+          summary: { state: "queued" },
+          navigation: {
+            path,
+            pageable: false,
+            can_descend: false,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
+        },
+      };
+    });
+    resolvePlaygroundValuePageMock.mockImplementation(async ({ path = "", offset = 0, limit = 64 }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          path: "/",
+          page: {
+            offset,
+            limit,
+            has_more: false,
+            next_offset: null,
+            total: 2,
+            items: [
+              {
+                index: 0,
+                label: "[0]",
+                path: "/0",
+                node_id: "child-0",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "sequence",
+                  format_version: "voxpod/1",
+                  summary: { length: 2 },
+                  navigation: {
+                    path: "/0",
+                    pageable: true,
+                    can_descend: true,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+              {
+                index: 1,
+                label: "[1]",
+                path: "/1",
+                node_id: "child-1",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "sequence",
+                  format_version: "voxpod/1",
+                  summary: { length: 2 },
+                  navigation: {
+                    path: "/1",
+                    pageable: true,
+                    can_descend: true,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+            ],
+          },
+        };
+      }
+      if (path === "/0") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          path: "/0",
+          page: {
+            offset,
+            limit,
+            has_more: false,
+            next_offset: null,
+            total: 2,
+            items: [
+              {
+                index: 0,
+                label: "[0]",
+                path: "/0/0",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "integer",
+                  format_version: "voxpod/1",
+                  summary: { value: 901 },
+                  navigation: {
+                    path: "/0/0",
+                    pageable: false,
+                    can_descend: false,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+              {
+                index: 1,
+                label: "[1]",
+                path: "/0/1",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "integer",
+                  format_version: "voxpod/1",
+                  summary: { value: 902 },
+                  navigation: {
+                    path: "/0/1",
+                    pageable: false,
+                    can_descend: false,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+            ],
+          },
+        };
+      }
+      return {
+        materialization: "computed",
+        compute_status: "completed",
+        path,
+        page: {
+          offset,
+          limit,
+          has_more: false,
+          next_offset: null,
+          total: 0,
+          items: [],
+        },
+      };
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("901");
+      expect(container.textContent).not.toContain("No values yet");
+    });
+
+    const nestedValueCalls = resolvePlaygroundValueMock.mock.calls.filter(([payload]) => payload?.path === "/0");
+    expect(nestedValueCalls).toHaveLength(0);
+    const nestedPageCalls = resolvePlaygroundValuePageMock.mock.calls.filter(([payload]) => payload?.path === "/0");
+    expect(nestedPageCalls.length).toBeGreaterThan(0);
+  });
+
+  it("keeps nested pending collection pages in a loading state instead of showing an empty terminal message", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-xs",
+      path: "/",
+      descriptor: {
+        vox_type: "sequence",
+        format_version: "voxpod/1",
+        summary: { length: 2 },
+        navigation: {
+          path: "/",
+          pageable: true,
+          can_descend: true,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    });
+    resolvePlaygroundValuePageMock.mockImplementation(async ({ path = "", offset = 0, limit = 64 }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          path: "/",
+          page: {
+            offset,
+            limit,
+            has_more: false,
+            next_offset: null,
+            total: 2,
+            items: [
+              {
+                index: 0,
+                label: "[0]",
+                path: "/0",
+                node_id: "child-0",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "sequence",
+                  format_version: "voxpod/1",
+                  summary: { length: 9 },
+                  navigation: {
+                    path: "/0",
+                    pageable: true,
+                    can_descend: true,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+              {
+                index: 1,
+                label: "[1]",
+                path: "/1",
+                node_id: "child-1",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "sequence",
+                  format_version: "voxpod/1",
+                  summary: { length: 9 },
+                  navigation: {
+                    path: "/1",
+                    pageable: true,
+                    can_descend: true,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+            ],
+          },
+        };
+      }
+      if (path === "/0") {
+        return {
+          materialization: "pending",
+          compute_status: "running",
+          path: "/0",
+          page: {
+            offset,
+            limit,
+            has_more: false,
+            next_offset: null,
+            total: 9,
+            items: [],
+          },
+        };
+      }
+      return {
+        materialization: "pending",
+        compute_status: "running",
+        path,
+        page: {
+          offset,
+          limit,
+          has_more: false,
+          next_offset: null,
+          total: 0,
+          items: [],
+        },
+      };
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(resolvePlaygroundValuePageMock.mock.calls.some(([payload]) => payload?.path === "/0")).toBe(true);
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector(".start-collection-stage-loading")).not.toBeNull();
+      expect(container.textContent).not.toContain("No values yet");
+    });
+  });
+
+  it("renders cached nested overlays directly from page snapshots without waiting on a child resolve", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-xs",
+      path: "/",
+      descriptor: {
+        vox_type: "sequence",
+        format_version: "voxpod/1",
+        summary: { length: 2 },
+        navigation: {
+          path: "/",
+          pageable: true,
+          can_descend: true,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    });
+    resolvePlaygroundValuePageMock.mockImplementation(async ({ path = "", offset = 0, limit = 64 }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          path: "/",
+          page: {
+            offset,
+            limit,
+            has_more: false,
+            next_offset: null,
+            total: 2,
+            items: [
+              {
+                index: 0,
+                label: "[0]",
+                path: "/0",
+                node_id: "child-0",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "sequence",
+                  format_version: "voxpod/1",
+                  summary: { length: 2 },
+                  navigation: {
+                    path: "/0",
+                    pageable: true,
+                    can_descend: true,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+              {
+                index: 1,
+                label: "[1]",
+                path: "/1",
+                node_id: "child-1",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "sequence",
+                  format_version: "voxpod/1",
+                  summary: { length: 2 },
+                  navigation: {
+                    path: "/1",
+                    pageable: true,
+                    can_descend: true,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+            ],
+          },
+        };
+      }
+      if (path === "/0") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          path: "/0",
+          page: {
+            offset,
+            limit,
+            has_more: false,
+            next_offset: null,
+            total: 2,
+            items: [
+              {
+                index: 0,
+                label: "[0]",
+                path: "/0/0",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "overlay",
+                  format_version: "voxpod/1",
+                  summary: { layer_count: 2, layer_labels: ["Base", "Mask"] },
+                  render: {
+                    kind: "image-overlay",
+                    layers: [
+                      { label: "Base", png_url: "/base.png", opacity: 1.0, visible: true },
+                      { label: "Mask", png_url: "/mask.png", opacity: 0.42, visible: true },
+                    ],
+                  },
+                  navigation: {
+                    path: "/0/0",
+                    pageable: false,
+                    can_descend: false,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+              {
+                index: 1,
+                label: "[1]",
+                path: "/0/1",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "overlay",
+                  format_version: "voxpod/1",
+                  summary: { layer_count: 2, layer_labels: ["Base", "Mask"] },
+                  render: {
+                    kind: "image-overlay",
+                    layers: [
+                      { label: "Base", png_url: "/base-2.png", opacity: 1.0, visible: true },
+                      { label: "Mask", png_url: "/mask-2.png", opacity: 0.42, visible: true },
+                    ],
+                  },
+                  navigation: {
+                    path: "/0/1",
+                    pageable: false,
+                    can_descend: false,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+            ],
+          },
+        };
+      }
+      return {
+        materialization: "computed",
+        compute_status: "completed",
+        path,
+        page: {
+          offset,
+          limit,
+          has_more: false,
+          next_offset: null,
+          total: 0,
+          items: [],
+        },
+      };
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(container.querySelectorAll(".start-overlay-image-layer").length).toBe(2);
+      expect(container.textContent).not.toContain("No values yet");
+    });
+
+    const nestedLeafCalls = resolvePlaygroundValueMock.mock.calls.filter(([payload]) => payload?.path === "/0/0");
+    expect(nestedLeafCalls).toHaveLength(0);
   });
 
   it("keeps collection navigation visible when page resolution fails and shows the concrete error", async () => {

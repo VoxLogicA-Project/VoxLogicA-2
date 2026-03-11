@@ -42,6 +42,7 @@
   const MAX_DEPTH = 7;
   const DEFAULT_LIMIT = 18;
   const ACTIVE_COLLECTION_ITEM_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting"]);
+  const COLLECTION_PENDING_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting", "pending", "missing"]);
   let stageExpanded = false;
 
   const safeText = (value) => {
@@ -58,6 +59,57 @@
   const concreteDescriptor = (descriptor) => {
     const voxType = String(descriptor?.vox_type || "").trim().toLowerCase();
     return Boolean(voxType) && voxType !== "unavailable" && voxType !== "error";
+  };
+
+  const descriptorPriority = (descriptor) => {
+    const voxType = String(descriptor?.vox_type || "").trim().toLowerCase();
+    if (!voxType || voxType === "unavailable" || voxType === "error") return 0;
+    let score = 10;
+    if (collectionDescriptor(descriptor)) score += 10;
+    const summary = descriptor?.summary && typeof descriptor.summary === "object" ? descriptor.summary : {};
+    if (summary.length !== null && summary.length !== undefined && summary.length !== "") score += 6;
+    if (Array.isArray(summary.size) && summary.size.length) score += 6;
+    if (summary.value !== undefined) score += 4;
+    const render = descriptor?.render && typeof descriptor.render === "object" ? descriptor.render : {};
+    if (String(render?.kind || "").trim()) score += 8;
+    return score;
+  };
+
+  const recordPriority = (value) => {
+    if (!value || typeof value !== "object") return -1;
+    const descriptor = value?.descriptor && typeof value.descriptor === "object" ? value.descriptor : null;
+    const state = normalizeCollectionItemState(value?.state || value?.status, descriptor);
+    if (state === "failed" || String(value?.error || "").trim()) return 100;
+    const descriptorScore = descriptorPriority(descriptor);
+    if (descriptorScore > 0) return 50 + descriptorScore;
+    if (state === "persisting") return 40;
+    if (state === "running") return 35;
+    if (state === "blocked") return 30;
+    if (state === "queued") return 25;
+    return 10;
+  };
+
+  const preferRecord = (...records) => {
+    let best = null;
+    let bestScore = -1;
+    for (const record of records) {
+      const score = recordPriority(record);
+      if (score > bestScore) {
+        best = record;
+        bestScore = score;
+      }
+    }
+    return best;
+  };
+
+  const descriptorNeedsExplicitDetail = (descriptor) => {
+    const voxType = String(descriptor?.vox_type || "").trim().toLowerCase();
+    if (!voxType || voxType === "unavailable" || voxType === "error") return true;
+    if (collectionDescriptor(descriptor)) return false;
+    if (["integer", "number", "boolean", "null", "string", "bytes"].includes(voxType)) return false;
+    const render = descriptor?.render && typeof descriptor.render === "object" ? descriptor.render : {};
+    if (String(render?.kind || "").trim()) return false;
+    return true;
   };
 
   const normalizeCollectionItemState = (rawState, descriptor = null) => {
@@ -102,10 +154,8 @@
   const displayRecordForItem = (item) => {
     const itemPath = String(item?.path || "");
     if (!itemPath) return null;
-    if (selectedRecordDetail && itemPath === selectedPath) {
-      return selectedRecordDetail;
-    }
-    return resolvedItemRecord(item);
+    const cached = itemPath === selectedPath ? selectedRecordDetail : resolvedItemRecord(item);
+    return preferRecord(cached, item);
   };
 
   const effectiveDescriptorForItem = (item) => {
@@ -130,6 +180,15 @@
       }
     }
     return normalizeCollectionItemState(item?.state || item?.status, effectiveDescriptorForItem(item));
+  };
+
+  const pendingCollectionStateFor = (value) => {
+    if (!value || typeof value !== "object") return "";
+    const computeStatus = String(value?.compute_status || value?.status || "").trim().toLowerCase();
+    if (COLLECTION_PENDING_STATES.has(computeStatus)) return computeStatus;
+    const materialization = String(value?.materialization || "").trim().toLowerCase();
+    if (COLLECTION_PENDING_STATES.has(materialization)) return materialization;
+    return "";
   };
 
   $: descriptor = recordDescriptor(record);
@@ -171,7 +230,8 @@
   $: selectedRecordDetail = (pathRecords, selectedPath ? pathRecordFor(sourceVariable, selectedPath) : null);
   $: selectedDetailLoading = (pathRecordsLoading, selectedPath ? pathRecordLoadingFor(sourceVariable, selectedPath) : false);
   $: selectedDetailError = (pathRecordsErrors, selectedPath ? pathRecordErrorFor(sourceVariable, selectedPath) : "");
-  $: selectedRecord = selectedRecordDetail || (selectedItem ? nestedRecordFromItem(record, selectedItem) : null);
+  $: selectedItemRecord = selectedItem ? nestedRecordFromItem(record, selectedItem) : null;
+  $: selectedRecord = preferRecord(selectedRecordDetail, selectedItemRecord);
   $: selectedDescriptor =
     selectedRecord?.descriptor && typeof selectedRecord.descriptor === "object"
       ? selectedRecord.descriptor
@@ -231,6 +291,7 @@
     !selectedRecordDetail &&
     !selectedDetailLoading &&
     !selectedDetailError &&
+    descriptorNeedsExplicitDetail(selectedItem?.descriptor) &&
     !pathRecordPollingFor(sourceVariable, selectedPath)
   ) {
     void loadPathRecord({
@@ -240,29 +301,6 @@
     });
   }
 
-  $: if (isCollection && sourceVariable && items.length) {
-    const budget = Math.min(items.length, 10);
-    const anchor = Math.max(0, Math.min(items.length - 1, Number(selectedIndex || 0)));
-    const prefetchOrder = [anchor];
-    for (let step = 1; prefetchOrder.length < budget && (anchor - step >= 0 || anchor + step < items.length); step += 1) {
-      if (anchor + step < items.length) prefetchOrder.push(anchor + step);
-      if (anchor - step >= 0 && prefetchOrder.length < budget) prefetchOrder.push(anchor - step);
-    }
-    for (const idx of prefetchOrder) {
-      const item = items[idx];
-      const itemPath = String(item?.path || "");
-      if (!itemPath) continue;
-      if (resolvedItemRecord(item)) continue;
-      if (pathRecordLoadingFor(sourceVariable, itemPath)) continue;
-      if (pathRecordPollingFor(sourceVariable, itemPath)) continue;
-      const shouldEnqueue = idx === anchor || idx < Math.min(4, items.length);
-      void loadPathRecord({
-        sourceVariable,
-        path: itemPath,
-        enqueueFallback: shouldEnqueue,
-      });
-    }
-  }
 </script>
 
 <div class="start-value-canvas">
@@ -309,7 +347,13 @@
     </div>
   {:else if isCollection}
     {#if level > 0 && !items.length && !loading && !error}
-      <div class="start-viewer-message">No values yet</div>
+      {#if pagePollingForRecord(record, path) || pendingCollectionStateFor(record)}
+        <div class="start-collection-stage-loading" aria-label="Waiting for values">
+          <span></span>
+        </div>
+      {:else}
+        <div class="start-viewer-message">No values yet</div>
+      {/if}
     {:else}
       <div class={`start-collection-shell ${level > 0 ? "is-nested" : ""} ${stageExpanded ? "is-stage-maximized" : ""}`.trim()}>
       <aside class="start-collection-index">
@@ -346,6 +390,12 @@
               <span style={`--row-index:${idx}`}></span>
             {/each}
           </div>
+        {:else if pagePollingForRecord(record, path) && !items.length}
+          <div class="start-collection-loading" aria-label="Waiting for values">
+            {#each Array(6) as _, idx}
+              <span style={`--row-index:${idx}`}></span>
+            {/each}
+          </div>
         {:else if error}
           <div class="viewer-error">{error}</div>
         {:else if items.length}
@@ -366,7 +416,12 @@
                     selectedAbsoluteIndex: Math.max(0, Number(page?.offset || 0)) + itemIndex,
                     selectedPath: nextPath,
                   });
-                  if (sourceVariable && nextPath && ACTIVE_COLLECTION_ITEM_STATES.has(itemState)) {
+                  if (
+                    sourceVariable &&
+                    nextPath &&
+                    ACTIVE_COLLECTION_ITEM_STATES.has(itemState) &&
+                    descriptorNeedsExplicitDetail(itemDescriptor)
+                  ) {
                     void loadPathRecord({
                       sourceVariable,
                       path: nextPath,

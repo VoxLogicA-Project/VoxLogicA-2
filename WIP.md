@@ -1340,3 +1340,48 @@ Conclusion:
 - if the UI still shows `Not Found` for these overlay leaves after this point, the fault is no longer in
   backend materialization or overlay URL generation on a fresh DB
 - remaining candidates are frontend state/view reconciliation, stale browser state, or viewer-specific rendering behavior
+
+## Follow-up fix: nested collection pages must not look terminal while still loading
+
+Date: 2026-03-11
+
+Proven issue:
+
+- the live API for the exact `vi_sweep_overlays` workflow returned:
+  - `/` -> cached sequence with outer items
+  - `/0` -> cached nested page with overlay items
+  - `/0/0` -> cached overlay leaf with `render.kind="medical-overlay"`
+- despite that, the Start tab could still show `No values yet` for a selected nested collection
+  while the page was still pending/polling, which made the UI look stuck even though the backend
+  was still driving child pages forward
+
+Root cause:
+
+- `StartValueCanvas.svelte` treated the state `!items.length && !loading && !error` as terminal empty
+- it did not distinguish:
+  - truly empty collection
+  - pending empty page still subscribed/polling
+
+Fix:
+
+- `implementation/ui/src/lib/components/tabs/StartValueCanvas.svelte`
+  - added `pendingCollectionStateFor(...)`
+  - when a collection page is empty but `pagePollingForRecord(...)` is active, or the selected
+    collection record is still pending, the nested stage now stays in loading state
+  - the left-hand collection index also keeps its loading skeleton while the empty pending page
+    is still active instead of implying completion
+
+Frontend regression tests:
+
+- `implementation/ui/src/lib/components/tabs/StartTab.test.js`
+  - `keeps nested pending collection pages in a loading state instead of showing an empty terminal message`
+  - `renders cached nested overlays directly from page snapshots without waiting on a child resolve`
+  - updated the older pending-child click regression so it reflects the intended no-churn behavior:
+    one explicit resolve for a clicked pending child, then direct nested page loading from page snapshots
+
+Validation:
+
+```bash
+npm --prefix implementation/ui run test -- src/lib/components/tabs/StartTab.test.js
+npm --prefix implementation/ui run build
+```
