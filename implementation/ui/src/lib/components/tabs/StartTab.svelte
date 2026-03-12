@@ -6,7 +6,13 @@
   import VoxCodeEditor from "$lib/components/editor/VoxCodeEditor.svelte";
   import StartValueCanvas from "$lib/components/tabs/StartValueCanvas.svelte";
   import { dreamState, showDream, dissolveDream as storeDissolveDream, clearDream } from "$lib/stores/dreamStore.js";
-  import { pushComputeActivity } from "$lib/stores/computeActivity.js";
+  import { OPERATIONS_HELP_ROWS } from "$lib/constants/computeActivityHelp.js";
+  import {
+    clearComputeActivity,
+    computeActivity,
+    ongoingComputeActivity,
+    pushComputeActivity,
+  } from "$lib/stores/computeActivity.js";
 
   export let active = false;
   export let capabilities = {};
@@ -90,6 +96,8 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   let editorSymbolTypes = {};
   let selectedVisualSymbols = [];
   let viewerSupportsMultiValue = false;
+  let showOperationsPanel = false;
+  let showOperationsHelp = false;
   let viewerRecords = [];
   let viewerMode = "empty";
   let viewerMessage = "";
@@ -400,6 +408,403 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     return `${text.slice(0, 10)}…${text.slice(-6)}`;
   };
 
+  const activityPathLabel = (path = "") => {
+    const text = String(path || "").trim();
+    return text || "/";
+  };
+
+  const activityTargetLabel = ({ variable = "", path = "" } = {}) => {
+    const name = String(variable || "").trim();
+    const resolvedPath = activityPathLabel(path);
+    return name ? `${name} ${resolvedPath}`.trim() : resolvedPath;
+  };
+
+  const resolveOperationKey = ({ traceId = 0, variable = "", path = "" } = {}) =>
+    traceId ? `resolve:${traceId}:${String(variable || "").trim()}:${activityPathLabel(path)}` : "";
+
+  const pollOperationKey = ({ variable = "", path = "" } = {}) =>
+    `poll:${String(variable || "").trim()}:${activityPathLabel(path)}`;
+
+  const pathLoadOperationKey = ({ variable = "", path = "" } = {}) =>
+    `path:${String(variable || "").trim()}:${activityPathLabel(path)}`;
+
+  const pageLoadOperationKey = ({ variable = "", path = "", offset = 0, limit = COLLECTION_PAGE_SIZE } = {}) =>
+    `page:${String(variable || "").trim()}:${activityPathLabel(path)}:${Math.max(0, Number(offset || 0))}:${Math.max(1, Number(limit || COLLECTION_PAGE_SIZE))}`;
+
+  const valueWatchOperationKey = ({ variable = "", path = "" } = {}) =>
+    `value-watch:${String(variable || "").trim()}:${activityPathLabel(path)}`;
+
+  const pageWatchOperationKey = ({ variable = "", path = "", offset = 0, limit = COLLECTION_PAGE_SIZE } = {}) =>
+    `page-watch:${String(variable || "").trim()}:${activityPathLabel(path)}:${Math.max(0, Number(offset || 0))}:${Math.max(1, Number(limit || COLLECTION_PAGE_SIZE))}`;
+
+  const activeOperationStatus = (entry = {}) =>
+    normalizeStatus(entry?.status || entry?.materialization || entry?.phase || "running");
+
+  function logComputeActivity(entry = {}) {
+    try {
+      pushComputeActivity(entry);
+    } catch {
+      // ignore logging failures
+    }
+  }
+
+  const logResolveLifecycle = (event, details = {}) => {
+    const variable = String(details?.variable || primaryVariable || "").trim();
+    const path = activityPathLabel(details?.path || currentPath || "/");
+    const baseTarget = activityTargetLabel({ variable, path });
+    const computeStatus = String(details?.computeStatus || details?.status || "").trim().toLowerCase();
+    const materialization = String(details?.materialization || "").trim().toLowerCase();
+    const isTimeout = /timed out/i.test(String(details?.message || ""));
+
+    if (event === "poll-start" || event === "poll-tick" || event === "poll-timeout") {
+      const summary =
+        event === "poll-start"
+          ? `Live updates active for ${baseTarget}`
+          : event === "poll-timeout"
+            ? `Live updates closed for ${baseTarget}`
+            : `Waiting for backend result ${baseTarget}`;
+      logComputeActivity({
+        type: `resolve.${event}`,
+        phase: event === "poll-start" ? "start" : event === "poll-timeout" ? "finish" : "update",
+        trackActive: true,
+        skipHistory: event === "poll-tick",
+        final: event === "poll-timeout",
+        operationKey: pollOperationKey({ variable, path }),
+        summary,
+        variable,
+        path,
+        status: event === "poll-timeout" ? "timeout" : "running",
+        detail: Number.isFinite(Number(details?.ticks)) && Number(details?.ticks) > 0 ? `ticks=${Number(details.ticks)}` : "",
+        source: "start-tab",
+      });
+      return;
+    }
+
+    const operationKey = resolveOperationKey({
+      traceId: Number(details?.traceId || 0),
+      variable,
+      path,
+    });
+    let entry = null;
+
+    switch (event) {
+      case "start":
+        entry = {
+          type: "resolve.primary",
+          phase: "start",
+          trackActive: true,
+          operationKey,
+          summary: `Fetching selected value ${baseTarget}`,
+          variable,
+          path,
+          status: "running",
+          detail: details?.background ? "background refresh" : details?.enqueue === false ? "cache-first probe" : "",
+        };
+        break;
+      case "request-dispatch":
+        entry = {
+          type: "resolve.primary",
+          phase: "update",
+          trackActive: true,
+          operationKey,
+          summary: `Sent resolve request for ${baseTarget}`,
+          variable,
+          path,
+          status: "running",
+          detail: details?.enqueue === false ? "enqueue=false" : "enqueue=true",
+        };
+        break;
+      case "response":
+        entry = {
+          type: "resolve.primary",
+          phase: "update",
+          trackActive: true,
+          operationKey,
+          summary: `Received resolve reply for ${baseTarget}`,
+          variable,
+          path,
+          status: computeStatus || materialization || "running",
+          materialization,
+          detail: [
+            Number.isFinite(Number(details?.elapsedMs)) ? `elapsed=${Number(details.elapsedMs).toFixed(1)}ms` : "",
+            details?.jobId ? `job=${details.jobId}` : "",
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        };
+        break;
+      case "branch-materialized":
+        entry = {
+          type: "resolve.primary",
+          phase: "finish",
+          trackActive: true,
+          final: true,
+          operationKey,
+          summary: `Resolved ${baseTarget}`,
+          variable,
+          path,
+          status: "completed",
+          materialization,
+          detail: details?.voxType ? `type=${details.voxType}` : "",
+        };
+        break;
+      case "branch-failed":
+        entry = {
+          type: "resolve.primary",
+          phase: "finish",
+          trackActive: true,
+          final: true,
+          operationKey,
+          summary: `Failed ${baseTarget}`,
+          variable,
+          path,
+          status: "failed",
+          materialization,
+          detail: String(details?.error || ""),
+        };
+        break;
+      case "branch-pending":
+        entry = {
+          type: "resolve.primary",
+          phase: "finish",
+          trackActive: true,
+          final: true,
+          operationKey,
+          summary: `Waiting for backend result ${baseTarget}`,
+          variable,
+          path,
+          status: computeStatus || materialization || "running",
+          materialization,
+          detail: details?.hasProgressSignal ? "handoff to live updates" : "no live progress signal",
+        };
+        break;
+      case "branch-unexpected":
+        entry = {
+          type: "resolve.primary",
+          phase: "finish",
+          trackActive: true,
+          final: true,
+          operationKey,
+          summary: `Unexpected resolve state for ${baseTarget}`,
+          variable,
+          path,
+          status: "failed",
+          materialization,
+        };
+        break;
+      case "request-error":
+        entry = {
+          type: "resolve.primary",
+          phase: "finish",
+          trackActive: true,
+          final: true,
+          operationKey,
+          summary: isTimeout ? `Request timed out for ${baseTarget}` : `Request failed for ${baseTarget}`,
+          variable,
+          path,
+          status: isTimeout ? "timeout" : "failed",
+          detail: String(details?.message || ""),
+        };
+        break;
+      case "response-stale":
+      case "request-error-stale":
+        entry = {
+          type: "resolve.primary",
+          phase: "finish",
+          trackActive: true,
+          final: true,
+          operationKey,
+          summary: `Discarded stale response for ${baseTarget}`,
+          variable,
+          path,
+          status: "cancelled",
+        };
+        break;
+      case "run-primary":
+        entry = {
+          type: "resolve.intent",
+          phase: "event",
+          summary: `Run requested for ${baseTarget}`,
+          variable,
+          path,
+          status: statusValue,
+        };
+        break;
+      case "symbol-click":
+        entry = {
+          type: "resolve.intent",
+          phase: "event",
+          summary: `Selected ${String(details?.token || variable || "").trim()}`,
+          variable: String(details?.token || variable || "").trim(),
+          path: "/",
+          status: normalizeStatus(details?.knownStatus || "idle"),
+        };
+        break;
+      case "skip-diagnostics":
+        entry = {
+          type: "resolve.intent",
+          phase: "event",
+          summary: `Resolve blocked by diagnostics for ${baseTarget}`,
+          variable,
+          path,
+          status: "failed",
+          detail: `diagnostics=${Number(details?.diagnostics || 0)}`,
+        };
+        break;
+      case "skip-no-primary":
+        entry = {
+          type: "resolve.intent",
+          phase: "event",
+          summary: "No primary variable to resolve",
+          status: "idle",
+        };
+        break;
+      default:
+        break;
+    }
+
+    if (entry) {
+      logComputeActivity({
+        ...entry,
+        source: "start-tab",
+      });
+    }
+  };
+
+  const logValueWatchActivity = ({
+    phase = "update",
+    final = false,
+    variable = "",
+    path = "",
+    status = "",
+    detail = "",
+    skipHistory = false,
+  } = {}) => {
+    const resolvedVariable = String(variable || primaryVariable || "").trim();
+    const resolvedPath = activityPathLabel(path);
+    logComputeActivity({
+      type: "value.watch",
+      phase,
+      final,
+      skipHistory,
+      trackActive: true,
+      operationKey: valueWatchOperationKey({ variable: resolvedVariable, path: resolvedPath }),
+      summary:
+        phase === "start"
+          ? `Live updates active for ${activityTargetLabel({ variable: resolvedVariable, path: resolvedPath })}`
+          : final
+            ? `Live updates closed for ${activityTargetLabel({ variable: resolvedVariable, path: resolvedPath })}`
+            : `Live value update received for ${activityTargetLabel({ variable: resolvedVariable, path: resolvedPath })}`,
+      variable: resolvedVariable,
+      path: resolvedPath,
+      status: status || (final ? "completed" : "running"),
+      detail,
+      source: "start-tab",
+    });
+  };
+
+  const logPageWatchActivity = ({
+    phase = "update",
+    final = false,
+    variable = "",
+    path = "",
+    offset = 0,
+    limit = COLLECTION_PAGE_SIZE,
+    status = "",
+    detail = "",
+    skipHistory = false,
+  } = {}) => {
+    const resolvedVariable = String(variable || primaryVariable || "").trim();
+    const resolvedPath = activityPathLabel(path);
+    logComputeActivity({
+      type: "page.watch",
+      phase,
+      final,
+      skipHistory,
+      trackActive: true,
+      operationKey: pageWatchOperationKey({ variable: resolvedVariable, path: resolvedPath, offset, limit }),
+      summary:
+        phase === "start"
+          ? `Live page updates active for ${activityTargetLabel({ variable: resolvedVariable, path: resolvedPath })}`
+          : final
+            ? `Live page updates closed for ${activityTargetLabel({ variable: resolvedVariable, path: resolvedPath })}`
+            : `Live page update received for ${activityTargetLabel({ variable: resolvedVariable, path: resolvedPath })}`,
+      variable: resolvedVariable,
+      path: resolvedPath,
+      status: status || (final ? "completed" : "running"),
+      detail,
+      source: "start-tab",
+    });
+  };
+
+  const logPathLoadActivity = ({
+    phase = "update",
+    final = false,
+    variable = "",
+    path = "",
+    status = "",
+    detail = "",
+    skipHistory = false,
+  } = {}) => {
+    const resolvedVariable = String(variable || "").trim();
+    const resolvedPath = activityPathLabel(path);
+    logComputeActivity({
+      type: "path.load",
+      phase,
+      final,
+      skipHistory,
+      trackActive: true,
+      operationKey: pathLoadOperationKey({ variable: resolvedVariable, path: resolvedPath }),
+      summary:
+        phase === "start"
+          ? `Fetching nested value ${activityTargetLabel({ variable: resolvedVariable, path: resolvedPath })}`
+          : final
+            ? `Nested value settled for ${activityTargetLabel({ variable: resolvedVariable, path: resolvedPath })}`
+            : `Waiting for nested value ${activityTargetLabel({ variable: resolvedVariable, path: resolvedPath })}`,
+      variable: resolvedVariable,
+      path: resolvedPath,
+      status: status || (final ? "completed" : "running"),
+      detail,
+      source: "start-tab",
+    });
+  };
+
+  const logPageLoadActivity = ({
+    phase = "update",
+    final = false,
+    variable = "",
+    path = "",
+    offset = 0,
+    limit = COLLECTION_PAGE_SIZE,
+    status = "",
+    detail = "",
+    skipHistory = false,
+  } = {}) => {
+    const resolvedVariable = String(variable || "").trim();
+    const resolvedPath = activityPathLabel(path);
+    logComputeActivity({
+      type: "page.load",
+      phase,
+      final,
+      skipHistory,
+      trackActive: true,
+      operationKey: pageLoadOperationKey({ variable: resolvedVariable, path: resolvedPath, offset, limit }),
+      summary:
+        phase === "start"
+          ? `Fetching page ${activityTargetLabel({ variable: resolvedVariable, path: resolvedPath })}`
+          : final
+            ? `Page settled for ${activityTargetLabel({ variable: resolvedVariable, path: resolvedPath })}`
+            : `Waiting for page items ${activityTargetLabel({ variable: resolvedVariable, path: resolvedPath })}`,
+      variable: resolvedVariable,
+      path: resolvedPath,
+      status: status || (final ? "completed" : "running"),
+      detail: [detail, `offset=${Math.max(0, Number(offset || 0))}`, `limit=${Math.max(1, Number(limit || COLLECTION_PAGE_SIZE))}`]
+        .filter(Boolean)
+        .join(" · "),
+      source: "start-tab",
+    });
+  };
+
   const traceResolve = (event, details = {}) => {
     try {
       console.info("[start-tab.resolve]", {
@@ -409,6 +814,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     } catch {
       // best-effort instrumentation only
     }
+    logResolveLifecycle(event, details);
   };
 
   const clearResolutionActivity = () => {
@@ -603,7 +1009,8 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     return `${protocol}://${window.location.host}`;
   };
 
-  const stopValueSocket = () => {
+  const stopValueSocket = ({ logFinal = true } = {}) => {
+    const subscription = activeValueSubscription ? { ...activeValueSubscription } : null;
     if (valueWsReconnectTimer) {
       clearTimeout(valueWsReconnectTimer);
       valueWsReconnectTimer = null;
@@ -617,11 +1024,23 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         // ignore close errors
       }
     }
+    if (logFinal && subscription?.variable) {
+      logValueWatchActivity({
+        phase: "finish",
+        final: true,
+        variable: subscription.variable,
+        path: subscription.path || "/",
+        status: "cancelled",
+        detail: "subscription closed",
+        skipHistory: true,
+      });
+    }
   };
 
-  const stopRecordPageSocket = (baseKey = "", { dropSubscription = true } = {}) => {
+  const stopRecordPageSocket = (baseKey = "", { dropSubscription = true, logFinal = true } = {}) => {
     const key = String(baseKey || "");
     if (!key) return;
+    const subscription = recordPageSubscriptions?.[key] ? { ...recordPageSubscriptions[key] } : null;
     const reconnectTimer = recordPageSocketReconnectTimers?.[key];
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
@@ -647,6 +1066,19 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       } catch {
         // ignore close errors
       }
+    }
+    if (logFinal && subscription?.variable) {
+      logPageWatchActivity({
+        phase: "finish",
+        final: true,
+        variable: subscription.variable,
+        path: subscription.path || "/",
+        offset: subscription.offset,
+        limit: subscription.limit,
+        status: "cancelled",
+        detail: "page subscription closed",
+        skipHistory: true,
+      });
     }
   };
 
@@ -701,11 +1133,18 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     if (valueWs && (valueWs.readyState === WebSocket.OPEN || valueWs.readyState === WebSocket.CONNECTING)) {
       return;
     }
-    stopValueSocket();
+    stopValueSocket({ logFinal: false });
     valueWs = new WebSocket(`${wsBaseUrl()}/ws/playground/value`);
     valueWs.onopen = () => {
       valueWsAttempts = 0;
       if (!activeValueSubscription) return;
+      logValueWatchActivity({
+        phase: "start",
+        variable: activeValueSubscription.variable,
+        path: activeValueSubscription.path || "/",
+        status: "running",
+        detail: "websocket subscribed",
+      });
       valueWs.send(
         JSON.stringify({
           type: "subscribe",
@@ -725,8 +1164,31 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         const message = JSON.parse(String(event.data || "{}"));
         if (message?.type === "value" || message?.type === "terminal") {
           applyStreamValuePayload(message?.payload || null);
+          const payloadStatus = String(message?.payload?.compute_status || message?.payload?.materialization || "").toLowerCase();
+          const terminal =
+            message?.type === "terminal" ||
+            ["computed", "cached", "failed", "killed"].includes(String(message?.payload?.materialization || "").toLowerCase()) ||
+            ["completed", "failed", "killed"].includes(payloadStatus);
+          logValueWatchActivity({
+            phase: terminal ? "finish" : "update",
+            final: terminal,
+            variable: String(message?.payload?.variable || activeValueSubscription?.variable || ""),
+            path: String(message?.payload?.path || activeValueSubscription?.path || "/"),
+            status: payloadStatus || String(message?.type || ""),
+            detail: String(message?.payload?.error || message?.payload?.state_reason || ""),
+          });
           logComputeActivity({
             type: "value.ws",
+            phase: "event",
+            summary: terminal
+              ? `Live value update completed for ${activityTargetLabel({
+                  variable: String(message?.payload?.variable || activeValueSubscription?.variable || ""),
+                  path: String(message?.payload?.path || activeValueSubscription?.path || "/"),
+                })}`
+              : `Live value update for ${activityTargetLabel({
+                  variable: String(message?.payload?.variable || activeValueSubscription?.variable || ""),
+                  path: String(message?.payload?.path || activeValueSubscription?.path || "/"),
+                })}`,
             variable: String(message?.payload?.variable || activeValueSubscription?.variable || ""),
             path: String(message?.payload?.path || activeValueSubscription?.path || ""),
             status: String(message?.type || ""),
@@ -766,6 +1228,13 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       path: String(path || ""),
       enqueue: Boolean(enqueue),
     };
+    logValueWatchActivity({
+      phase: "start",
+      variable: activeValueSubscription.variable,
+      path: activeValueSubscription.path || "/",
+      status: "running",
+      detail: activeValueSubscription.enqueue ? "awaiting live updates" : "cache-first live updates",
+    });
     ensureValueSocket();
     if (valueWs && valueWs.readyState === WebSocket.OPEN) {
       valueWs.send(
@@ -787,13 +1256,6 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
   const isTimeoutError = (error) => /timed out/i.test(String(error?.message || error || ""));
 
-  const logComputeActivity = (entry = {}) => {
-    try {
-      pushComputeActivity(entry);
-    } catch {
-      // ignore logging failures
-    }
-  };
   const isUnknownNodeSelectionError = (error) => /unknown node selection/i.test(String(error?.message || error || ""));
 
   const ensurePendingPoll = ({ traceId = 0, variable = "", path = "" } = {}) => {
@@ -1126,7 +1588,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       return true;
     }
 
-    stopRecordPageSocket(baseKey, { dropSubscription: false });
+    stopRecordPageSocket(baseKey, { dropSubscription: false, logFinal: false });
     const socket = new WebSocket(`${wsBaseUrl()}/ws/playground/value`);
     recordPageSockets = {
       ...recordPageSockets,
@@ -1137,6 +1599,15 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         ...recordPageSocketAttempts,
         [baseKey]: 0,
       };
+      logPageWatchActivity({
+        phase: "start",
+        variable: subscription.variable,
+        path: subscription.path || "/",
+        offset: subscription.offset,
+        limit: subscription.limit,
+        status: "running",
+        detail: "page websocket subscribed",
+      });
       sendSubscribe(socket);
     };
     socket.onmessage = (event) => {
@@ -1152,8 +1623,34 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           limit: subscription.limit,
           payload: message?.payload || null,
         });
+        const payloadStatus = String(message?.payload?.compute_status || message?.payload?.materialization || "").toLowerCase();
+        const itemCount = Array.isArray(message?.payload?.page?.items) ? message.payload.page.items.length : 0;
+        const terminal =
+          messageType === "terminal" ||
+          ["failed", "computed", "cached"].includes(String(message?.payload?.materialization || "").toLowerCase()) ||
+          ["completed", "failed", "killed"].includes(payloadStatus);
+        logPageWatchActivity({
+          phase: terminal ? "finish" : "update",
+          final: terminal,
+          variable: subscription.variable,
+          path: subscription.path || "/",
+          offset: subscription.offset,
+          limit: subscription.limit,
+          status: payloadStatus || messageType,
+          detail: `items=${itemCount}`,
+        });
         logComputeActivity({
           type: "page.ws",
+          phase: "event",
+          summary: terminal
+            ? `Live page update completed for ${activityTargetLabel({
+                variable: subscription.variable,
+                path: subscription.path || "/",
+              })}`
+            : `Live page update for ${activityTargetLabel({
+                variable: subscription.variable,
+                path: subscription.path || "/",
+              })}`,
           variable: subscription.variable,
           path: subscription.path,
           status: messageType,
@@ -1559,8 +2056,18 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     if (!variableName) return null;
     const key = pathRecordKey(variableName, targetPath);
     if (!force && pathRecords?.[key] && shouldReuseCachedPathRecord(pathRecords[key], { enqueueFallback })) {
+      logPathLoadActivity({
+        phase: "finish",
+        final: true,
+        variable: variableName,
+        path: targetPath || "/",
+        status: "completed",
+        detail: "cache hit",
+      });
       logComputeActivity({
         type: "value.cache",
+        phase: "event",
+        summary: `Cached value ${activityTargetLabel({ variable: variableName, path: targetPath || "/" })}`,
         variable: variableName,
         path: targetPath,
         status: String(pathRecords?.[key]?.compute_status || ""),
@@ -1573,6 +2080,13 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     clearPathRecordPoll(key);
 
     pathRecordsLoading = { ...pathRecordsLoading, [key]: true };
+    logPathLoadActivity({
+      phase: "start",
+      variable: variableName,
+      path: targetPath || "/",
+      status: "running",
+      detail: enqueueFallback ? "loading nested value" : "refresh nested value",
+    });
     const nextErrors = { ...pathRecordsErrors };
     delete nextErrors[key];
     pathRecordsErrors = nextErrors;
@@ -1596,6 +2110,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         ["queued", "running", "persisting"].includes(firstStatus);
       if (firstFailed) {
         cachePathRecord(variableName, targetPath, first);
+        logPathLoadActivity({
+          phase: "finish",
+          final: true,
+          variable: variableName,
+          path: targetPath || "/",
+          status: "failed",
+          detail: String(first?.error || "nested value failed"),
+        });
         pathRecordsErrors = {
           ...pathRecordsErrors,
           [key]: buildFailureDetailsText(first, {
@@ -1609,14 +2131,37 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       if (firstConcrete) {
         cachePathRecord(variableName, targetPath, first);
         if (firstPending && ["sequence", "mapping"].includes(String(first?.descriptor?.vox_type || "").toLowerCase())) {
+          logPathLoadActivity({
+            phase: "update",
+            variable: variableName,
+            path: targetPath || "/",
+            status: firstStatus || firstMaterialization || "running",
+            detail: "descriptor ready; waiting on nested items",
+          });
           schedulePathRecordPoll({ sourceVariable: variableName, path: targetPath, delayMs: 900 });
         } else {
+          logPathLoadActivity({
+            phase: "finish",
+            final: true,
+            variable: variableName,
+            path: targetPath || "/",
+            status: "completed",
+            detail: `materialization=${firstMaterialization || "computed"}`,
+          });
           clearPathRecordPoll(key);
         }
         return first;
       }
       if (firstMaterialized) {
         cachePathRecord(variableName, targetPath, first);
+        logPathLoadActivity({
+          phase: "finish",
+          final: true,
+          variable: variableName,
+          path: targetPath || "/",
+          status: "completed",
+          detail: `materialization=${firstMaterialization || "computed"}`,
+        });
         clearPathRecordPoll(key);
         return first;
       }
@@ -1632,6 +2177,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           ["queued", "running", "persisting"].includes(secondStatus);
         if (secondFailed) {
           cachePathRecord(variableName, targetPath, second);
+          logPathLoadActivity({
+            phase: "finish",
+            final: true,
+            variable: variableName,
+            path: targetPath || "/",
+            status: "failed",
+            detail: String(second?.error || "nested value failed"),
+          });
           pathRecordsErrors = {
             ...pathRecordsErrors,
             [key]: buildFailureDetailsText(second, {
@@ -1648,39 +2201,106 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
             secondPending &&
             ["sequence", "mapping"].includes(String(second?.descriptor?.vox_type || "").toLowerCase())
           ) {
+            logPathLoadActivity({
+              phase: "update",
+              variable: variableName,
+              path: targetPath || "/",
+              status: secondStatus || secondMaterialization || "running",
+              detail: "descriptor ready; waiting on nested items",
+            });
             schedulePathRecordPoll({ sourceVariable: variableName, path: targetPath, delayMs: 900 });
           } else {
+            logPathLoadActivity({
+              phase: "finish",
+              final: true,
+              variable: variableName,
+              path: targetPath || "/",
+              status: "completed",
+              detail: `materialization=${secondMaterialization || "computed"}`,
+            });
             clearPathRecordPoll(key);
           }
           return second;
         }
         if (secondMaterialized) {
           cachePathRecord(variableName, targetPath, second);
+          logPathLoadActivity({
+            phase: "finish",
+            final: true,
+            variable: variableName,
+            path: targetPath || "/",
+            status: "completed",
+            detail: `materialization=${secondMaterialization || "computed"}`,
+          });
           clearPathRecordPoll(key);
           return second;
         }
         if (secondPending) {
+          logPathLoadActivity({
+            phase: "update",
+            variable: variableName,
+            path: targetPath || "/",
+            status: secondStatus || secondMaterialization || "running",
+            detail: "awaiting nested value",
+          });
           schedulePathRecordPoll({ sourceVariable: variableName, path: targetPath, delayMs: 900 });
           return null;
         }
       }
 
       if (firstPending) {
+        logPathLoadActivity({
+          phase: "update",
+          variable: variableName,
+          path: targetPath || "/",
+          status: firstStatus || firstMaterialization || "running",
+          detail: "awaiting nested value",
+        });
         schedulePathRecordPoll({ sourceVariable: variableName, path: targetPath, delayMs: 900 });
         return null;
       }
 
       if (first?.descriptor && !["pending", "missing"].includes(firstMaterialization)) {
         cachePathRecord(variableName, targetPath, first);
+        logPathLoadActivity({
+          phase: "finish",
+          final: true,
+          variable: variableName,
+          path: targetPath || "/",
+          status: "completed",
+          detail: `materialization=${firstMaterialization || "computed"}`,
+        });
         clearPathRecordPoll(key);
         return first;
       }
+      logPathLoadActivity({
+        phase: "update",
+        variable: variableName,
+        path: targetPath || "/",
+        status: "running",
+        detail: "waiting for nested value",
+      });
       return null;
     } catch (error) {
       if (isTimeoutError(error)) {
+        logPathLoadActivity({
+          phase: "update",
+          variable: variableName,
+          path: targetPath || "/",
+          status: "running",
+          detail: "request timed out; waiting for retry",
+        });
         schedulePathRecordPoll({ sourceVariable: variableName, path: targetPath, delayMs: 1100 });
         return pathRecords?.[key] || null;
       }
+      logPathLoadActivity({
+        phase: "finish",
+        final: true,
+        variable: variableName,
+        path: targetPath || "/",
+        status: "failed",
+        detail: String(error?.message || error || "Unable to load value."),
+      });
       pathRecordsErrors = {
         ...pathRecordsErrors,
         [key]: String(error?.message || error || "Unable to load value."),
@@ -1761,8 +2381,20 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         ...recordPagePointers,
         [baseKey]: cacheKey,
       };
+      logPageLoadActivity({
+        phase: "finish",
+        final: true,
+        variable: variableName,
+        path: resolvedPath || "/",
+        offset: resolvedOffset,
+        limit: resolvedLimit,
+        status: "completed",
+        detail: "cache hit",
+      });
       logComputeActivity({
         type: "page.cache",
+        phase: "event",
+        summary: `Cached page ${activityTargetLabel({ variable: variableName, path: resolvedPath || "/" })}`,
         variable: variableName,
         path: resolvedPath,
         status: "cached",
@@ -1772,6 +2404,15 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     }
     if (recordPagesLoading?.[cacheKey]) return null;
     recordPagesLoading = { ...recordPagesLoading, [cacheKey]: true };
+    logPageLoadActivity({
+      phase: "start",
+      variable: variableName,
+      path: resolvedPath || "/",
+      offset: resolvedOffset,
+      limit: resolvedLimit,
+      status: "running",
+      detail: enqueueFallback ? "loading collection page" : "refreshing collection page",
+    });
     const nextErrors = { ...recordPagesErrors };
     delete nextErrors[baseKey];
     recordPagesErrors = nextErrors;
@@ -1816,6 +2457,15 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         pendingStatuses.has(String(payload?.compute_status || "").toLowerCase());
       const hasPendingItems = effectiveItems.some((item) => ACTIVE_COLLECTION_ITEM_STATES.has(normalizeCollectionItemState(item)));
       if (hasPendingItems || (pagePending && (!Array.isArray(effectivePage?.items) || effectivePage.items.length === 0))) {
+        logPageLoadActivity({
+          phase: "update",
+          variable: variableName,
+          path: resolvedPath || "/",
+          offset: resolvedOffset,
+          limit: resolvedLimit,
+          status: payloadStatus || payloadMaterialization || "running",
+          detail: `items=${effectiveItems.length} · pending-items=${effectiveItems.filter((item) => ACTIVE_COLLECTION_ITEM_STATES.has(normalizeCollectionItemState(item))).length}`,
+        });
         if (!ensureRecordPageSocket(record, {
           path: resolvedPath,
           offset: resolvedOffset,
@@ -1834,12 +2484,31 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           clearRecordPagePoll(baseKey);
         }
       } else {
+        logPageLoadActivity({
+          phase: "finish",
+          final: true,
+          variable: variableName,
+          path: resolvedPath || "/",
+          offset: resolvedOffset,
+          limit: resolvedLimit,
+          status: "completed",
+          detail: `items=${effectiveItems.length}`,
+        });
         clearRecordPagePoll(baseKey);
         stopRecordPageSocket(baseKey);
       }
       return effectivePage;
     } catch (error) {
       if (isTimeoutError(error)) {
+        logPageLoadActivity({
+          phase: "update",
+          variable: variableName,
+          path: resolvedPath || "/",
+          offset: resolvedOffset,
+          limit: resolvedLimit,
+          status: "running",
+          detail: "page request timed out; waiting for retry",
+        });
         if (!ensureRecordPageSocket(record, {
           path: resolvedPath,
           offset: resolvedOffset,
@@ -1862,6 +2531,15 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         return cached;
       }
       if (isUnknownNodeSelectionError(error) && variableName) {
+        logPageLoadActivity({
+          phase: "update",
+          variable: variableName,
+          path: resolvedPath || "/",
+          offset: resolvedOffset,
+          limit: resolvedLimit,
+          status: "running",
+          detail: "selection not ready yet; retry scheduled",
+        });
         scheduleRecordPagePoll(record, {
           path: resolvedPath,
           offset: resolvedOffset,
@@ -1871,6 +2549,16 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         });
         return recordPages?.[cacheKey] || null;
       }
+      logPageLoadActivity({
+        phase: "finish",
+        final: true,
+        variable: variableName,
+        path: resolvedPath || "/",
+        offset: resolvedOffset,
+        limit: resolvedLimit,
+        status: "failed",
+        detail: String(error?.message || error || "Unable to load collection values."),
+      });
       recordPagesErrors = {
         ...recordPagesErrors,
         [baseKey]: String(error?.message || error || "Unable to load collection values."),
@@ -2965,6 +3653,93 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
               <span class="start-caption-main">{captionVariable}</span>
             </footer>
           {/if}
+          {#if showOperationsPanel}
+            <section class="start-operations-panel" aria-live="polite">
+              <div class="start-operations-panel-head">
+                <div class="start-operations-panel-title">
+                  <span class="start-operations-panel-label">Operations</span>
+                  <span class="start-operations-panel-state">
+                    {$ongoingComputeActivity.length ? `${$ongoingComputeActivity.length} live` : "idle"}
+                  </span>
+                </div>
+                <div class="start-operations-panel-actions">
+                  <button
+                    class={`btn btn-ghost btn-small start-operations-info ${showOperationsHelp ? "is-open" : ""}`.trim()}
+                    type="button"
+                    aria-expanded={showOperationsHelp}
+                    aria-label="Explain operations labels"
+                    title="Explain operations labels"
+                    on:click={() => {
+                      showOperationsHelp = !showOperationsHelp;
+                    }}
+                  >
+                    i
+                  </button>
+                  <button class="btn btn-ghost btn-small" type="button" on:click={clearComputeActivity}>Clear</button>
+                </div>
+              </div>
+
+              {#if showOperationsHelp}
+                <div class="operations-help-card" role="note" aria-label="Operations help">
+                  <div class="operations-help-title">What these labels mean</div>
+                  <div class="operations-help-list">
+                    {#each OPERATIONS_HELP_ROWS as row}
+                      <div class="operations-help-row">
+                        <span class="operations-help-label">{row.label}</span>
+                        <span class="operations-help-detail">{row.detail}</span>
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+
+              <div class="start-operations-panel-grid">
+                <div class="start-operations-section">
+                  <div class="start-operations-section-head">Live now</div>
+                  {#if !$ongoingComputeActivity.length}
+                    <div class="start-operations-empty">No ongoing work right now.</div>
+                  {:else}
+                    <div class="start-operations-list">
+                      {#each $ongoingComputeActivity as entry (entry.operationKey)}
+                        {@const liveStatus = activeOperationStatus(entry)}
+                        <article class={`start-operations-item is-live is-${liveStatus}`.trim()}>
+                          <div class="start-operations-item-row">
+                            <span class="start-operations-item-summary">{entry.summary}</span>
+                            <span class={`start-operations-item-status is-${liveStatus}`.trim()}>{liveStatus}</span>
+                          </div>
+                          <div class="start-operations-item-meta">
+                            {#if entry.detail}{entry.detail}{:else}{entry.variable ? `${entry.variable} ${entry.path || "/"}`.trim() : entry.path || "-"}{/if}
+                          </div>
+                        </article>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+
+                <div class="start-operations-section">
+                  <div class="start-operations-section-head">Recent</div>
+                  {#if !$computeActivity.length}
+                    <div class="start-operations-empty">No activity yet.</div>
+                  {:else}
+                    <div class="start-operations-list is-history">
+                      {#each $computeActivity.slice(0, 10) as entry (entry.id)}
+                        {@const historyStatus = activeOperationStatus(entry)}
+                        <article class={`start-operations-item is-history is-${historyStatus}`.trim()}>
+                          <div class="start-operations-item-row">
+                            <span class="start-operations-item-summary">{entry.summary}</span>
+                            <span class="start-operations-item-time">{new Date(entry.ts).toLocaleTimeString()}</span>
+                          </div>
+                          <div class="start-operations-item-meta">
+                            {#if entry.detail}{entry.detail}{:else if entry.variable}{`${entry.variable} ${entry.path || "/"}`.trim()}{:else}{entry.path || entry.type}{/if}
+                          </div>
+                        </article>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            </section>
+          {/if}
           <div class="start-value-tag-row">
             {#if symbolDiagnostics.length}
               <span class="start-value-tag start-value-tag--empty">Fix syntax errors to visualize values</span>
@@ -2986,6 +3761,19 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
             {/if}
           </div>
           <div class="start-prime-action-row">
+            <button
+              class={`btn btn-ghost btn-small start-operations-toggle ${showOperationsPanel ? "is-open" : ""}`.trim()}
+              type="button"
+              aria-pressed={showOperationsPanel}
+              on:click={() => {
+                showOperationsPanel = !showOperationsPanel;
+              }}
+            >
+              <span>Operations</span>
+              {#if $ongoingComputeActivity.length}
+                <span class="start-operations-toggle-count">{$ongoingComputeActivity.length}</span>
+              {/if}
+            </button>
             <span class={`start-run-state start-run-state--${statusValue}`} aria-hidden="true"></span>
             <button class="btn btn-primary btn-small" type="button" on:click={runPrimary}>Run</button>
           </div>

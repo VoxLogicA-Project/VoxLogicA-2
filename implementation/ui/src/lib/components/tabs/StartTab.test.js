@@ -2,6 +2,7 @@ import { fireEvent, render, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import StartTab from "./StartTab.svelte";
+import { clearComputeActivity, pushComputeActivity } from "$lib/stores/computeActivity.js";
 
 const getProgramSymbolsMock = vi.fn();
 const resolvePlaygroundValueMock = vi.fn();
@@ -26,6 +27,7 @@ vi.mock("$lib/api/client.js", () => ({
 describe("StartTab", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    clearComputeActivity();
     getProgramSymbolsMock.mockReset();
     resolvePlaygroundValueMock.mockReset();
     resolvePlaygroundValuePageMock.mockReset();
@@ -151,6 +153,71 @@ describe("StartTab", () => {
 
     const editorSymbol = container.querySelector('.vx-editor__symbol[title="ov (overlay)"]');
     expect(editorSymbol).not.toBeNull();
+  });
+
+  it("shows the live operations log inline when toggled open", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { x: "node-x" },
+      diagnostics: [],
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    pushComputeActivity({
+      type: "resolve.primary",
+      phase: "start",
+      trackActive: true,
+      operationKey: "resolve:x:/",
+      summary: "Resolving x /",
+      variable: "x",
+      path: "/",
+      status: "running",
+      source: "start-tab",
+    });
+
+    const toggle = Array.from(container.querySelectorAll("button")).find((button) =>
+      String(button.textContent || "").includes("Operations"),
+    );
+    expect(toggle).not.toBeNull();
+    await fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Live now");
+      expect(container.textContent).toContain("Resolving x /");
+    });
+  });
+
+  it("shows inline explanations for operations labels", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { x: "node-x" },
+      diagnostics: [],
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const toggle = Array.from(container.querySelectorAll("button")).find((button) =>
+      String(button.textContent || "").includes("Operations"),
+    );
+    expect(toggle).not.toBeNull();
+    await fireEvent.click(toggle);
+
+    const infoButton = container.querySelector('.start-operations-info[aria-label="Explain operations labels"]');
+    expect(infoButton).not.toBeNull();
+    await fireEvent.click(infoButton);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("What these labels mean");
+      expect(container.textContent).toContain("Sent HTTP request");
+      expect(container.textContent).toContain("Session only");
+    });
   });
 
   it("surfaces concrete execution error details instead of generic failure counts", async () => {

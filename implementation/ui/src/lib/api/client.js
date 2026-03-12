@@ -35,6 +35,15 @@ const activityContext = (init = {}) => {
   }
 };
 
+const activitySummary = (kind, stage, meta = {}) => {
+  const target = meta?.variable ? `${meta.variable} ${meta.path || "/"}`.trim() : meta?.path || "/";
+  if (stage === "request") return `Request ${kind} ${target}`;
+  if (stage === "response") return `${kind === "page" ? "Page" : "Value"} response ${target}`;
+  if (stage === "error") return `${kind === "page" ? "Page" : "Value"} error ${target}`;
+  if (stage === "timeout") return `${kind === "page" ? "Page" : "Value"} timeout ${target}`;
+  return `${kind} ${stage} ${target}`.trim();
+};
+
 export const apiRequest = async (path, init = {}) => {
   const traceValueRequest = traceValueRequests() && isPlaygroundValueRequest(path);
   const method = String(init?.method || "GET").toUpperCase();
@@ -68,8 +77,11 @@ export const apiRequest = async (path, init = {}) => {
   if (trackActivity) {
     pushComputeActivity({
       type: `${activityKind}.request`,
-      status: method,
+      phase: "event",
+      summary: activitySummary(activityKind, "request", activityMeta),
       ...activityMeta,
+      status: method,
+      detail: activityMeta?.detail || "",
       source: "http",
     });
   }
@@ -91,8 +103,10 @@ export const apiRequest = async (path, init = {}) => {
       if (trackActivity) {
         pushComputeActivity({
           type: `${activityKind}.timeout`,
-          detail: String(error?.message || error || "timeout"),
+          phase: "timeout",
+          summary: activitySummary(activityKind, "timeout", activityMeta),
           ...activityMeta,
+          detail: String(error?.message || error || "timeout"),
           source: "http",
         });
       }
@@ -101,8 +115,10 @@ export const apiRequest = async (path, init = {}) => {
     if (trackActivity) {
       pushComputeActivity({
         type: `${activityKind}.error`,
-        detail: String(error?.message || error || "request-failed"),
+        phase: "error",
+        summary: activitySummary(activityKind, "error", activityMeta),
         ...activityMeta,
+        detail: String(error?.message || error || "request-failed"),
         source: "http",
       });
     }
@@ -155,9 +171,11 @@ export const apiRequest = async (path, init = {}) => {
     if (trackActivity) {
       pushComputeActivity({
         type: `${activityKind}.error`,
+        phase: "error",
+        summary: activitySummary(activityKind, "error", activityMeta),
+        ...activityMeta,
         status: `${response.status}`,
         detail: toErrorMessage(response.status, response.statusText, payload?.detail),
-        ...activityMeta,
         source: "http",
       });
     }
@@ -174,10 +192,14 @@ export const apiRequest = async (path, init = {}) => {
   if (trackActivity) {
     pushComputeActivity({
       type: `${activityKind}.response`,
+      phase: "event",
+      summary: activitySummary(activityKind, "response", activityMeta),
+      ...activityMeta,
       status: String(payload?.compute_status || ""),
       materialization: String(payload?.materialization || ""),
-      detail: String(payload?.error || ""),
-      ...activityMeta,
+      detail: [activityMeta?.detail, `elapsed=${Number(elapsedMs.toFixed(1))}ms`, String(payload?.error || "")]
+        .filter(Boolean)
+        .join(" · "),
       source: "http",
     });
   }

@@ -2,7 +2,8 @@
   import { onDestroy } from "svelte";
   import { getPlaygroundJob, listPlaygroundJobs } from "$lib/api/client.js";
   import StatusChip from "$lib/components/shared/StatusChip.svelte";
-  import { computeActivity, clearComputeActivity } from "$lib/stores/computeActivity.js";
+  import { OPERATIONS_HELP_ROWS } from "$lib/constants/computeActivityHelp.js";
+  import { clearComputeActivity, computeActivity, ongoingComputeActivity } from "$lib/stores/computeActivity.js";
 
   export let active = false;
 
@@ -13,6 +14,7 @@
   let errorText = "";
   let pollTimer = null;
   let pollInFlight = false;
+  let showOperationsHelp = false;
 
   const toTs = (value) => {
     const raw = String(value || "").trim();
@@ -168,9 +170,62 @@
 
       <section class="compute-log-activity">
         <header class="compute-log-activity-head">
-          <h3>Activity</h3>
-          <button class="btn btn-ghost btn-small" type="button" on:click={clearComputeActivity}>Clear</button>
+          <h3>Operations</h3>
+          <div class="compute-log-activity-actions">
+            <button
+              class={`btn btn-ghost btn-small start-operations-info ${showOperationsHelp ? "is-open" : ""}`.trim()}
+              type="button"
+              aria-expanded={showOperationsHelp}
+              aria-label="Explain operations labels"
+              title="Explain operations labels"
+              on:click={() => {
+                showOperationsHelp = !showOperationsHelp;
+              }}
+            >
+              i
+            </button>
+            <button class="btn btn-ghost btn-small" type="button" on:click={clearComputeActivity}>Clear</button>
+          </div>
         </header>
+        {#if showOperationsHelp}
+          <div class="operations-help-card" role="note" aria-label="Operations help">
+            <div class="operations-help-title">What these labels mean</div>
+            <div class="operations-help-list">
+              {#each OPERATIONS_HELP_ROWS as row}
+                <div class="operations-help-row">
+                  <span class="operations-help-label">{row.label}</span>
+                  <span class="operations-help-detail">{row.detail}</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+        <div class="compute-log-activity-live">
+          <div class="compute-log-activity-row">
+            <span class="compute-log-activity-type">live</span>
+            <span class="compute-log-activity-ts">{$ongoingComputeActivity.length ? `${$ongoingComputeActivity.length} active` : "idle"}</span>
+          </div>
+          {#if !$ongoingComputeActivity.length}
+            <div class="compute-log-activity-note">No ongoing operations.</div>
+          {:else}
+            <div class="compute-log-activity-list">
+              {#each $ongoingComputeActivity as entry (entry.operationKey)}
+                <div class="compute-log-activity-item">
+                  <div class="compute-log-activity-row">
+                    <span class="compute-log-activity-type">{entry.summary}</span>
+                    <span class="compute-log-activity-ts">{String(entry.status || entry.materialization || entry.phase || "-")}</span>
+                  </div>
+                  <div class="compute-log-activity-detail">
+                    {entry.variable ? `${entry.variable} ${entry.path || ""}`.trim() : entry.path || "-"}
+                  </div>
+                  {#if entry.detail}
+                    <div class="compute-log-activity-note">{entry.detail}</div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
         {#if !$computeActivity.length}
           <p class="muted">No activity yet.</p>
         {:else}

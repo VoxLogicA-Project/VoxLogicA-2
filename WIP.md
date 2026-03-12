@@ -1,5 +1,66 @@
 # WIP: Lazy Sequence Materialization Debug/Handover
 
+## Update: Main Start Tab Needs A True Ongoing-Operations Feed
+
+Current bug/UX gap:
+
+- the dedicated Compute Log tab receives some HTTP/cache/ws events
+- but the Start tab still hides most of the actual resolve lifecycle in `console.info`
+- result: the user cannot tell whether the UI is:
+  - resolving a root value
+  - waiting on a websocket subscription
+  - polling a pending value
+  - loading a nested page
+  - loading a nested child path
+
+Planned slice in progress:
+
+- upgrade `implementation/ui/src/lib/stores/computeActivity.js` from a flat history-only store to:
+  - recent history
+  - live/ongoing operations derived from lifecycle events
+- route `implementation/ui/src/lib/components/tabs/StartTab.svelte` resolve/page/path/socket lifecycle into that store
+- expose the feed inline in the Start tab behind a compact toggle button near the main action row
+- keep the existing lazy/progressive engine untouched; this slice is UI observability only
+
+Validation plan:
+
+- add store-level tests for start/update/finish operation tracking
+- add Start-tab UI regression coverage for the inline operations panel
+- run the existing Start-tab tests and rebuild the static serve bundle
+
+### Implemented
+
+Files:
+- `implementation/ui/src/lib/stores/computeActivity.js`
+- `implementation/ui/src/lib/stores/computeActivity.test.js`
+- `implementation/ui/src/lib/api/client.js`
+- `implementation/ui/src/lib/components/tabs/StartTab.svelte`
+- `implementation/ui/src/lib/components/tabs/StartTab.test.js`
+- `implementation/ui/src/lib/components/tabs/ComputeLogTab.svelte`
+- `implementation/ui/src/app.css`
+
+What changed:
+- `computeActivity` now keeps:
+  - recent history
+  - `ongoingComputeActivity` for live operations
+- the Start tab now publishes its real lifecycle to the activity store instead of only `console.info`:
+  - root resolve start/update/finish
+  - pending poll start/update/finish
+  - nested path load start/update/finish
+  - nested page load start/update/finish
+  - websocket watch start/update/finish for root values and record pages
+- the Start tab now exposes a compact inline **Operations** toggle in the main action row
+  - when opened, it shows:
+    - `Live now`
+    - `Recent`
+- the dedicated Compute Log tab also shows the live operations section first
+
+Validation:
+- `npm --prefix implementation/ui run test -- src/lib/stores/computeActivity.test.js`
+- `npm --prefix implementation/ui run test -- src/lib/components/tabs/StartTab.test.js`
+- `npm --prefix implementation/ui run test -- src/lib/api/client.test.js`
+- `npm --prefix implementation/ui run build`
+
 ## Update: Nested Inspectable Sequence Persistence Was Corrupting Overlay Trees
 
 New proven bug in the `vi_sweep_overlays` path:
@@ -1383,5 +1444,52 @@ Validation:
 
 ```bash
 npm --prefix implementation/ui run test -- src/lib/components/tabs/StartTab.test.js
+npm --prefix implementation/ui run build
+```
+
+## Update: operations terminology, inline help, and failure contrast
+
+Date: 2026-03-12
+
+Scope:
+
+- clarify the in-app operations log wording so it distinguishes transport, live subscriptions,
+  and pending backend work
+- add inline `(i)` explanations in both the Start tab operations panel and the Compute Log tab
+- fix unreadable failure styling (`red` text over `pink` surfaces)
+
+Implemented:
+
+- `implementation/ui/src/lib/constants/computeActivityHelp.js`
+  - shared help rows used by both Start and Compute Log panels
+- `implementation/ui/src/lib/components/tabs/StartTab.svelte`
+  - renamed ambiguous summaries:
+    - `Watching ...` -> `Live updates active ...`
+    - `Loading ...` -> `Fetching nested value ...`
+    - `Updating ...` -> `Waiting for nested value ...`
+    - `Loading page ...` -> `Fetching page ...`
+    - `Updating page ...` -> `Waiting for page items ...`
+    - `Request sent ...` / `Response received ...` -> explicit resolve request/reply wording
+  - added an inline info button and help card
+- `implementation/ui/src/lib/components/tabs/ComputeLogTab.svelte`
+  - added the same inline info button and help card for consistency
+- `implementation/ui/src/app.css`
+  - restyled failed collection items, failed status pills, and viewer error cards to use dark text
+    on soft tinted backgrounds instead of low-contrast red-on-pink
+- `implementation/ui/src/lib/components/tabs/StartTab.test.js`
+  - added a regression/behavior test for the inline explanations panel
+
+Persistence note:
+
+- the operations log is still session-local browser state only
+- it is not persisted across page reloads or browser restarts
+- the new help card says this explicitly
+
+Validation:
+
+```bash
+npm --prefix implementation/ui run test -- src/lib/stores/computeActivity.test.js
+npm --prefix implementation/ui run test -- src/lib/components/tabs/StartTab.test.js
+npm --prefix implementation/ui run test -- src/lib/api/client.test.js
 npm --prefix implementation/ui run build
 ```
