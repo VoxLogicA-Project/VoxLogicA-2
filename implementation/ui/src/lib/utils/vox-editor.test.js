@@ -3,8 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   applyCompletion,
   buildDefaultCompletions,
+  buildEditorDocument,
   completionContextAt,
   parseDiagnosticLocation,
+  readEditableText,
+  restoreSelectionWithin,
+  selectionOffsetsWithin,
 } from "./vox-editor.js";
 
 describe("vox-editor utils", () => {
@@ -13,6 +17,62 @@ describe("vox-editor utils", () => {
       message: "Unexpected token at line 3, column 9.",
     });
     expect(loc).toEqual({ line: 3, column: 9 });
+  });
+
+  it("builds a render model with symbol metadata and diagnostic lines", () => {
+    const documentModel = buildEditorDocument(
+      "alpha = 1\nbeta = alpha",
+      { alpha: "hash-alpha" },
+      [{ message: "Unexpected token", location: "line 2, column 1" }],
+      { alpha: "cached" },
+      ["alpha"],
+      { alpha: "integer" },
+    );
+
+    expect(documentModel).toHaveLength(2);
+    expect(documentModel[1].className).toContain("vx-editor__line--error");
+
+    const symbolToken = documentModel[0].tokens.find((token) => token.kind === "symbol");
+    expect(symbolToken).toMatchObject({
+      symbol: "alpha",
+      status: "computed",
+      selected: true,
+      title: "alpha (integer)",
+    });
+  });
+
+  it("reads editable DOM as plain text and restores selection offsets", () => {
+    const root = document.createElement("div");
+    const lineOne = document.createElement("div");
+    lineOne.setAttribute("data-line", "1");
+    const lineOneText = document.createElement("span");
+    lineOneText.textContent = "alpha";
+    lineOne.appendChild(lineOneText);
+
+    const lineTwo = document.createElement("div");
+    lineTwo.setAttribute("data-line", "2");
+    lineTwo.appendChild(document.createElement("br"));
+
+    const lineThree = document.createElement("div");
+    lineThree.setAttribute("data-line", "3");
+    const lineThreeText = document.createElement("span");
+    lineThreeText.textContent = "beta";
+    lineThree.appendChild(lineThreeText);
+
+    root.append(lineOne, lineTwo, lineThree);
+    document.body.appendChild(root);
+
+    try {
+      expect(readEditableText(root)).toBe("alpha\n\nbeta");
+      expect(restoreSelectionWithin(root, "alpha\n\nbeta", 7, 7)).toBe(true);
+      expect(selectionOffsetsWithin(root)).toMatchObject({
+        start: 7,
+        end: 7,
+        collapsed: true,
+      });
+    } finally {
+      root.remove();
+    }
   });
 
   it("computes completion context and applies selected completion", () => {

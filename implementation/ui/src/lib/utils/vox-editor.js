@@ -1,5 +1,3 @@
-import { sanitizeAttr, sanitizeText } from "$lib/utils/sanitize.js";
-
 export const VOX_KEYWORDS = [
   "import",
   "let",
@@ -15,6 +13,8 @@ const IDENT_START = /[A-Za-z_.$]/;
 const IDENT_CONT = /[A-Za-z0-9_.$]/;
 const NUMBER_CHAR = /[0-9]/;
 const COMPLETION_CHAR = /[A-Za-z0-9_.$]/;
+const BLOCK_TAGS = new Set(["DIV", "P", "LI", "PRE"]);
+const EMPTY_LINE_MARKER = "\u200b";
 
 export const parseDiagnosticLocation = (diag) => {
   const location = String(diag?.location || "");
@@ -55,8 +55,8 @@ const tokenizeLine = (line) => {
     if (ch === '"') {
       let end = idx + 1;
       while (end < line.length) {
-        const c = line[end];
-        if (c === '"' && line[end - 1] !== "\\") {
+        const current = line[end];
+        if (current === '"' && line[end - 1] !== "\\") {
           end += 1;
           break;
         }
@@ -79,7 +79,10 @@ const tokenizeLine = (line) => {
       let end = idx + 1;
       while (end < line.length && IDENT_CONT.test(line[end])) end += 1;
       const token = line.slice(idx, end);
-      out.push({ kind: KEYWORD_SET.has(token) ? "keyword" : "identifier", text: token });
+      out.push({
+        kind: KEYWORD_SET.has(token) ? "keyword" : "identifier",
+        text: token,
+      });
       idx = end;
       continue;
     }
@@ -101,67 +104,305 @@ const tokenizeLine = (line) => {
 
 const normalizeSymbolStatus = (status) => {
   const normalized = String(status || "").trim().toLowerCase();
-  if (normalized === "cached") return "computed";
-  if (normalized === "completed") return "computed";
-  if (normalized === "pending") return "queued";
+  if (normalized === "cached" || normalized === "completed") return "computed";
+  if (normalized === "pending" || normalized === "missing") return "queued";
   if (normalized === "killed") return "failed";
-  if (normalized === "missing") return "queued";
   if (["idle", "queued", "running", "persisting", "computed", "failed"].includes(normalized)) {
     return normalized;
   }
   return "idle";
 };
 
-const renderToken = (token, symbolSet, symbolStatuses, selectedSymbols, symbolTypes) => {
-  const text = String(token.text || "");
-  const safeText = sanitizeText(text);
-  if (token.kind === "space") return safeText;
-  if (token.kind === "identifier" && symbolSet.has(text)) {
-    const encoded = encodeURIComponent(text);
-    const status = normalizeSymbolStatus(symbolStatuses?.[text]);
-    const isSelected = selectedSymbols.has(text);
-    const typeLabel = String(symbolTypes?.[text] || "").trim();
-    const hover = typeLabel ? `${text} (${typeLabel})` : `Inspect ${text}`;
-    const className = `vx-editor__symbol vx-editor__symbol--${sanitizeAttr(status)}${isSelected ? " vx-editor__symbol--selected" : ""}`;
-    return (
-      `<button type="button" class="${className}" data-status="${sanitizeAttr(status)}" ` +
-      `data-token="${sanitizeAttr(encoded)}" title="${sanitizeAttr(hover)}">` +
-      `${safeText}</button>`
-    );
+const diagnosticLookup = (diagnostics) => {
+  const lines = new Set();
+  const titles = new Map();
+
+  for (const diag of Array.isArray(diagnostics) ? diagnostics : []) {
+    const location = parseDiagnosticLocation(diag);
+    if (!location?.line || !Number.isFinite(location.line) || location.line <= 0) continue;
+    lines.add(location.line);
+    const message = String(diag?.message || "Static error").trim();
+    const prefix = location.column ? `Line ${location.line}:${location.column}` : `Line ${location.line}`;
+    const code = diag?.code ? ` [${String(diag.code)}]` : "";
+    titles.set(location.line, `${prefix} - ${message}${code}`);
   }
-  const className = `vx-editor__token vx-editor__token--${sanitizeAttr(token.kind)}`;
-  return `<span class="${className}">${safeText}</span>`;
+
+  return { lines, titles };
 };
 
-export const buildOverlayHtml = (text, symbols = {}, diagnostics = [], symbolStatuses = {}, selectedSymbols = [], symbolTypes = {}) => {
+export const buildEditorDocument = (
+  text,
+  symbols = {},
+  diagnostics = [],
+  symbolStatuses = {},
+  selectedSymbols = [],
+  symbolTypes = {},
+) => {
   const source = String(text || "");
   const symbolSet = new Set(Object.keys(symbols || {}));
   const selectedSet = new Set((Array.isArray(selectedSymbols) ? selectedSymbols : []).map((value) => String(value || "")));
-  const diagnosticLines = new Set();
-  const diagnosticMessagesByLine = new Map();
-  for (const diag of Array.isArray(diagnostics) ? diagnostics : []) {
-    const loc = parseDiagnosticLocation(diag);
-    if (loc?.line && Number.isFinite(loc.line) && loc.line > 0) {
-      diagnosticLines.add(loc.line);
-      const message = String(diag?.message || "Static error").trim();
-      const locationText = loc.column ? `Line ${loc.line}:${loc.column}` : `Line ${loc.line}`;
-      const codeText = diag?.code ? ` [${String(diag.code)}]` : "";
-      diagnosticMessagesByLine.set(loc.line, `${locationText} - ${message}${codeText}`);
+  const diagnosticsByLine = diagnosticLookup(diagnostics);
+
+  let nextStart = 0;
+  return source.split("\n").map((line, index) => {
+    const lineNumber = index + 1;
+    const tokens = [];
+    let tokenStart = nextStart;
+
+    for (const token of tokenizeLine(line)) {
+      const start = tokenStart;
+      const end = start + token.text.length;
+      tokenStart = end;
+
+      if (token.kind === "identifier" && symbolSet.has(token.text)) {
+        const status = normalizeSymbolStatus(symbolStatuses?.[token.text]);
+        const selected = selectedSet.has(token.text);
+        const typeLabel = String(symbolTypes?.[token.text] || "").trim();
+        tokens.push({
+          kind: "symbol",
+          tokenKind: "identifier",
+          text: token.text,
+          start,
+          end,
+          symbol: token.text,
+          status,
+          selected,
+          title: typeLabel ? `${token.text} (${typeLabel})` : `Inspect ${token.text}`,
+          className: `vx-editor__symbol vx-editor__symbol--${status}${selected ? " vx-editor__symbol--selected" : ""}`,
+        });
+        continue;
+      }
+
+      tokens.push({
+        kind: token.kind,
+        tokenKind: token.kind,
+        text: token.text,
+        start,
+        end,
+        className: `vx-editor__token vx-editor__token--${token.kind}`,
+      });
+    }
+
+    const lineStart = nextStart;
+    nextStart += line.length + 1;
+    const hasError = diagnosticsByLine.lines.has(lineNumber);
+
+    return {
+      number: lineNumber,
+      start: lineStart,
+      text: line,
+      title: diagnosticsByLine.titles.get(lineNumber) || "",
+      className: hasError ? "vx-editor__line vx-editor__line--error" : "vx-editor__line",
+      isEmpty: line.length === 0,
+      tokens,
+    };
+  });
+};
+
+const mergeLineParts = (target, source) => {
+  if (!source.length) return target;
+  target[target.length - 1] += source[0];
+  for (let index = 1; index < source.length; index += 1) {
+    target.push(source[index]);
+  }
+  return target;
+};
+
+const isBlockNode = (node) => node?.nodeType === 1 && BLOCK_TAGS.has(node.nodeName);
+const isBreakNode = (node) => node?.nodeType === 1 && node.nodeName === "BR";
+
+const collectNodeLines = (node, isRoot = false) => {
+  if (!node) return [""];
+
+  if (node.nodeType === 3) {
+    return [String(node.textContent || "").replaceAll(EMPTY_LINE_MARKER, "")];
+  }
+
+  if (isBreakNode(node)) {
+    return ["", ""];
+  }
+
+  if (!isRoot && isBlockNode(node)) {
+    if (!node.childNodes?.length) {
+      return ["", ""];
+    }
+    if (node.childNodes.length === 1 && isBreakNode(node.firstChild)) {
+      return ["", ""];
     }
   }
 
+  const lines = [""];
+  for (const child of Array.from(node.childNodes || [])) {
+    mergeLineParts(lines, collectNodeLines(child, false));
+  }
+
+  if (!isRoot && isBlockNode(node)) {
+    lines.push("");
+  }
+  return lines;
+};
+
+export const readEditableText = (root) => {
+  if (!root) return "";
+  const lines = collectNodeLines(root, true);
+  if (lines.length > 1 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return lines.join("\n");
+};
+
+const normalizeDomOffset = (node, offset) => {
+  const safeOffset = Number(offset || 0);
+  if (!node) return 0;
+  if (node.nodeType === 3) {
+    return Math.max(0, Math.min(safeOffset, String(node.textContent || "").length));
+  }
+  return Math.max(0, Math.min(safeOffset, node.childNodes?.length || 0));
+};
+
+const domPositionToTextOffset = (root, container, offset) => {
+  const doc = root?.ownerDocument;
+  if (!root || !container || !doc?.createRange || !root.contains(container)) return 0;
+
+  const range = doc.createRange();
+  range.selectNodeContents(root);
+  range.setEnd(container, normalizeDomOffset(container, offset));
+
+  const fragment = range.cloneContents();
+  const wrapper = doc.createElement("div");
+  wrapper.appendChild(fragment);
+  return readEditableText(wrapper).length;
+};
+
+export const selectionOffsetsWithin = (root) => {
+  const doc = root?.ownerDocument;
+  const selection = doc?.getSelection?.();
+  if (!root || !selection || !selection.rangeCount) return null;
+  if (!root.contains(selection.anchorNode) || !root.contains(selection.focusNode)) return null;
+
+  const anchor = domPositionToTextOffset(root, selection.anchorNode, selection.anchorOffset);
+  const focus = domPositionToTextOffset(root, selection.focusNode, selection.focusOffset);
+  return {
+    anchor,
+    focus,
+    start: Math.min(anchor, focus),
+    end: Math.max(anchor, focus),
+    collapsed: anchor === focus,
+  };
+};
+
+const positionFromTextOffset = (root, text, offset) => {
+  const source = String(text || "");
+  const safeOffset = Math.max(0, Math.min(Number(offset || 0), source.length));
   const lines = source.split("\n");
-  return lines
-    .map((line, idx) => {
-      const lineNo = idx + 1;
-      const lineClass = diagnosticLines.has(lineNo) ? "vx-editor__line vx-editor__line--error" : "vx-editor__line";
-      const title = diagnosticMessagesByLine.get(lineNo);
-      const titleAttr = title ? ` title="${sanitizeAttr(title)}"` : "";
-      const tokens = tokenizeLine(line);
-      const rendered = tokens.map((token) => renderToken(token, symbolSet, symbolStatuses, selectedSet, symbolTypes)).join("");
-      return `<span class="${lineClass}" data-line="${lineNo}"${titleAttr}>${rendered || " "}</span>`;
-    })
-    .join("");
+
+  let remaining = safeOffset;
+  let lineIndex = 0;
+  for (; lineIndex < lines.length; lineIndex += 1) {
+    const lineLength = lines[lineIndex].length;
+    if (remaining <= lineLength || lineIndex === lines.length - 1) {
+      break;
+    }
+    remaining -= lineLength + 1;
+  }
+
+  const lineEl = root?.querySelector?.(`[data-line="${lineIndex + 1}"]`);
+  if (!lineEl) {
+    return {
+      node: root,
+      offset: root?.childNodes?.length || 0,
+    };
+  }
+
+  const doc = lineEl.ownerDocument;
+  const nodeFilter = doc?.defaultView?.NodeFilter;
+  const walker = doc?.createTreeWalker?.(
+    lineEl,
+    nodeFilter?.SHOW_TEXT ?? 4,
+    {
+      acceptNode: (node) => {
+        const textValue = String(node.textContent || "");
+        return textValue.length
+          ? nodeFilter?.FILTER_ACCEPT ?? 1
+          : nodeFilter?.FILTER_SKIP ?? 3;
+      },
+    },
+  );
+
+  let textNode = walker?.nextNode?.() ? walker.currentNode : null;
+  let lastTextNode = textNode;
+  while (textNode) {
+    const textValue = String(textNode.textContent || "");
+    if (remaining <= textValue.length) {
+      return { node: textNode, offset: remaining };
+    }
+    remaining -= textValue.length;
+    lastTextNode = textNode;
+    textNode = walker.nextNode();
+  }
+
+  if (lastTextNode) {
+    return {
+      node: lastTextNode,
+      offset: String(lastTextNode.textContent || "").length,
+    };
+  }
+
+  return { node: lineEl, offset: 0 };
+};
+
+export const restoreSelectionWithin = (root, text, start, end = start) => {
+  const doc = root?.ownerDocument;
+  const selection = doc?.getSelection?.();
+  if (!root || !doc?.createRange || !selection) return false;
+
+  const startPos = positionFromTextOffset(root, text, start);
+  const endPos = positionFromTextOffset(root, text, end);
+  const range = doc.createRange();
+  range.setStart(startPos.node, normalizeDomOffset(startPos.node, startPos.offset));
+  range.setEnd(endPos.node, normalizeDomOffset(endPos.node, endPos.offset));
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return true;
+};
+
+export const caretClientRectFromSelection = (root) => {
+  const doc = root?.ownerDocument;
+  const selection = doc?.getSelection?.();
+  if (!root || !selection || !selection.rangeCount) return null;
+  if (!root.contains(selection.anchorNode) || !root.contains(selection.focusNode)) return null;
+
+  const range = selection.getRangeAt(0).cloneRange();
+  range.collapse(false);
+
+  const directRect = Array.from(range.getClientRects?.() || []).find((rect) => rect.width || rect.height) || range.getBoundingClientRect?.();
+  if (directRect && (directRect.width || directRect.height)) {
+    return {
+      left: directRect.left,
+      top: directRect.top,
+      bottom: directRect.bottom,
+      height: directRect.height,
+    };
+  }
+
+  const marker = doc.createElement("span");
+  marker.textContent = EMPTY_LINE_MARKER;
+  const originalRange = selection.getRangeAt(0).cloneRange();
+
+  try {
+    range.insertNode(marker);
+    const rect = marker.getBoundingClientRect();
+    return {
+      left: rect.left,
+      top: rect.top,
+      bottom: rect.bottom,
+      height: rect.height,
+    };
+  } finally {
+    marker.remove();
+    selection.removeAllRanges();
+    selection.addRange(originalRange);
+  }
 };
 
 export const expressionContextAt = (text, position) => {
@@ -169,8 +410,10 @@ export const expressionContextAt = (text, position) => {
   const safePos = Math.max(0, Math.min(Number(position || 0), source.length));
   let start = safePos;
   let end = safePos;
+
   while (start > 0 && source[start - 1] !== "\n") start -= 1;
   while (end < source.length && source[end] !== "\n") end += 1;
+
   const line = source.slice(start, end).trim();
   if (!line) return "";
   return line.length <= 160 ? line : `${line.slice(0, 157)}...`;
@@ -185,60 +428,29 @@ export const extractTokenInfoAt = (text, position) => {
   let end = safePos;
   while (start > 0 && COMPLETION_CHAR.test(source[start - 1])) start -= 1;
   while (end < source.length && COMPLETION_CHAR.test(source[end])) end += 1;
-  const token = source.slice(start, end).trim();
-  return { token, start, end };
+
+  return {
+    token: source.slice(start, end).trim(),
+    start,
+    end,
+  };
 };
 
 export const isOperatorToken = (token) => !!token && !/[A-Za-z0-9_$]/.test(token);
-
-export const textIndexFromPoint = (textarea, clientX, clientY) => {
-  const text = String(textarea?.value || "");
-  if (!textarea) return null;
-  const rect = textarea.getBoundingClientRect();
-  if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return null;
-
-  const style = window.getComputedStyle(textarea);
-  const font = style.font || `${style.fontSize} ${style.fontFamily}`;
-  const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.5;
-  const padLeft = Number.parseFloat(style.paddingLeft) || 0;
-  const padTop = Number.parseFloat(style.paddingTop) || 0;
-
-  const probe = document.createElement("span");
-  probe.style.position = "absolute";
-  probe.style.visibility = "hidden";
-  probe.style.whiteSpace = "pre";
-  probe.style.font = font;
-  probe.textContent = "MMMMMMMMMM";
-  document.body.appendChild(probe);
-  const charWidth = Math.max(1, probe.getBoundingClientRect().width / 10);
-  probe.remove();
-
-  const x = clientX - rect.left + textarea.scrollLeft - padLeft;
-  const y = clientY - rect.top + textarea.scrollTop - padTop;
-  const lineIndex = Math.max(0, Math.floor(y / lineHeight));
-  const colIndex = Math.max(0, Math.floor(x / charWidth));
-
-  const lines = text.split("\n");
-  const boundedLine = Math.min(lineIndex, Math.max(0, lines.length - 1));
-  let offset = 0;
-  for (let idx = 0; idx < boundedLine; idx += 1) {
-    offset += lines[idx].length + 1;
-  }
-  offset += Math.min(colIndex, lines[boundedLine].length);
-  return Math.min(offset, text.length);
-};
 
 const lineAndColumnAt = (text, position) => {
   const source = String(text || "");
   const safe = Math.max(0, Math.min(Number(position || 0), source.length));
   let line = 1;
   let lastLineBreak = -1;
-  for (let i = 0; i < safe; i += 1) {
-    if (source[i] === "\n") {
+
+  for (let index = 0; index < safe; index += 1) {
+    if (source[index] === "\n") {
       line += 1;
-      lastLineBreak = i;
+      lastLineBreak = index;
     }
   }
+
   return { line, column: safe - lastLineBreak };
 };
 
@@ -246,21 +458,21 @@ export const completionContextAt = (text, cursor) => {
   const source = String(text || "");
   const safeCursor = Math.max(0, Math.min(Number(cursor || 0), source.length));
   let from = safeCursor;
-  while (from > 0 && COMPLETION_CHAR.test(source[from - 1])) from -= 1;
   let to = safeCursor;
+
+  while (from > 0 && COMPLETION_CHAR.test(source[from - 1])) from -= 1;
   while (to < source.length && COMPLETION_CHAR.test(source[to])) to += 1;
-  const prefix = source.slice(from, safeCursor);
-  const token = source.slice(from, to);
-  const lc = lineAndColumnAt(source, safeCursor);
+
+  const location = lineAndColumnAt(source, safeCursor);
   return {
     text: source,
     cursor: safeCursor,
     from,
     to,
-    prefix,
-    token,
-    line: lc.line,
-    column: lc.column,
+    prefix: source.slice(from, safeCursor),
+    token: source.slice(from, to),
+    line: location.line,
+    column: location.column,
   };
 };
 
@@ -277,6 +489,7 @@ export const buildDefaultCompletions = (context, { symbols = {}, keywords = VOX_
       detail: "language keyword",
     });
   }
+
   for (const builtin of builtins) {
     const label = String(builtin || "");
     if (!label) continue;
@@ -287,6 +500,7 @@ export const buildDefaultCompletions = (context, { symbols = {}, keywords = VOX_
       detail: "known primitive",
     });
   }
+
   for (const symbol of Object.keys(symbols || {})) {
     pool.set(symbol, {
       label: symbol,
@@ -297,10 +511,7 @@ export const buildDefaultCompletions = (context, { symbols = {}, keywords = VOX_
   }
 
   return Array.from(pool.values())
-    .filter((item) => {
-      if (!prefix) return true;
-      return String(item.label || "").toLowerCase().startsWith(prefixLower);
-    })
+    .filter((item) => !prefix || String(item.label || "").toLowerCase().startsWith(prefixLower))
     .sort((a, b) => {
       const aLabel = String(a.label || "");
       const bLabel = String(b.label || "");
@@ -318,46 +529,8 @@ export const applyCompletion = (text, context, item) => {
   const from = Math.max(0, Math.min(Number(context?.from || 0), source.length));
   const to = Math.max(from, Math.min(Number(context?.to || from), source.length));
   const nextText = `${source.slice(0, from)}${insertText}${source.slice(to)}`;
-  const nextCursor = from + insertText.length;
-  return { text: nextText, cursor: nextCursor };
-};
-
-export const getCaretCoordinates = (textarea, position) => {
-  if (!textarea) return { left: 0, top: 0, height: 0 };
-  const value = String(textarea.value || "");
-  const safePos = Math.max(0, Math.min(Number(position || 0), value.length));
-  const style = window.getComputedStyle(textarea);
-
-  const mirror = document.createElement("div");
-  mirror.style.position = "absolute";
-  mirror.style.visibility = "hidden";
-  mirror.style.whiteSpace = "pre-wrap";
-  mirror.style.wordWrap = "break-word";
-  mirror.style.overflow = "hidden";
-  mirror.style.width = style.width;
-  mirror.style.font = style.font;
-  mirror.style.lineHeight = style.lineHeight;
-  mirror.style.padding = style.padding;
-  mirror.style.border = style.border;
-  mirror.style.letterSpacing = style.letterSpacing;
-  mirror.style.tabSize = style.tabSize;
-
-  const before = value.slice(0, safePos);
-  const after = value.slice(safePos) || ".";
-  mirror.textContent = before;
-  const marker = document.createElement("span");
-  marker.textContent = after[0];
-  mirror.appendChild(marker);
-  document.body.appendChild(mirror);
-
-  const markerRect = marker.getBoundingClientRect();
-  const mirrorRect = mirror.getBoundingClientRect();
-  const textareaRect = textarea.getBoundingClientRect();
-  const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.5;
-
-  const left = markerRect.left - mirrorRect.left - textarea.scrollLeft + textareaRect.left;
-  const top = markerRect.top - mirrorRect.top - textarea.scrollTop + textareaRect.top;
-  document.body.removeChild(mirror);
-
-  return { left, top, height: lineHeight };
+  return {
+    text: nextText,
+    cursor: from + insertText.length,
+  };
 };

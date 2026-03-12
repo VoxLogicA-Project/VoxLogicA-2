@@ -108,7 +108,8 @@ describe("StartTab", () => {
     const editor = container.querySelector(".vx-editor__input");
     expect(editor).not.toBeNull();
 
-    await fireEvent.input(editor, { target: { value: "x = 3" } });
+    editor.textContent = "x = 3";
+    await fireEvent.input(editor);
     vi.advanceTimersByTime(220);
     await waitFor(() => {
       expect(window.localStorage.getItem("voxlogica.start.program.v1")).toBe("x = 3");

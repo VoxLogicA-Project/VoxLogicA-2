@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { describe, expect, it, vi } from "vitest";
 
+import { readEditableText, restoreSelectionWithin } from "$lib/utils/vox-editor.js";
 import VoxCodeEditor from "./VoxCodeEditor.svelte";
 import VoxCodeEditorEventHarness from "./VoxCodeEditorEventHarness.svelte";
 
@@ -9,10 +10,10 @@ describe("VoxCodeEditor", () => {
     const handler = vi.fn();
     const { container } = render(VoxCodeEditorEventHarness, { onSymbolClick: handler });
 
-    const symbolButton = container.querySelector(".vx-editor__symbol");
-    expect(symbolButton).not.toBeNull();
+    const symbolEl = container.querySelector(".vx-editor__symbol");
+    expect(symbolEl).not.toBeNull();
 
-    await fireEvent.click(symbolButton);
+    await fireEvent.click(symbolEl);
     expect(handler).toHaveBeenCalledTimes(1);
     expect(handler.mock.calls[0][0].token).toBe("x");
   });
@@ -30,25 +31,25 @@ describe("VoxCodeEditor", () => {
       completionProvider: provider,
     });
 
-    const textarea = container.querySelector("textarea");
-    expect(textarea).not.toBeNull();
-    textarea.focus();
-    textarea.setSelectionRange(2, 2);
+    const editor = container.querySelector(".vx-editor__surface");
+    expect(editor).not.toBeNull();
 
-    await fireEvent.keyDown(textarea, { key: " ", ctrlKey: true });
+    editor.focus();
+    restoreSelectionWithin(editor, "ma", 2, 2);
+    await fireEvent.keyDown(editor, { key: " ", ctrlKey: true });
 
     await waitFor(() => {
       expect(screen.getByTestId("completion-list")).toBeInTheDocument();
     });
 
-    await fireEvent.keyDown(textarea, { key: "Enter" });
+    await fireEvent.keyDown(editor, { key: "Enter" });
 
     await waitFor(() => {
-      expect(textarea.value).toBe("map");
+      expect(readEditableText(editor)).toBe("map");
     });
   });
 
-  it("marks diagnostic lines in overlay", () => {
+  it("marks diagnostic lines in the editor surface", () => {
     const { container } = render(VoxCodeEditor, {
       value: "a = 1\nb = 2",
       symbols: {},
