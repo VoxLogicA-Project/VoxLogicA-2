@@ -156,7 +156,7 @@ describe("StartTab", () => {
     expect(editorSymbol).not.toBeNull();
   });
 
-  it("shows the live operations log inline when toggled open", async () => {
+  it("shows the live operations log in the right-side operations pane by default", async () => {
     getProgramSymbolsMock.mockResolvedValue({
       available: true,
       symbol_table: { x: "node-x" },
@@ -180,13 +180,8 @@ describe("StartTab", () => {
       source: "start-tab",
     });
 
-    const toggle = Array.from(container.querySelectorAll("button")).find((button) =>
-      String(button.textContent || "").includes("Operations"),
-    );
-    expect(toggle).not.toBeNull();
-    await fireEvent.click(toggle);
-
     await waitFor(() => {
+      expect(container.querySelector(".start-prime-operations")).not.toBeNull();
       expect(container.textContent).toContain("Live now");
       expect(container.textContent).toContain("Resolving x /");
     });
@@ -204,12 +199,6 @@ describe("StartTab", () => {
       expect(getProgramSymbolsMock).toHaveBeenCalled();
     });
 
-    const toggle = Array.from(container.querySelectorAll("button")).find((button) =>
-      String(button.textContent || "").includes("Operations"),
-    );
-    expect(toggle).not.toBeNull();
-    await fireEvent.click(toggle);
-
     const infoButton = container.querySelector('.start-operations-info[aria-label="Explain operations labels"]');
     expect(infoButton).not.toBeNull();
     await fireEvent.click(infoButton);
@@ -218,6 +207,46 @@ describe("StartTab", () => {
       expect(container.textContent).toContain("What these labels mean");
       expect(container.textContent).toContain("Sent HTTP request");
       expect(container.textContent).toContain("Session only");
+    });
+  });
+
+  it("toggles code, results, and operations panes independently", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { x: "node-x" },
+      diagnostics: [],
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const buttons = Array.from(container.querySelectorAll("button"));
+    const codeToggle = buttons.find((button) => String(button.textContent || "").trim() === "Code");
+    const resultsToggle = buttons.find((button) => String(button.textContent || "").trim() === "Results");
+    const operationsToggle = buttons.find((button) => String(button.textContent || "").includes("Operations"));
+
+    expect(codeToggle).not.toBeNull();
+    expect(resultsToggle).not.toBeNull();
+    expect(operationsToggle).not.toBeNull();
+    expect(container.querySelector(".start-prime-editor")).not.toBeNull();
+    expect(container.querySelector(".start-prime-results")).not.toBeNull();
+    expect(container.querySelector(".start-prime-operations")).not.toBeNull();
+
+    await fireEvent.click(codeToggle);
+    await waitFor(() => {
+      expect(container.querySelector(".start-prime-editor")).toBeNull();
+    });
+
+    await fireEvent.click(resultsToggle);
+    await waitFor(() => {
+      expect(container.querySelector(".start-prime-results")).toBeNull();
+    });
+
+    await fireEvent.click(operationsToggle);
+    await waitFor(() => {
+      expect(container.querySelector(".start-prime-operations")).toBeNull();
     });
   });
 
@@ -1722,13 +1751,12 @@ describe("StartTab", () => {
     expect(runButton).not.toBeNull();
     await fireEvent.click(runButton);
 
+    let outerThird;
     await waitFor(() => {
-      expect(container.textContent).toContain("collection");
+      const collectionButtons = Array.from(container.querySelectorAll(".start-prime-results .start-collection-item"));
+      outerThird = collectionButtons.find((button) => (button.textContent || "").includes("[2]"));
+      expect(outerThird).not.toBeUndefined();
     });
-
-    const collectionButtons = Array.from(container.querySelectorAll(".start-collection-item"));
-    const outerThird = collectionButtons.find((button) => (button.textContent || "").includes("[2]"));
-    expect(outerThird).not.toBeUndefined();
     await fireEvent.click(outerThird);
 
     await waitFor(() => {

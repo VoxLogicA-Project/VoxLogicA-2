@@ -766,6 +766,14 @@ body {
   height: 100%;
 }
 
+.start-prime-grid.is-code-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.start-prime-grid.is-observation-hidden {
+  grid-template-columns: minmax(320px, var(--start-editor-width, 48%)) minmax(320px, 1fr);
+}
+
 .start-prime-grid.is-resizing {
   cursor: col-resize;
   user-select: none;
@@ -815,6 +823,42 @@ body {
 
 .start-prime-visual {
   grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.start-prime-stage {
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.42rem;
+}
+
+.start-prime-stage.has-operations {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+}
+
+.start-prime-stage.is-operations-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.start-prime-results,
+.start-prime-operations {
+  min-height: 0;
+  height: 100%;
+  display: grid;
+}
+
+.start-prime-empty-state {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgba(177, 192, 218, 0.72);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(251, 253, 255, 0.94), rgba(241, 246, 252, 0.92));
+  color: #6b7d99;
+  font-size: 0.82rem;
+  text-align: center;
+  padding: 1rem;
 }
 
 .start-prime-splitter {
@@ -1658,6 +1702,7 @@ body {
   align-content: start;
 }
 
+.start-pane-toggle,
 .start-operations-toggle {
   display: inline-flex;
   align-items: center;
@@ -1665,6 +1710,7 @@ body {
   min-width: 0;
 }
 
+.start-pane-toggle.is-open,
 .start-operations-toggle.is-open {
   border-color: rgba(74, 118, 255, 0.42);
   color: #2f518b;
@@ -1697,6 +1743,13 @@ body {
     0 16px 34px rgba(28, 45, 77, 0.08);
   display: grid;
   gap: 0.72rem;
+}
+
+.start-prime-operations .start-operations-panel {
+  min-height: 0;
+  height: 100%;
+  align-content: start;
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .start-operations-panel-head {
@@ -1791,10 +1844,21 @@ body {
   gap: 0.72rem;
 }
 
+.start-prime-operations .start-operations-panel-grid {
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+}
+
 .start-operations-section {
   display: grid;
   gap: 0.48rem;
   min-width: 0;
+}
+
+.start-prime-operations .start-operations-section {
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .start-operations-section-head {
@@ -1810,6 +1874,10 @@ body {
   max-height: 12rem;
   overflow: auto;
   padding-right: 0.18rem;
+}
+
+.start-prime-operations .start-operations-list {
+  max-height: none;
 }
 
 .start-operations-item {
@@ -1915,9 +1983,10 @@ body {
 
 .start-prime-action-row {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   gap: 0.42rem;
+  flex-wrap: wrap;
 }
 
 .start-prime-action-row .start-run-state,
@@ -2819,6 +2888,10 @@ body {
 
   .start-prime-splitter {
     display: none;
+  }
+
+  .start-prime-stage.has-operations {
+    grid-template-columns: 1fr;
   }
 
   .start-collection-shell,

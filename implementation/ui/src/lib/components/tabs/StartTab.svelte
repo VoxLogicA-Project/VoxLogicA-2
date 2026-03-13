@@ -96,7 +96,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   let editorSymbolTypes = {};
   let selectedVisualSymbols = [];
   let viewerSupportsMultiValue = false;
-  let showOperationsPanel = false;
+  let showCodePanel = true;
+  let showResultsPanel = true;
+  let showOperationsPanel = true;
   let showOperationsHelp = false;
   let viewerRecords = [];
   let viewerMode = "empty";
@@ -3535,116 +3537,219 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 <section class={`panel ${active ? "active" : ""}`} id="tab-start">
   <article class="card start-prime-shell">
     <div
-      class={`start-prime-grid ${splitDragActive ? "is-resizing" : ""}`.trim()}
+      class={`start-prime-grid ${splitDragActive ? "is-resizing" : ""} ${showCodePanel ? "" : "is-code-hidden"} ${showCodePanel && !showResultsPanel && !showOperationsPanel ? "is-observation-hidden" : ""}`.trim()}
       bind:this={startPrimeGridEl}
       style={`--start-editor-width:${(splitRatio * 100).toFixed(1)}%`}
     >
-      <section class="start-prime-editor">
-        <div class="start-prime-editor-frame">
-          <VoxCodeEditor
-            ariaLabel="Start tab code editor"
-            bind:value={programText}
-            symbols={symbolTable}
-            symbolStatuses={symbolStatuses}
-            selectedSymbols={selectedVisualSymbols}
-            symbolTypes={editorSymbolTypes}
-            diagnostics={symbolDiagnostics}
-            autocompleteEnabled={true}
-            completionProvider={provideEditorCompletions}
-            completionBuiltins={COMPLETION_BUILTINS}
-            on:change={handleEditorChange}
-            on:symbolclick={handleEditorSymbolClick}
-          />
-        </div>
-      </section>
+      {#if showCodePanel}
+        <section class="start-prime-editor">
+          <div class="start-prime-editor-frame">
+            <VoxCodeEditor
+              ariaLabel="Start tab code editor"
+              bind:value={programText}
+              symbols={symbolTable}
+              symbolStatuses={symbolStatuses}
+              selectedSymbols={selectedVisualSymbols}
+              symbolTypes={editorSymbolTypes}
+              diagnostics={symbolDiagnostics}
+              autocompleteEnabled={true}
+              completionProvider={provideEditorCompletions}
+              completionBuiltins={COMPLETION_BUILTINS}
+              on:change={handleEditorChange}
+              on:symbolclick={handleEditorSymbolClick}
+            />
+          </div>
+        </section>
+      {/if}
 
-      <button
-        class="start-prime-splitter"
-        type="button"
-        aria-label="Resize editor and viewer panels"
-        on:pointerdown={handleSplitPointerDown}
-        on:keydown={handleSplitKeyDown}
-      >
-        <span></span>
-      </button>
+      {#if showCodePanel && (showResultsPanel || showOperationsPanel)}
+        <button
+          class="start-prime-splitter"
+          type="button"
+          aria-label="Resize code and observation panels"
+          on:pointerdown={handleSplitPointerDown}
+          on:keydown={handleSplitKeyDown}
+        >
+          <span></span>
+        </button>
+      {/if}
 
       <section class="start-prime-visual">
-        <div class="start-viewer-wrap start-prime-viewer-wrap">
-          <div class="start-pure-viewer">
-            {#if viewerMode === "error"}
-              <div class="viewer-error">{viewerErrorMessage || "Unable to visualize value."}</div>
-            {:else if viewerMode === "loading"}
-              <div class="start-viewer-message">{viewerMessage || "Computing..."}</div>
-            {:else if viewerMode === "value" && viewerRecords.length}
-              <div
-                class={`start-value-grid ${viewerRecords.length > 1 ? "is-multi" : "is-single"} ${maximizedViewerIndex >= 0 ? "has-maximized" : ""}`.trim()}
-              >
-                {#each viewerRecords as record, index (`${record?.node_id || "value"}-${index}`)}
-                  {#if maximizedViewerIndex < 0 || maximizedViewerIndex === index}
-                    {@const descriptor = recordDescriptor(record)}
-                    <article
-                      class={`start-value-card ${["integer", "number", "boolean", "null", "string", "bytes"].includes(recordType(record)) ? "is-centered-value" : ""} ${maximizedViewerIndex === index ? "is-maximized" : ""} is-${recordCardState(record, index)} ${recordJustMaterialized(record) ? "is-just-materialized" : ""}`.trim()}
-                      title={`${recordLabel(record, index)} (${typeLabelFromDescriptor(descriptor)})`}
+        <div class={`start-prime-stage ${showOperationsPanel ? "has-operations" : ""} ${!showResultsPanel && showOperationsPanel ? "is-operations-only" : ""}`.trim()}>
+          {#if showResultsPanel}
+            <div class="start-prime-results">
+              <div class="start-viewer-wrap start-prime-viewer-wrap">
+                <div class="start-pure-viewer">
+                  {#if viewerMode === "error"}
+                    <div class="viewer-error">{viewerErrorMessage || "Unable to visualize value."}</div>
+                  {:else if viewerMode === "loading"}
+                    <div class="start-viewer-message">{viewerMessage || "Computing..."}</div>
+                  {:else if viewerMode === "value" && viewerRecords.length}
+                    <div
+                      class={`start-value-grid ${viewerRecords.length > 1 ? "is-multi" : "is-single"} ${maximizedViewerIndex >= 0 ? "has-maximized" : ""}`.trim()}
                     >
-                      <header class="start-value-card-head">
-                        {#if viewerRecords.length > 1 || maximizedViewerIndex === index}
-                          <span class="start-value-card-label">{recordLabel(record, index)}</span>
-                        {:else}
-                          <span class="start-value-card-label"></span>
+                      {#each viewerRecords as record, index (`${record?.node_id || "value"}-${index}`)}
+                        {#if maximizedViewerIndex < 0 || maximizedViewerIndex === index}
+                          {@const descriptor = recordDescriptor(record)}
+                          <article
+                            class={`start-value-card ${["integer", "number", "boolean", "null", "string", "bytes"].includes(recordType(record)) ? "is-centered-value" : ""} ${maximizedViewerIndex === index ? "is-maximized" : ""} is-${recordCardState(record, index)} ${recordJustMaterialized(record) ? "is-just-materialized" : ""}`.trim()}
+                            title={`${recordLabel(record, index)} (${typeLabelFromDescriptor(descriptor)})`}
+                          >
+                            <header class="start-value-card-head">
+                              {#if viewerRecords.length > 1 || maximizedViewerIndex === index}
+                                <span class="start-value-card-label">{recordLabel(record, index)}</span>
+                              {:else}
+                                <span class="start-value-card-label"></span>
+                              {/if}
+                              <button
+                                class="btn btn-ghost btn-small start-value-card-expand"
+                                type="button"
+                                on:click={() => toggleMaximizedViewer(index)}
+                              >
+                                {maximizedViewerIndex === index ? "Restore" : "Maximize"}
+                              </button>
+                            </header>
+                            <StartValueCanvas
+                              {record}
+                              label={recordLabel(record, index)}
+                              sourceVariable={sourceVariableForRecord(record, index)}
+                              level={0}
+                              {collectionRecord}
+                              {recordDescriptor}
+                              {recordType}
+                              {recordPath}
+                              {previewText}
+                              {typeLabelFromDescriptor}
+                              {pageForRecord}
+                              {pageErrorForRecord}
+                              {pageLoadingForRecord}
+                              {pagePollingForRecord}
+                              {loadRecordPage}
+                              {collectionItemsForPage}
+                              {collectionSelectionFor}
+                              {setCollectionSelection}
+                              {loadCollectionPrev}
+                              {loadCollectionNext}
+                              {nestedRecordFromItem}
+                              {pathRecordFor}
+                              {pathRecordLoadingFor}
+                              {pathRecordErrorFor}
+                              {pathRecordPollingFor}
+                              {loadPathRecord}
+                              {recordPages}
+                              {recordPagePointers}
+                              {recordPagesLoading}
+                              {recordPagesErrors}
+                              {collectionSelections}
+                              {pathRecords}
+                              {pathRecordsLoading}
+                              {pathRecordsErrors}
+                            />
+                          </article>
                         {/if}
-                        <button
-                          class="btn btn-ghost btn-small start-value-card-expand"
-                          type="button"
-                          on:click={() => toggleMaximizedViewer(index)}
-                        >
-                          {maximizedViewerIndex === index ? "Restore" : "Maximize"}
-                        </button>
-                      </header>
-                      <StartValueCanvas
-                        {record}
-                        label={recordLabel(record, index)}
-                        sourceVariable={sourceVariableForRecord(record, index)}
-                        level={0}
-                        {collectionRecord}
-                        {recordDescriptor}
-                        {recordType}
-                        {recordPath}
-                        {previewText}
-                        {typeLabelFromDescriptor}
-                        {pageForRecord}
-                        {pageErrorForRecord}
-                        {pageLoadingForRecord}
-                        {pagePollingForRecord}
-                        {loadRecordPage}
-                        {collectionItemsForPage}
-                        {collectionSelectionFor}
-                        {setCollectionSelection}
-                        {loadCollectionPrev}
-                        {loadCollectionNext}
-                        {nestedRecordFromItem}
-                        {pathRecordFor}
-                        {pathRecordLoadingFor}
-                        {pathRecordErrorFor}
-                        {pathRecordPollingFor}
-                        {loadPathRecord}
-                        {recordPages}
-                        {recordPagePointers}
-                        {recordPagesLoading}
-                        {recordPagesErrors}
-                        {collectionSelections}
-                        {pathRecords}
-                        {pathRecordsLoading}
-                        {pathRecordsErrors}
-                      />
-                    </article>
+                      {/each}
+                    </div>
+                  {:else}
+                    <div class="start-viewer-message">Run or click a variable</div>
                   {/if}
-                {/each}
+                </div>
               </div>
-            {:else}
-              <div class="start-viewer-message">Run or click a variable</div>
-            {/if}
-          </div>
+            </div>
+          {/if}
 
+          {#if showOperationsPanel}
+            <aside class="start-prime-operations">
+              <section class="start-operations-panel" aria-live="polite">
+                <div class="start-operations-panel-head">
+                  <div class="start-operations-panel-title">
+                    <span class="start-operations-panel-label">Operations</span>
+                    <span class="start-operations-panel-state">
+                      {$ongoingComputeActivity.length ? `${$ongoingComputeActivity.length} live` : "idle"}
+                    </span>
+                  </div>
+                  <div class="start-operations-panel-actions">
+                    <button
+                      class={`btn btn-ghost btn-small start-operations-info ${showOperationsHelp ? "is-open" : ""}`.trim()}
+                      type="button"
+                      aria-expanded={showOperationsHelp}
+                      aria-label="Explain operations labels"
+                      title="Explain operations labels"
+                      on:click={() => {
+                        showOperationsHelp = !showOperationsHelp;
+                      }}
+                    >
+                      i
+                    </button>
+                    <button class="btn btn-ghost btn-small" type="button" on:click={clearComputeActivity}>Clear</button>
+                  </div>
+                </div>
+
+                {#if showOperationsHelp}
+                  <div class="operations-help-card" role="note" aria-label="Operations help">
+                    <div class="operations-help-title">What these labels mean</div>
+                    <div class="operations-help-list">
+                      {#each OPERATIONS_HELP_ROWS as row}
+                        <div class="operations-help-row">
+                          <span class="operations-help-label">{row.label}</span>
+                          <span class="operations-help-detail">{row.detail}</span>
+                        </div>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                <div class="start-operations-panel-grid">
+                  <div class="start-operations-section">
+                    <div class="start-operations-section-head">Live now</div>
+                    {#if !$ongoingComputeActivity.length}
+                      <div class="start-operations-empty">No ongoing work right now.</div>
+                    {:else}
+                      <div class="start-operations-list">
+                        {#each $ongoingComputeActivity as entry (entry.operationKey)}
+                          {@const liveStatus = activeOperationStatus(entry)}
+                          <article class={`start-operations-item is-live is-${liveStatus}`.trim()}>
+                            <div class="start-operations-item-row">
+                              <span class="start-operations-item-summary">{entry.summary}</span>
+                              <span class={`start-operations-item-status is-${liveStatus}`.trim()}>{liveStatus}</span>
+                            </div>
+                            <div class="start-operations-item-meta">
+                              {#if entry.detail}{entry.detail}{:else}{entry.variable ? `${entry.variable} ${entry.path || "/"}`.trim() : entry.path || "-"}{/if}
+                            </div>
+                          </article>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+
+                  <div class="start-operations-section">
+                    <div class="start-operations-section-head">Recent</div>
+                    {#if !$computeActivity.length}
+                      <div class="start-operations-empty">No activity yet.</div>
+                    {:else}
+                      <div class="start-operations-list is-history">
+                        {#each $computeActivity.slice(0, 10) as entry (entry.id)}
+                          {@const historyStatus = activeOperationStatus(entry)}
+                          <article class={`start-operations-item is-history is-${historyStatus}`.trim()}>
+                            <div class="start-operations-item-row">
+                              <span class="start-operations-item-summary">{entry.summary}</span>
+                              <span class="start-operations-item-time">{new Date(entry.ts).toLocaleTimeString()}</span>
+                            </div>
+                            <div class="start-operations-item-meta">
+                              {#if entry.detail}{entry.detail}{:else if entry.variable}{`${entry.variable} ${entry.path || "/"}`.trim()}{:else}{entry.path || entry.type}{/if}
+                            </div>
+                          </article>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+              </section>
+            </aside>
+          {/if}
+
+          {#if !showResultsPanel && !showOperationsPanel}
+            <div class="start-prime-empty-state">Enable Results or Operations to observe the current run.</div>
+          {/if}
         </div>
 
         <div class="start-prime-controls">
@@ -3652,93 +3757,6 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
             <footer class="start-caption">
               <span class="start-caption-main">{captionVariable}</span>
             </footer>
-          {/if}
-          {#if showOperationsPanel}
-            <section class="start-operations-panel" aria-live="polite">
-              <div class="start-operations-panel-head">
-                <div class="start-operations-panel-title">
-                  <span class="start-operations-panel-label">Operations</span>
-                  <span class="start-operations-panel-state">
-                    {$ongoingComputeActivity.length ? `${$ongoingComputeActivity.length} live` : "idle"}
-                  </span>
-                </div>
-                <div class="start-operations-panel-actions">
-                  <button
-                    class={`btn btn-ghost btn-small start-operations-info ${showOperationsHelp ? "is-open" : ""}`.trim()}
-                    type="button"
-                    aria-expanded={showOperationsHelp}
-                    aria-label="Explain operations labels"
-                    title="Explain operations labels"
-                    on:click={() => {
-                      showOperationsHelp = !showOperationsHelp;
-                    }}
-                  >
-                    i
-                  </button>
-                  <button class="btn btn-ghost btn-small" type="button" on:click={clearComputeActivity}>Clear</button>
-                </div>
-              </div>
-
-              {#if showOperationsHelp}
-                <div class="operations-help-card" role="note" aria-label="Operations help">
-                  <div class="operations-help-title">What these labels mean</div>
-                  <div class="operations-help-list">
-                    {#each OPERATIONS_HELP_ROWS as row}
-                      <div class="operations-help-row">
-                        <span class="operations-help-label">{row.label}</span>
-                        <span class="operations-help-detail">{row.detail}</span>
-                      </div>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
-
-              <div class="start-operations-panel-grid">
-                <div class="start-operations-section">
-                  <div class="start-operations-section-head">Live now</div>
-                  {#if !$ongoingComputeActivity.length}
-                    <div class="start-operations-empty">No ongoing work right now.</div>
-                  {:else}
-                    <div class="start-operations-list">
-                      {#each $ongoingComputeActivity as entry (entry.operationKey)}
-                        {@const liveStatus = activeOperationStatus(entry)}
-                        <article class={`start-operations-item is-live is-${liveStatus}`.trim()}>
-                          <div class="start-operations-item-row">
-                            <span class="start-operations-item-summary">{entry.summary}</span>
-                            <span class={`start-operations-item-status is-${liveStatus}`.trim()}>{liveStatus}</span>
-                          </div>
-                          <div class="start-operations-item-meta">
-                            {#if entry.detail}{entry.detail}{:else}{entry.variable ? `${entry.variable} ${entry.path || "/"}`.trim() : entry.path || "-"}{/if}
-                          </div>
-                        </article>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-
-                <div class="start-operations-section">
-                  <div class="start-operations-section-head">Recent</div>
-                  {#if !$computeActivity.length}
-                    <div class="start-operations-empty">No activity yet.</div>
-                  {:else}
-                    <div class="start-operations-list is-history">
-                      {#each $computeActivity.slice(0, 10) as entry (entry.id)}
-                        {@const historyStatus = activeOperationStatus(entry)}
-                        <article class={`start-operations-item is-history is-${historyStatus}`.trim()}>
-                          <div class="start-operations-item-row">
-                            <span class="start-operations-item-summary">{entry.summary}</span>
-                            <span class="start-operations-item-time">{new Date(entry.ts).toLocaleTimeString()}</span>
-                          </div>
-                          <div class="start-operations-item-meta">
-                            {#if entry.detail}{entry.detail}{:else if entry.variable}{`${entry.variable} ${entry.path || "/"}`.trim()}{:else}{entry.path || entry.type}{/if}
-                          </div>
-                        </article>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              </div>
-            </section>
           {/if}
           <div class="start-value-tag-row">
             {#if symbolDiagnostics.length}
@@ -3762,7 +3780,27 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           </div>
           <div class="start-prime-action-row">
             <button
-              class={`btn btn-ghost btn-small start-operations-toggle ${showOperationsPanel ? "is-open" : ""}`.trim()}
+              class={`btn btn-ghost btn-small start-pane-toggle ${showCodePanel ? "is-open" : ""}`.trim()}
+              type="button"
+              aria-pressed={showCodePanel}
+              on:click={() => {
+                showCodePanel = !showCodePanel;
+              }}
+            >
+              <span>Code</span>
+            </button>
+            <button
+              class={`btn btn-ghost btn-small start-pane-toggle ${showResultsPanel ? "is-open" : ""}`.trim()}
+              type="button"
+              aria-pressed={showResultsPanel}
+              on:click={() => {
+                showResultsPanel = !showResultsPanel;
+              }}
+            >
+              <span>Results</span>
+            </button>
+            <button
+              class={`btn btn-ghost btn-small start-pane-toggle start-operations-toggle ${showOperationsPanel ? "is-open" : ""}`.trim()}
               type="button"
               aria-pressed={showOperationsPanel}
               on:click={() => {
