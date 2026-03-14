@@ -71,7 +71,8 @@ body {
 }
 
 .shell {
-  width: min(1600px, calc(100vw - 1.2rem));
+  width: calc(100vw - 1.2rem);
+  max-width: none;
   height: calc(100dvh - 1.2rem);
   margin: 0.6rem auto;
   display: grid;
@@ -759,19 +760,21 @@ body {
 }
 
 .start-prime-grid {
-  display: grid;
-  grid-template-columns: minmax(320px, var(--start-editor-width, 48%)) 12px minmax(320px, 1fr);
+  display: flex;
+  align-items: stretch;
   gap: 0.36rem;
   min-height: 0;
   height: 100%;
+  width: 100%;
+  min-width: 0;
 }
 
 .start-prime-grid.is-code-hidden {
-  grid-template-columns: minmax(0, 1fr);
+  display: block;
 }
 
 .start-prime-grid.is-observation-hidden {
-  grid-template-columns: minmax(320px, var(--start-editor-width, 48%)) minmax(320px, 1fr);
+  gap: 0;
 }
 
 .start-prime-grid.is-resizing {
@@ -792,6 +795,16 @@ body {
   gap: 0.34rem;
   box-shadow: 0 10px 24px rgba(18, 30, 50, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.78);
   transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.start-prime-editor {
+  flex: 0 0 var(--start-editor-width, 48%);
+  min-width: 0;
+}
+
+.start-prime-visual {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .start-prime-editor::before,
@@ -828,17 +841,19 @@ body {
 .start-prime-stage {
   min-height: 0;
   height: 100%;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  display: flex;
+  align-items: stretch;
   gap: 0.42rem;
+  width: 100%;
+  min-width: 0;
 }
 
 .start-prime-stage.has-operations {
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  display: flex;
 }
 
 .start-prime-stage.is-operations-only {
-  grid-template-columns: minmax(0, 1fr);
+  display: block;
 }
 
 .start-prime-results,
@@ -846,6 +861,15 @@ body {
   min-height: 0;
   height: 100%;
   display: grid;
+  min-width: 0;
+}
+
+.start-prime-results {
+  flex: 1.55 1 0;
+}
+
+.start-prime-operations {
+  flex: 1 1 0;
 }
 
 .start-prime-empty-state {
@@ -1407,6 +1431,7 @@ body {
 .start-collection-item--not_loaded .start-collection-item-preview,
 .start-collection-item--queued .start-collection-item-preview,
 .start-collection-item--blocked .start-collection-item-preview,
+.start-collection-item--loading .start-collection-item-preview,
 .start-collection-item--running .start-collection-item-preview,
 .start-collection-item--persisting .start-collection-item-preview {
   background: linear-gradient(90deg, rgba(219, 229, 244, 0.5), rgba(236, 242, 251, 0.9), rgba(219, 229, 244, 0.5));
@@ -1415,6 +1440,7 @@ body {
   border-radius: 6px;
 }
 
+.start-collection-item--loading,
 .start-collection-item--running,
 .start-collection-item--persisting {
   opacity: 0.78;
@@ -1469,6 +1495,7 @@ body {
   background: rgba(210, 247, 230, 0.9);
 }
 
+.start-collection-item-state--loading,
 .start-collection-item-state--running,
 .start-collection-item-state--computing,
 .start-collection-item-state--persisting {
@@ -2880,6 +2907,7 @@ body {
   }
 
   .start-prime-grid {
+    display: grid;
     grid-template-columns: 1fr;
     grid-template-rows: minmax(280px, 1.05fr) minmax(260px, 1fr);
     min-height: auto;
@@ -2891,6 +2919,7 @@ body {
   }
 
   .start-prime-stage.has-operations {
+    display: grid;
     grid-template-columns: 1fr;
   }
 

@@ -151,8 +151,18 @@
     return resolved && typeof resolved === "object" ? resolved : null;
   };
 
+  const itemTargetPath = (item) => String(item?.path || "");
+
+  const itemHasGraphTarget = (item) => {
+    const targetPath = itemTargetPath(item);
+    if (targetPath) return true;
+    const resolved = resolvedItemRecord(item);
+    if (String(resolved?.node_id || "").trim()) return true;
+    return false;
+  };
+
   const displayRecordForItem = (item) => {
-    const itemPath = String(item?.path || "");
+    const itemPath = itemTargetPath(item);
     if (!itemPath) return null;
     const cached = itemPath === selectedPath ? selectedRecordDetail : resolvedItemRecord(item);
     return preferRecord(cached, item);
@@ -167,13 +177,29 @@
   };
 
   const effectiveStateForItem = (item) => {
+    if (!itemHasGraphTarget(item)) return "not_loaded";
     const resolved = displayRecordForItem(item);
+    const targetPath = itemTargetPath(item);
+    const itemDescriptor = effectiveDescriptorForItem(item);
+    if (collectionDescriptor(itemDescriptor)) {
+      const nestedRecord = nestedRecordFromItem(record, item);
+      const nestedPath = recordPath(nestedRecord);
+      const nestedPageReady = Boolean(pageForRecord(nestedRecord, nestedPath));
+      const nestedPageBusy = pageLoadingForRecord(nestedRecord, nestedPath) || pagePollingForRecord(nestedRecord, nestedPath);
+      const targetBusy =
+        Boolean(sourceVariable) &&
+        Boolean(targetPath) &&
+        (pathRecordLoadingFor(sourceVariable, targetPath) || pathRecordPollingFor(sourceVariable, targetPath));
+      if (String(selectedPath || "") === targetPath && (nestedPageBusy || targetBusy)) return "loading";
+      if (nestedPageReady) return "ready";
+    }
     if (resolved) {
       const materialization = String(resolved?.materialization || "").toLowerCase();
       const computeStatus = String(resolved?.compute_status || "").toLowerCase();
       if (materialization === "failed" || computeStatus === "failed" || computeStatus === "killed") return "failed";
       if (concreteDescriptor(resolved?.descriptor)) return "ready";
       if ((materialization === "computed" || materialization === "cached") && resolved?.descriptor) return "ready";
+      if (String(selectedPath || "") === targetPath && ["queued", "running", "persisting"].includes(computeStatus)) return "loading";
       if (["queued", "running", "persisting"].includes(computeStatus)) return computeStatus;
       if (["pending", "missing"].includes(materialization)) {
         return normalizeCollectionItemState(item?.state || item?.status, effectiveDescriptorForItem(item));
@@ -210,22 +236,25 @@
   $: loading = (recordPagesLoading, isCollection ? pageLoadingForRecord(record, path) : false);
   $: error = (recordPagesErrors, isCollection ? pageErrorForRecord(record, path) : "");
   $: items = isCollection ? collectionItemsForPage(page, voxType) : [];
+  $: visibleItems = items.filter((item) => itemHasGraphTarget(item));
   $: selection = (
     collectionSelections,
     isCollection ? collectionSelectionFor(record, path) : { selectedIndex: 0, selectedAbsoluteIndex: 0, selectedPath: "" }
   );
 
   $: selectedIndex = (() => {
-    if (!items.length) return 0;
-    const byAbsolute = Math.max(0, Number(selection?.selectedAbsoluteIndex || 0)) - Math.max(0, Number(page?.offset || 0));
-    if (byAbsolute >= 0 && byAbsolute < items.length) return byAbsolute;
+    if (!visibleItems.length) return 0;
     const selectedPath = String(selection?.selectedPath || "");
-    const byPath = selectedPath ? items.findIndex((item) => String(item?.path || "") === selectedPath) : -1;
+    const byPath = selectedPath ? visibleItems.findIndex((item) => String(item?.path || "") === selectedPath) : -1;
     if (byPath >= 0) return byPath;
+    const firstReady = visibleItems.findIndex((item) => itemStateClass(item) === "ready");
+    if (firstReady >= 0) return firstReady;
+    const byAbsolute = Math.max(0, Number(selection?.selectedAbsoluteIndex || 0)) - Math.max(0, Number(page?.offset || 0));
+    if (byAbsolute >= 0 && byAbsolute < visibleItems.length) return byAbsolute;
     const byIndex = Math.max(0, Number(selection?.selectedIndex || 0));
-    return byIndex < items.length ? byIndex : 0;
+    return byIndex < visibleItems.length ? byIndex : 0;
   })();
-  $: selectedItem = items.length ? items[selectedIndex] : null;
+  $: selectedItem = visibleItems.length ? visibleItems[selectedIndex] : null;
   $: selectedPath = String(selectedItem?.path || "");
   $: selectedRecordDetail = (pathRecords, selectedPath ? pathRecordFor(sourceVariable, selectedPath) : null);
   $: selectedDetailLoading = (pathRecordsLoading, selectedPath ? pathRecordLoadingFor(sourceVariable, selectedPath) : false);
@@ -239,8 +268,10 @@
         ? selectedItem.descriptor
         : { vox_type: "unavailable", summary: {} };
 
-  $: if (isCollection && items.length) {
-    const nextPath = String(items[selectedIndex]?.path || "");
+  $: selectedItemState = selectedItem ? itemStateClass(selectedItem) : "";
+
+  $: if (isCollection && visibleItems.length) {
+    const nextPath = String(visibleItems[selectedIndex]?.path || "");
     if (String(selection?.selectedPath || "") !== nextPath || Number(selection?.selectedIndex || 0) !== selectedIndex) {
       setCollectionSelection(record, path, {
         selectedIndex,
@@ -398,9 +429,9 @@
           </div>
         {:else if error}
           <div class="viewer-error">{error}</div>
-        {:else if items.length}
+        {:else if visibleItems.length}
           <div class="start-collection-list">
-            {#each items as item, itemIndex}
+            {#each visibleItems as item, itemIndex}
               {@const itemDescriptor = effectiveDescriptorForItem(item)}
               {@const itemState = itemStateClass(item)}
               {@const itemLabel = itemStateLabel(item)}
@@ -449,7 +480,10 @@
       <section class="start-collection-stage">
         {#if selectedItem}
           <header class="start-collection-stage-head">
-            <span class="start-collection-stage-label">{selectedItem?.label || label || "value"}</span>
+            <div class="start-collection-stage-meta">
+              <span class="start-collection-stage-label">{selectedItem?.label || label || "value"}</span>
+              <span class={`start-collection-stage-status start-collection-stage-status--${selectedItemState}`.trim()}>{selectedItemState.replaceAll("_", " ") || "pending"}</span>
+            </div>
             <button class="btn btn-ghost btn-small start-collection-stage-expand" type="button" on:click={() => (stageExpanded = !stageExpanded)}>
               {stageExpanded ? "Restore" : "Maximize"}
             </button>
@@ -518,6 +552,49 @@
 </div>
 
 <style>
+  .start-collection-stage-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+
+  .start-collection-stage-status {
+    flex: 0 0 auto;
+    padding: 0.16rem 0.46rem;
+    border-radius: 999px;
+    border: 1px solid rgba(171, 187, 213, 0.72);
+    background: rgba(248, 250, 253, 0.92);
+    color: #6b7d99;
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .start-collection-stage-status--ready {
+    color: #1d7b55;
+    border-color: rgba(91, 201, 146, 0.58);
+    background: rgba(228, 248, 239, 0.92);
+  }
+
+  .start-collection-stage-status--loading,
+  .start-collection-stage-status--running,
+  .start-collection-stage-status--queued,
+  .start-collection-stage-status--persisting,
+  .start-collection-stage-status--not_loaded,
+  .start-collection-stage-status--blocked {
+    color: #b47a2e;
+    border-color: rgba(236, 177, 92, 0.62);
+    background: rgba(251, 240, 222, 0.92);
+  }
+
+  .start-collection-stage-status--failed {
+    color: #8b3040;
+    border-color: rgba(205, 94, 111, 0.36);
+    background: rgba(255, 241, 244, 0.96);
+  }
+
   .start-overlay-image-shell {
     position: relative;
     width: min(100%, 900px);

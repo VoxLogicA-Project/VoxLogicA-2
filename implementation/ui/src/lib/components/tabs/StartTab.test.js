@@ -250,6 +250,273 @@ describe("StartTab", () => {
     });
   });
 
+  it("marks a selected collection as loading while its nested page is still hydrating", async () => {
+    const nestedPageDeferred = deferred();
+
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-xs",
+      path: "/",
+      descriptor: {
+        vox_type: "sequence",
+        format_version: "voxpod/1",
+        summary: { length: 3 },
+        navigation: {
+          path: "/",
+          pageable: true,
+          can_descend: true,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    });
+    resolvePlaygroundValuePageMock.mockImplementation(({ path = "", offset = 0, limit = 64 }) => {
+      if (!path || path === "/") {
+        return Promise.resolve({
+          materialization: "computed",
+          compute_status: "completed",
+          path: "/",
+          page: {
+            offset,
+            limit,
+            has_more: false,
+            next_offset: null,
+            total: 3,
+            items: [
+              {
+                index: 0,
+                label: "[0]",
+                path: "/0",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "sequence",
+                  format_version: "voxpod/1",
+                  summary: { length: 11 },
+                  navigation: { path: "/0", pageable: true, can_descend: true, default_page_size: 64, max_page_size: 512 },
+                },
+              },
+              {
+                index: 1,
+                label: "[1]",
+                path: "/1",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "sequence",
+                  format_version: "voxpod/1",
+                  summary: { length: 11 },
+                  navigation: { path: "/1", pageable: true, can_descend: true, default_page_size: 64, max_page_size: 512 },
+                },
+              },
+              {
+                index: 2,
+                label: "[2]",
+                path: "/2",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "sequence",
+                  format_version: "voxpod/1",
+                  summary: { length: 11 },
+                  navigation: { path: "/2", pageable: true, can_descend: true, default_page_size: 64, max_page_size: 512 },
+                },
+              },
+            ],
+          },
+        });
+      }
+      if (path === "/2") {
+        return nestedPageDeferred.promise;
+      }
+      return Promise.resolve({
+        materialization: "computed",
+        compute_status: "completed",
+        path,
+        page: {
+          offset,
+          limit,
+          has_more: false,
+          next_offset: null,
+          total: 1,
+          items: [
+            {
+              index: 0,
+              label: "[0]",
+              path: `${path}/0`,
+              status: "materialized",
+              descriptor: {
+                vox_type: "integer",
+                format_version: "voxpod/1",
+                summary: { value: 1 },
+                navigation: { path: `${path}/0`, pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
+              },
+            },
+          ],
+        },
+      });
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    let targetButton;
+    await waitFor(() => {
+      const buttons = Array.from(container.querySelectorAll(".start-prime-results .start-collection-item"));
+      targetButton = buttons.find((button) => (button.textContent || "").includes("[2]"));
+      expect(targetButton).not.toBeUndefined();
+    });
+    await fireEvent.click(targetButton);
+
+    await waitFor(() => {
+      const selectedBadge = container.querySelector(".start-prime-results .start-collection-item.is-selected .start-collection-item-state");
+      const stageBadge = container.querySelector(".start-prime-results .start-collection-stage-status");
+      expect(selectedBadge?.textContent?.trim().toLowerCase()).toBe("loading");
+      expect(stageBadge?.textContent?.trim().toLowerCase()).toBe("loading");
+    });
+
+    nestedPageDeferred.resolve({
+      materialization: "computed",
+      compute_status: "completed",
+      path: "/2",
+      page: {
+        offset: 0,
+        limit: 18,
+        has_more: false,
+        next_offset: null,
+        total: 1,
+        items: [
+          {
+            index: 0,
+            label: "[0]",
+            path: "/2/0",
+            status: "materialized",
+            descriptor: {
+              vox_type: "integer",
+              format_version: "voxpod/1",
+              summary: { value: 42 },
+              navigation: { path: "/2/0", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  it("keeps a selected collection in loading state when a cached nested page is still polling", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-xs",
+      path: "/",
+      descriptor: {
+        vox_type: "sequence",
+        format_version: "voxpod/1",
+        summary: { length: 2 },
+        navigation: {
+          path: "/",
+          pageable: true,
+          can_descend: true,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    });
+    resolvePlaygroundValuePageMock.mockImplementation(async ({ path = "", offset = 0, limit = 64 }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          path: "/",
+          page: {
+            offset,
+            limit,
+            has_more: false,
+            next_offset: null,
+            total: 2,
+            items: [
+              {
+                index: 0,
+                label: "[0]",
+                path: "/0",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "sequence",
+                  format_version: "voxpod/1",
+                  summary: { length: 11 },
+                  navigation: { path: "/0", pageable: true, can_descend: true, default_page_size: 64, max_page_size: 512 },
+                },
+              },
+              {
+                index: 1,
+                label: "[1]",
+                path: "/1",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "sequence",
+                  format_version: "voxpod/1",
+                  summary: { length: 11 },
+                  navigation: { path: "/1", pageable: true, can_descend: true, default_page_size: 64, max_page_size: 512 },
+                },
+              },
+            ],
+          },
+        };
+      }
+      return {
+        materialization: "pending",
+        compute_status: "running",
+        path,
+        page: {
+          offset,
+          limit,
+          has_more: false,
+          next_offset: null,
+          total: 0,
+          items: [],
+        },
+      };
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    let targetButton;
+    await waitFor(() => {
+      const buttons = Array.from(container.querySelectorAll(".start-prime-results .start-collection-item"));
+      targetButton = buttons.find((button) => (button.textContent || "").includes("[1]"));
+      expect(targetButton).not.toBeUndefined();
+    });
+    await fireEvent.click(targetButton);
+
+    await waitFor(() => {
+      const selectedBadge = container.querySelector(".start-prime-results .start-collection-item.is-selected .start-collection-item-state");
+      const stageBadge = container.querySelector(".start-prime-results .start-collection-stage-status");
+      expect(selectedBadge?.textContent?.trim().toLowerCase()).toBe("loading");
+      expect(stageBadge?.textContent?.trim().toLowerCase()).toBe("loading");
+    });
+  });
+
   it("surfaces concrete execution error details instead of generic failure counts", async () => {
     getProgramSymbolsMock.mockResolvedValue({
       available: true,
