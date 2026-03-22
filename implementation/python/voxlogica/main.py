@@ -803,6 +803,13 @@ app = typer.Typer(
     add_completion=False,
 )
 
+mcp_app = typer.Typer(
+    help="Model Context Protocol servers for VoxLogicA",
+    add_completion=False,
+)
+
+app.add_typer(mcp_app, name="mcp")
+
 
 @app.command()
 def version() -> None:
@@ -3304,6 +3311,32 @@ def dev(
 
     if exit_code != 0:
         raise typer.Exit(code=exit_code)
+
+
+@mcp_app.command("ui-inspector")
+def mcp_ui_inspector(
+    url: Optional[str] = typer.Option(None, "--url", help="Initial page URL for the inspector browser."),
+    headed: bool = typer.Option(False, "--headed", help="Run the browser with a visible window."),
+    browser_channel: Optional[str] = typer.Option(
+        None,
+        "--browser-channel",
+        help="Optional Playwright browser channel, for example 'chrome'.",
+    ),
+    viewport_width: int = typer.Option(1440, help="Browser viewport width"),
+    viewport_height: int = typer.Option(900, help="Browser viewport height"),
+) -> None:
+    """Start the Playwright-backed UI inspector MCP server over stdio."""
+
+    setup_logging(False, False)
+    from voxlogica.mcp_server import run_ui_inspector_mcp_server
+
+    run_ui_inspector_mcp_server(
+        start_url=url,
+        headless=not headed,
+        browser_channel=browser_channel,
+        viewport_width=viewport_width,
+        viewport_height=viewport_height,
+    )
 
 
 @app.command()

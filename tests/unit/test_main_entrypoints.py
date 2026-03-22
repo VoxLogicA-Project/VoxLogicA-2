@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 import typer
+from voxlogica.mcp_server import UIInspectorSession
 
 from voxlogica.features import OperationResult
 from voxlogica.lazy.hash import hash_sequence_item
@@ -141,6 +142,212 @@ def test_dev_supervisor_prefixes_repo_pythonpath(monkeypatch: pytest.MonkeyPatch
     pythonpath = backend_env.get("PYTHONPATH", "")
     assert pythonpath
     assert pythonpath.split(os.pathsep)[0] == expected_prefix
+
+
+@pytest.mark.unit
+def test_mcp_ui_inspector_command_delegates(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(main_mod, "setup_logging", lambda debug, verbose=False: None)
+
+    def _fake_run_ui_inspector_mcp_server(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "voxlogica.mcp_server.run_ui_inspector_mcp_server",
+        _fake_run_ui_inspector_mcp_server,
+    )
+
+    main_mod.mcp_ui_inspector(
+        url="http://127.0.0.1:5173/",
+        headed=True,
+        browser_channel="chrome",
+        viewport_width=1280,
+        viewport_height=720,
+    )
+
+    assert captured == {
+        "start_url": "http://127.0.0.1:5173/",
+        "headless": False,
+        "browser_channel": "chrome",
+        "viewport_width": 1280,
+        "viewport_height": 720,
+    }
+
+
+@pytest.mark.unit
+def test_ui_inspector_session_reports_clickables():
+    async def _scenario() -> None:
+        session = UIInspectorSession(headless=True)
+        html = (
+            "data:text/html,"
+            "<html><body>"
+            "<button data-testid='run-button' onclick=\"document.body.dataset.clicked='yes'\">Run</button>"
+            "<input id='query' type='text' value='' />"
+            "<select id='mode'><option value='a'>A</option><option value='b'>B</option></select>"
+            "</body></html>"
+        )
+        try:
+            await session.open_page(url=html)
+            payload = await session.inspect_page()
+            selectors = {item["selector"]: item for item in payload["interactive_elements"]}
+            assert 'button[data-testid="run-button"]' in selectors
+            assert selectors['button[data-testid="run-button"]']["actions"] == ["click"]
+            assert "#query" in selectors
+            assert "type" in selectors["#query"]["actions"]
+            assert "#mode" in selectors
+            assert "select" in selectors["#mode"]["actions"]
+
+            await session.click_element(selector='button[data-testid="run-button"]')
+            clicked = await session.inspect_page(root_selector="body")
+            assert 'data-clicked="yes"' in clicked["dom_excerpt"]
+        finally:
+            await session.close_browser()
+
+    asyncio.run(_scenario())
+
+
+@pytest.mark.unit
+def test_ui_inspector_session_reads_contenteditable_text():
+    async def _scenario() -> None:
+        session = UIInspectorSession(headless=True)
+        html = (
+            "data:text/html,"
+            "<html><body>"
+            "<div role='textbox' aria-label='Start tab code editor' contenteditable='true'>"
+            "line 1\nline 2\nflair_images = map(read_image, flair_paths)"
+            "</div>"
+            "</body></html>"
+        )
+        try:
+            await session.open_page(url=html)
+            payload = await session.read_element_text(selector='[aria-label="Start tab code editor"]')
+            assert payload["tag"] == "div"
+            assert payload["role"] == "textbox"
+            assert payload["contenteditable"] == "true"
+            assert "flair_images = map(read_image, flair_paths)" in payload["text"]
+        finally:
+            await session.close_browser()
+
+    asyncio.run(_scenario())
+
+
+@pytest.mark.unit
+def test_ui_inspector_session_bridge_backed_methods(monkeypatch: pytest.MonkeyPatch):
+    async def _scenario() -> None:
+        session = UIInspectorSession(headless=True)
+
+        async def _fake_call_bridge(method_name: str, *args):
+            if method_name == "getAppState":
+                return {"activeTab": "start", "start": {"primaryVariable": "flair_images"}}
+            if method_name == "selectTab":
+                return {"ok": True, "state": {"activeTab": args[0]}}
+            if method_name == "getProgram":
+                return "flair_images = map(read_image, flair_paths)"
+            if method_name == "loadProgram":
+                return {"ok": True, "loaded": args[0], "runAfterLoad": args[1]}
+            if method_name == "selectStartSymbol":
+                return {"ok": True, "symbol": args[0]}
+            raise AssertionError(f"Unexpected bridge method: {method_name}")
+
+        monkeypatch.setattr(session, "_call_bridge", _fake_call_bridge)
+
+        app_state = await session.inspect_app_state()
+        assert app_state["activeTab"] == "start"
+        assert app_state["start"]["primaryVariable"] == "flair_images"
+
+        selected = await session.select_app_tab("graph")
+        assert selected == {"ok": True, "state": {"activeTab": "graph"}}
+
+        program = await session.read_program()
+        assert program["text"] == "flair_images = map(read_image, flair_paths)"
+        assert program["length"] == len(program["text"])
+
+        loaded = await session.set_program("x = 1", run_after_load=True)
+        assert loaded == {"ok": True, "loaded": "x = 1", "runAfterLoad": True}
+
+        clicked = await session.click_variable("flair_images")
+        assert clicked == {"ok": True, "symbol": "flair_images"}
+
+    asyncio.run(_scenario())
+
+
+@pytest.mark.unit
+def test_ui_inspector_session_runtime_methods(monkeypatch: pytest.MonkeyPatch):
+    async def _scenario() -> None:
+        session = UIInspectorSession(headless=True)
+
+        async def _fake_call_bridge(method_name: str, *args):
+            assert method_name == "getAppState"
+            assert args == ()
+            return {"activeTab": "results"}
+
+        async def _fake_read_program_text() -> str:
+            return "flair_images = map(read_image, flair_paths)"
+
+        async def _fake_fetch_backend_json(path: str, *, method: str = "GET", body=None):
+            if path == "/api/v1/playground/jobs":
+                assert method == "GET"
+                return {"ok": True, "payload": [{"job_id": "job-1", "status": "queued"}]}
+            if path == "/api/v1/playground/symbols":
+                assert method == "POST"
+                assert body == {"program": "flair_images = map(read_image, flair_paths)"}
+                return {"ok": True, "payload": {"symbols": ["flair_images"]}}
+            if path == "/api/v1/playground/graph":
+                assert method == "POST"
+                assert body == {"program": "flair_images = map(read_image, flair_paths)"}
+                return {"ok": True, "payload": {"nodes": [{"id": "n1"}]}}
+            if path == "/api/v1/playground/value":
+                assert method == "POST"
+                assert body == {
+                    "program": "flair_images = map(read_image, flair_paths)",
+                    "execution_strategy": "dask",
+                    "variable": "flair_images",
+                    "path": "/",
+                    "enqueue": True,
+                }
+                return {"ok": True, "payload": {"compute_status": "queued"}}
+            if path == "/api/v1/playground/value/page":
+                assert method == "POST"
+                assert body == {
+                    "program": "flair_images = map(read_image, flair_paths)",
+                    "execution_strategy": "dask",
+                    "variable": "flair_images",
+                    "path": "/",
+                    "offset": 5,
+                    "limit": 10,
+                    "enqueue": False,
+                }
+                return {"ok": True, "payload": {"items": []}}
+            raise AssertionError(f"Unexpected backend request: {method} {path} body={body!r}")
+
+        monkeypatch.setattr(session, "_call_bridge", _fake_call_bridge)
+        monkeypatch.setattr(session, "_read_program_text", _fake_read_program_text)
+        monkeypatch.setattr(session, "_fetch_backend_json", _fake_fetch_backend_json)
+
+        jobs = await session.list_playground_jobs()
+        assert jobs["payload"][0]["job_id"] == "job-1"
+
+        symbols = await session.get_program_symbols()
+        assert symbols["payload"]["symbols"] == ["flair_images"]
+
+        graph = await session.get_program_graph()
+        assert graph["payload"]["nodes"][0]["id"] == "n1"
+
+        value = await session.resolve_program_value(variable="flair_images", path="/", enqueue=True)
+        assert value["payload"]["compute_status"] == "queued"
+
+        page = await session.resolve_program_value_page(variable="flair_images", path="/", offset=5, limit=10)
+        assert page["payload"]["items"] == []
+
+        runtime = await session.inspect_runtime_state(include_symbols=True, include_graph=True, include_jobs=True)
+        assert runtime["app"]["activeTab"] == "results"
+        assert runtime["program"]["text"] == "flair_images = map(read_image, flair_paths)"
+        assert runtime["jobs"][0]["status"] == "queued"
+        assert runtime["symbols"]["symbols"] == ["flair_images"]
+        assert runtime["graph"]["nodes"][0]["id"] == "n1"
+
+    asyncio.run(_scenario())
 
 
 @pytest.mark.unit

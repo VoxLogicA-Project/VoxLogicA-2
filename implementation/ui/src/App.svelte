@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { getCapabilities, getVersion, sendClientLogBatch } from "$lib/api/client.js";
   import StartTab from "$lib/components/tabs/StartTab.svelte";
   import ComputeLogTab from "$lib/components/tabs/ComputeLogTab.svelte";
@@ -34,6 +34,8 @@
   let clientLogInFlight = false;
   const clientLogMaxQueue = 300;
   const clientLogBatchSize = 40;
+  const AUTOMATION_BRIDGE_NAME = "__VOXLOGICA_AUTOMATION__";
+  const START_PROGRAM_STORAGE_KEY = "voxlogica.start.program.v1";
 
   const selectTab = (tabId) => {
     activeTab = String(tabId || "start");
@@ -161,6 +163,104 @@
     }
   };
 
+  const getTabSnapshot = () => tabs.map((tab) => ({ ...tab, active: activeTab === tab.id }));
+
+  const getAppStateSnapshot = () => ({
+    activeTab,
+    tabs: getTabSnapshot(),
+    tabsMenuOpen: Boolean(tabsMenuOpen),
+    buildStamp,
+    capabilities: { ...(capabilities || {}) },
+    start: startTabRef && typeof startTabRef.getAutomationState === "function" ? startTabRef.getAutomationState() : null,
+  });
+
+  const selectTabById = (tabId) => {
+    const normalized = String(tabId || "").trim();
+    if (!tabs.some((tab) => tab.id === normalized)) {
+      return {
+        ok: false,
+        error: `Unknown tab: ${normalized || "<empty>"}`,
+        state: getAppStateSnapshot(),
+      };
+    }
+    selectTab(normalized);
+    return {
+      ok: true,
+      state: getAppStateSnapshot(),
+    };
+  };
+
+  const loadProgramInStartTab = async (code, runAfterLoad = false) => {
+    activeTab = "start";
+    tabsMenuOpen = false;
+    if (startTabRef && typeof startTabRef.loadProgram === "function") {
+      await startTabRef.loadProgram(code, runAfterLoad);
+      return {
+        ok: true,
+        state: getAppStateSnapshot(),
+      };
+    }
+    return {
+      ok: false,
+      error: "Start tab is not ready.",
+      state: getAppStateSnapshot(),
+    };
+  };
+
+  const selectStartSymbol = async (token) => {
+    activeTab = "start";
+    tabsMenuOpen = false;
+    if (startTabRef && typeof startTabRef.selectSymbol === "function") {
+      return await startTabRef.selectSymbol(token);
+    }
+    return {
+      ok: false,
+      error: "Start tab is not ready.",
+      state: getAppStateSnapshot(),
+    };
+  };
+
+  const publishAutomationBridge = () => {
+    if (typeof window === "undefined") return;
+    window[AUTOMATION_BRIDGE_NAME] = {
+      version: 1,
+      actionAreas: {
+        browser: ["open_page", "inspect_page", "focus_app", "close_browser"],
+        ui: ["inspect_app_state", "select_app_tab", "click_element", "focus_element", "read_element_text"],
+        program: ["read_program", "set_program", "click_variable"],
+        runtime: [
+          "inspect_runtime_state",
+          "list_playground_jobs",
+          "get_playground_job",
+          "kill_playground_job",
+          "get_program_symbols",
+          "get_program_graph",
+          "resolve_program_value",
+          "resolve_program_value_page",
+        ],
+      },
+      getAppState: () => getAppStateSnapshot(),
+      selectTab: (tabId) => selectTabById(tabId),
+      getProgram: () => {
+        if (startTabRef && typeof startTabRef.getProgramText === "function") {
+          return startTabRef.getProgramText();
+        }
+        return window.localStorage.getItem(START_PROGRAM_STORAGE_KEY) || "";
+      },
+      loadProgram: async (code, runAfterLoad = false) => await loadProgramInStartTab(code, runAfterLoad),
+      selectStartSymbol: async (token) => await selectStartSymbol(token),
+    };
+  };
+
+  const removeAutomationBridge = () => {
+    if (typeof window === "undefined") return;
+    delete window[AUTOMATION_BRIDGE_NAME];
+  };
+
+  $: if (typeof window !== "undefined") {
+    publishAutomationBridge();
+  }
+
   onMount(async () => {
     installClientLogger();
     try {
@@ -174,6 +274,12 @@
     if (import.meta.env.PROD) {
       connectLiveReload();
     }
+
+    publishAutomationBridge();
+  });
+
+  onDestroy(() => {
+    removeAutomationBridge();
   });
 </script>
 

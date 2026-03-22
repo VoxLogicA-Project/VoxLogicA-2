@@ -13,6 +13,8 @@ setup(
         "uvicorn>=0.23.0",
         "typer>=0.9.0",
         "pydantic>=2.0.0",
+        "mcp>=1.26.0",
+        "playwright>=1.58.0",
     ],
     entry_points={
         "console_scripts": [

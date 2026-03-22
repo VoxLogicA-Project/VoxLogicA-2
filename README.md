@@ -37,6 +37,9 @@ python3 bootstrap.py --with-test
 
 # Start modern dev mode (backend + Vite frontend, one command)
 ./voxlogica dev
+
+# Start the UI inspector MCP server for AI/browser debugging
+./voxlogica mcp ui-inspector --url http://127.0.0.1:5173/
 ```
 
 ## Safety Defaults
@@ -158,3 +161,4 @@ For command-specific flags:
 - API usage notes: `doc/user/api-usage.md`
 - Language guide + example gallery: `doc/user/language-gallery.md`
 - Serve studio dashboards: `doc/user/serve-studio.md`
+- VS Code MCP setup for the UI inspector: `doc/user/vscode-mcp-ui-inspector.md`

@@ -3402,24 +3402,39 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     return resolvePrimaryValue({ enqueue: true, path: "" });
   };
 
-  const handleEditorSymbolClick = async (event) => {
-    const token = String(event?.detail?.token || "");
-    if (!token || !symbolTable[token]) return;
+  const activatePrimarySymbol = async (token) => {
+    const symbolName = String(token || "");
+    if (!symbolName || !symbolTable[symbolName]) {
+      return {
+        ok: false,
+        error: `Unknown symbol: ${symbolName || "<empty>"}`,
+      };
+    }
     traceResolve("symbol-click", {
-      token,
+      token: symbolName,
       from: primaryVariable,
       currentStatus: statusValue,
-      knownStatus: normalizeStatus(symbolStatuses?.[token] || "idle"),
+      knownStatus: normalizeStatus(symbolStatuses?.[symbolName] || "idle"),
     });
-    primaryVariable = token;
-    captionVariable = token;
-    selectedVisualSymbols = [token];
+    primaryVariable = symbolName;
+    captionVariable = symbolName;
+    selectedVisualSymbols = [symbolName];
     stopPoll();
     resolveRequestSeq += 1;
     const rendered = renderSelectedRecords();
     if (!rendered) viewer.renderRecord(null);
     currentPath = "";
-    await resolveCurrentPreferCache();
+    const resolution = await resolveCurrentPreferCache();
+    return {
+      ok: true,
+      symbol: symbolName,
+      resolution,
+      state: getAutomationState(),
+    };
+  };
+
+  const handleEditorSymbolClick = async (event) => {
+    await activatePrimarySymbol(String(event?.detail?.token || ""));
   };
 
   const runPrimary = async () => {
@@ -3452,6 +3467,29 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     if (runAfterLoad) {
       await resolvePrimaryValue({ enqueue: true, path: "" });
     }
+  }
+
+  export function getProgramText() {
+    return String(programText || "");
+  }
+
+  export function getAutomationState() {
+    return {
+      primaryVariable: String(primaryVariable || ""),
+      captionVariable: String(captionVariable || ""),
+      statusValue: String(statusValue || "idle"),
+      statusText: String(statusText || ""),
+      currentPath: String(currentPath || "/"),
+      selectedVisualSymbols: Array.isArray(selectedVisualSymbols) ? [...selectedVisualSymbols] : [],
+      symbolTable: { ...(symbolTable || {}) },
+      symbolStatuses: { ...(symbolStatuses || {}) },
+      symbolMaterializations: { ...(symbolMaterializations || {}) },
+      programLength: String(programText || "").length,
+    };
+  }
+
+  export async function selectSymbol(token) {
+    return await activatePrimarySymbol(token);
   }
 
   const handleVisualTagClick = async (symbolName, event) => {
