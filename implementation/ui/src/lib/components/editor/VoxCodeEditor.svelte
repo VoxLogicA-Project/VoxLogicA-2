@@ -1,16 +1,13 @@
 <script>
-  import { afterUpdate, createEventDispatcher, onDestroy, tick } from "svelte";
+  import { afterUpdate, createEventDispatcher, onDestroy } from "svelte";
   import {
     applyCompletion,
     buildDefaultCompletions,
     buildEditorDocument,
-    caretClientRectFromSelection,
     completionContextAt,
     expressionContextAt,
+    extractTokenInfoAt,
     isOperatorToken,
-    readEditableText,
-    restoreSelectionWithin,
-    selectionOffsetsWithin,
     VOX_KEYWORDS,
   } from "$lib/utils/vox-editor.js";
 
@@ -30,38 +27,58 @@
 
   const dispatch = createEventDispatcher();
 
-  let editorEl;
+  let textareaEl;
+  let overlayContentEl;
   let hoverTimer = null;
   let completionTimer = null;
   let completionRequestToken = 0;
   let editorDocument = [];
   let editorText = "";
+  let overlayScrollLeft = 0;
+  let overlayScrollTop = 0;
   let pendingSelection = null;
   let pendingScroll = null;
   let pendingFocus = false;
+  let editorFocused = false;
+  let surfaceCursor = "text";
 
   let suggestions = [];
   let selectedSuggestion = 0;
   let suggestionsOpen = false;
   let completionContext = null;
+  let suggestionInteractionMode = "passive";
   let suggestionsPos = { left: 0, top: 0 };
 
   const currentText = () => editorText;
 
-  const currentSelection = () =>
-    selectionOffsetsWithin(editorEl) || {
-      anchor: currentText().length,
-      focus: currentText().length,
-      start: currentText().length,
-      end: currentText().length,
-      collapsed: true,
+  const currentSelection = () => {
+    if (!textareaEl) {
+      const length = currentText().length;
+      return {
+        anchor: length,
+        focus: length,
+        start: length,
+        end: length,
+        collapsed: true,
+      };
+    }
+
+    const start = Number(textareaEl.selectionStart || 0);
+    const end = Number(textareaEl.selectionEnd || 0);
+    return {
+      anchor: start,
+      focus: end,
+      start,
+      end,
+      collapsed: start === end,
     };
+  };
 
   const preserveViewport = () => {
-    if (!editorEl) return;
+    if (!textareaEl) return;
     pendingScroll = {
-      left: editorEl.scrollLeft,
-      top: editorEl.scrollTop,
+      left: textareaEl.scrollLeft,
+      top: textareaEl.scrollTop,
     };
   };
 
@@ -71,10 +88,15 @@
     preserveViewport();
   };
 
-  const emitTextChange = (emitInput = true) => {
-    dispatch("change", { value });
+  const syncOverlayScroll = () => {
+    overlayScrollLeft = Number(textareaEl?.scrollLeft || 0);
+    overlayScrollTop = Number(textareaEl?.scrollTop || 0);
+  };
+
+  const emitTextChange = (nextValue, emitInput = true) => {
+    dispatch("change", { value: nextValue });
     if (emitInput) {
-      dispatch("input", { value });
+      dispatch("input", { value: nextValue });
     }
   };
 
@@ -84,6 +106,7 @@
     selectedSuggestion = 0;
     suggestionsOpen = false;
     completionContext = null;
+    suggestionInteractionMode = "passive";
     if (notify && wasOpen) {
       dispatch("completionstate", {
         open: false,
@@ -120,8 +143,42 @@
       .filter((item) => !prefix || item.label.toLowerCase().startsWith(prefix));
   };
 
+  const measureCaretRect = () => {
+    if (!textareaEl) return null;
+    if (typeof navigator !== "undefined" && /jsdom/i.test(String(navigator.userAgent || ""))) {
+      return textareaEl.getBoundingClientRect();
+    }
+
+    const text = currentText();
+    const cursor = Number(textareaEl.selectionEnd || 0);
+    const style = getComputedStyle(textareaEl);
+    const rect = textareaEl.getBoundingClientRect();
+    const lineHeight = Number.parseFloat(style.lineHeight || "0") || (Number.parseFloat(style.fontSize || "0") * 1.5);
+    const paddingLeft = Number.parseFloat(style.paddingLeft || "0") || 0;
+    const paddingTop = Number.parseFloat(style.paddingTop || "0") || 0;
+    const lineStart = text.lastIndexOf("\n", Math.max(0, cursor - 1)) + 1;
+    const lineText = text.slice(lineStart, cursor).replaceAll("\t", "  ");
+    const lineIndex = text.slice(0, cursor).split("\n").length - 1;
+    const canvas = measureCaretRect.canvas || (measureCaretRect.canvas = document.createElement("canvas"));
+    const context = typeof canvas.getContext === "function" ? canvas.getContext("2d") : null;
+    if (!context) return rect;
+
+    context.font = style.font || `${style.fontSize} ${style.fontFamily}`;
+    const width = context.measureText(lineText).width;
+    const left = rect.left + paddingLeft + width - textareaEl.scrollLeft;
+    const top = rect.top + paddingTop + (lineIndex * lineHeight) - textareaEl.scrollTop;
+
+    return {
+      left,
+      top,
+      bottom: top + lineHeight,
+      height: lineHeight,
+    };
+  };
+  measureCaretRect.canvas = null;
+
   const openCompletions = async (forced) => {
-    if (!autocompleteEnabled || readonly || !editorEl) return;
+    if (!autocompleteEnabled || readonly || !textareaEl) return;
     const selection = currentSelection();
     const cursor = Number(selection.end || 0);
     const context = completionContextAt(currentText(), cursor);
@@ -160,13 +217,14 @@
       return;
     }
 
-    const caret = caretClientRectFromSelection(editorEl) || editorEl.getBoundingClientRect();
+    const caret = measureCaretRect() || textareaEl.getBoundingClientRect();
     suggestions = normalized;
     selectedSuggestion = 0;
     suggestionsOpen = true;
     completionContext = context;
+    suggestionInteractionMode = forced || suggestionInteractionMode === "manual" ? "manual" : "passive";
     suggestionsPos = {
-      left: Math.max(8, Math.round(caret.left + 8)),
+      left: Math.max(8, Math.round((caret.left || 0) + 8)),
       top: Math.max(8, Math.round((caret.bottom || caret.top || 0) + 6)),
     };
     dispatch("completionstate", {
@@ -176,41 +234,137 @@
     });
   };
 
-  const applyTextEdit = async (nextText, cursor, { emitInput = true, focus = true } = {}) => {
-    queueSelectionRestore(cursor, cursor, { focus });
-    value = nextText;
-    emitTextChange(emitInput);
-    await tick();
+  const updateModelFromTextarea = (emitInput = true) => {
+    if (!textareaEl) return;
+    syncOverlayScroll();
+    const nextText = textareaEl.value;
+    if (nextText !== currentText()) {
+      value = nextText;
+      emitTextChange(nextText, emitInput);
+    }
   };
 
-  const replaceSelection = async (insertText, { emitInput = true, focus = true } = {}) => {
-    const source = currentText();
+  const replaceTextRange = (start, end, insertText, { emitInput = true, focus = true, selectionMode = "end" } = {}) => {
+    if (!textareaEl) {
+      const source = currentText();
+      const safeStart = Math.max(0, Math.min(Number(start || 0), source.length));
+      const safeEnd = Math.max(safeStart, Math.min(Number(end || 0), source.length));
+      const nextText = `${source.slice(0, safeStart)}${insertText}${source.slice(safeEnd)}`;
+      const nextCursor = safeStart + insertText.length;
+      value = nextText;
+      emitTextChange(nextText, emitInput);
+      queueSelectionRestore(nextCursor, nextCursor, { focus });
+      return;
+    }
+
+    const source = textareaEl.value;
+    const safeStart = Math.max(0, Math.min(Number(start || 0), source.length));
+    const safeEnd = Math.max(safeStart, Math.min(Number(end || 0), source.length));
+    const nextText = `${source.slice(0, safeStart)}${insertText}${source.slice(safeEnd)}`;
+    const insertedEnd = safeStart + insertText.length;
+    let nextSelectionStart = insertedEnd;
+    let nextSelectionEnd = insertedEnd;
+
+    if (selectionMode === "select") {
+      nextSelectionStart = safeStart;
+      nextSelectionEnd = insertedEnd;
+    } else if (selectionMode === "start") {
+      nextSelectionStart = safeStart;
+      nextSelectionEnd = safeStart;
+    } else if (selectionMode === "preserve") {
+      const delta = insertText.length - (safeEnd - safeStart);
+      nextSelectionStart = safeStart;
+      nextSelectionEnd = Math.max(safeStart, safeEnd + delta);
+    }
+
+    if (focus) {
+      textareaEl.focus({ preventScroll: true });
+    }
+    preserveViewport();
+
+    if (typeof textareaEl.setRangeText === "function") {
+      try {
+        textareaEl.setSelectionRange(safeStart, safeEnd, "none");
+        textareaEl.setRangeText(insertText, safeStart, safeEnd, selectionMode);
+      } catch {
+        textareaEl.value = nextText;
+      }
+    }
+
+    if (textareaEl.value !== nextText) {
+      textareaEl.value = nextText;
+    }
+
+    textareaEl.setSelectionRange(nextSelectionStart, nextSelectionEnd, "none");
+    updateModelFromTextarea(emitInput);
+  };
+
+  const replaceSelection = (insertText, options = {}) => {
     const selection = currentSelection();
-    const nextText = `${source.slice(0, selection.start)}${insertText}${source.slice(selection.end)}`;
-    const nextCursor = selection.start + insertText.length;
-    await applyTextEdit(nextText, nextCursor, { emitInput, focus });
+    replaceTextRange(selection.start, selection.end, insertText, options);
   };
 
   const applyActiveSuggestion = async () => {
     if (!suggestionsOpen || !suggestions.length || !completionContext) return false;
     const item = suggestions[Math.max(0, Math.min(selectedSuggestion, suggestions.length - 1))];
-    const applied = applyCompletion(currentText(), completionContext, item);
+    const context = completionContext;
+    const applied = applyCompletion(currentText(), context, item);
     clearSuggestionState(true);
-    await applyTextEdit(applied.text, applied.cursor, { emitInput: false, focus: true });
+    replaceTextRange(context.from, context.to, item.insertText, {
+      emitInput: false,
+      focus: true,
+      selectionMode: "end",
+    });
+    if (textareaEl) {
+      textareaEl.setSelectionRange(applied.cursor, applied.cursor, "none");
+    }
     dispatch("completionapply", { item, cursor: applied.cursor });
     return true;
   };
 
-  const handleInput = (event) => {
-    if (!editorEl) return;
-    const eventValue = typeof event?.target?.value === "string" ? event.target.value : null;
-    const nextText = eventValue ?? readEditableText(editorEl);
+  const tokenInfoNearSelection = () => {
     const selection = currentSelection();
-    queueSelectionRestore(selection.start, selection.end, { focus: true });
-    if (nextText !== currentText()) {
-      value = nextText;
-      emitTextChange(true);
+    if (!selection.collapsed) return null;
+
+    const cursor = selection.start;
+    let token = extractTokenInfoAt(currentText(), cursor);
+    if (!token.token && cursor > 0) {
+      token = extractTokenInfoAt(currentText(), cursor - 1);
     }
+    if (!token.token) return null;
+    return token;
+  };
+
+  const tokenElementFromPoint = (clientX, clientY) => {
+    if (!overlayContentEl) return null;
+
+    const tokenNodes = Array.from(overlayContentEl.querySelectorAll("[data-token-kind]"));
+    for (const tokenEl of tokenNodes) {
+      const rect = tokenEl.getBoundingClientRect();
+      if (
+        clientX >= rect.left &&
+        clientX <= rect.right &&
+        clientY >= rect.top &&
+        clientY <= rect.bottom
+      ) {
+        return tokenEl;
+      }
+    }
+
+    return null;
+  };
+
+  const handleInput = () => {
+    updateModelFromTextarea(true);
+    scheduleCompletion();
+  };
+
+  const handleScroll = () => {
+    syncOverlayScroll();
+  };
+
+  const handleSelect = () => {
+    if (!suggestionsOpen) return;
     scheduleCompletion();
   };
 
@@ -222,6 +376,19 @@
     }
 
     if (suggestionsOpen) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        clearSuggestionState(true);
+        return;
+      }
+
+      if (suggestionInteractionMode !== "manual") {
+        if (["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", "Enter"].includes(event.key)) {
+          clearSuggestionState(true);
+        }
+      }
+
+      if (suggestionInteractionMode === "manual") {
       if (event.key === "ArrowDown") {
         event.preventDefault();
         selectedSuggestion = (selectedSuggestion + 1) % suggestions.length;
@@ -232,79 +399,65 @@
         selectedSuggestion = (selectedSuggestion - 1 + suggestions.length) % suggestions.length;
         return;
       }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        clearSuggestionState(true);
-        return;
-      }
       if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
         await applyActiveSuggestion();
         return;
       }
+      }
     }
 
     if (!readonly && event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
-      await replaceSelection("  ");
+      replaceSelection("  ", { emitInput: true, focus: true, selectionMode: "end" });
     }
   };
 
-  const handlePaste = async (event) => {
-    if (readonly) return;
-    const text = String(event.clipboardData?.getData("text/plain") || "");
-    event.preventDefault();
-    await replaceSelection(text);
-  };
+  const handleTextareaClick = (event) => {
+    const pointToken = tokenElementFromPoint(event.clientX, event.clientY);
+    const pointSymbol = String(pointToken?.getAttribute?.("data-token") || "");
+    if (pointSymbol) {
+      dispatch("symbolclick", { token: pointSymbol });
+      return;
+    }
 
-  const handleEditorMouseOver = (event) => {
-    const symbolEl = event.target instanceof Element ? event.target.closest(".vx-editor__symbol") : null;
-    if (!symbolEl || !editorEl?.contains(symbolEl)) return;
-    const token = String(symbolEl.getAttribute("data-token") || "");
-    if (!token) return;
-    dispatch("symbolhover", { token });
-  };
-
-  const handleEditorMouseOut = (event) => {
-    const from = event.target instanceof Element ? event.target.closest(".vx-editor__symbol") : null;
-    if (!from) return;
-    const to = event.relatedTarget instanceof Element ? event.relatedTarget.closest(".vx-editor__symbol") : null;
-    if (to) return;
-    dispatch("symbolleave");
-  };
-
-  const handleEditorMouseDown = (event) => {
-    const symbolEl = event.target instanceof Element ? event.target.closest(".vx-editor__symbol") : null;
-    if (!symbolEl || !editorEl?.contains(symbolEl)) return;
-    event.preventDefault();
-  };
-
-  const handleEditorClick = (event) => {
-    const symbolEl = event.target instanceof Element ? event.target.closest(".vx-editor__symbol") : null;
-    if (!symbolEl || !editorEl?.contains(symbolEl)) return;
-    event.preventDefault();
-    const token = String(symbolEl.getAttribute("data-token") || "");
-    if (!token) return;
-    dispatch("symbolclick", { token });
-    editorEl.focus({ preventScroll: true });
+    const token = tokenInfoNearSelection();
+    if (token?.token && symbols?.[token.token]) {
+      dispatch("symbolclick", { token: token.token });
+    }
   };
 
   const handleMouseMove = (event) => {
+    const tokenEl = tokenElementFromPoint(event.clientX, event.clientY);
+    const symbolToken = String(tokenEl?.getAttribute("data-token") || "");
+    const tokenKind = String(tokenEl?.getAttribute("data-token-kind") || "");
+    const tokenText = String(tokenEl?.getAttribute("data-token-text") || "");
+
+    if (symbolToken) {
+      surfaceCursor = "pointer";
+    } else if (tokenKind === "operator" && isOperatorToken(tokenText)) {
+      surfaceCursor = "help";
+    } else {
+      surfaceCursor = readonly ? "default" : "text";
+    }
+
     if (hoverTimer) clearTimeout(hoverTimer);
     hoverTimer = setTimeout(() => {
-      const target = event.target instanceof Element ? event.target : null;
-      const symbolEl = target?.closest(".vx-editor__symbol");
-      if (symbolEl && editorEl?.contains(symbolEl)) {
+      const tokenEl = tokenElementFromPoint(event.clientX, event.clientY);
+      if (!tokenEl) {
+        dispatch("hoverleave");
+        dispatch("symbolleave");
+        return;
+      }
+
+      const symbolToken = String(tokenEl.getAttribute("data-token") || "");
+      if (symbolToken) {
+        dispatch("symbolhover", { token: symbolToken });
         dispatch("hoverleave");
         return;
       }
 
-      const tokenEl = target?.closest("[data-token-kind]");
-      if (!tokenEl || !editorEl?.contains(tokenEl)) {
-        dispatch("hoverleave");
-        return;
-      }
-
+      dispatch("symbolleave");
       const tokenKind = String(tokenEl.getAttribute("data-token-kind") || "");
       const tokenText = String(tokenEl.getAttribute("data-token-text") || "");
       if (tokenKind !== "operator" || !isOperatorToken(tokenText)) {
@@ -324,16 +477,21 @@
       clearTimeout(hoverTimer);
       hoverTimer = null;
     }
+    surfaceCursor = readonly ? "default" : "text";
     dispatch("hoverleave");
     dispatch("symbolleave");
   };
 
   const handleBlur = () => {
+    editorFocused = false;
+    surfaceCursor = readonly ? "default" : "text";
     dispatch("hoverleave");
     dispatch("symbolleave");
   };
 
-  const handleFocus = () => {};
+  const handleFocus = () => {
+    editorFocused = true;
+  };
 
   const chooseSuggestion = async (index) => {
     selectedSuggestion = Number(index || 0);
@@ -367,17 +525,21 @@
   }
 
   afterUpdate(() => {
-    if (!editorEl) return;
+    if (!textareaEl) return;
+    if (textareaEl.value !== editorText) {
+      textareaEl.value = editorText;
+    }
     if (pendingFocus) {
-      editorEl.focus({ preventScroll: true });
+      textareaEl.focus({ preventScroll: true });
     }
     if (pendingSelection) {
-      restoreSelectionWithin(editorEl, currentText(), pendingSelection.start, pendingSelection.end);
+      textareaEl.setSelectionRange(pendingSelection.start, pendingSelection.end, "none");
     }
     if (pendingScroll) {
-      editorEl.scrollLeft = pendingScroll.left;
-      editorEl.scrollTop = pendingScroll.top;
+      textareaEl.scrollLeft = pendingScroll.left;
+      textareaEl.scrollTop = pendingScroll.top;
     }
+    syncOverlayScroll();
     pendingFocus = false;
     pendingSelection = null;
     pendingScroll = null;
@@ -391,49 +553,61 @@
 <div class="vx-editor" data-testid="vox-code-editor">
   <div class="vx-editor__shell">
     <div
-      class="vx-editor__input vx-editor__surface"
-      bind:this={editorEl}
-      role="textbox"
-      aria-multiline="true"
-      aria-label={ariaLabel}
-      contenteditable={readonly ? "false" : "true"}
-      spellcheck="false"
-      tabindex="0"
+      class="vx-editor__surface"
       data-empty={editorText.length ? "false" : "true"}
+      data-focused={editorFocused ? "true" : "false"}
+      data-cursor={surfaceCursor}
       data-placeholder={placeholder}
       data-readonly={readonly ? "true" : "false"}
-      on:input={handleInput}
-      on:keydown={handleKeydown}
-      on:paste={handlePaste}
-      on:mouseover={handleEditorMouseOver}
-      on:mouseout={handleEditorMouseOut}
-      on:mousedown={handleEditorMouseDown}
-      on:click={handleEditorClick}
-      on:mousemove={handleMouseMove}
-      on:mouseleave={handleMouseLeave}
-      on:focus={handleFocus}
-      on:blur={handleBlur}
     >
-      {#each editorDocument as line (`line-${line.number}`)}
-        <div class={line.className} data-line={line.number} title={line.title || undefined}>
-          {#if line.isEmpty}
-            <br />
-          {:else}
-            {#each line.tokens as token (`token-${line.number}-${token.start}-${token.end}`)}
-              <span
-                class={token.className}
-                data-start={token.start}
-                data-end={token.end}
-                data-token-kind={token.tokenKind}
-                data-token-text={token.kind === "symbol" ? undefined : token.text}
-                data-token={token.kind === "symbol" ? token.symbol : undefined}
-                data-status={token.kind === "symbol" ? token.status : undefined}
-                title={token.title || undefined}
-              >{token.text}</span>
-            {/each}
-          {/if}
+      <div class="vx-editor__overlay" aria-hidden="true">
+        <div
+          class="vx-editor__overlay-content"
+          bind:this={overlayContentEl}
+          style={`transform: translate(${-overlayScrollLeft}px, ${-overlayScrollTop}px)`}
+        >
+          {#each editorDocument as line (`line-${line.number}`)}
+            <div class={line.className} data-line={line.number} title={line.title || undefined}>
+              {#if line.isEmpty}
+                <span class="vx-editor__line-placeholder"> </span>
+              {:else}
+                {#each line.tokens as token (`token-${line.number}-${token.start}-${token.end}`)}
+                  <span
+                    class={token.className}
+                    data-start={token.start}
+                    data-end={token.end}
+                    data-token-kind={token.tokenKind}
+                    data-token-text={token.kind === "symbol" ? undefined : token.text}
+                    data-token={token.kind === "symbol" ? token.symbol : undefined}
+                    data-status={token.kind === "symbol" ? token.status : undefined}
+                    title={token.title || undefined}
+                  >{token.text}</span>
+                {/each}
+              {/if}
+            </div>
+          {/each}
         </div>
-      {/each}
+      </div>
+
+      <textarea
+        class="vx-editor__textarea"
+        bind:this={textareaEl}
+        aria-label={ariaLabel}
+        spellcheck="false"
+        tabindex="0"
+        readonly={readonly}
+        wrap="off"
+        value={editorText}
+        on:input={handleInput}
+        on:keydown={handleKeydown}
+        on:scroll={handleScroll}
+        on:select={handleSelect}
+        on:click={handleTextareaClick}
+        on:mousemove={handleMouseMove}
+        on:mouseleave={handleMouseLeave}
+        on:focus={handleFocus}
+        on:blur={handleBlur}
+      ></textarea>
     </div>
   </div>
 
@@ -493,27 +667,14 @@
     width: 100%;
     min-height: 100%;
     height: 100%;
-    overflow: auto;
+    overflow: hidden;
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
     background: rgba(1, 10, 18, 0.8);
-    color: #cce2ff;
-    caret-color: #cce2ff;
-    padding: 0.8rem;
-    box-sizing: border-box;
-    white-space: pre-wrap;
-    word-break: normal;
-    overflow-wrap: normal;
-    font-family: "IBM Plex Mono", monospace;
-    font-size: 0.83rem;
-    line-height: 1.5;
-    tab-size: 2;
-    font-variant-ligatures: none;
-    font-feature-settings: "liga" 0, "calt" 0;
     transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
   }
 
-  .vx-editor__surface:focus {
+  .vx-editor__surface:focus-within {
     outline: 2px solid rgba(38, 198, 169, 0.35);
     outline-offset: 1px;
   }
@@ -524,19 +685,94 @@
     inset: 0.8rem auto auto 0.8rem;
     color: #6f8498;
     pointer-events: none;
+    z-index: 0;
   }
 
   .vx-editor__surface[data-readonly="true"] {
     cursor: default;
   }
 
-  .vx-editor__surface :global(::selection) {
+  .vx-editor__surface[data-cursor="pointer"] .vx-editor__textarea {
+    cursor: pointer;
+  }
+
+  .vx-editor__surface[data-cursor="help"] .vx-editor__textarea {
+    cursor: help;
+  }
+
+  .vx-editor__overlay,
+  .vx-editor__textarea {
+    position: absolute;
+    inset: 0;
+    box-sizing: border-box;
+    padding: 0.8rem;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.83rem;
+    line-height: 1.5;
+    tab-size: 2;
+    letter-spacing: normal;
+    font-variant-ligatures: none;
+    font-feature-settings: "liga" 0, "calt" 0;
+  }
+
+  .vx-editor__overlay {
+    pointer-events: none;
+    overflow: hidden;
+    color: #cce2ff;
+    white-space: pre;
+    z-index: 1;
+  }
+
+  .vx-editor__surface[data-focused="true"] .vx-editor__overlay {
+    opacity: 0;
+  }
+
+  .vx-editor__overlay-content {
+    min-width: 100%;
+    width: max-content;
+    will-change: transform;
+  }
+
+  .vx-editor__textarea {
+    margin: 0;
+    border: none;
+    resize: none;
+    background: transparent;
+    color: transparent;
+    caret-color: #cce2ff;
+    -webkit-text-fill-color: transparent;
+    overflow: auto;
+    white-space: pre;
+    word-break: normal;
+    overflow-wrap: normal;
+    outline: none;
+    z-index: 2;
+  }
+
+  .vx-editor__surface[data-focused="true"] .vx-editor__textarea {
+    color: #cce2ff;
+    -webkit-text-fill-color: #cce2ff;
+  }
+
+  .vx-editor__textarea::selection {
     background: rgba(51, 105, 255, 0.36);
   }
 
   .vx-editor__line {
     display: block;
     min-height: 1.5em;
+    letter-spacing: normal;
+    white-space: pre;
+  }
+
+  .vx-editor__token,
+  .vx-editor__symbol {
+    letter-spacing: normal;
+  }
+
+  .vx-editor__line-placeholder {
+    display: inline-block;
+    min-width: 1px;
   }
 
   .vx-editor__line--error {
@@ -546,7 +782,7 @@
   }
 
   .vx-editor__token--space {
-    white-space: pre-wrap;
+    white-space: pre;
   }
 
   .vx-editor__token--keyword {
@@ -575,13 +811,8 @@
 
   .vx-editor__symbol {
     color: #8cecdc;
-    cursor: pointer;
     text-decoration: none;
     transition: color 120ms ease;
-  }
-
-  .vx-editor__symbol:hover {
-    color: #d8fff7;
   }
 
   .vx-editor__symbol--idle {

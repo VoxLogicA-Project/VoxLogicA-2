@@ -984,6 +984,9 @@ def repl(
 
 live_reload_clients: set[WebSocket] = set()
 _file_observer: BaseObserver | None = None
+_DEV_BACKEND_WATCHABLE_SUFFIXES = frozenset({".py", ".toml", ".yaml", ".yml", ".json"})
+_DEV_BACKEND_WATCHABLE_FILES = frozenset({"requirements.txt", "requirements-test.txt", "setup.py"})
+_DEV_BACKEND_IGNORED_PARTS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".git", "node_modules", ".venv"})
 
 
 class ReloadEventHandler(FileSystemEventHandler):
@@ -1012,6 +1015,73 @@ class ReloadEventHandler(FileSystemEventHandler):
 
         for websocket in failed:
             live_reload_clients.discard(websocket)
+
+
+def _is_dev_backend_watch_path(repo_root: Path, candidate: str | Path | None) -> bool:
+    if candidate is None:
+        return False
+
+    candidate_path = Path(candidate)
+    if not candidate_path.parts:
+        return False
+    if any(part in _DEV_BACKEND_IGNORED_PARTS for part in candidate_path.parts):
+        return False
+
+    try:
+        relative_path = candidate_path.resolve().relative_to(repo_root.resolve())
+    except (OSError, ValueError):
+        return False
+
+    if len(relative_path.parts) < 2 or relative_path.parts[:2] != ("implementation", "python"):
+        return False
+
+    if relative_path.name in _DEV_BACKEND_WATCHABLE_FILES:
+        return True
+
+    return relative_path.suffix.lower() in _DEV_BACKEND_WATCHABLE_SUFFIXES
+
+
+class DevBackendReloadEventHandler(FileSystemEventHandler):
+    """Watch Python/backend sources and request supervisor restarts."""
+
+    def __init__(self, repo_root: Path, on_change: Callable[[str], None]):
+        self.repo_root = repo_root.resolve()
+        self.on_change = on_change
+        self.logger = logging.getLogger("voxlogica.devwatch")
+
+    def on_any_event(self, event) -> None:  # noqa: ANN001
+        if event.is_directory:
+            return
+
+        candidates = [getattr(event, "src_path", None)]
+        destination = getattr(event, "dest_path", None)
+        if destination:
+            candidates.append(destination)
+
+        for candidate in candidates:
+            if not _is_dev_backend_watch_path(self.repo_root, candidate):
+                continue
+            self.logger.info("Backend source change detected: %s (%s)", candidate, event.event_type)
+            self.on_change(str(candidate))
+            break
+
+
+def _start_dev_backend_watcher(repo_root: Path, on_change: Callable[[str], None]) -> BaseObserver | None:
+    watch_root = (repo_root / "implementation" / "python").resolve()
+    if not watch_root.exists():
+        return None
+
+    observer = Observer()
+    observer.schedule(DevBackendReloadEventHandler(repo_root, on_change), str(watch_root), recursive=True)
+    observer.start()
+    return observer
+
+
+def _stop_dev_backend_watcher(observer: BaseObserver | None) -> None:
+    if observer is None:
+        return
+    observer.stop()
+    observer.join()
 
 
 def start_file_watcher() -> None:
@@ -3174,6 +3244,7 @@ def dev(
     frontend_host: str = typer.Option("127.0.0.1", help="Vite frontend host"),
     frontend_port: int = typer.Option(5173, help="Vite frontend port"),
     debug: bool = typer.Option(False, "--debug", help="Enable verbose backend logging"),
+    backend_watch: bool = typer.Option(True, "--backend-watch/--no-backend-watch", help="Auto-restart backend on Python-side file changes"),
 ) -> None:
     """Run backend API and Vite frontend together with one supervisor process."""
 
@@ -3241,6 +3312,7 @@ def dev(
     logger.info("Starting Vite frontend at %s", frontend_origin)
     backend_proc: subprocess.Popen[str] | None = None
     frontend_proc: subprocess.Popen[str] | None = None
+    backend_watch_observer: BaseObserver | None = None
     exit_code = 0
     command_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
 
@@ -3254,10 +3326,20 @@ def dev(
     try:
         backend_proc = subprocess.Popen(backend_cmd, cwd=repo_root, env=env)
         frontend_proc = subprocess.Popen(frontend_cmd, cwd=ui_dir, env=env)
+        if backend_watch:
+            backend_watch_observer = _start_dev_backend_watcher(
+                repo_root,
+                lambda changed_path: _on_dev_command(f"backend-dirty:{changed_path}"),
+            )
+            if backend_watch_observer is not None:
+                logger.info("Watching backend sources for restart: %s", repo_root / "implementation" / "python")
         logger.info("Dev mode ready: open %s", frontend_origin)
         logger.info("Press Ctrl+C to stop both backend and frontend.")
         _print_dev_help()
         while True:
+            restart_backend = False
+            restart_frontend = False
+            auto_backend_changes: set[str] = set()
             while True:
                 try:
                     command = command_queue.get_nowait()
@@ -3269,25 +3351,45 @@ def dev(
                     webbrowser.open(frontend_origin)
                     logger.info("[dev stdin] opened %s", frontend_origin)
                 elif command in {"rb", "restart-backend"}:
-                    _terminate_child_process(backend_proc, name="backend")
-                    backend_proc = subprocess.Popen(backend_cmd, cwd=repo_root, env=env)
-                    logger.info("[dev stdin] backend restarted")
+                    restart_backend = True
                 elif command in {"rf", "restart-frontend"}:
-                    _terminate_child_process(frontend_proc, name="frontend")
-                    frontend_proc = subprocess.Popen(frontend_cmd, cwd=ui_dir, env=env)
-                    logger.info("[dev stdin] frontend restarted")
+                    restart_frontend = True
                 elif command in {"r", "restart"}:
-                    _terminate_child_process(frontend_proc, name="frontend")
-                    _terminate_child_process(backend_proc, name="backend")
-                    backend_proc = subprocess.Popen(backend_cmd, cwd=repo_root, env=env)
-                    frontend_proc = subprocess.Popen(frontend_cmd, cwd=ui_dir, env=env)
-                    logger.info("[dev stdin] backend+frontend restarted")
+                    restart_backend = True
+                    restart_frontend = True
+                elif command.startswith("backend-dirty:"):
+                    changed_path = command.split(":", 1)[1].strip()
+                    if changed_path:
+                        auto_backend_changes.add(changed_path)
                 elif command in {"q", "quit", "exit"}:
                     logger.info("[dev stdin] quit requested")
                     exit_code = 0
                     raise KeyboardInterrupt
                 else:
                     logger.info("[dev stdin] unknown command '%s' (type 'h' for help)", command)
+
+            if restart_frontend:
+                _terminate_child_process(frontend_proc, name="frontend")
+                frontend_proc = subprocess.Popen(frontend_cmd, cwd=ui_dir, env=env)
+                if restart_backend:
+                    logger.info("[dev stdin] frontend restarted")
+                else:
+                    logger.info("[dev stdin] frontend restarted")
+
+            if restart_backend or auto_backend_changes:
+                _terminate_child_process(backend_proc, name="backend")
+                backend_proc = subprocess.Popen(backend_cmd, cwd=repo_root, env=env)
+                if auto_backend_changes and not restart_backend:
+                    changed = sorted(auto_backend_changes)
+                    lead = changed[0]
+                    if len(changed) == 1:
+                        logger.info("[dev watch] backend restarted after change in %s", lead)
+                    else:
+                        logger.info("[dev watch] backend restarted after %s changes; latest %s", len(changed), lead)
+                elif restart_frontend:
+                    logger.info("[dev stdin] backend+frontend restarted")
+                else:
+                    logger.info("[dev stdin] backend restarted")
 
             backend_status = backend_proc.poll()
             frontend_status = frontend_proc.poll()
@@ -3306,6 +3408,7 @@ def dev(
     finally:
         if bridge is not None:
             bridge[0].set()
+        _stop_dev_backend_watcher(backend_watch_observer)
         _terminate_child_process(frontend_proc, name="frontend")
         _terminate_child_process(backend_proc, name="backend")
 

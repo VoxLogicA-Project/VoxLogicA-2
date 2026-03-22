@@ -1,8 +1,9 @@
 import { fireEvent, render, waitFor } from "@testing-library/svelte";
+import { get } from "svelte/store";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import StartTab from "./StartTab.svelte";
-import { clearComputeActivity, pushComputeActivity } from "$lib/stores/computeActivity.js";
+import { clearComputeActivity, ongoingComputeActivity, pushComputeActivity } from "$lib/stores/computeActivity.js";
 
 const getProgramSymbolsMock = vi.fn();
 const resolvePlaygroundValueMock = vi.fn();
@@ -105,10 +106,10 @@ describe("StartTab", () => {
     });
 
     const { container } = render(StartTab, { active: true, capabilities: {} });
-    const editor = container.querySelector(".vx-editor__input");
+    const editor = container.querySelector(".vx-editor__textarea");
     expect(editor).not.toBeNull();
 
-    editor.textContent = "x = 3";
+    editor.value = "x = 3";
     await fireEvent.input(editor);
     vi.advanceTimersByTime(220);
     await waitFor(() => {
@@ -514,6 +515,84 @@ describe("StartTab", () => {
       const stageBadge = container.querySelector(".start-prime-results .start-collection-stage-status");
       expect(selectedBadge?.textContent?.trim().toLowerCase()).toBe("loading");
       expect(stageBadge?.textContent?.trim().toLowerCase()).toBe("loading");
+    });
+  });
+
+  it("does not keep page activity live for cached pages whose visible rows are merely not_loaded", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "cached",
+      compute_status: "cached",
+      node_id: "node-xs",
+      path: "/",
+      descriptor: {
+        vox_type: "sequence",
+        format_version: "voxpod/1",
+        summary: { length: 2 },
+        navigation: {
+          path: "/",
+          pageable: true,
+          can_descend: true,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    });
+    resolvePlaygroundValuePageMock.mockResolvedValue({
+      materialization: "cached",
+      compute_status: "cached",
+      path: "/",
+      page: {
+        offset: 0,
+        limit: 18,
+        has_more: false,
+        next_offset: null,
+        total: 2,
+        items: [
+          {
+            index: 0,
+            label: "[0]",
+            path: "/0",
+            status: "pending",
+            descriptor: {
+              vox_type: "unavailable",
+              format_version: "voxpod/1",
+              summary: { reason: "not loaded yet" },
+              navigation: { path: "/0", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
+            },
+          },
+          {
+            index: 1,
+            label: "[1]",
+            path: "/1",
+            status: "pending",
+            descriptor: {
+              vox_type: "unavailable",
+              format_version: "voxpod/1",
+              summary: { reason: "not loaded yet" },
+              navigation: { path: "/1", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
+            },
+          },
+        ],
+      },
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(resolvePlaygroundValuePageMock).toHaveBeenCalled();
+      expect(get(ongoingComputeActivity)).toHaveLength(0);
     });
   });
 

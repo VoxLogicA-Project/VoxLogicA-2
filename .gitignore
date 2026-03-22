@@ -52,3 +52,6 @@ tests/reports/*
 implementation/ui/node_modules/
 implementation/ui/.vite/
 tests/data/datasets
+.playwright-mcp/
+node_modules
+

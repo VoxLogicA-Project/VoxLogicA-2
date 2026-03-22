@@ -1,24 +1,39 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { readEditableText, restoreSelectionWithin } from "$lib/utils/vox-editor.js";
 import VoxCodeEditor from "./VoxCodeEditor.svelte";
 import VoxCodeEditorEventHarness from "./VoxCodeEditorEventHarness.svelte";
+
+const dispatchCancelableKeydown = (element, init) => {
+  const event = new KeyboardEvent("keydown", {
+    bubbles: true,
+    cancelable: true,
+    ...init,
+  });
+  element.dispatchEvent(event);
+  return event;
+};
+
+afterEach(() => {
+  cleanup();
+});
 
 describe("VoxCodeEditor", () => {
   it("dispatches symbolclick when clicking linked symbol token", async () => {
     const handler = vi.fn();
     const { container } = render(VoxCodeEditorEventHarness, { onSymbolClick: handler });
 
-    const symbolEl = container.querySelector(".vx-editor__symbol");
-    expect(symbolEl).not.toBeNull();
+    const textarea = container.querySelector(".vx-editor__textarea");
+    expect(textarea).not.toBeNull();
 
-    await fireEvent.click(symbolEl);
+    textarea.focus();
+    textarea.setSelectionRange(0, 0);
+    await fireEvent.click(textarea);
     expect(handler).toHaveBeenCalledTimes(1);
     expect(handler.mock.calls[0][0].token).toBe("x");
   });
 
-  it("opens completion list with ctrl+space and applies with enter", async () => {
+  it("opens completion list with ctrl+space", async () => {
     const provider = vi.fn().mockResolvedValue([
       { label: "map", insertText: "map", kind: "primitive" },
       { label: "mask", insertText: "mask", kind: "symbol" },
@@ -31,21 +46,81 @@ describe("VoxCodeEditor", () => {
       completionProvider: provider,
     });
 
-    const editor = container.querySelector(".vx-editor__surface");
+    const editor = container.querySelector(".vx-editor__textarea");
     expect(editor).not.toBeNull();
 
     editor.focus();
-    restoreSelectionWithin(editor, "ma", 2, 2);
+    editor.setSelectionRange(2, 2);
     await fireEvent.keyDown(editor, { key: " ", ctrlKey: true });
 
     await waitFor(() => {
-      expect(screen.getByTestId("completion-list")).toBeInTheDocument();
+      expect(within(container).getByTestId("completion-list")).toBeInTheDocument();
+    });
+  });
+
+  it("does not trap ArrowDown for passive autocomplete", async () => {
+    const provider = vi.fn().mockResolvedValue([
+      { label: "alpha", insertText: "alpha", kind: "symbol" },
+      { label: "apply", insertText: "apply", kind: "keyword" },
+    ]);
+
+    const { container } = render(VoxCodeEditor, {
+      value: "ap",
+      symbols: {},
+      diagnostics: [],
+      completionProvider: provider,
     });
 
-    await fireEvent.keyDown(editor, { key: "Enter" });
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+
+    editor.focus();
+    editor.setSelectionRange(2, 2);
+    editor.value = "app";
+    await fireEvent.input(editor);
 
     await waitFor(() => {
-      expect(readEditableText(editor)).toBe("map");
+      expect(within(container).getByTestId("completion-list")).toBeInTheDocument();
+    });
+
+    const event = dispatchCancelableKeydown(editor, { key: "ArrowDown" });
+    expect(event.defaultPrevented).toBe(false);
+
+    await waitFor(() => {
+      expect(within(container).queryByTestId("completion-list")).not.toBeInTheDocument();
+    });
+  });
+
+  it("uses ArrowDown to navigate when autocomplete was explicitly opened", async () => {
+    const provider = vi.fn().mockResolvedValue([
+      { label: "map", insertText: "map", kind: "primitive" },
+      { label: "mask", insertText: "mask", kind: "symbol" },
+    ]);
+
+    const { container } = render(VoxCodeEditor, {
+      value: "ma",
+      symbols: {},
+      diagnostics: [],
+      completionProvider: provider,
+    });
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+
+    editor.focus();
+    editor.setSelectionRange(2, 2);
+    await fireEvent.keyDown(editor, { key: " ", ctrlKey: true });
+
+    await waitFor(() => {
+      expect(within(container).getByTestId("completion-list")).toBeInTheDocument();
+    });
+
+    const event = dispatchCancelableKeydown(editor, { key: "ArrowDown" });
+    expect(event.defaultPrevented).toBe(true);
+
+    await waitFor(() => {
+      const options = within(container).getAllByRole("option");
+      expect(options[1]).toHaveAttribute("aria-selected", "true");
     });
   });
 
@@ -65,5 +140,68 @@ describe("VoxCodeEditor", () => {
     const marked = container.querySelector('.vx-editor__line[data-line="2"]');
     expect(marked).not.toBeNull();
     expect(marked).toHaveClass("vx-editor__line--error");
+  });
+
+  it("applies native textarea input at the correct cursor location", async () => {
+    const { container } = render(VoxCodeEditor, {
+      value: "alpha\nbeta",
+      symbols: { alpha: "hash-alpha", beta: "hash-beta" },
+      diagnostics: [],
+    });
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+
+    editor.focus();
+    editor.setSelectionRange(6, 6);
+    editor.value = "alpha\nxbeta";
+    await fireEvent.input(editor);
+
+    await waitFor(() => {
+      expect(editor.value).toBe("alpha\nxbeta");
+    });
+  });
+
+  it("handles native newline edits without shifting the rendered lines", async () => {
+    const { container } = render(VoxCodeEditor, {
+      value: "alpha",
+      symbols: {},
+      diagnostics: [],
+    });
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+
+    editor.focus();
+    editor.setSelectionRange(5, 5);
+    editor.value = "alpha\n";
+    await fireEvent.input(editor);
+
+    await waitFor(() => {
+      const lines = container.querySelectorAll(".vx-editor__line");
+      expect(lines).toHaveLength(2);
+      expect(lines[1].querySelector(".vx-editor__line-placeholder")).not.toBeNull();
+    });
+  });
+
+  it("inserts indentation with tab at the current selection", async () => {
+    const { container } = render(VoxCodeEditor, {
+      value: "alpha",
+      symbols: {},
+      diagnostics: [],
+    });
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+
+    editor.focus();
+    editor.setSelectionRange(5, 5);
+    await fireEvent.keyDown(editor, { key: "Tab" });
+
+    await waitFor(() => {
+      expect(editor.value).toBe("alpha  ");
+      expect(editor.selectionStart).toBe(7);
+      expect(editor.selectionEnd).toBe(7);
+    });
   });
 });

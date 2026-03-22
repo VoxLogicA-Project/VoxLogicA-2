@@ -132,9 +132,11 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   let activeValueSubscription = null;
   let pendingSave = null;
   let pendingProbe = null;
+  let pendingEditRefresh = null;
   let probeToken = 0;
   let resolveTraceSeq = 0;
   let resolveRequestSeq = 0;
+  let editRefreshSeq = 0;
   let resolveInFlight = false;
   let maximizedViewerIndex = -1;
   let startPrimeGridEl = null;
@@ -147,7 +149,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   const COLLECTION_PAGE_SIZE = 18;
   const SPLIT_MIN = 0.32;
   const SPLIT_MAX = 0.68;
-  const ACTIVE_COLLECTION_ITEM_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting"]);
+  const ACTIVE_COLLECTION_ITEM_STATES = new Set(["queued", "blocked", "running", "persisting"]);
 
   let loadToken = 0;
 
@@ -991,6 +993,12 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     pendingPollTicks = 0;
   };
 
+  const stopEditRefresh = () => {
+    if (!pendingEditRefresh) return;
+    clearTimeout(pendingEditRefresh);
+    pendingEditRefresh = null;
+  };
+
   const wsReconnectDelayMs = (attempt) => {
     const clamped = Math.max(0, Math.min(6, Number(attempt || 0)));
     return 220 + clamped * 300;
@@ -1380,12 +1388,136 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   const schedulePersist = () => {
     if (pendingSave) clearTimeout(pendingSave);
     pendingSave = setTimeout(() => {
+      if (typeof window === "undefined") return;
       try {
         window.localStorage.setItem(STORAGE_KEY, String(programText || ""));
       } catch {
         // ignore persistence errors in restricted browser contexts
       }
     }, 180);
+  };
+
+  const applyDisplayedValueRefresh = (payload, variableName) => {
+    const descriptor = payload?.descriptor && typeof payload.descriptor === "object" ? payload.descriptor : null;
+    const materialization = String(payload?.materialization || payload?.status || "materialized");
+    setSymbolStatus(variableName, "computed");
+    setSymbolMaterialization(variableName, materialization);
+    if (descriptor?.vox_type) {
+      symbolTypeHints = {
+        ...symbolTypeHints,
+        [variableName]: String(descriptor.vox_type),
+      };
+    }
+    materializedRecords = {
+      ...materializedRecords,
+      [variableName]: payload,
+    };
+    markRecordMaterialized(String(payload?.node_id || ""));
+    renderSelectedRecords({ fallbackRecord: payload });
+  };
+
+  const markDisplayedValueRefreshPending = (payload, variableName) => {
+    const state = String(payload?.compute_status || payload?.materialization || "running");
+    setSymbolStatus(variableName, state);
+    setSymbolMaterialization(variableName, payload?.materialization || state);
+    if (String(variableName || "") === String(primaryVariable || "")) {
+      statusValue = "running";
+      statusText = `Updating ${variableName}...`;
+      captionVariable = variableName || "-";
+      errorText = "";
+      applyPendingLogs(payload, state);
+    }
+  };
+
+  const markDisplayedValueRefreshFailed = (payload, variableName) => {
+    setSymbolStatus(variableName, "failed");
+    setSymbolMaterialization(variableName, "failed");
+    if (materializedRecords?.[variableName]) {
+      const next = { ...materializedRecords };
+      delete next[variableName];
+      materializedRecords = next;
+    }
+    if (String(variableName || "") === String(primaryVariable || "")) {
+      applyFailure(payload, variableName);
+    } else {
+      renderSelectedRecords();
+    }
+  };
+
+  const refreshDisplayedValuesAfterEdit = async (token) => {
+    if (token !== editRefreshSeq) return;
+    if (symbolDiagnostics.length) return;
+    const names = [...new Set((selectedVisualSymbols.length ? selectedVisualSymbols : [primaryVariable])
+      .map((name) => String(name || "").trim())
+      .filter((name) => name && symbolTable?.[name]))];
+    if (!names.length) return;
+
+    const programSnapshot = String(programText || "");
+    let anyPending = false;
+
+    for (const variableName of names) {
+      if (token !== editRefreshSeq) return;
+      if (programSnapshot !== String(programText || "")) return;
+      try {
+        const payload = await resolvePlaygroundValue({
+          program: programSnapshot,
+          variable: variableName,
+          path: variableName === String(primaryVariable || "") ? currentPath : "",
+          enqueue: true,
+        });
+        if (token !== editRefreshSeq) return;
+        if (programSnapshot !== String(programText || "")) return;
+
+        const materialization = String(payload?.materialization || "").toLowerCase();
+        const computeStatus = String(payload?.compute_status || "").toLowerCase();
+        const descriptor = payload?.descriptor && typeof payload.descriptor === "object" ? payload.descriptor : null;
+        const isMaterialized = (materialization === "cached" || materialization === "computed") && !!descriptor;
+        const isPending =
+          materialization === "pending" ||
+          materialization === "missing" ||
+          computeStatus === "queued" ||
+          computeStatus === "running" ||
+          computeStatus === "persisting";
+
+        if (isMaterialized) {
+          applyDisplayedValueRefresh(payload, variableName);
+          continue;
+        }
+
+        if (materialization === "failed" || computeStatus === "failed" || computeStatus === "killed") {
+          markDisplayedValueRefreshFailed(payload, variableName);
+          continue;
+        }
+
+        if (isPending) {
+          anyPending = true;
+          markDisplayedValueRefreshPending(payload, variableName);
+          continue;
+        }
+      } catch {
+        // keep the current rendered value until a later edit or explicit run resolves it
+      }
+    }
+
+    if (token !== editRefreshSeq) return;
+    if (programSnapshot !== String(programText || "")) return;
+
+    const primaryName = String(primaryVariable || "");
+    if (anyPending && primaryName && names.includes(primaryName)) {
+      subscribeValueSocket({ variable: primaryName, path: currentPath, enqueue: true });
+      pendingEditRefresh = setTimeout(() => {
+        pendingEditRefresh = null;
+        void refreshDisplayedValuesAfterEdit(token);
+      }, 240);
+      return;
+    }
+
+    if (anyPending) {
+      pendingEditRefresh = setTimeout(() => {
+        pendingEditRefresh = null;
+        void refreshDisplayedValuesAfterEdit(token);
+      }, 240);
+    }
   };
 
   const probeOneSymbolStatus = async (symbolName, token) => {
@@ -3322,6 +3454,8 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     }
 
     try {
+      const previousPrimary = String(primaryVariable || "");
+      const previousSelected = Array.isArray(selectedVisualSymbols) ? [...selectedVisualSymbols] : [];
       const payload = await getProgramSymbols(programText);
       if (token !== loadToken) return;
       const available = payload?.available !== false;
@@ -3332,7 +3466,13 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       syncSymbolMaterializations(symbolTable);
       syncMaterializedRecords(symbolTable);
       syncSymbolTypeHints(symbolTable, staticTypeHints);
-      primaryVariable = inferPrimaryVariable(programText, symbolTable);
+
+      const nextNames = Object.keys(symbolTable || {});
+      const retainedSelected = previousSelected.filter((name) => nextNames.includes(name));
+      selectedVisualSymbols = retainedSelected;
+      primaryVariable = nextNames.includes(previousPrimary)
+        ? previousPrimary
+        : inferPrimaryVariable(programText, symbolTable);
       ensureSelectedVisualSymbols();
       captionVariable = primaryVariable || "-";
       renderSelectedRecords();
@@ -3371,6 +3511,8 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   const handleEditorChange = async (event) => {
     programText = String(event?.detail?.value ?? programText ?? "");
     schedulePersist();
+    stopEditRefresh();
+    editRefreshSeq += 1;
     resolveRequestSeq += 1;
     resolveInFlight = false;
     probeToken += 1;
@@ -3378,9 +3520,13 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     stopPoll();
     activeValueSubscription = null;
     stopValueSocket();
-    resetViewer();
     clearResolutionActivity();
     await refreshSymbols();
+    const token = editRefreshSeq;
+    pendingEditRefresh = setTimeout(() => {
+      pendingEditRefresh = null;
+      void refreshDisplayedValuesAfterEdit(token);
+    }, 120);
   };
 
   const resolveCurrentPreferCache = async () => {
@@ -3533,18 +3679,29 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     ensureRecordPages();
   }
 
-  onMount(async () => {
+  onMount(() => {
+    let cancelled = false;
+
     ensureViewer();
-    try {
-      const persisted = window.localStorage.getItem(STORAGE_KEY);
-      if (persisted && String(persisted).trim()) {
-        programText = persisted;
+    if (typeof window !== "undefined") {
+      try {
+        const persisted = window.localStorage.getItem(STORAGE_KEY);
+        if (persisted && String(persisted).trim()) {
+          programText = persisted;
+        }
+      } catch {
+        // ignore localStorage errors
       }
-    } catch {
-      // ignore localStorage errors
     }
 
-    await refreshSymbols();
+    void (async () => {
+      await refreshSymbols();
+      if (cancelled) return;
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   });
 
   onDestroy(() => {
@@ -3553,6 +3710,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     activeValueSubscription = null;
     stopValueSocket();
     stopProbe();
+    stopEditRefresh();
     probeToken += 1;
     if (pendingSave) clearTimeout(pendingSave);
     if (pendingDreamCleanup) clearTimeout(pendingDreamCleanup);

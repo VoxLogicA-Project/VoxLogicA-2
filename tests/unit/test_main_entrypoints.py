@@ -118,6 +118,8 @@ def test_dev_supervisor_prefixes_repo_pythonpath(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(main_mod.shutil, "which", lambda _name: "/usr/bin/npm")
     monkeypatch.setattr(main_mod, "setup_logging", lambda debug, verbose: None)
     monkeypatch.setattr(main_mod, "_terminate_child_process", lambda proc, name: None)
+    monkeypatch.setattr(main_mod, "_start_dev_backend_watcher", lambda repo_root, on_change: None)
+    monkeypatch.setattr(main_mod, "_stop_dev_backend_watcher", lambda observer: None)
     monkeypatch.setattr(main_mod.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(main_mod.subprocess, "run", lambda *args, **kwargs: None)
 
@@ -142,6 +144,28 @@ def test_dev_supervisor_prefixes_repo_pythonpath(monkeypatch: pytest.MonkeyPatch
     pythonpath = backend_env.get("PYTHONPATH", "")
     assert pythonpath
     assert pythonpath.split(os.pathsep)[0] == expected_prefix
+
+
+@pytest.mark.unit
+def test_dev_backend_watch_filter_limits_restarts_to_python_side_files():
+    repo_root = Path(main_mod.__file__).resolve().parents[3]
+
+    assert main_mod._is_dev_backend_watch_path(
+        repo_root,
+        repo_root / "implementation" / "python" / "voxlogica" / "main.py",
+    )
+    assert main_mod._is_dev_backend_watch_path(
+        repo_root,
+        repo_root / "implementation" / "python" / "requirements.txt",
+    )
+    assert not main_mod._is_dev_backend_watch_path(
+        repo_root,
+        repo_root / "implementation" / "ui" / "src" / "main.js",
+    )
+    assert not main_mod._is_dev_backend_watch_path(
+        repo_root,
+        repo_root / "implementation" / "python" / "__pycache__" / "main.cpython-312.pyc",
+    )
 
 
 @pytest.mark.unit
