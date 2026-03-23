@@ -104,6 +104,17 @@
     };
   };
 
+  const currentViewState = () => ({
+    selectionStart: Number(currentSelection().start || 0),
+    selectionEnd: Number(currentSelection().end || 0),
+    scrollTop: Math.max(0, Number(textareaEl?.scrollTop || 0)),
+    scrollLeft: Math.max(0, Number(textareaEl?.scrollLeft || 0)),
+  });
+
+  const emitViewState = () => {
+    dispatch("viewstate", currentViewState());
+  };
+
   const preserveViewport = () => {
     if (!textareaEl) return;
     pendingScroll = {
@@ -383,6 +394,25 @@
       }
     }
 
+    const ownerDocument = overlayContentEl.ownerDocument;
+    const tokenFromNode = (node) => {
+      const element = node?.nodeType === 1 ? node : node?.parentElement;
+      const tokenEl = element?.closest?.("[data-token-kind]");
+      return tokenEl && overlayContentEl.contains(tokenEl) ? tokenEl : null;
+    };
+
+    if (typeof ownerDocument?.caretPositionFromPoint === "function") {
+      const caret = ownerDocument.caretPositionFromPoint(clientX, clientY);
+      const tokenEl = tokenFromNode(caret?.offsetNode || null);
+      if (tokenEl) return tokenEl;
+    }
+
+    if (typeof ownerDocument?.caretRangeFromPoint === "function") {
+      const range = ownerDocument.caretRangeFromPoint(clientX, clientY);
+      const tokenEl = tokenFromNode(range?.startContainer || null);
+      if (tokenEl) return tokenEl;
+    }
+
     return null;
   };
 
@@ -391,15 +421,20 @@
     if (!activeNumberDrag?.active) {
       scheduleCompletion();
     }
+    emitViewState();
   };
 
   const handleScroll = () => {
     syncOverlayScroll();
+    emitViewState();
   };
 
   const handleSelect = () => {
-    if (activeNumberDrag?.active || !suggestionsOpen) return;
-    scheduleCompletion();
+    if (activeNumberDrag?.active) return;
+    if (suggestionsOpen) {
+      scheduleCompletion();
+    }
+    emitViewState();
   };
 
   const endNumberDrag = () => {
@@ -544,6 +579,7 @@
     if (!readonly && event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
       replaceSelection("  ", { emitInput: true, focus: true, selectionMode: "end" });
+      emitViewState();
     }
   };
 
@@ -632,11 +668,36 @@
     surfaceCursor = readonly ? "default" : "text";
     dispatch("hoverleave");
     dispatch("symbolleave");
+    emitViewState();
   };
 
   const handleFocus = () => {
     editorFocused = true;
+    emitViewState();
   };
+
+  export function getViewState() {
+    return currentViewState();
+  }
+
+  export function restoreViewState(state = {}) {
+    const start = Math.max(0, Number(state?.selectionStart || 0));
+    const end = Math.max(start, Number(state?.selectionEnd || state?.selectionStart || 0));
+    const scrollState = {
+      left: Math.max(0, Number(state?.scrollLeft || 0)),
+      top: Math.max(0, Number(state?.scrollTop || 0)),
+    };
+    if (textareaEl) {
+      textareaEl.setSelectionRange(start, end, "none");
+      textareaEl.scrollLeft = scrollState.left;
+      textareaEl.scrollTop = scrollState.top;
+      syncOverlayScroll();
+      emitViewState();
+      return;
+    }
+    pendingSelection = { start, end };
+    pendingScroll = scrollState;
+  }
 
   const chooseSuggestion = async (index) => {
     selectedSuggestion = Number(index || 0);
@@ -688,6 +749,7 @@
     pendingFocus = false;
     pendingSelection = null;
     pendingScroll = null;
+    emitViewState();
   });
 
   onDestroy(() => {

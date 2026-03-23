@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { getProgramSymbols, resolvePlaygroundValue, resolvePlaygroundValuePage } from "$lib/api/client.js";
   import { buildExecutionLogRows } from "$lib/utils/logs.js";
   import { buildFailureDetailsText, normalizedExecutionErrors } from "$lib/utils/playground-value.js";
@@ -13,11 +13,14 @@
     ongoingComputeActivity,
     pushComputeActivity,
   } from "$lib/stores/computeActivity.js";
+  import {
+    readPersistedStartState,
+    updatePersistedStartState,
+  } from "$lib/utils/ui-persistence.js";
 
   export let active = false;
   export let capabilities = {};
 
-  const STORAGE_KEY = "voxlogica.start.program.v1";
   const PRIMARY_VARIABLE_PREFERENCES = ["vi_sweep_overlays", "result", "output", "masks", "vi_sweep_masks"];
   const COMPLETION_BUILTINS = [
     "map",
@@ -142,11 +145,15 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   let resolveInFlight = false;
   let maximizedViewerIndex = -1;
   let startPrimeGridEl = null;
+  let startEditorRef = null;
+  let editorViewState = null;
   let splitRatio = 0.48;
   let splitDragActive = false;
   let splitDragCleanup = null;
   let recentlyMaterialized = {};
   let recentMaterializeTimers = {};
+  let persistenceReady = false;
+  let hasPersistedViewerRestore = false;
   const MAX_PENDING_POLL_TICKS = 45;
   const COLLECTION_PAGE_SIZE = 18;
   const SPLIT_MIN = 0.32;
@@ -1426,20 +1433,92 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     pendingProbe = null;
   };
 
+  const buildPersistedStartState = () => ({
+    programText: String(programText || ""),
+    editor:
+      editorViewState && typeof editorViewState === "object"
+        ? {
+            selectionStart: Math.max(0, Number(editorViewState.selectionStart || 0)),
+            selectionEnd: Math.max(0, Number(editorViewState.selectionEnd || editorViewState.selectionStart || 0)),
+            scrollTop: Math.max(0, Number(editorViewState.scrollTop || 0)),
+            scrollLeft: Math.max(0, Number(editorViewState.scrollLeft || 0)),
+          }
+        : null,
+    layout: {
+      showCodePanel,
+      showResultsPanel,
+      showOperationsPanel,
+      showOperationsHelp,
+      splitRatio,
+    },
+    viewer: {
+      primaryVariable: String(primaryVariable || ""),
+      currentPath: String(currentPath || ""),
+      selectedVisualSymbols: Array.isArray(selectedVisualSymbols) ? [...selectedVisualSymbols] : [],
+      maximizedViewerIndex,
+      collectionSelections,
+      recordPagePointers,
+    },
+  });
+
   const schedulePersist = () => {
     if (pendingSave) clearTimeout(pendingSave);
     pendingSave = setTimeout(() => {
       if (destroyed) return;
-      if (typeof window === "undefined") return;
-      try {
-        window.localStorage.setItem(STORAGE_KEY, String(programText || ""));
-      } catch {
-        // ignore persistence errors in restricted browser contexts
-      }
+      updatePersistedStartState(buildPersistedStartState());
     }, 180);
   };
 
+  const restorePersistedStartState = async () => {
+    const persisted = readPersistedStartState();
+    programText = String(persisted?.programText || programText || "");
+    editorViewState = persisted?.editor && typeof persisted.editor === "object" ? { ...persisted.editor } : null;
+    showCodePanel = Boolean(persisted?.layout?.showCodePanel ?? showCodePanel);
+    showResultsPanel = Boolean(persisted?.layout?.showResultsPanel ?? showResultsPanel);
+    showOperationsPanel = Boolean(persisted?.layout?.showOperationsPanel ?? showOperationsPanel);
+    showOperationsHelp = Boolean(persisted?.layout?.showOperationsHelp ?? showOperationsHelp);
+    splitRatio = clampSplitRatio(persisted?.layout?.splitRatio ?? splitRatio);
+    primaryVariable = String(persisted?.viewer?.primaryVariable || primaryVariable || "");
+    captionVariable = primaryVariable || captionVariable;
+    currentPath = String(persisted?.viewer?.currentPath || "");
+    selectedVisualSymbols = Array.isArray(persisted?.viewer?.selectedVisualSymbols)
+      ? [...persisted.viewer.selectedVisualSymbols]
+      : [];
+    maximizedViewerIndex = Number.isInteger(persisted?.viewer?.maximizedViewerIndex)
+      ? Number(persisted.viewer.maximizedViewerIndex)
+      : -1;
+    collectionSelections = persisted?.viewer?.collectionSelections && typeof persisted.viewer.collectionSelections === "object"
+      ? { ...persisted.viewer.collectionSelections }
+      : {};
+    recordPagePointers = persisted?.viewer?.recordPagePointers && typeof persisted.viewer.recordPagePointers === "object"
+      ? { ...persisted.viewer.recordPagePointers }
+      : {};
+    hasPersistedViewerRestore = Boolean(
+      String(primaryVariable || "").trim() ||
+        String(currentPath || "").trim() ||
+        (Array.isArray(selectedVisualSymbols) && selectedVisualSymbols.length) ||
+        (recordPagePointers && Object.keys(recordPagePointers).length) ||
+        (collectionSelections && Object.keys(collectionSelections).length),
+    );
+    await tick();
+    if (startEditorRef && typeof startEditorRef.restoreViewState === "function" && editorViewState) {
+      startEditorRef.restoreViewState(editorViewState);
+    }
+  };
+
+  const handleEditorViewState = (event) => {
+    const state = event?.detail;
+    if (!state || typeof state !== "object") return;
+    editorViewState = {
+      selectionStart: Math.max(0, Number(state.selectionStart || 0)),
+      selectionEnd: Math.max(0, Number(state.selectionEnd || state.selectionStart || 0)),
+      scrollTop: Math.max(0, Number(state.scrollTop || 0)),
+      scrollLeft: Math.max(0, Number(state.scrollLeft || 0)),
+    };
+  };
+
   const applyDisplayedValueRefresh = (payload, variableName) => {
+    refreshVariableNestedCaches(variableName, payload);
     const descriptor = payload?.descriptor && typeof payload.descriptor === "object" ? payload.descriptor : null;
     const materialization = String(payload?.materialization || payload?.status || "materialized");
     setSymbolStatus(variableName, "computed");
@@ -2165,6 +2244,39 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   const recordJustMaterialized = (record) => Boolean(recentlyMaterialized?.[String(record?.node_id || "")]);
 
   const pathRecordKey = (sourceVariable = "", path = "") => `${String(sourceVariable || "")}:${String(path || "/")}`;
+
+  const clearPathRecordCacheForVariable = (sourceVariable = "") => {
+    const variableName = String(sourceVariable || "").trim();
+    if (!variableName) return;
+    const prefix = `${variableName}:`;
+
+    for (const [key, timer] of Object.entries(pathRecordPollTimers || {})) {
+      if (!String(key || "").startsWith(prefix)) continue;
+      clearTimeout(timer);
+    }
+
+    pathRecords = Object.fromEntries(
+      Object.entries(pathRecords || {}).filter(([key]) => !String(key || "").startsWith(prefix)),
+    );
+    pathRecordsLoading = Object.fromEntries(
+      Object.entries(pathRecordsLoading || {}).filter(([key]) => !String(key || "").startsWith(prefix)),
+    );
+    pathRecordsErrors = Object.fromEntries(
+      Object.entries(pathRecordsErrors || {}).filter(([key]) => !String(key || "").startsWith(prefix)),
+    );
+    pathRecordPollTimers = Object.fromEntries(
+      Object.entries(pathRecordPollTimers || {}).filter(([key]) => !String(key || "").startsWith(prefix)),
+    );
+  };
+
+  const refreshVariableNestedCaches = (sourceVariable = "", nextRecord = null) => {
+    const variableName = String(sourceVariable || "").trim();
+    if (!variableName || !nextRecord || typeof nextRecord !== "object") return;
+    const previousNodeId = String(materializedRecords?.[variableName]?.node_id || "").trim();
+    const nextNodeId = String(nextRecord?.node_id || "").trim();
+    if (!previousNodeId || !nextNodeId || previousNodeId === nextNodeId) return;
+    clearPathRecordCacheForVariable(variableName);
+  };
 
   const pathRecordFor = (sourceVariable = "", path = "") => pathRecords?.[pathRecordKey(sourceVariable, path)] || null;
 
@@ -3183,6 +3295,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
   const applyMaterialized = (payload, variableName) => {
     clearStaleValue();
+    refreshVariableNestedCaches(variableName, payload);
     const descriptor = payload?.descriptor && typeof payload.descriptor === "object" ? payload.descriptor : null;
     const materialization = String(payload?.materialization || payload?.status || "materialized");
     traceResolve("materialized", {
@@ -3693,9 +3806,6 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
   export async function loadProgram(code, runAfterLoad = false) {
     programText = String(code || "");
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(STORAGE_KEY, programText);
-    }
     resolveRequestSeq += 1;
     resolveInFlight = false;
     stopPoll();
@@ -3773,24 +3883,46 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     ensureRecordPages();
   }
 
+  $: startPersistenceSignature = JSON.stringify({
+    programText,
+    editorViewState,
+    showCodePanel,
+    showResultsPanel,
+    showOperationsPanel,
+    showOperationsHelp,
+    splitRatio,
+    primaryVariable,
+    currentPath,
+    selectedVisualSymbols,
+    maximizedViewerIndex,
+    collectionSelections,
+    recordPagePointers,
+  });
+
+  $: if (persistenceReady) {
+    startPersistenceSignature;
+    schedulePersist();
+  }
+
   onMount(() => {
     let cancelled = false;
 
     ensureViewer();
-    if (typeof window !== "undefined") {
-      try {
-        const persisted = window.localStorage.getItem(STORAGE_KEY);
-        if (persisted && String(persisted).trim()) {
-          programText = persisted;
-        }
-      } catch {
-        // ignore localStorage errors
-      }
-    }
 
     void (async () => {
+      await restorePersistedStartState();
       await refreshSymbols();
       if (cancelled) return;
+      if (startEditorRef && typeof startEditorRef.restoreViewState === "function" && editorViewState) {
+        await tick();
+        if (!cancelled && startEditorRef && typeof startEditorRef.restoreViewState === "function") {
+          startEditorRef.restoreViewState(editorViewState);
+        }
+      }
+      if (hasPersistedViewerRestore && primaryVariable) {
+        void resolvePrimaryValue({ enqueue: false, path: currentPath, background: true });
+      }
+      persistenceReady = true;
     })();
 
     return () => {
@@ -3839,6 +3971,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         <section class="start-prime-editor">
           <div class="start-prime-editor-frame">
             <VoxCodeEditor
+              bind:this={startEditorRef}
               ariaLabel="Start tab code editor"
               bind:value={programText}
               symbols={symbolTable}
@@ -3850,6 +3983,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
               completionProvider={provideEditorCompletions}
               completionBuiltins={COMPLETION_BUILTINS}
               on:change={handleEditorChange}
+              on:viewstate={handleEditorViewState}
               on:symbolclick={handleEditorSymbolClick}
             />
           </div>

@@ -10,6 +10,11 @@
   import ResultsTab from "$lib/components/tabs/ResultsTab.svelte";
   import GalleryTab from "$lib/components/tabs/GalleryTab.svelte";
   import QualityTab from "$lib/components/tabs/QualityTab.svelte";
+  import {
+    readPersistedAppState,
+    readPersistedStartProgram,
+    updatePersistedAppState,
+  } from "$lib/utils/ui-persistence.js";
 
   const tabs = [
     { id: "start", label: "Start" },
@@ -35,11 +40,19 @@
   const clientLogMaxQueue = 300;
   const clientLogBatchSize = 40;
   const AUTOMATION_BRIDGE_NAME = "__VOXLOGICA_AUTOMATION__";
-  const START_PROGRAM_STORAGE_KEY = "voxlogica.start.program.v1";
+  let appPersistenceReady = false;
 
   const selectTab = (tabId) => {
     activeTab = String(tabId || "start");
     tabsMenuOpen = false;
+  };
+
+  const restorePersistedAppState = () => {
+    const persisted = readPersistedAppState();
+    const persistedTab = String(persisted?.activeTab || "").trim();
+    if (tabs.some((tab) => tab.id === persistedTab)) {
+      activeTab = persistedTab;
+    }
   };
 
   const toggleTabsMenu = () => {
@@ -245,7 +258,7 @@
         if (startTabRef && typeof startTabRef.getProgramText === "function") {
           return startTabRef.getProgramText();
         }
-        return window.localStorage.getItem(START_PROGRAM_STORAGE_KEY) || "";
+        return readPersistedStartProgram("");
       },
       loadProgram: async (code, runAfterLoad = false) => await loadProgramInStartTab(code, runAfterLoad),
       selectStartSymbol: async (token) => await selectStartSymbol(token),
@@ -261,7 +274,13 @@
     publishAutomationBridge();
   }
 
+  $: if (appPersistenceReady) {
+    updatePersistedAppState({ activeTab });
+  }
+
   onMount(async () => {
+    restorePersistedAppState();
+    appPersistenceReady = true;
     installClientLogger();
     try {
       const [caps, version] = await Promise.all([getCapabilities(), getVersion()]);

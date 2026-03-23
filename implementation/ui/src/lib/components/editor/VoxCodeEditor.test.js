@@ -255,4 +255,68 @@ describe("VoxCodeEditor", () => {
       expect(editor.selectionEnd).toBe(13);
     });
   });
+
+  it("falls back to caret-based token lookup when rectangle hit-testing misses", async () => {
+    const { container } = render(VoxCodeEditor, {
+      value: "threshold = 5",
+      symbols: {},
+      diagnostics: [],
+    });
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    const numberToken = container.querySelector('.vx-editor__token--number[data-token-text="5"]');
+    expect(editor).not.toBeNull();
+    expect(numberToken).not.toBeNull();
+
+    editor.focus();
+    editor.setSelectionRange(12, 13);
+
+    numberToken.getBoundingClientRect = () => ({
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0,
+      width: 0,
+      height: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    const ownerDocument = numberToken.ownerDocument;
+    const originalCaretPositionFromPoint = ownerDocument.caretPositionFromPoint;
+    const originalCaretRangeFromPoint = ownerDocument.caretRangeFromPoint;
+
+    ownerDocument.caretPositionFromPoint = vi.fn(() => ({
+      offsetNode: numberToken.firstChild,
+      offset: 0,
+    }));
+    ownerDocument.caretRangeFromPoint = undefined;
+
+    try {
+      await fireEvent.pointerDown(editor, {
+        pointerId: 2,
+        button: 0,
+        clientX: 16,
+        clientY: 24,
+      });
+      await fireEvent.pointerMove(editor, {
+        pointerId: 2,
+        clientX: 16,
+        clientY: 12,
+      });
+      await fireEvent.pointerUp(editor, {
+        pointerId: 2,
+        clientX: 16,
+        clientY: 12,
+      });
+
+      await waitFor(() => {
+        expect(editor.value).toBe("threshold = 7");
+      });
+    } finally {
+      ownerDocument.caretPositionFromPoint = originalCaretPositionFromPoint;
+      ownerDocument.caretRangeFromPoint = originalCaretRangeFromPoint;
+    }
+  });
 });

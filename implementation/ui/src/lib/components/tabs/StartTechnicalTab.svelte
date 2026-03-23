@@ -7,11 +7,16 @@
   import { summarizeDescriptor } from "$lib/utils/playground-value.js";
   import VoxCodeEditor from "$lib/components/editor/VoxCodeEditor.svelte";
   import StatusChip from "$lib/components/shared/StatusChip.svelte";
+  import {
+    readPersistedStartProgram,
+    readPersistedStartTechnicalState,
+    updatePersistedStartTechnicalState,
+    writePersistedStartProgram,
+  } from "$lib/utils/ui-persistence.js";
 
   export let active = false;
   export let capabilities = {};
 
-  const STORAGE_KEY = "voxlogica.start.program.v1";
   const PRIMARY_VARIABLE_PREFERENCES = ["vi_sweep_overlays", "result", "output", "masks", "vi_sweep_masks"];
   const COMPLETION_BUILTINS = [
     "map",
@@ -95,6 +100,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   let pendingProbe = null;
   let probeToken = 0;
   let resolveTraceSeq = 0;
+  let persistenceReady = false;
 
   let initialized = false;
   let loadToken = 0;
@@ -271,11 +277,8 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   const schedulePersist = () => {
     if (pendingSave) clearTimeout(pendingSave);
     pendingSave = setTimeout(() => {
-      try {
-        window.localStorage.setItem(STORAGE_KEY, String(programText || ""));
-      } catch {
-        // ignore persistence errors in restricted browser contexts
-      }
+      writePersistedStartProgram(String(programText || ""));
+      updatePersistedStartTechnicalState({ splitPercent });
     }, 180);
   };
 
@@ -823,6 +826,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       const y = moveEvent.clientY - rect.top;
       const next = Math.max(28, Math.min(82, (y / rect.height) * 100));
       splitPercent = Number(next.toFixed(2));
+      if (persistenceReady) {
+        schedulePersist();
+      }
     };
 
     const onPointerUp = () => {
@@ -838,14 +844,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   };
 
   onMount(async () => {
-    try {
-      const persisted = window.localStorage.getItem(STORAGE_KEY);
-      if (persisted && String(persisted).trim()) {
-        programText = persisted;
-      }
-    } catch {
-      // ignore localStorage errors
-    }
+    programText = readPersistedStartProgram(DEFAULT_PROGRAM);
+    splitPercent = Number(readPersistedStartTechnicalState().splitPercent || splitPercent);
+    persistenceReady = true;
 
     initialized = true;
     await refreshSymbols();

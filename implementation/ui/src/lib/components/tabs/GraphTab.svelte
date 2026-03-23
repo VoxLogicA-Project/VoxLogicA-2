@@ -1,9 +1,8 @@
 <script>
   import { getPlaygroundGraph } from "$lib/api/client.js";
+  import { readPersistedStartProgram } from "$lib/utils/ui-persistence.js";
 
   export let active = false;
-
-  const STORAGE_KEY = "voxlogica.start.program.v1";
 
   let graph = null;
   let loading = false;
@@ -61,7 +60,7 @@
     loading = true;
     errorText = "";
     try {
-      const program = window.localStorage.getItem(STORAGE_KEY) || "";
+      const program = readPersistedStartProgram("");
       const payload = await getPlaygroundGraph(program);
       graph = payload;
       computeLayout(payload);

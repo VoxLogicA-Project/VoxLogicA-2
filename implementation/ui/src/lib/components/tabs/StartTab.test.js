@@ -4,6 +4,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import StartTab from "./StartTab.svelte";
 import { clearComputeActivity, ongoingComputeActivity, pushComputeActivity } from "$lib/stores/computeActivity.js";
+import { UI_STATE_STORAGE_KEY } from "$lib/utils/ui-persistence.js";
 
 const getProgramSymbolsMock = vi.fn();
 const resolvePlaygroundValueMock = vi.fn();
@@ -26,6 +27,8 @@ vi.mock("$lib/api/client.js", () => ({
 }));
 
 describe("StartTab", () => {
+  const persistedStartProgram = () => JSON.parse(window.localStorage.getItem(UI_STATE_STORAGE_KEY) || "{}");
+
   beforeEach(() => {
     window.localStorage.clear();
     clearComputeActivity();
@@ -84,7 +87,7 @@ describe("StartTab", () => {
     });
   });
 
-  it("persists edited code in localStorage", async () => {
+  it("persists edited code in unified UI state", async () => {
     vi.useFakeTimers();
     getProgramSymbolsMock.mockResolvedValue({
       available: true,
@@ -118,10 +121,94 @@ describe("StartTab", () => {
     await fireEvent.input(editor);
     vi.advanceTimersByTime(220);
     await waitFor(() => {
-      expect(window.localStorage.getItem("voxlogica.start.program.v1")).toBe("x = 3");
+      expect(persistedStartProgram().start?.programText).toBe("x = 3");
     });
 
     vi.useRealTimers();
+  });
+
+  it("restores persisted editor, layout, and viewer state from unified UI state", async () => {
+    window.localStorage.setItem(
+      UI_STATE_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        app: { activeTab: "start" },
+        start: {
+          programText: "a = 1\nb = a + 1",
+          editor: {
+            selectionStart: 2,
+            selectionEnd: 5,
+            scrollTop: 14,
+            scrollLeft: 7,
+          },
+          layout: {
+            showCodePanel: true,
+            showResultsPanel: true,
+            showOperationsPanel: false,
+            showOperationsHelp: false,
+            splitRatio: 0.61,
+          },
+          viewer: {
+            primaryVariable: "a",
+            currentPath: "/child",
+            selectedVisualSymbols: ["a"],
+            maximizedViewerIndex: -1,
+            collectionSelections: {},
+            recordPagePointers: {},
+          },
+        },
+      }),
+    );
+
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { a: "node-a", b: "node-b" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-a",
+      path: "/child",
+      descriptor: {
+        vox_type: "integer",
+        format_version: "voxpod/1",
+        summary: { value: 1 },
+        navigation: {
+          path: "/child",
+          pageable: false,
+          can_descend: false,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+      expect(resolvePlaygroundValueMock).toHaveBeenCalled();
+    });
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor?.value).toBe("a = 1\nb = a + 1");
+
+    const codeToggle = [...container.querySelectorAll(".start-pane-toggle")].find((button) =>
+      String(button.textContent || "").includes("Code"),
+    );
+    const operationsToggle = [...container.querySelectorAll(".start-pane-toggle")].find((button) =>
+      String(button.textContent || "").includes("Operations"),
+    );
+    expect(codeToggle?.getAttribute("aria-pressed")).toBe("true");
+    expect(operationsToggle?.getAttribute("aria-pressed")).toBe("false");
+
+    const grid = container.querySelector(".start-prime-grid");
+    expect(grid?.getAttribute("style") || "").toContain("61.0%");
+
+    const latestResolve = resolvePlaygroundValueMock.mock.calls.at(-1)?.[0];
+    expect(latestResolve?.variable).toBe("a");
+    expect(latestResolve?.path).toBe("/child");
   });
 
   it("surfaces static diagnostics and blocks value resolve", async () => {
@@ -794,6 +881,141 @@ describe("StartTab", () => {
       expect(resolvePlaygroundValuePageMock).toHaveBeenCalled();
       expect(get(ongoingComputeActivity)).toHaveLength(0);
     });
+  });
+
+  it("reloads selected collection child detail after the parent node changes on edit", async () => {
+    vi.useFakeTimers();
+
+    const initialProgram = "xs = old";
+    const updatedProgram = "xs = new";
+    window.localStorage.setItem("voxlogica.start.program.v1", initialProgram);
+
+    getProgramSymbolsMock.mockImplementation(async (program) => ({
+      available: true,
+      symbol_table: { xs: String(program || "").trim() === updatedProgram ? "node-xs-new" : "node-xs-old" },
+      diagnostics: [],
+    }));
+
+    resolvePlaygroundValueMock.mockImplementation(async ({ program, variable, path = "" }) => {
+      const source = String(program || "").trim();
+      const isUpdated = source === updatedProgram;
+      if (variable !== "xs") throw new Error(`unexpected variable ${variable}`);
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: isUpdated ? "node-xs-new" : "node-xs-old",
+          path: "/",
+          descriptor: {
+            vox_type: "sequence",
+            format_version: "voxpod/1",
+            summary: { length: 1 },
+            navigation: {
+              path: "/",
+              pageable: true,
+              can_descend: true,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      if (path === "/0") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: isUpdated ? "node-xs-new-item" : "node-xs-old-item",
+          path: "/0",
+          descriptor: {
+            vox_type: "integer",
+            format_version: "voxpod/1",
+            summary: { value: isUpdated ? 99 : 1 },
+            navigation: {
+              path: "/0",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    resolvePlaygroundValuePageMock.mockImplementation(async ({ path = "", offset = 0, limit = 64 }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          path: "/",
+          page: {
+            offset,
+            limit,
+            has_more: false,
+            next_offset: null,
+            total: 1,
+            items: [
+              {
+                index: 0,
+                label: "[0]",
+                path: "/0",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "unavailable",
+                  format_version: "voxpod/1",
+                  summary: { reason: "detail required" },
+                  navigation: {
+                    path: "/0",
+                    pageable: false,
+                    can_descend: false,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+            ],
+          },
+        };
+      }
+      throw new Error(`unexpected page path ${path}`);
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      const initialDetailCalls = resolvePlaygroundValueMock.mock.calls.filter(
+        ([request]) => request?.variable === "xs" && request?.path === "/0" && request?.program === initialProgram,
+      );
+      expect(initialDetailCalls).toHaveLength(1);
+      expect(container.textContent).toContain("1");
+    });
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+    editor.value = updatedProgram;
+    await fireEvent.input(editor);
+
+    vi.advanceTimersByTime(220);
+    await Promise.resolve();
+    vi.advanceTimersByTime(260);
+
+    await waitFor(() => {
+      const updatedDetailCalls = resolvePlaygroundValueMock.mock.calls.filter(
+        ([request]) => request?.variable === "xs" && request?.path === "/0" && request?.program === updatedProgram,
+      );
+      expect(updatedDetailCalls).toHaveLength(1);
+      expect(container.textContent).toContain("99");
+    });
+
+    vi.useRealTimers();
   });
 
   it("surfaces concrete execution error details instead of generic failure counts", async () => {
