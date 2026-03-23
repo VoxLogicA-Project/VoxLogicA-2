@@ -868,6 +868,10 @@ body {
   flex: 1.55 1 0;
 }
 
+.start-prime-results.is-stale {
+  position: relative;
+}
+
 .start-prime-operations {
   flex: 1 1 0;
 }
@@ -1161,6 +1165,20 @@ body {
   pointer-events: none;
 }
 
+.start-value-card.is-stale {
+  border-color: rgba(196, 139, 48, 0.42);
+  background: linear-gradient(170deg, rgba(255, 252, 245, 0.96), rgba(250, 246, 236, 0.9));
+  box-shadow: inset 0 0 0 1px rgba(255, 248, 232, 0.84), 0 0 0 1px rgba(196, 139, 48, 0.08);
+}
+
+.start-value-card.is-stale::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 244, 214, 0.16), rgba(255, 244, 214, 0.02));
+}
+
 .start-value-card.is-just-materialized {
   animation: startCrystalIn 520ms cubic-bezier(0.2, 0.9, 0.2, 1);
 }
@@ -1186,6 +1204,20 @@ body {
   font-weight: 700;
   color: #3c4f69;
   min-height: 0.9rem;
+}
+
+.start-value-card-stale {
+  flex: 0 0 auto;
+  margin-left: auto;
+  border: 1px solid rgba(196, 139, 48, 0.36);
+  border-radius: 999px;
+  background: rgba(255, 245, 219, 0.92);
+  color: #8a621b;
+  font-size: 0.61rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.14rem 0.38rem;
 }
 
 .start-value-card-expand {
@@ -2008,6 +2040,18 @@ body {
   letter-spacing: -0.01em;
 }
 
+.start-caption-status {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(196, 139, 48, 0.34);
+  border-radius: 999px;
+  background: rgba(255, 245, 219, 0.88);
+  color: #8a621b;
+  font-size: 0.66rem;
+  font-weight: 700;
+  padding: 0.14rem 0.42rem;
+}
+
 .start-prime-action-row {
   display: flex;
   justify-content: flex-start;
@@ -2069,6 +2113,31 @@ body {
 .start-run-state--failed {
   background: #e56d75;
   box-shadow: 0 0 0 1px rgba(229, 109, 117, 0.56), 0 0 12px rgba(229, 109, 117, 0.34);
+}
+
+.start-stale-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.55rem;
+  padding: 0.42rem 0.54rem;
+  border: 1px solid rgba(196, 139, 48, 0.28);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(255, 251, 241, 0.98), rgba(255, 247, 228, 0.94));
+  color: #7b5a18;
+}
+
+.start-stale-banner-label {
+  flex: 0 0 auto;
+  font-size: 0.64rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.start-stale-banner-text {
+  font-size: 0.76rem;
+  line-height: 1.35;
 }
 
 @keyframes startPulse {

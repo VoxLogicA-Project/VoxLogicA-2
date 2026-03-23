@@ -85,6 +85,8 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   let statusValue = "idle";
   let statusText = "Write code and run to compute a value.";
   let errorText = "";
+  let staleValueVisible = false;
+  let staleValueReason = "";
   let pendingLogSummary = "No execution log yet.";
   let pendingLogRows = [];
   let pendingLogRaw = "";
@@ -152,6 +154,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   const ACTIVE_COLLECTION_ITEM_STATES = new Set(["queued", "blocked", "running", "persisting"]);
 
   let loadToken = 0;
+  let destroyed = false;
 
   const TYPE_LABELS = {
     scalar: "value",
@@ -265,6 +268,19 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       return normalized;
     }
     return "unresolved";
+  };
+
+  const clearStaleValue = () => {
+    staleValueVisible = false;
+    staleValueReason = "";
+  };
+
+  const markStaleValue = (reason = "") => {
+    const hasRenderedValue = viewerMode === "value" && Array.isArray(viewerRecords) && viewerRecords.length > 0;
+    staleValueVisible = hasRenderedValue;
+    staleValueReason = hasRenderedValue
+      ? String(reason || "Showing the last computed value while you edit.")
+      : "";
   };
 
   const normalizeCollectionItemState = (item) => {
@@ -1218,6 +1234,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       const delay = wsReconnectDelayMs(valueWsAttempts);
       if (valueWsReconnectTimer) clearTimeout(valueWsReconnectTimer);
       valueWsReconnectTimer = setTimeout(() => {
+        if (destroyed) return;
         ensureValueSocket();
       }, delay);
     };
@@ -1277,6 +1294,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     });
     pendingPollTicks = 0;
     pendingPoll = setInterval(() => {
+      if (destroyed) return;
       if (resolveInFlight) return;
       pendingPollTicks += 1;
       if (pendingPollTicks > MAX_PENDING_POLL_TICKS) {
@@ -1366,6 +1384,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       [key]: true,
     };
     const timer = setTimeout(() => {
+      if (destroyed) return;
       const nextPulse = { ...recentlyMaterialized };
       delete nextPulse[key];
       recentlyMaterialized = nextPulse;
@@ -1388,6 +1407,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   const schedulePersist = () => {
     if (pendingSave) clearTimeout(pendingSave);
     pendingSave = setTimeout(() => {
+      if (destroyed) return;
       if (typeof window === "undefined") return;
       try {
         window.localStorage.setItem(STORAGE_KEY, String(programText || ""));
@@ -1506,6 +1526,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     if (anyPending && primaryName && names.includes(primaryName)) {
       subscribeValueSocket({ variable: primaryName, path: currentPath, enqueue: true });
       pendingEditRefresh = setTimeout(() => {
+        if (destroyed) return;
         pendingEditRefresh = null;
         void refreshDisplayedValuesAfterEdit(token);
       }, 240);
@@ -1514,6 +1535,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
     if (anyPending) {
       pendingEditRefresh = setTimeout(() => {
+        if (destroyed) return;
         pendingEditRefresh = null;
         void refreshDisplayedValuesAfterEdit(token);
       }, 240);
@@ -1576,6 +1598,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     const token = probeToken + 1;
     probeToken = token;
     pendingProbe = setTimeout(() => {
+      if (destroyed) return;
       pendingProbe = null;
       if (token !== probeToken || statusValue === "running" || pendingPoll) return;
       const safeNames = Object.keys(symbolTable || {});
@@ -2164,12 +2187,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   };
 
   const schedulePathRecordPoll = ({ sourceVariable = "", path = "", delayMs = 850 } = {}) => {
+    if (destroyed) return;
     const variableName = String(sourceVariable || "").trim();
     const targetPath = String(path || "");
     if (!variableName) return;
     const key = pathRecordKey(variableName, targetPath);
     if (pathRecordPollTimers?.[key]) return;
     const timer = setTimeout(() => {
+      if (destroyed) return;
       clearPathRecordPoll(key);
       void loadPathRecord({
         sourceVariable: variableName,
@@ -2185,6 +2210,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   };
 
   const loadPathRecord = async ({ sourceVariable = "", path = "", enqueueFallback = true, force = false } = {}) => {
+    if (destroyed) return null;
     const variableName = String(sourceVariable || "").trim();
     const targetPath = String(path || "");
     if (!variableName) return null;
@@ -2235,6 +2261,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
     try {
       const first = await tryResolve(false);
+      if (destroyed) return null;
       const firstMaterialization = String(first?.materialization || "").toLowerCase();
       const firstStatus = String(first?.compute_status || "").toLowerCase();
       const firstFailed = firstMaterialization === "failed" || ["failed", "killed"].includes(firstStatus);
@@ -2302,6 +2329,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
       if (enqueueFallback && ["pending", "missing"].includes(firstMaterialization) && !["failed", "killed"].includes(firstStatus)) {
         const second = await tryResolve(true);
+        if (destroyed) return null;
         const secondMaterialization = String(second?.materialization || "").toLowerCase();
         const secondStatus = String(second?.compute_status || "").toLowerCase();
         const secondFailed = secondMaterialization === "failed" || ["failed", "killed"].includes(secondStatus);
@@ -2416,6 +2444,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       });
       return null;
     } catch (error) {
+      if (destroyed) return null;
       if (isTimeoutError(error)) {
         logPathLoadActivity({
           phase: "update",
@@ -2441,6 +2470,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       };
       return null;
     } finally {
+      if (destroyed) return;
       const nextLoading = { ...pathRecordsLoading };
       delete nextLoading[key];
       pathRecordsLoading = nextLoading;
@@ -2476,10 +2506,12 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     record,
     { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, delayMs = 900, sourceVariable = "" } = {},
   ) => {
+    if (destroyed) return;
     const resolvedPath = String(path || recordPath(record) || "");
     const baseKey = pageKey(record, resolvedPath);
     if (recordPagePollTimers?.[baseKey]) return;
     const timer = setTimeout(() => {
+      if (destroyed) return;
       clearRecordPagePoll(baseKey);
       void loadRecordPage(record, {
         path: resolvedPath,
@@ -2500,6 +2532,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     record,
     { path = "", offset = 0, limit = COLLECTION_PAGE_SIZE, enqueueFallback = true, force = false, sourceVariable = "" } = {},
   ) => {
+    if (destroyed) return null;
     if (!record || !collectionRecord(record)) return null;
     const descriptor = recordDescriptor(record);
     const navigation = descriptor?.navigation && typeof descriptor.navigation === "object" ? descriptor.navigation : {};
@@ -2563,6 +2596,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         });
 
       let payload = await requestPage(false);
+      if (destroyed) return null;
       const pendingStatuses = new Set(["queued", "running", "persisting", "pending", "missing"]);
       const payloadMaterialization = String(payload?.materialization || "").toLowerCase();
       const payloadStatus = String(payload?.compute_status || "").toLowerCase();
@@ -2576,6 +2610,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
       if (enqueueFallback && needsFallback && (likelyPending || expectedLength > 0)) {
         payload = await requestPage(true);
+        if (destroyed) return null;
       }
 
       const effectivePage = applyRecordPagePayload(record, {
@@ -2633,6 +2668,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       }
       return effectivePage;
     } catch (error) {
+      if (destroyed) return null;
       if (isTimeoutError(error)) {
         logPageLoadActivity({
           phase: "update",
@@ -2699,6 +2735,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       };
       return null;
     } finally {
+      if (destroyed) return;
       const nextLoading = { ...recordPagesLoading };
       delete nextLoading[cacheKey];
       recordPagesLoading = nextLoading;
@@ -2849,6 +2886,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     storeDissolveDream();
     if (pendingDreamCleanup) clearTimeout(pendingDreamCleanup);
     pendingDreamCleanup = setTimeout(() => {
+      if (destroyed) return;
       clearDream();
       pendingDreamCleanup = null;
     }, 1200);
@@ -2900,6 +2938,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     viewerMode = "empty";
     viewerMessage = "";
     viewerErrorMessage = "";
+    clearStaleValue();
     recordPages = {};
     recordPagePointers = {};
     recordPageSources = {};
@@ -2954,6 +2993,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     String(request?.program || "") === String(programText || "");
 
   const applyFailure = (payload, variableName) => {
+    clearStaleValue();
     const executionErrors = normalizedExecutionErrors(payload);
     const executionErrorEntries = Object.entries(executionErrors || {});
     const primaryExecutionMessage = executionErrorEntries.length ? String(executionErrorEntries[0]?.[1] || "").trim() : "";
@@ -3071,6 +3111,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   };
 
   const applyPending = (payload, variableName) => {
+    clearStaleValue();
     const state = String(payload?.compute_status || payload?.materialization || "running");
     traceResolve("pending", {
       variable: variableName,
@@ -3112,6 +3153,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   };
 
   const applyMaterialized = (payload, variableName) => {
+    clearStaleValue();
     const descriptor = payload?.descriptor && typeof payload.descriptor === "object" ? payload.descriptor : null;
     const materialization = String(payload?.materialization || payload?.status || "materialized");
     traceResolve("materialized", {
@@ -3173,7 +3215,6 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     }
     if (symbolDiagnostics.length) {
       const summary = diagnosticsSummaryText() || "Fix static diagnostics before computing.";
-      const details = diagnosticsDetailsText() || summary;
       traceResolve("skip-diagnostics", {
         traceId,
         enqueue,
@@ -3181,13 +3222,12 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         variable: primaryVariable,
         diagnostics: symbolDiagnostics.length,
       });
-      statusValue = "failed";
-      statusText = summary;
+      markStaleValue(summary);
+      statusValue = "idle";
+      statusText = staleValueVisible ? "Results are stale until editor diagnostics are fixed." : summary;
       captionVariable = primaryVariable;
       dissolveDream();
-      viewer.setError(summary);
-      errorText = details;
-      setSymbolStatus(primaryVariable, "failed");
+      errorText = "";
       return { state: "failed", reason: "diagnostics" };
     }
 
@@ -3411,6 +3451,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   };
 
   const refreshSymbols = async () => {
+    if (destroyed) return;
     if (capabilities.playground_symbols === false) {
       probeToken += 1;
       stopProbe();
@@ -3423,6 +3464,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       selectedVisualSymbols = [];
       primaryVariable = "";
       captionVariable = "-";
+      clearStaleValue();
       statusValue = "failed";
       statusText = "Program symbol API unavailable on this backend.";
       errorText = statusText;
@@ -3446,6 +3488,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       selectedVisualSymbols = [];
       primaryVariable = "";
       captionVariable = "-";
+      clearStaleValue();
       statusValue = "idle";
       statusText = "Write code and run to compute a value.";
       errorText = "";
@@ -3457,6 +3500,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       const previousPrimary = String(primaryVariable || "");
       const previousSelected = Array.isArray(selectedVisualSymbols) ? [...selectedVisualSymbols] : [];
       const payload = await getProgramSymbols(programText);
+      if (destroyed) return;
       if (token !== loadToken) return;
       const available = payload?.available !== false;
       symbolTable = available ? payload.symbol_table || {} : {};
@@ -3478,17 +3522,19 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       renderSelectedRecords();
       if (symbolDiagnostics.length) {
         const summary = diagnosticsSummaryText() || "Static diagnostics detected.";
-        statusValue = "failed";
-        statusText = summary;
-        errorText = diagnosticsDetailsText() || summary;
-        viewer.setError(summary);
+        markStaleValue(summary);
+        statusValue = "idle";
+        statusText = staleValueVisible ? "Results are stale until editor diagnostics are fixed." : summary;
+        errorText = "";
       } else if (primaryVariable) {
+        clearStaleValue();
         statusValue = "idle";
         statusText = `Ready to compute ${primaryVariable}.`;
         errorText = "";
         scheduleSymbolProbe();
       }
     } catch (error) {
+      if (destroyed) return;
       if (token !== loadToken) return;
       probeToken += 1;
       stopProbe();
@@ -3501,6 +3547,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       selectedVisualSymbols = [];
       primaryVariable = "";
       captionVariable = "-";
+      clearStaleValue();
       statusValue = "failed";
       statusText = "Unable to refresh symbols.";
       errorText = statusText;
@@ -3522,8 +3569,10 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     stopValueSocket();
     clearResolutionActivity();
     await refreshSymbols();
+    if (destroyed) return;
     const token = editRefreshSeq;
     pendingEditRefresh = setTimeout(() => {
+      if (destroyed) return;
       pendingEditRefresh = null;
       void refreshDisplayedValuesAfterEdit(token);
     }, 120);
@@ -3705,6 +3754,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   });
 
   onDestroy(() => {
+    destroyed = true;
     stopSplitDrag();
     stopPoll();
     activeValueSubscription = null;
@@ -3773,7 +3823,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       <section class="start-prime-visual">
         <div class={`start-prime-stage ${showOperationsPanel ? "has-operations" : ""} ${!showResultsPanel && showOperationsPanel ? "is-operations-only" : ""}`.trim()}>
           {#if showResultsPanel}
-            <div class="start-prime-results">
+            <div class={`start-prime-results ${staleValueVisible ? "is-stale" : ""}`.trim()}>
               <div class="start-viewer-wrap start-prime-viewer-wrap">
                 <div class="start-pure-viewer">
                   {#if viewerMode === "error"}
@@ -3781,6 +3831,12 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
                   {:else if viewerMode === "loading"}
                     <div class="start-viewer-message">{viewerMessage || "Computing..."}</div>
                   {:else if viewerMode === "value" && viewerRecords.length}
+                    {#if staleValueVisible}
+                      <div class="start-stale-banner" role="status" aria-live="polite">
+                        <span class="start-stale-banner-label">Stale</span>
+                        <span class="start-stale-banner-text">{staleValueReason || "Showing the last computed value while you edit."}</span>
+                      </div>
+                    {/if}
                     <div
                       class={`start-value-grid ${viewerRecords.length > 1 ? "is-multi" : "is-single"} ${maximizedViewerIndex >= 0 ? "has-maximized" : ""}`.trim()}
                     >
@@ -3788,7 +3844,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
                         {#if maximizedViewerIndex < 0 || maximizedViewerIndex === index}
                           {@const descriptor = recordDescriptor(record)}
                           <article
-                            class={`start-value-card ${["integer", "number", "boolean", "null", "string", "bytes"].includes(recordType(record)) ? "is-centered-value" : ""} ${maximizedViewerIndex === index ? "is-maximized" : ""} is-${recordCardState(record, index)} ${recordJustMaterialized(record) ? "is-just-materialized" : ""}`.trim()}
+                            class={`start-value-card ${["integer", "number", "boolean", "null", "string", "bytes"].includes(recordType(record)) ? "is-centered-value" : ""} ${maximizedViewerIndex === index ? "is-maximized" : ""} is-${recordCardState(record, index)} ${recordJustMaterialized(record) ? "is-just-materialized" : ""} ${staleValueVisible ? "is-stale" : ""}`.trim()}
                             title={`${recordLabel(record, index)} (${typeLabelFromDescriptor(descriptor)})`}
                           >
                             <header class="start-value-card-head">
@@ -3796,6 +3852,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
                                 <span class="start-value-card-label">{recordLabel(record, index)}</span>
                               {:else}
                                 <span class="start-value-card-label"></span>
+                              {/if}
+                              {#if staleValueVisible}
+                                <span class="start-value-card-stale">stale</span>
                               {/if}
                               <button
                                 class="btn btn-ghost btn-small start-value-card-expand"
@@ -3949,15 +4008,16 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         </div>
 
         <div class="start-prime-controls">
-          {#if !symbolDiagnostics.length}
+          {#if captionVariable !== "-" || staleValueVisible}
             <footer class="start-caption">
               <span class="start-caption-main">{captionVariable}</span>
+              {#if staleValueVisible}
+                <span class="start-caption-status">Stale while editing</span>
+              {/if}
             </footer>
           {/if}
           <div class="start-value-tag-row">
-            {#if symbolDiagnostics.length}
-              <span class="start-value-tag start-value-tag--empty">Fix syntax errors to visualize values</span>
-            {:else if !Object.keys(symbolTable || {}).length}
+            {#if !Object.keys(symbolTable || {}).length}
               <span class="start-value-tag start-value-tag--empty">No visualizable symbols yet</span>
             {:else}
               {#each Object.keys(symbolTable || {}) as symbolName}
@@ -4015,7 +4075,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       </section>
     </div>
 
-    {#if errorText}
+    {#if errorText && !symbolDiagnostics.length}
       <div class="inline-error">{errorText}</div>
     {/if}
   </article>

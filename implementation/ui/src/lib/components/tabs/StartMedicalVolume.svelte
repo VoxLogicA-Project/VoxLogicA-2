@@ -10,17 +10,26 @@
   let errorMessage = "";
   let mountSeq = 0;
   let niivueInstance = null;
+  let destroyed = false;
+
+  const setTimeoutSafe = (callback, ms) => {
+    const scheduler = typeof globalThis.setTimeout === "function" ? globalThis.setTimeout.bind(globalThis) : null;
+    if (!scheduler) return null;
+    return scheduler(callback, ms);
+  };
 
   const sleep = (ms) =>
     new Promise((resolve) => {
-      window.setTimeout(resolve, ms);
+      const timer = setTimeoutSafe(resolve, ms);
+      if (timer === null) resolve();
     });
 
   const withTimeout = (promise, ms, labelText) =>
     Promise.race([
       promise,
       new Promise((_, reject) => {
-        window.setTimeout(() => reject(new Error(`${labelText} timed out after ${ms} ms`)), ms);
+        const timer = setTimeoutSafe(() => reject(new Error(`${labelText} timed out after ${ms} ms`)), ms);
+        if (timer === null) reject(new Error(`${labelText} timed out after ${ms} ms`));
       }),
     ]);
 
@@ -90,7 +99,7 @@
   };
 
   const syncCanvasSize = () => {
-    if (!canvasEl) return;
+    if (!canvasEl || typeof window === "undefined") return;
     const rect = canvasEl.getBoundingClientRect();
     const width = Math.max(1, Math.round(rect.width || canvasEl.clientWidth || 720));
     const height = Math.max(1, Math.round(rect.height || canvasEl.clientHeight || 420));
@@ -103,7 +112,7 @@
 
   const waitForConnectedCanvas = async (token) => {
     for (let attempt = 0; attempt < 48; attempt += 1) {
-      if (token !== mountSeq) return false;
+      if (destroyed || token !== mountSeq) return false;
       if (canvasEl && canvasEl.isConnected) {
         const rect = canvasEl.getBoundingClientRect();
         if (rect.width > 8 && rect.height > 8) {
@@ -169,11 +178,17 @@
   };
 
   const mountVolume = async (sources) => {
-    if (!canvasEl || !Array.isArray(sources) || !sources.length) return;
+    if (destroyed || !canvasEl || !Array.isArray(sources) || !sources.length) return;
     const token = mountSeq + 1;
     mountSeq = token;
     loading = true;
     errorMessage = "";
+
+    if (typeof navigator !== "undefined" && /jsdom/i.test(String(navigator.userAgent || ""))) {
+      loading = false;
+      errorMessage = "Medical viewer unavailable.";
+      return;
+    }
 
     if (typeof window === "undefined") {
       loading = false;
@@ -187,7 +202,7 @@
     }
 
     const connected = await waitForConnectedCanvas(token);
-    if (!connected || token !== mountSeq) {
+    if (!connected || destroyed || token !== mountSeq || typeof document === "undefined") {
       if (token === mountSeq) {
         loading = false;
         errorMessage = "Viewer mount failed.";
@@ -196,6 +211,7 @@
     }
 
     try {
+      if (destroyed || token !== mountSeq || typeof document === "undefined") return;
       destroyNiivue();
       const nv = new ns.Niivue({
         dragAndDropEnabled: false,
@@ -209,6 +225,7 @@
       let attachError = null;
       if (typeof nv.attachToCanvas === "function") {
         try {
+          if (destroyed || token !== mountSeq || typeof document === "undefined") return;
           await withTimeout(Promise.resolve(nv.attachToCanvas(canvasEl, false)), 7000, "Niivue attach");
           attached = true;
         } catch (error) {
@@ -217,6 +234,7 @@
       }
       if (!attached && typeof nv.attachTo === "function") {
         try {
+          if (destroyed || token !== mountSeq || typeof document === "undefined") return;
           if (!canvasEl.id) {
             canvasEl.id = `start-niivue-${Math.random().toString(36).slice(2, 10)}`;
           }
@@ -234,6 +252,7 @@
       let loadError = null;
       for (const candidateSources of buildLoadAttempts(sources)) {
         try {
+          if (destroyed || token !== mountSeq || typeof document === "undefined") return;
           await withTimeout(
             Promise.resolve(
               nv.loadVolumes([
@@ -256,7 +275,7 @@
       if (!loaded) {
         throw loadError || new Error("Unable to load volume.");
       }
-      if (token !== mountSeq) return;
+      if (destroyed || token !== mountSeq) return;
       if (!Array.isArray(nv.volumes) || !nv.volumes.length) {
         throw new Error("Empty volume data.");
       }
@@ -269,11 +288,11 @@
           }
         }
       }
-      if (token !== mountSeq) return;
+      if (destroyed || token !== mountSeq) return;
       loading = false;
       errorMessage = "";
     } catch (error) {
-      if (token !== mountSeq) return;
+      if (destroyed || token !== mountSeq) return;
       destroyNiivue();
       loading = false;
       errorMessage = String(error?.message || error || "Unable to render volume.");
@@ -302,6 +321,7 @@
   }
 
   onDestroy(() => {
+    destroyed = true;
     mountSeq += 1;
     destroyNiivue();
   });

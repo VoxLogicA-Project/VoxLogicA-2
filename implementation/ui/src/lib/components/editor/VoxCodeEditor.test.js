@@ -140,6 +140,7 @@ describe("VoxCodeEditor", () => {
     const marked = container.querySelector('.vx-editor__line[data-line="2"]');
     expect(marked).not.toBeNull();
     expect(marked).toHaveClass("vx-editor__line--error");
+    expect(container.querySelector(".vx-editor__diagnostics")?.textContent || "").toContain("Line 2:1 - Unexpected token");
   });
 
   it("applies native textarea input at the correct cursor location", async () => {

@@ -32,6 +32,7 @@
   let hoverTimer = null;
   let completionTimer = null;
   let completionRequestToken = 0;
+  let destroyed = false;
   let editorDocument = [];
   let editorText = "";
   let overlayScrollLeft = 0;
@@ -48,6 +49,30 @@
   let completionContext = null;
   let suggestionInteractionMode = "passive";
   let suggestionsPos = { left: 0, top: 0 };
+
+  const diagnosticLocationLabel = (diagnostic) => {
+    const location = String(diagnostic?.location || "").trim();
+    if (!location) return "";
+    const match = location.match(/line\s+(\d+)(?:\s*,\s*column\s+(\d+))?/i);
+    if (!match) return location;
+    return `Line ${match[1]}${match[2] ? `:${match[2]}` : ""}`;
+  };
+
+  const diagnosticItems = () =>
+    (Array.isArray(diagnostics) ? diagnostics : []).map((diagnostic) => ({
+      message: String(diagnostic?.message || "Static error").trim(),
+      locationLabel: diagnosticLocationLabel(diagnostic),
+      code: String(diagnostic?.code || "").trim(),
+    }));
+
+  const diagnosticsSummary = () => {
+    const items = diagnosticItems();
+    if (!items.length) return "";
+    const first = items[0];
+    const summary = [first.locationLabel, first.message].filter(Boolean).join(" - ");
+    if (items.length === 1) return summary;
+    return `${summary} (+${items.length - 1} more)`;
+  };
 
   const currentText = () => editorText;
 
@@ -120,6 +145,7 @@
     if (!autocompleteEnabled || readonly) return;
     if (completionTimer) clearTimeout(completionTimer);
     completionTimer = setTimeout(() => {
+      if (destroyed) return;
       void openCompletions(false);
     }, 80);
   };
@@ -145,6 +171,7 @@
 
   const measureCaretRect = () => {
     if (!textareaEl) return null;
+    if (typeof document === "undefined") return null;
     if (typeof navigator !== "undefined" && /jsdom/i.test(String(navigator.userAgent || ""))) {
       return textareaEl.getBoundingClientRect();
     }
@@ -178,7 +205,7 @@
   measureCaretRect.canvas = null;
 
   const openCompletions = async (forced) => {
-    if (!autocompleteEnabled || readonly || !textareaEl) return;
+    if (destroyed || !autocompleteEnabled || readonly || !textareaEl) return;
     const selection = currentSelection();
     const cursor = Number(selection.end || 0);
     const context = completionContextAt(currentText(), cursor);
@@ -209,7 +236,7 @@
       });
     }
 
-    if (requestToken !== completionRequestToken) return;
+    if (destroyed || requestToken !== completionRequestToken) return;
 
     const normalized = toCompletionItems(items, context);
     if (!normalized.length) {
@@ -443,6 +470,7 @@
 
     if (hoverTimer) clearTimeout(hoverTimer);
     hoverTimer = setTimeout(() => {
+      if (destroyed) return;
       const tokenEl = tokenElementFromPoint(event.clientX, event.clientY);
       if (!tokenEl) {
         dispatch("hoverleave");
@@ -546,6 +574,7 @@
   });
 
   onDestroy(() => {
+    destroyed = true;
     clearTimers();
   });
 </script>
@@ -556,6 +585,7 @@
       class="vx-editor__surface"
       data-empty={editorText.length ? "false" : "true"}
       data-focused={editorFocused ? "true" : "false"}
+      data-has-diagnostics={diagnosticItems().length ? "true" : "false"}
       data-cursor={surfaceCursor}
       data-placeholder={placeholder}
       data-readonly={readonly ? "true" : "false"}
@@ -609,6 +639,13 @@
         on:blur={handleBlur}
       ></textarea>
     </div>
+
+    {#if diagnosticItems().length}
+      <div class="vx-editor__diagnostics" role="status" aria-live="polite">
+        <span class="vx-editor__diagnostics-label">Editor</span>
+        <span class="vx-editor__diagnostics-text">{diagnosticsSummary()}</span>
+      </div>
+    {/if}
   </div>
 
   {#if suggestionsOpen && suggestions.length}
@@ -690,6 +727,11 @@
 
   .vx-editor__surface[data-readonly="true"] {
     cursor: default;
+  }
+
+  .vx-editor__surface[data-has-diagnostics="true"] .vx-editor__overlay,
+  .vx-editor__surface[data-has-diagnostics="true"] .vx-editor__textarea {
+    padding-bottom: 2.5rem;
   }
 
   .vx-editor__surface[data-cursor="pointer"] .vx-editor__textarea {
@@ -779,6 +821,42 @@
     background: rgba(240, 93, 94, 0.16);
     box-shadow: inset 3px 0 0 rgba(240, 93, 94, 0.75);
     cursor: help;
+  }
+
+  .vx-editor__diagnostics {
+    position: absolute;
+    left: 0.6rem;
+    right: 0.6rem;
+    bottom: 0.55rem;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    gap: 0.42rem;
+    min-width: 0;
+    border: 1px solid rgba(219, 116, 99, 0.34);
+    border-radius: 999px;
+    background: rgba(255, 247, 244, 0.94);
+    box-shadow: 0 8px 18px rgba(99, 50, 31, 0.08);
+    padding: 0.34rem 0.55rem;
+    color: #7a3b33;
+  }
+
+  .vx-editor__diagnostics-label {
+    flex: 0 0 auto;
+    font-size: 0.64rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #a14b40;
+  }
+
+  .vx-editor__diagnostics-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.72rem;
+    line-height: 1.2;
   }
 
   .vx-editor__token--space {

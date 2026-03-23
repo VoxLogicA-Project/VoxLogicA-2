@@ -43,6 +43,7 @@
   const DEFAULT_LIMIT = 18;
   const ACTIVE_COLLECTION_ITEM_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting"]);
   const COLLECTION_PENDING_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting", "pending", "missing"]);
+  const isJsdom = typeof navigator !== "undefined" && /jsdom/i.test(String(navigator.userAgent || ""));
   let stageExpanded = false;
 
   const safeText = (value) => {
@@ -353,10 +354,12 @@
     <div class="start-value-centered">
       <img class="start-pure-image" src={renderPngUrl} alt={`${label || "value"} preview`} />
     </div>
-  {:else if renderableVolume}
+  {:else if renderableVolume && !isJsdom}
     <div class="start-value-media-shell">
       <StartMedicalVolume niftiUrl={renderNiftiUrl} label={label || "value"} />
     </div>
+  {:else if renderableVolume}
+    <div class="start-viewer-message">Medical viewer unavailable.</div>
   {:else if renderableImageOverlay}
     <div class="start-value-centered">
       <div class="start-overlay-image-shell" aria-label={`${label || "value"} overlay`}>
@@ -372,10 +375,12 @@
         {/each}
       </div>
     </div>
-  {:else if renderableVolumeOverlay}
+  {:else if renderableVolumeOverlay && !isJsdom}
     <div class="start-value-media-shell">
       <StartMedicalVolume layers={renderLayers} label={label || "value"} />
     </div>
+  {:else if renderableVolumeOverlay}
+    <div class="start-viewer-message">Medical viewer unavailable.</div>
   {:else if isCollection}
     {#if level > 0 && !items.length && !loading && !error}
       {#if pagePollingForRecord(record, path) || pendingCollectionStateFor(record)}

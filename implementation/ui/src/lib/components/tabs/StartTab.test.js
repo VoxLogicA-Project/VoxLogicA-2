@@ -60,7 +60,7 @@ describe("StartTab", () => {
       },
     });
 
-    const { container } = render(StartTab, { active: true, capabilities: {} });
+    const { container, component } = render(StartTab, { active: true, capabilities: {} });
     await waitFor(() => {
       expect(getProgramSymbolsMock).toHaveBeenCalled();
     });
@@ -105,7 +105,7 @@ describe("StartTab", () => {
       },
     });
 
-    const { container } = render(StartTab, { active: true, capabilities: {} });
+    const { container, component } = render(StartTab, { active: true, capabilities: {} });
     const editor = container.querySelector(".vx-editor__textarea");
     expect(editor).not.toBeNull();
 
@@ -120,15 +120,24 @@ describe("StartTab", () => {
   });
 
   it("surfaces static diagnostics and blocks value resolve", async () => {
-    getProgramSymbolsMock.mockResolvedValue({
+    getProgramSymbolsMock.mockImplementation(async (program) => ({
       available: true,
-      symbol_table: { x: "node-x" },
-      diagnostics: [{ code: "E_PARSE", message: "Unexpected token", location: "line 1, column 1" }],
-    });
+      symbol_table: String(program || "").trim() === "x =" ? { x: "node-x" } : { a: "node-a", b: "node-b" },
+      diagnostics:
+        String(program || "").trim() === "x ="
+          ? [{ code: "E_PARSE", message: "Unexpected token", location: "line 1, column 1" }]
+          : [],
+    }));
 
     const { container } = render(StartTab, { active: true, capabilities: {} });
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+    editor.value = "x =";
+    await fireEvent.input(editor);
+
     await waitFor(() => {
-      expect(container.textContent).toContain("Line 1:1 - Unexpected token");
+      expect(getProgramSymbolsMock.mock.calls.length).toBeGreaterThanOrEqual(1);
+      expect(editor.value).toBe("x =");
     });
 
     const runButton = container.querySelector(".btn.btn-primary");
@@ -136,6 +145,73 @@ describe("StartTab", () => {
     await fireEvent.click(runButton);
 
     expect(resolvePlaygroundValueMock).not.toHaveBeenCalled();
+    expect(container.querySelector(".inline-error")).toBeNull();
+  });
+
+  it("keeps the last computed value visible but marks it stale while editing through diagnostics", async () => {
+    getProgramSymbolsMock.mockImplementation(async (program) => {
+      const source = String(program || "").trim();
+      if (source === "a = 1\nb = a +") {
+        return {
+          available: true,
+          symbol_table: { a: "node-a", b: "node-b" },
+          diagnostics: [{ code: "E_PARSE", message: "Unexpected token", location: "line 2, column 7" }],
+        };
+      }
+      return {
+        available: true,
+        symbol_table: { a: "node-a", b: "node-b" },
+        diagnostics: [],
+      };
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-b",
+      path: "/",
+      descriptor: {
+        vox_type: "integer",
+        format_version: "voxpod/1",
+        summary: { value: 2 },
+        navigation: {
+          path: "/",
+          pageable: false,
+          can_descend: false,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("2");
+    });
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+    editor.value = "a = 1\nb = a +";
+    await fireEvent.input(editor);
+
+    await waitFor(() => {
+      expect(getProgramSymbolsMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(editor.value).toBe("a = 1\nb = a +");
+      expect(container.querySelector(".start-value-card.is-stale")).not.toBeNull();
+      expect(container.querySelector(".start-caption-status")?.textContent || "").toContain("Stale while editing");
+      expect(container.querySelector(".start-stale-banner")?.textContent || "").toContain("Stale");
+      expect(container.textContent).toContain("2");
+    });
+
+    expect(resolvePlaygroundValueMock).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".inline-error")).toBeNull();
   });
 
   it("shows static symbol types on hover before computation", async () => {
