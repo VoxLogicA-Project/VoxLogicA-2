@@ -211,6 +211,44 @@ pflair_images = map(preprocess_flair, map(to_intensity, flair_images))
 vi_sweep_overlays = map(sweep_case_overlay, pflair_images)
 ```
 
+### Fixed-threshold BraTS brain tumour segmentation
+
+<!-- vox:playground
+id: sitk-brats-fixed-segmentation
+title: BraTS brain tumour segmentation
+module: simpleitk
+level: advanced
+strategy: dask
+description: Run the BraTS preprocessing pipeline on a small dataset slice and return segmentation masks only with fixed hiThr and viThr values.
+-->
+```imgql
+import "simpleitk"
+
+dataset_root = "tests/data/datasets/BraTS_2019_HGG"
+dataset_slice_start = 0
+dataset_slice_stop = 3
+hi_thr = 0.93
+vi_thr = 0.88
+all_flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
+flair_paths = subsequence(all_flair_paths, dataset_slice_start, dataset_slice_stop)
+
+read_image(path) = ReadImage(path)
+to_intensity(img) = intensity(img)
+preprocess_flair(flair) =
+  let background = touch(leq_sv(0.1, flair), border) in
+  let brain = not(background) in
+  percentiles(flair, brain, 0)
+
+segment_case(pflair) =
+  let hyper_intense = smoothen(geq_sv(hi_thr, pflair), 5.0) in
+  let very_intense = smoothen(geq_sv(vi_thr, pflair), 2.0) in
+  grow(hyper_intense, very_intense)
+
+flair_images = map(read_image, flair_paths)
+pflair_images = map(preprocess_flair, map(to_intensity, flair_images))
+segmentations = map(segment_case, pflair_images)
+```
+
 ## 4. `vox1` Compatibility Module
 
 ### Dot operators and legacy-compatible morphology helpers
