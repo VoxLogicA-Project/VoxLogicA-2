@@ -789,6 +789,107 @@ describe("StartTab", () => {
     }
   });
 
+  it("keeps a poll fallback when websocket subscriptions stay silent", async () => {
+    vi.useFakeTimers();
+    const originalWebSocket = globalThis.WebSocket;
+
+    class SilentWebSocket {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 3;
+
+      constructor() {
+        this.readyState = SilentWebSocket.CONNECTING;
+        setTimeout(() => {
+          this.readyState = SilentWebSocket.OPEN;
+          this.onopen?.();
+        }, 0);
+      }
+
+      send() {}
+
+      close() {
+        this.readyState = SilentWebSocket.CLOSED;
+        this.onclose?.();
+      }
+    }
+
+    try {
+      Object.defineProperty(globalThis, "WebSocket", {
+        value: SilentWebSocket,
+        configurable: true,
+      });
+    } catch {
+      // best effort for environments where WebSocket is not configurable
+    }
+
+    try {
+      getProgramSymbolsMock.mockResolvedValue({
+        available: true,
+        symbol_table: { x: "node-x" },
+        diagnostics: [],
+      });
+      resolvePlaygroundValueMock
+        .mockResolvedValueOnce({
+          materialization: "pending",
+          compute_status: "running",
+          node_id: "node-x",
+          job_id: "job-silent-ws",
+          path: "/",
+        })
+        .mockResolvedValue({
+          materialization: "cached",
+          compute_status: "cached",
+          node_id: "node-x",
+          path: "/",
+          descriptor: {
+            vox_type: "integer",
+            format_version: "voxpod/1",
+            summary: { value: 7 },
+            navigation: {
+              path: "/",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        });
+
+      const { container } = render(StartTab, { active: true, capabilities: {} });
+      await waitFor(() => {
+        expect(getProgramSymbolsMock).toHaveBeenCalled();
+      });
+
+      const runButton = container.querySelector(".btn.btn-primary");
+      expect(runButton).not.toBeNull();
+      await fireEvent.click(runButton);
+
+      await waitFor(() => {
+        expect(resolvePlaygroundValueMock).toHaveBeenCalledTimes(1);
+        expect(container.querySelector(".start-run-state--running")).not.toBeNull();
+      });
+
+      vi.advanceTimersByTime(1200);
+
+      await waitFor(() => {
+        expect(resolvePlaygroundValueMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(container.querySelector(".start-run-state--completed")).not.toBeNull();
+        expect(container.textContent).toContain("7");
+      });
+    } finally {
+      try {
+        Object.defineProperty(globalThis, "WebSocket", {
+          value: originalWebSocket,
+          configurable: true,
+        });
+      } catch {
+        // best effort restore
+      }
+      vi.useRealTimers();
+    }
+  });
+
   it("renders value tags with visual states and resolves clicked tags", async () => {
     getProgramSymbolsMock.mockResolvedValue({
       available: true,

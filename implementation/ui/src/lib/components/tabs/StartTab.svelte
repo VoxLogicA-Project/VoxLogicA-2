@@ -1140,11 +1140,15 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       computeStatus === "persisting";
 
     if (isMaterialized) {
+      activeValueSubscription = null;
+      stopValueSocket({ logFinal: false });
       stopPoll();
       applyMaterialized(payload, requestedVariable || String(primaryVariable || ""));
       return;
     }
     if (materialization === "failed" || computeStatus === "failed" || computeStatus === "killed") {
+      activeValueSubscription = null;
+      stopValueSocket({ logFinal: false });
       stopPoll();
       setSymbolStatus(requestedVariable || String(primaryVariable || ""), "failed");
       applyFailure(payload, requestedVariable || String(primaryVariable || ""));
@@ -3373,10 +3377,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           dissolveDream();
           return { state: "idle", reason: "no-progress" };
         }
-        if (!subscribeValueSocket({ variable: request.variable, path: currentPath || "/", enqueue })) {
-          ensurePendingPoll({ traceId, variable: request.variable, path: currentPath || "/" });
-        } else {
-          stopPoll();
+        const subscribed = subscribeValueSocket({ variable: request.variable, path: currentPath || "/", enqueue });
+        ensurePendingPoll({ traceId, variable: request.variable, path: currentPath || "/" });
+        if (!subscribed) {
+          traceResolve("pending-no-ws", {
+            traceId,
+            variable: request.variable,
+            path: currentPath || "/",
+          });
         }
         return { state: "pending", reason: "in-progress" };
       }
@@ -3430,11 +3438,8 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           },
           request.variable,
         );
-        if (!subscribeValueSocket({ variable: request.variable, path: currentPath || "/", enqueue })) {
-          ensurePendingPoll({ traceId, variable: request.variable, path: currentPath || "/" });
-        } else {
-          stopPoll();
-        }
+        subscribeValueSocket({ variable: request.variable, path: currentPath || "/", enqueue });
+        ensurePendingPoll({ traceId, variable: request.variable, path: currentPath || "/" });
         return { state: "pending", reason: "request-timeout" };
       }
       stopPoll();

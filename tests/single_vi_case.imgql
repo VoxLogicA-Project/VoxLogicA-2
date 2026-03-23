@@ -1,0 +1,26 @@
+import "simpleitk"
+
+image_path = "synthetic_data/images/case_000_0000.nii.gz"
+
+// Controls.
+hi_thr = 90
+vi_thr = 50
+
+read_image(path) = ReadImage(path)
+to_intensity(img) = intensity(img)
+preprocess_flair(flair) = smoothen(flair, 1.2)
+
+single_vi_mask(pflair) =
+  let hyper_intense = smoothen(geq_sv(hi_thr, pflair), 5.0) in
+  let very_intense = smoothen(geq_sv(vi_thr, pflair), 2.0) in
+  grow(hyper_intense, very_intense)
+
+single_vi_overlay(flair) =
+  let pflair = preprocess_flair(to_intensity(flair)) in
+  let mask = single_vi_mask(pflair) in
+  overlay(flair, mask)
+
+flair_image = read_image(image_path)
+single_mask = single_vi_mask(preprocess_flair(to_intensity(flair_image)))
+result = single_vi_overlay(flair_image)
+output = result
