@@ -26,7 +26,7 @@ from voxlogica.inspectable_sequence import (
 )
 from voxlogica.lazy.hash import hash_child_ref
 from voxlogica.lazy.ir import NodeId, NodeSpec, SymbolicPlan
-from voxlogica.parser import EBool, ECall, EFor, ELet, ENumber, EString, Expression, parse_expression_content
+from voxlogica.parser import EArray, EBool, ECall, EFor, ELet, ENumber, ESlice, EString, Expression, parse_expression_content
 from voxlogica.policy import enforce_runtime_read_path_policy
 from voxlogica.primitives.registry import PrimitiveRegistry
 from voxlogica.storage import DefinitionStore, MaterializationStore, ResultsDatabase
@@ -437,6 +437,9 @@ class StrictExecutionStrategy(ExecutionStrategy):
         if isinstance(expression, ENumber):
             return expression.value
 
+        if isinstance(expression, EArray):
+            return [self._evaluate_runtime_expression(item, env) for item in expression.items]
+
         if isinstance(expression, EBool):
             return expression.value
 
@@ -499,6 +502,21 @@ class StrictExecutionStrategy(ExecutionStrategy):
             kernel = self.registry.load_kernel(expression.identifier)
             enforce_runtime_read_path_policy(expression.identifier, arg_values)
             return self._invoke_kernel(kernel, arg_values, {})
+
+        if isinstance(expression, ESlice):
+            sequence_value = self._evaluate_runtime_expression(expression.sequence, env)
+            start_value = (
+                self._evaluate_runtime_expression(expression.start, env)
+                if expression.start is not None
+                else None
+            )
+            stop_value = (
+                self._evaluate_runtime_expression(expression.stop, env)
+                if expression.stop is not None
+                else None
+            )
+            kernel = self.registry.load_kernel("slice")
+            return self._invoke_kernel(kernel, [sequence_value, start_value, stop_value], {})
 
         if isinstance(expression, ELet):
             value = self._evaluate_runtime_expression(expression.value, env)

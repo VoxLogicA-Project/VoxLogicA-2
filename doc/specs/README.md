@@ -6,6 +6,7 @@ Current specs:
 
 - [viewer-contracts.md](./viewer-contracts.md): incremental host and adapter contracts for leaf viewers and full-record viewers.
 - [editor-surface-contract.md](./editor-surface-contract.md): stable token/event surface for the program editor.
+- [language/README.md](./language/README.md): canonical language syntax and semantics contracts.
 
 Rules for specs in this directory:
 

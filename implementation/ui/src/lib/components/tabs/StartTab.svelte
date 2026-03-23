@@ -14,6 +14,7 @@
     pushComputeActivity,
   } from "$lib/stores/computeActivity.js";
   import {
+    clearPersistedStartState,
     readPersistedStartState,
     updatePersistedStartState,
   } from "$lib/utils/ui-persistence.js";
@@ -115,6 +116,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   let recordPagesLoading = {};
   let recordPagesErrors = {};
   let collectionSelections = {};
+  let expandedCollectionStages = {};
   let recordPagePollTimers = {};
   let recordPageSockets = {};
   let recordPageSocketReconnectTimers = {};
@@ -1458,6 +1460,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       maximizedViewerIndex,
       collectionSelections,
       recordPagePointers,
+      expandedCollectionStages,
     },
   });
 
@@ -1493,12 +1496,16 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     recordPagePointers = persisted?.viewer?.recordPagePointers && typeof persisted.viewer.recordPagePointers === "object"
       ? { ...persisted.viewer.recordPagePointers }
       : {};
+    expandedCollectionStages = persisted?.viewer?.expandedCollectionStages && typeof persisted.viewer.expandedCollectionStages === "object"
+      ? { ...persisted.viewer.expandedCollectionStages }
+      : {};
     hasPersistedViewerRestore = Boolean(
       String(primaryVariable || "").trim() ||
         String(currentPath || "").trim() ||
         (Array.isArray(selectedVisualSymbols) && selectedVisualSymbols.length) ||
         (recordPagePointers && Object.keys(recordPagePointers).length) ||
-        (collectionSelections && Object.keys(collectionSelections).length),
+        (collectionSelections && Object.keys(collectionSelections).length) ||
+        (expandedCollectionStages && Object.keys(expandedCollectionStages).length),
     );
     await tick();
     if (startEditorRef && typeof startEditorRef.restoreViewState === "function" && editorViewState) {
@@ -3086,6 +3093,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     recordPagesLoading = {};
     recordPagesErrors = {};
     collectionSelections = {};
+    expandedCollectionStages = {};
     recordPagePollTimers = {};
     recordPageSockets = {};
     recordPageSocketReconnectTimers = {};
@@ -3126,6 +3134,72 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       return;
     }
     maximizedViewerIndex = maximizedViewerIndex === next ? -1 : next;
+  };
+
+  const setCollectionStageExpanded = (key, expanded) => {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey) return;
+    if (expanded) {
+      expandedCollectionStages = {
+        ...expandedCollectionStages,
+        [normalizedKey]: true,
+      };
+      return;
+    }
+    if (!expandedCollectionStages?.[normalizedKey]) return;
+    const next = { ...(expandedCollectionStages || {}) };
+    delete next[normalizedKey];
+    expandedCollectionStages = next;
+  };
+
+  const resetStartStateToDefaults = async () => {
+    resolveRequestSeq += 1;
+    resolveInFlight = false;
+    stopPoll();
+    stopProbe();
+    clearPendingLogs();
+    clearResolutionActivity();
+    clearComputeActivity();
+    clearPersistedStartState();
+    programText = DEFAULT_PROGRAM;
+    editorViewState = null;
+    showCodePanel = true;
+    showResultsPanel = true;
+    showOperationsPanel = true;
+    showOperationsHelp = false;
+    splitRatio = 0.48;
+    primaryVariable = "";
+    captionVariable = "-";
+    currentPath = "";
+    selectedVisualSymbols = [];
+    maximizedViewerIndex = -1;
+    collectionSelections = {};
+    recordPagePointers = {};
+    expandedCollectionStages = {};
+    symbolStatuses = {};
+    symbolMaterializations = {};
+    materializedRecords = {};
+    symbolTypeHints = {};
+    editorSymbolTypes = {};
+    errorText = "";
+    statusValue = "idle";
+    statusText = "Write code and run to compute a value.";
+    clearStaleValue();
+    resetViewer();
+    await tick();
+    if (startEditorRef && typeof startEditorRef.restoreViewState === "function") {
+      startEditorRef.restoreViewState(null);
+    }
+    await refreshSymbols();
+    ensureSelectedVisualSymbols();
+  };
+
+  const handlePanicReset = async () => {
+    if (typeof window !== "undefined" && typeof window.confirm === "function") {
+      const confirmed = window.confirm("Reset the Start tab state and clear its persisted state?");
+      if (!confirmed) return;
+    }
+    await resetStartStateToDefaults();
   };
 
   const resolveContextMatches = (request = {}) =>
@@ -3897,6 +3971,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     maximizedViewerIndex,
     collectionSelections,
     recordPagePointers,
+    expandedCollectionStages,
   });
 
   $: if (persistenceReady) {
@@ -4079,9 +4154,11 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
                               {recordPagesLoading}
                               {recordPagesErrors}
                               {collectionSelections}
+                              {expandedCollectionStages}
                               {pathRecords}
                               {pathRecordsLoading}
                               {pathRecordsErrors}
+                              {setCollectionStageExpanded}
                             />
                           </article>
                         {/if}
@@ -4253,6 +4330,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
             </button>
             <span class={`start-run-state start-run-state--${statusValue}`} aria-hidden="true"></span>
             <button class="btn btn-primary btn-small" type="button" on:click={runPrimary}>Run</button>
+            <button class="btn btn-ghost btn-small start-panic-reset" type="button" on:click={handlePanicReset}>Panic Reset</button>
           </div>
         </div>
       </section>

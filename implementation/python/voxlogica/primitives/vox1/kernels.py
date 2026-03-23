@@ -158,8 +158,18 @@ def bool_not_scalar(value: bool) -> bool:
     return not bool(value)
 
 
+def not_compat(value: object) -> object:
+    if isinstance(value, (bool, int, float)):
+        return bool_not_scalar(bool(value))
+    return logical_not(value)
+
+
 def num_eq(left: float, right: float) -> bool:
     return float(left) == float(right)
+
+
+def num_neq(left: float, right: float) -> bool:
+    return float(left) != float(right)
 
 
 def num_leq(left: float, right: float) -> bool:

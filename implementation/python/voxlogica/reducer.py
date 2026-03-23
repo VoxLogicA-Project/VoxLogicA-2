@@ -13,11 +13,13 @@ from voxlogica.lazy.hash import hash_node
 from voxlogica.parser import (
     Command,
     Declaration,
+    EArray,
     EBool,
     ECall,
     EFor,
     ELet,
     ENumber,
+    ESlice,
     EString,
     Expression,
     Import,
@@ -35,6 +37,18 @@ logger = logging.getLogger(__name__)
 
 identifier = str
 Stack = list[tuple[str, str]]
+
+_PRIMITIVE_OPERATOR_ALIASES: dict[str, str] = {
+    "!": "not_compat",
+    "!=": "num_neq",
+    "&&": "bool_and_scalar",
+    "||": "bool_or_scalar",
+    "==": "num_eq",
+    "<=": "num_leq",
+    "<": "num_lt",
+    ">=": "num_geq",
+    ">": "num_gt",
+}
 
 
 @dataclass(frozen=True)
@@ -196,6 +210,20 @@ class Environment:
 
 
 def _collect_referenced_variables(expr: Expression) -> set[str]:
+    if isinstance(expr, EArray):
+        refs: set[str] = set()
+        for item in expr.items:
+            refs.update(_collect_referenced_variables(item))
+        return refs
+
+    if isinstance(expr, ESlice):
+        refs = _collect_referenced_variables(expr.sequence)
+        if expr.start is not None:
+            refs.update(_collect_referenced_variables(expr.start))
+        if expr.stop is not None:
+            refs.update(_collect_referenced_variables(expr.stop))
+        return refs
+
     if isinstance(expr, ECall):
         refs = {expr.identifier}
         for arg in expr.arguments:
@@ -228,6 +256,11 @@ def _create_constant_node(work_plan: WorkPlan, value: Any) -> NodeId:
             output_kind="scalar",
         )
     )
+
+
+def _normalize_primitive_identifier(identifier: str) -> str:
+    normalized = str(identifier or "").strip()
+    return _PRIMITIVE_OPERATOR_ALIASES.get(normalized, normalized)
 
 
 def _serialize_function_capture(
@@ -319,6 +352,7 @@ def _plan_primitive_call(
     position: str | None = None,
 ) -> NodeId:
     attrs = dict(attrs or {})
+    identifier = _normalize_primitive_identifier(identifier)
     call = PrimitiveCall(args=args, kwargs=kwargs, attrs=attrs)
 
     try:
@@ -444,6 +478,37 @@ def reduce_expression(
     if isinstance(expr, ENumber):
         return _create_constant_node(work_plan, expr.value)
 
+    if isinstance(expr, EArray):
+        item_ids = tuple(
+            reduce_expression(env, work_plan, item, current_stack)
+            for item in expr.items
+        )
+        return _plan_primitive_call(
+            work_plan,
+            identifier="sequence",
+            args=item_ids,
+            output_kind="sequence",
+        )
+
+    if isinstance(expr, ESlice):
+        sequence_id = reduce_expression(env, work_plan, expr.sequence, current_stack)
+        start_id = (
+            reduce_expression(env, work_plan, expr.start, current_stack)
+            if expr.start is not None
+            else _create_constant_node(work_plan, None)
+        )
+        stop_id = (
+            reduce_expression(env, work_plan, expr.stop, current_stack)
+            if expr.stop is not None
+            else _create_constant_node(work_plan, None)
+        )
+        return _plan_primitive_call(
+            work_plan,
+            identifier="slice",
+            args=(sequence_id, start_id, stop_id),
+            output_kind="sequence",
+        )
+
     if isinstance(expr, EBool):
         return _create_constant_node(work_plan, expr.value)
 
@@ -453,6 +518,19 @@ def reduce_expression(
     if isinstance(expr, ECall):
         if expr.identifier in {"map", "default.map"} and len(expr.arguments) == 2:
             return _reduce_map_call(env, work_plan, expr, current_stack)
+
+        if expr.identifier in _PRIMITIVE_OPERATOR_ALIASES:
+            args_ids = tuple(
+                reduce_expression(env, work_plan, arg, current_stack)
+                for arg in expr.arguments
+            )
+            return _plan_primitive_call(
+                work_plan,
+                identifier=expr.identifier,
+                args=args_ids,
+                output_kind="scalar",
+                position=expr.position,
+            )
 
         if not expr.arguments:
             val = env.try_find(expr.identifier)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from lark.exceptions import UnexpectedInput
 
-from voxlogica.parser import Declaration, ECall, parse_program_content
+from voxlogica.parser import Declaration, EArray, ECall, ESlice, parse_program_content
 from voxlogica.reducer import reduce_program
 from voxlogica.execution_strategy.strict import StrictExecutionStrategy
 
@@ -89,6 +89,146 @@ def test_uppercase_identifier_uses_regular_call_syntax():
     assert result.success
     res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
     assert prepared.materialization_store.get(res_goal.id) == 9.0
+
+
+@pytest.mark.unit
+def test_plain_scalar_comparison_operator_resolves_without_unknown_callable():
+    program = parse_program_content(
+        """
+        c = 32
+        print "res" c > 20
+        """
+    )
+    work_plan = reduce_program(program)
+    strategy = StrictExecutionStrategy(registry=work_plan.registry)
+    prepared = strategy.compile(work_plan.to_symbolic_plan())
+    result = strategy.run(prepared)
+    assert result.success
+    res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
+    assert prepared.materialization_store.get(res_goal.id) is True
+
+
+@pytest.mark.unit
+def test_plain_scalar_boolean_and_inequality_operators_resolve():
+    program = parse_program_content(
+        """
+        left = 3 != 4
+        right = !false
+        print "res" left && right
+        """
+    )
+    work_plan = reduce_program(program)
+    strategy = StrictExecutionStrategy(registry=work_plan.registry)
+    prepared = strategy.compile(work_plan.to_symbolic_plan())
+    result = strategy.run(prepared)
+    assert result.success
+    res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
+    assert prepared.materialization_store.get(res_goal.id) is True
+
+
+@pytest.mark.unit
+def test_parser_supports_array_literals():
+    program = parse_program_content(
+        """
+        xs = [1, 2, 3]
+        """
+    )
+    decl = program.commands[0]
+    assert isinstance(decl, Declaration)
+    assert isinstance(decl.expression, EArray)
+    assert len(decl.expression.items) == 3
+
+
+@pytest.mark.unit
+def test_parser_supports_slice_syntax():
+    program = parse_program_content(
+        """
+        xs = [1, 2, 3, 4]
+        mid = xs[1:3]
+        """
+    )
+    decl = program.commands[1]
+    assert isinstance(decl, Declaration)
+    assert isinstance(decl.expression, ESlice)
+
+
+@pytest.mark.unit
+def test_array_literals_and_bracket_access_execute():
+    program = parse_program_content(
+        """
+        rows = [[1, 2], [3, 4 + 1]]
+        print "res" rows[1][1]
+        """
+    )
+    work_plan = reduce_program(program)
+    strategy = StrictExecutionStrategy(registry=work_plan.registry)
+    prepared = strategy.compile(work_plan.to_symbolic_plan())
+    result = strategy.run(prepared)
+    assert result.success
+    res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
+    assert prepared.materialization_store.get(res_goal.id) == 5.0
+
+
+@pytest.mark.unit
+def test_slice_syntax_variants_execute():
+    program = parse_program_content(
+        """
+        xs = [0, 1, 2, 3, 4]
+        print "mid" xs[1:4]
+        print "head" xs[:2]
+        print "tail" xs[3:]
+        print "all" xs[:]
+        """
+    )
+    work_plan = reduce_program(program)
+    strategy = StrictExecutionStrategy(registry=work_plan.registry)
+    prepared = strategy.compile(work_plan.to_symbolic_plan())
+    result = strategy.run(prepared)
+    assert result.success
+    goal_values = {
+        goal.name: prepared.materialization_store.get(goal.id)
+        for goal in prepared.plan.goals
+    }
+    assert goal_values["mid"] == [1.0, 2.0, 3.0]
+    assert goal_values["head"] == [0.0, 1.0]
+    assert goal_values["tail"] == [3.0, 4.0]
+    assert goal_values["all"] == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+
+@pytest.mark.unit
+def test_slice_syntax_works_inside_runtime_closure_bodies():
+    program = parse_program_content(
+        """
+        tail(xs) = xs[1:]
+        ys = map(tail, [[1, 2, 3], [4, 5]])
+        print "res" ys[1][0]
+        """
+    )
+    work_plan = reduce_program(program)
+    strategy = StrictExecutionStrategy(registry=work_plan.registry)
+    prepared = strategy.compile(work_plan.to_symbolic_plan())
+    result = strategy.run(prepared)
+    assert result.success
+    res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
+    assert prepared.materialization_store.get(res_goal.id) == 5.0
+
+
+@pytest.mark.unit
+def test_array_literals_materialize_as_sequences():
+    program = parse_program_content(
+        """
+        xs = [1, 2 + 1, 4]
+        print "res" xs
+        """
+    )
+    work_plan = reduce_program(program)
+    strategy = StrictExecutionStrategy(registry=work_plan.registry)
+    prepared = strategy.compile(work_plan.to_symbolic_plan())
+    result = strategy.run(prepared)
+    assert result.success
+    res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
+    value = prepared.materialization_store.get(res_goal.id)
+    assert [float(item) for item in value] == [1.0, 3.0, 4.0]
 
 
 @pytest.mark.unit

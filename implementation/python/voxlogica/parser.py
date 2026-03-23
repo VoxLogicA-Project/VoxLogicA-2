@@ -32,6 +32,10 @@ class Expression:
     def create_string(value: str) -> "EString":
         return EString(value)
 
+    @staticmethod
+    def create_array(items: List["Expression"]) -> "EArray":
+        return EArray(items)
+
     def to_syntax(self) -> str:
         """Convert the expression to syntax form"""
         raise NotImplementedError("Must be implemented by subclasses")
@@ -95,6 +99,38 @@ class EString(Expression):
 
     def to_syntax(self) -> str:
         return f'"{self.value}"'
+
+
+@dataclass
+class EArray(Expression):
+    """Array literal expression."""
+
+    items: List[Expression]
+
+    def __str__(self) -> str:
+        return f"[{', '.join(str(item) for item in self.items)}]"
+
+    def to_syntax(self) -> str:
+        return f"[{','.join(item.to_syntax() for item in self.items)}]"
+
+
+@dataclass
+class ESlice(Expression):
+    """Slice expression using bracket syntax."""
+
+    sequence: Expression
+    start: Expression | None
+    stop: Expression | None
+
+    def __str__(self) -> str:
+        start = "" if self.start is None else str(self.start)
+        stop = "" if self.stop is None else str(self.stop)
+        return f"{self.sequence}[{start}:{stop}]"
+
+    def to_syntax(self) -> str:
+        start = "" if self.start is None else self.start.to_syntax()
+        stop = "" if self.stop is None else self.stop.to_syntax()
+        return f"{self.sequence.to_syntax()}[{start}:{stop}]"
 
 
 @dataclass
@@ -215,14 +251,25 @@ grammar = r"""
     formal_args: "(" identifier ("," identifier)* ")"
     actual_args: "(" expression ("," expression)* ")"
     
-    expression: simple_expr | call_id_expr | call_op_expr | prefix_expr | op_expr | paren_expr | for_expr | let_expr
+        ?expression: let_expr | for_expr | op_expr
     
-    simple_expr: number | boolean | string
+        ?op_expr: prefix_expr
+            | op_expr infix_operator prefix_expr   -> op_expr
+        ?prefix_expr: postfix_expr
+            | prefix_operator prefix_expr      -> prefix_expr
+        postfix_expr: primary_expr postfix_access*
+        postfix_access: "[" expression "]"        -> postfix_index
+                      | "[" expression ":" expression "]" -> postfix_slice_both
+                      | "[" expression ":" "]"   -> postfix_slice_from
+                      | "[" ":" expression "]"   -> postfix_slice_to
+                      | "[" ":" "]"              -> postfix_slice_all
+        ?primary_expr: simple_expr | array_expr | call_id_expr | call_op_expr | paren_expr
+
+        simple_expr: number | boolean | string
     call_id_expr: identifier actual_args?
     call_op_expr: OPERATOR actual_args
-    op_expr: expression infix_operator expression
-    prefix_expr: prefix_operator expression
     paren_expr: "(" expression ")"
+        array_expr: "[" [expression ("," expression)*] "]"
     for_expr: "for" identifier "in" expression "do" expression
     let_expr: "let" identifier "=" expression "in" expression
     
@@ -319,6 +366,33 @@ class VoxLogicATransformer(Transformer):
         return ECall("pos", str(function_name), args)
 
     @v_args(inline=True)
+    def postfix_expr(self, expr, *indices):
+        current = expr
+        for index in indices:
+            kind = index[0]
+            if kind == "index":
+                current = ECall("pos", "index", [current, index[1]])
+                continue
+            current = ESlice(current, index[1], index[2])
+        return current
+
+    @v_args(inline=True)
+    def postfix_index(self, expr):
+        return ("index", expr)
+
+    def postfix_slice_both(self, items):
+        return ("slice", items[0], items[1])
+
+    def postfix_slice_from(self, items):
+        return ("slice", items[0], None)
+
+    def postfix_slice_to(self, items):
+        return ("slice", None, items[0])
+
+    def postfix_slice_all(self, _items):
+        return ("slice", None, None)
+
+    @v_args(inline=True)
     def op_expr(self, left, op, right):
         return ECall("pos", op, [left, right])
 
@@ -337,6 +411,10 @@ class VoxLogicATransformer(Transformer):
     @v_args(inline=True)
     def paren_expr(self, expr):
         return expr
+
+    @v_args(inline=True)
+    def array_expr(self, *items):
+        return EArray(list(items))
 
     @v_args(inline=True)
     def for_expr(self, variable, iterable, body):

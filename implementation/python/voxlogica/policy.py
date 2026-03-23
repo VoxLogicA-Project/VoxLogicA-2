@@ -10,7 +10,7 @@ from typing import Any, Iterable
 import os
 
 from voxlogica.lazy.ir import NodeSpec
-from voxlogica.parser import ECall, EFor, ELet, Expression, parse_expression_content
+from voxlogica.parser import EArray, ECall, EFor, ELet, ESlice, Expression, parse_expression_content
 from voxlogica.primitives.api import PrimitiveSpec
 from voxlogica.primitives.registry import PrimitiveRegistry
 
@@ -255,6 +255,43 @@ def _scan_expression_for_effects(
     diagnostics: list[StaticDiagnostic],
     location: str,
 ) -> None:
+    if isinstance(expression, EArray):
+        for item in expression.items:
+            _scan_expression_for_effects(
+                expression=item,
+                bound_names=bound_names,
+                registry=registry,
+                diagnostics=diagnostics,
+                location=location,
+            )
+        return
+
+    if isinstance(expression, ESlice):
+        _scan_expression_for_effects(
+            expression=expression.sequence,
+            bound_names=bound_names,
+            registry=registry,
+            diagnostics=diagnostics,
+            location=location,
+        )
+        if expression.start is not None:
+            _scan_expression_for_effects(
+                expression=expression.start,
+                bound_names=bound_names,
+                registry=registry,
+                diagnostics=diagnostics,
+                location=location,
+            )
+        if expression.stop is not None:
+            _scan_expression_for_effects(
+                expression=expression.stop,
+                bound_names=bound_names,
+                registry=registry,
+                diagnostics=diagnostics,
+                location=location,
+            )
+        return
+
     if isinstance(expression, ECall):
         identifier = str(expression.identifier)
         if identifier not in bound_names:
@@ -321,6 +358,43 @@ def _scan_expression_for_unbound_identifiers(
     diagnostics: list[StaticDiagnostic],
     location: str,
 ) -> None:
+    if isinstance(expression, EArray):
+        for item in expression.items:
+            _scan_expression_for_unbound_identifiers(
+                expression=item,
+                bound_names=bound_names,
+                registry=registry,
+                diagnostics=diagnostics,
+                location=location,
+            )
+        return
+
+    if isinstance(expression, ESlice):
+        _scan_expression_for_unbound_identifiers(
+            expression=expression.sequence,
+            bound_names=bound_names,
+            registry=registry,
+            diagnostics=diagnostics,
+            location=location,
+        )
+        if expression.start is not None:
+            _scan_expression_for_unbound_identifiers(
+                expression=expression.start,
+                bound_names=bound_names,
+                registry=registry,
+                diagnostics=diagnostics,
+                location=location,
+            )
+        if expression.stop is not None:
+            _scan_expression_for_unbound_identifiers(
+                expression=expression.stop,
+                bound_names=bound_names,
+                registry=registry,
+                diagnostics=diagnostics,
+                location=location,
+            )
+        return
+
     if isinstance(expression, ECall):
         identifier = str(expression.identifier)
         if identifier not in bound_names and _resolve_spec(registry, identifier) is None:

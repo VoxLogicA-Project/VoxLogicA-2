@@ -36,15 +36,28 @@
   export let recordPagesLoading = {};
   export let recordPagesErrors = {};
   export let collectionSelections = {};
+  export let expandedCollectionStages = {};
   export let pathRecords = {};
   export let pathRecordsLoading = {};
   export let pathRecordsErrors = {};
+  export let setCollectionStageExpanded = () => {};
 
   const MAX_DEPTH = 7;
   const DEFAULT_LIMIT = 18;
   const ACTIVE_COLLECTION_ITEM_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting"]);
   const COLLECTION_PENDING_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting", "pending", "missing"]);
   let stageExpanded = false;
+
+  const stageExpansionKeyFor = (recordValue, recordPathValue, recordSourceVariable) => {
+    const normalizedSource = String(recordSourceVariable || "").trim();
+    const normalizedPath = String(recordPathValue || "").trim();
+    const nodeId = String(recordValue?.node_id || "").trim();
+    if (normalizedSource && normalizedPath) return `${normalizedSource}:${normalizedPath}`;
+    if (normalizedSource && nodeId) return `${normalizedSource}:node:${nodeId}`;
+    if (nodeId && normalizedPath) return `node:${nodeId}:${normalizedPath}`;
+    if (nodeId) return `node:${nodeId}`;
+    return "";
+  };
 
   const safeText = (value) => {
     if (value === null || value === undefined) return "null";
@@ -273,6 +286,8 @@
         : { vox_type: "unavailable", summary: {} };
 
   $: selectedItemState = selectedItem ? itemStateClass(selectedItem) : "";
+  $: stageExpansionKey = isCollection ? stageExpansionKeyFor(record, path, sourceVariable) : "";
+  $: stageExpanded = Boolean(stageExpansionKey && expandedCollectionStages?.[stageExpansionKey]);
 
   $: if (isCollection && visibleItems.length) {
     const nextPath = String(visibleItems[selectedIndex]?.path || "");
@@ -451,7 +466,14 @@
               <span class="start-collection-stage-label">{selectedItem?.label || label || "value"}</span>
               <span class={`start-collection-stage-status start-collection-stage-status--${selectedItemState}`.trim()}>{selectedItemState.replaceAll("_", " ") || "pending"}</span>
             </div>
-            <button class="btn btn-ghost btn-small start-collection-stage-expand" type="button" on:click={() => (stageExpanded = !stageExpanded)}>
+            <button
+              class="btn btn-ghost btn-small start-collection-stage-expand"
+              type="button"
+              on:click={() => {
+                if (!stageExpansionKey) return;
+                setCollectionStageExpanded(stageExpansionKey, !stageExpanded);
+              }}
+            >
               {stageExpanded ? "Restore" : "Maximize"}
             </button>
           </header>
@@ -498,9 +520,11 @@
                   {recordPagesLoading}
                   {recordPagesErrors}
                   {collectionSelections}
+                  {expandedCollectionStages}
                   {pathRecords}
                   {pathRecordsLoading}
                   {pathRecordsErrors}
+                  {setCollectionStageExpanded}
                 />
               {/if}
             </div>

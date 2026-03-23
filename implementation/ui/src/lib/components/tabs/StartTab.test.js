@@ -155,6 +155,7 @@ describe("StartTab", () => {
             maximizedViewerIndex: -1,
             collectionSelections: {},
             recordPagePointers: {},
+            expandedCollectionStages: { "a:/child": true },
           },
         },
       }),
@@ -209,6 +210,60 @@ describe("StartTab", () => {
     const latestResolve = resolvePlaygroundValueMock.mock.calls.at(-1)?.[0];
     expect(latestResolve?.variable).toBe("a");
     expect(latestResolve?.path).toBe("/child");
+  });
+
+  it("panic reset clears persisted Start state and restores the default program", async () => {
+    const originalConfirm = window.confirm;
+    window.confirm = vi.fn(() => true);
+
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { x: "node-x" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-x",
+      path: "/",
+      descriptor: {
+        vox_type: "integer",
+        format_version: "voxpod/1",
+        summary: { value: 3 },
+        navigation: {
+          path: "/",
+          pageable: false,
+          can_descend: false,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+
+    editor.value = "x = 3";
+    await fireEvent.input(editor);
+    await waitFor(() => {
+      expect(persistedStartProgram().start?.programText).toBe("x = 3");
+    });
+
+    const panicButton = container.querySelector(".start-panic-reset");
+    expect(panicButton).not.toBeNull();
+    await fireEvent.click(panicButton);
+
+    await waitFor(() => {
+      const persisted = persistedStartProgram();
+      expect(window.confirm).toHaveBeenCalled();
+      expect(container.querySelector(".vx-editor__textarea")?.value || "").toContain('import "simpleitk"');
+      expect(persisted.start?.programText || "").toContain('import "simpleitk"');
+      expect(persisted.start?.viewer?.expandedCollectionStages || {}).toEqual({});
+      expect(persisted.start?.viewer?.currentPath || "").toBe("");
+    });
+
+    window.confirm = originalConfirm;
   });
 
   it("surfaces static diagnostics and blocks value resolve", async () => {

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  clearPersistedStartState,
   LEGACY_START_PROGRAM_STORAGE_KEY,
   UI_STATE_STORAGE_KEY,
   readPersistedStartProgram,
@@ -43,6 +44,11 @@ describe("ui-persistence", () => {
         recordPagePointers: {
           base0: "cache0",
         },
+        expandedCollectionStages: {
+          "y:/4": true,
+          "": true,
+          "y:/closed": false,
+        },
       },
     });
 
@@ -53,5 +59,25 @@ describe("ui-persistence", () => {
     expect(raw.start?.layout?.splitRatio).toBe(0.68);
     expect(raw.start?.viewer?.selectedVisualSymbols).toEqual(["y"]);
     expect(raw.start?.viewer?.recordPagePointers?.base0).toBe("cache0");
+    expect(raw.start?.viewer?.expandedCollectionStages).toEqual({ "y:/4": true });
+  });
+
+  it("clears only the Start tab slice while preserving the rest of UI state", () => {
+    updatePersistedAppState({ activeTab: "gallery" });
+    updatePersistedStartState({
+      programText: "y = 9",
+      viewer: {
+        primaryVariable: "y",
+        expandedCollectionStages: { "y:/4": true },
+      },
+    });
+
+    clearPersistedStartState();
+
+    const state = readPersistedUiState();
+    expect(state.app.activeTab).toBe("gallery");
+    expect(state.start.programText).toBe("");
+    expect(state.start.viewer.primaryVariable).toBe("");
+    expect(state.start.viewer.expandedCollectionStages).toEqual({});
   });
 });

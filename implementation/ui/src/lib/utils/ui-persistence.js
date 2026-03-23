@@ -33,6 +33,15 @@ const sanitizeStringMap = (value) => {
   );
 };
 
+const sanitizeTrueBooleanMap = (value) => {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, entry]) => [String(key || "").trim(), Boolean(entry)])
+      .filter(([key, entry]) => key && entry),
+  );
+};
+
 const sanitizeCollectionSelections = (value) => {
   if (!value || typeof value !== "object") return {};
   return Object.fromEntries(
@@ -77,6 +86,7 @@ const defaultStartState = () => ({
     maximizedViewerIndex: -1,
     collectionSelections: {},
     recordPagePointers: {},
+    expandedCollectionStages: {},
   },
 });
 
@@ -123,6 +133,7 @@ const sanitizeStartState = (value) => ({
       : -1,
     collectionSelections: sanitizeCollectionSelections(value?.viewer?.collectionSelections),
     recordPagePointers: sanitizeStringMap(value?.viewer?.recordPagePointers),
+    expandedCollectionStages: sanitizeTrueBooleanMap(value?.viewer?.expandedCollectionStages),
   },
 });
 
@@ -229,6 +240,12 @@ export const writePersistedStartProgram = (programText) =>
   updatePersistedStartState((state) => ({
     ...state,
     programText: String(programText || ""),
+  }));
+
+export const clearPersistedStartState = () =>
+  updatePersistedUiState((state) => ({
+    ...state,
+    start: defaultStartState(),
   }));
 
 export const readPersistedStartTechnicalState = () => readPersistedUiState().startTechnical;
