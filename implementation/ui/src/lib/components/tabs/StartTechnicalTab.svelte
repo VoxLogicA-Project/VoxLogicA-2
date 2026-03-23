@@ -1,6 +1,8 @@
 <script>
   import { onDestroy, onMount } from "svelte";
   import { getProgramSymbols, resolvePlaygroundValue, resolvePlaygroundValuePage } from "$lib/api/client.js";
+  import StartViewerHost from "$lib/components/tabs/StartViewerHost.svelte";
+  import { buildRecordViewerContract } from "$lib/components/tabs/viewers/viewerContracts.js";
   import { buildExecutionLogRows } from "$lib/utils/logs.js";
   import { summarizeDescriptor } from "$lib/utils/playground-value.js";
   import VoxCodeEditor from "$lib/components/editor/VoxCodeEditor.svelte";
@@ -74,9 +76,6 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   let splitPercent = 62;
   let resizeActive = false;
 
-  let viewerContainer;
-  let viewer = null;
-
   let captionVariable = "-";
   let captionType = "-";
   let statusValue = "idle";
@@ -99,6 +98,30 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
   let initialized = false;
   let loadToken = 0;
+
+  const technicalViewerContractFor = ({ state = "empty", record = null, message = "" } = {}) =>
+    buildRecordViewerContract({
+      label: captionVariable || primaryVariable || "technical result",
+      state,
+      record,
+      message,
+      onNavigate: (path) => {
+        currentPath = String(path || "");
+        void resolvePrimaryValue({ enqueue: false, path: currentPath });
+      },
+      fetchPage: ({ nodeId, path, offset, limit }) =>
+        resolvePlaygroundValuePage({
+          program: programText,
+          nodeId: nodeId || "",
+          variable: primaryVariable,
+          path: path || "",
+          offset: Number(offset || 0),
+          limit: Number(limit || 64),
+          enqueue: false,
+        }),
+    });
+
+  let viewerContract = technicalViewerContractFor();
 
   const diagnosticsText = () => {
     const rows = Array.isArray(symbolDiagnostics) ? symbolDiagnostics : [];
@@ -334,43 +357,6 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     return symbolKeys[symbolKeys.length - 1] || symbolKeys[0] || "";
   };
 
-  const ensureViewer = () => {
-    if (viewer || !viewerContainer) return;
-
-    const ctor = window.VoxResultViewer?.ResultViewer;
-    if (typeof ctor === "function") {
-      viewer = new ctor(viewerContainer, {
-        onNavigate: (path) => {
-          currentPath = String(path || "");
-          void resolvePrimaryValue({ enqueue: false, path: currentPath });
-        },
-        fetchPage: ({ nodeId, path, offset, limit }) =>
-          resolvePlaygroundValuePage({
-            program: programText,
-            nodeId: nodeId || "",
-            variable: primaryVariable,
-            path: path || "",
-            offset: Number(offset || 0),
-            limit: Number(limit || 64),
-            enqueue: false,
-          }),
-      });
-      return;
-    }
-
-    viewer = {
-      setLoading: (message) => {
-        viewerContainer.textContent = message || "Loading...";
-      },
-      setError: (message) => {
-        viewerContainer.textContent = message || "Viewer error";
-      },
-      renderRecord: (record) => {
-        viewerContainer.textContent = JSON.stringify(record || {}, null, 2);
-      },
-    };
-  };
-
   const applyFailure = (payload, variableName) => {
     const message = String(payload?.error || "Unable to inspect value.");
     statusValue = "failed";
@@ -378,22 +364,25 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     captionVariable = variableName || "-";
     captionType = "error";
     errorText = message;
-    viewer.renderRecord({
-      available: false,
-      node_id: payload?.node_id || "",
-      status: "failed",
-      path: payload?.path || "/",
-      error: message,
-      descriptor: {
-        vox_type: "string",
-        format_version: "voxpod/1",
-        summary: { value: message, length: message.length, truncated: false },
-        navigation: {
-          path: payload?.path || "/",
-          pageable: false,
-          can_descend: false,
-          default_page_size: 64,
-          max_page_size: 512,
+    viewerContract = technicalViewerContractFor({
+      state: "record",
+      record: {
+        available: false,
+        node_id: payload?.node_id || "",
+        status: "failed",
+        path: payload?.path || "/",
+        error: message,
+        descriptor: {
+          vox_type: "string",
+          format_version: "voxpod/1",
+          summary: { value: message, length: message.length, truncated: false },
+          navigation: {
+            path: payload?.path || "/",
+            pageable: false,
+            can_descend: false,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
         },
       },
     });
@@ -478,26 +467,29 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     errorText = "";
     setSymbolStatus(variableName, state);
     applyPendingLogs(payload, state);
-    viewer.renderRecord({
-      ...payload,
-      available: false,
-      status: state,
-      path: payload?.path || currentPath || "/",
-      descriptor:
-        payload?.descriptor && typeof payload.descriptor === "object"
-          ? payload.descriptor
-          : {
-              vox_type: "unavailable",
-              format_version: "voxpod/1",
-              summary: { reason: `status=${state}` },
-              navigation: {
-                path: payload?.path || currentPath || "/",
-                pageable: false,
-                can_descend: false,
-                default_page_size: 64,
-                max_page_size: 512,
+    viewerContract = technicalViewerContractFor({
+      state: "record",
+      record: {
+        ...payload,
+        available: false,
+        status: state,
+        path: payload?.path || currentPath || "/",
+        descriptor:
+          payload?.descriptor && typeof payload.descriptor === "object"
+            ? payload.descriptor
+            : {
+                vox_type: "unavailable",
+                format_version: "voxpod/1",
+                summary: { reason: `status=${state}` },
+                navigation: {
+                  path: payload?.path || currentPath || "/",
+                  pageable: false,
+                  can_descend: false,
+                  default_page_size: 64,
+                  max_page_size: 512,
+                },
               },
-            },
+      },
     });
   };
 
@@ -512,7 +504,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       path: String(payload?.path || currentPath || "/"),
       voxType: String(descriptor?.vox_type || ""),
     });
-    viewer.renderRecord(payload);
+    viewerContract = technicalViewerContractFor({ state: "record", record: payload });
     statusValue = "completed";
     statusText = descriptor ? summarizeDescriptor(descriptor) : `Computed ${variableName}`;
     captionVariable = variableName || "-";
@@ -534,7 +526,6 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   };
 
   const resolvePrimaryValue = async ({ enqueue = true, path = "" } = {}) => {
-    ensureViewer();
     const traceId = resolveTraceSeq + 1;
     resolveTraceSeq = traceId;
     if (!primaryVariable) {
@@ -543,7 +534,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       statusText = "Define at least one variable to inspect.";
       captionVariable = "-";
       captionType = "-";
-      viewer.renderRecord(null);
+      viewerContract = technicalViewerContractFor();
       return;
     }
     if (symbolDiagnostics.length) {
@@ -558,7 +549,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       statusText = "Fix static diagnostics before execution.";
       captionVariable = primaryVariable;
       captionType = "error";
-      viewer.setError(statusText);
+      viewerContract = technicalViewerContractFor({ state: "error", message: statusText });
       errorText = statusText;
       setSymbolStatus(primaryVariable, "failed");
       return;
@@ -584,7 +575,10 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     captionType = "in-progress";
     errorText = "";
     setSymbolStatus(primaryVariable, "running");
-    viewer.setLoading(`Resolving ${primaryVariable}${currentPath ? ` @ ${currentPath}` : ""}...`);
+    viewerContract = technicalViewerContractFor({
+      state: "loading",
+      message: `Resolving ${primaryVariable}${currentPath ? ` @ ${currentPath}` : ""}...`,
+    });
 
     try {
       const requestStarted = performance?.now ? performance.now() : Date.now();
@@ -723,6 +717,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       statusValue = "failed";
       statusText = "Program symbol API unavailable on this backend.";
       errorText = statusText;
+      viewerContract = technicalViewerContractFor({ state: "error", message: statusText });
       return;
     }
 
@@ -742,6 +737,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       statusValue = "idle";
       statusText = "Write code and run to materialize a result.";
       errorText = "";
+      viewerContract = technicalViewerContractFor();
       return;
     }
 
@@ -776,6 +772,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       statusValue = "failed";
       statusText = "Unable to refresh symbols.";
       errorText = statusText;
+      viewerContract = technicalViewerContractFor({ state: "error", message: statusText });
     }
   };
 
@@ -841,7 +838,6 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   };
 
   onMount(async () => {
-    ensureViewer();
     try {
       const persisted = window.localStorage.getItem(STORAGE_KEY);
       if (persisted && String(persisted).trim()) {
@@ -860,9 +856,6 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     stopProbe();
     probeToken += 1;
     if (pendingSave) clearTimeout(pendingSave);
-    if (viewer && typeof viewer.destroy === "function") {
-      viewer.destroy();
-    }
   });
 </script>
 
@@ -878,7 +871,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           </div>
         </header>
         <div class="start-viewer-wrap">
-          <div class="result-inspector start-viewer" bind:this={viewerContainer}></div>
+          <div class="result-inspector start-viewer">
+            <StartViewerHost contract={viewerContract} />
+          </div>
         </div>
         <footer class="start-caption">
           <span class="start-caption-main">{captionVariable}</span>

@@ -1,5 +1,7 @@
 <script>
   import { onMount } from "svelte";
+  import StartViewerHost from "$lib/components/tabs/StartViewerHost.svelte";
+  import { buildRecordViewerContract } from "$lib/components/tabs/viewers/viewerContracts.js";
   import { fmtBytes } from "$lib/utils/format.js";
   import { inspectStoreResult, inspectStoreResultPage, listStoreResults } from "$lib/api/client.js";
 
@@ -14,77 +16,59 @@
   let currentNodeId = "";
   let currentPath = "";
 
-  let viewerContainer;
-  let viewer = null;
   let searchTimer = null;
 
-  const ensureViewer = () => {
-    if (viewer) return;
+  const resultViewerContractFor = ({ state = "empty", record = null, message = "" } = {}) =>
+    buildRecordViewerContract({
+      label: "stored result",
+      state,
+      record,
+      message,
+      onNavigate: (path) => {
+        if (!currentNodeId) return;
+        void openRecord(currentNodeId, path || "");
+      },
+      fetchPage: ({ nodeId, path, offset, limit }) =>
+        inspectStoreResultPage({
+          nodeId: nodeId || currentNodeId,
+          path: path || "",
+          offset: Number(offset || 0),
+          limit: Number(limit || 64),
+        }),
+      onStatusClick: (record) => {
+        if (!record || (record.status !== "failed" && record.status !== "killed")) return;
+        const lines = [
+          `node: ${record.node_id || "-"}`,
+          `path: ${record.path || "/"}`,
+          `status: ${record.status || "failed"}`,
+          record.error ? `error: ${record.error}` : "",
+        ].filter(Boolean);
+        viewerContract = resultViewerContractFor({ state: "error", message: lines.join("\n") });
+      },
+    });
 
-    const ctor = window.VoxResultViewer?.ResultViewer;
-    if (typeof ctor === "function") {
-      viewer = new ctor(viewerContainer, {
-        onNavigate: (path) => {
-          if (!currentNodeId) return;
-          openRecord(currentNodeId, path || "");
-        },
-        fetchPage: ({ nodeId, path, offset, limit }) =>
-          inspectStoreResultPage({
-            nodeId: nodeId || currentNodeId,
-            path: path || "",
-            offset: Number(offset || 0),
-            limit: Number(limit || 64),
-          }),
-        onStatusClick: (record) => {
-          if (!record || (record.status !== "failed" && record.status !== "killed")) return;
-          const lines = [
-            `node: ${record.node_id || "-"}`,
-            `path: ${record.path || "/"}`,
-            `status: ${record.status || "failed"}`,
-            record.error ? `error: ${record.error}` : "",
-          ].filter(Boolean);
-          viewer.setError(lines.join("\n"));
-        },
-      });
-      return;
-    }
-
-    viewer = {
-      setLoading: (message) => {
-        viewerContainer.textContent = message || "Loading...";
-      },
-      setError: (message) => {
-        viewerContainer.textContent = message || "Viewer error";
-      },
-      renderRecord: (record) => {
-        viewerContainer.textContent = JSON.stringify(record || {}, null, 2);
-      },
-    };
-  };
+  let viewerContract = resultViewerContractFor();
 
   const openRecord = async (nodeId, path = "") => {
-    ensureViewer();
     currentNodeId = nodeId;
     currentPath = path;
-    viewer.setLoading(`Loading ${nodeId}${path || ""} ...`);
+    viewerContract = resultViewerContractFor({ state: "loading", message: `Loading ${nodeId}${path || ""} ...` });
 
     try {
       const payload = await inspectStoreResult(nodeId, path);
-      viewer.renderRecord(payload);
+      viewerContract = resultViewerContractFor({ state: "record", record: payload });
       errorText = "";
     } catch (error) {
-      viewer.setError(`Failed loading result ${nodeId}: ${error.message}`);
+      viewerContract = resultViewerContractFor({ state: "error", message: `Failed loading result ${nodeId}: ${error.message}` });
     }
   };
 
   const refresh = async () => {
-    ensureViewer();
-
     if (capabilities.store_results_viewer === false) {
       records = [];
       summaryText = "Store results viewer unavailable on this backend.";
       errorText = "";
-      viewer.setError("Store results endpoint unavailable.");
+      viewerContract = resultViewerContractFor({ state: "error", message: "Store results endpoint unavailable." });
       return;
     }
 
@@ -98,7 +82,7 @@
       if (!payload.available) {
         records = [];
         summaryText = payload.error || "Store results unavailable.";
-        viewer.setError(payload.error || "Store results unavailable.");
+        viewerContract = resultViewerContractFor({ state: "error", message: payload.error || "Store results unavailable." });
         return;
       }
 
@@ -117,13 +101,13 @@
       } else {
         currentNodeId = "";
         currentPath = "";
-        viewer.renderRecord(null);
+        viewerContract = resultViewerContractFor();
       }
     } catch (error) {
       records = [];
       summaryText = `Unable to load results: ${error.message}`;
       errorText = "";
-      viewer.setError(`Unable to load result list: ${error.message}`);
+      viewerContract = resultViewerContractFor({ state: "error", message: `Unable to load result list: ${error.message}` });
     }
   };
 
@@ -147,14 +131,9 @@
   }
 
   onMount(() => {
-    ensureViewer();
-
     return () => {
       if (searchTimer) {
         clearTimeout(searchTimer);
-      }
-      if (viewer && typeof viewer.destroy === "function") {
-        viewer.destroy();
       }
     };
   });
@@ -220,7 +199,9 @@
       <p class="muted">
         View values only from persisted store entries. Server-side save/export is intentionally disabled.
       </p>
-      <div id="resultInspector" class="result-inspector" bind:this={viewerContainer}></div>
+      <div id="resultInspector" class="result-inspector">
+        <StartViewerHost contract={viewerContract} />
+      </div>
     </article>
   </div>
 </section>

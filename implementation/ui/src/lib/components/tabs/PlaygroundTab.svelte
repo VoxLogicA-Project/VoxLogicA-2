@@ -13,6 +13,8 @@
   } from "$lib/api/client.js";
   import { fmtBytes, fmtPercent, fmtSeconds } from "$lib/utils/format.js";
   import { buildExecutionLogRows, buildQueueSnapshot } from "$lib/utils/logs.js";
+  import StartViewerHost from "$lib/components/tabs/StartViewerHost.svelte";
+  import { buildRecordViewerContract } from "$lib/components/tabs/viewers/viewerContracts.js";
   import {
     buildFailureDetailsText,
     buildPlayTargets,
@@ -113,9 +115,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let hoverPreviewSeq = 0;
   let lastHoverToken = "";
 
-  let playResultInspectorEl;
   let daskQueueVizEl;
-  let playResultViewer = null;
   let queueVisualizer = null;
 
   let pollTimer = null;
@@ -132,6 +132,44 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   let jobWsAttempts = 0;
   let activeJobSubscription = "";
   let initializedOnFirstActivation = false;
+
+  const playViewerContractFor = ({ state = "empty", record = null, message = "", pageRefresh = null } = {}) =>
+    buildRecordViewerContract({
+      label: "playground result",
+      state,
+      record,
+      message,
+      pageRefresh,
+      onNavigate: (path) => {
+        const selected = playTargets[selectedTargetIndex];
+        if (!selected?.nodeId) return;
+        void inspectPlayTarget(selected.nodeId, path || "", {
+          variable: selected.kind === "variable" ? selected.label : "",
+        });
+      },
+      fetchPage: ({ nodeId, path, offset, limit }) => {
+        const selected = playTargets[selectedTargetIndex];
+        const variable = selected?.kind === "variable" ? selected.label : "";
+        return resolvePlaygroundValuePage({
+          program: programText,
+          nodeId: nodeId || selected?.nodeId || "",
+          variable,
+          path: path || "",
+          offset: Number(offset || 0),
+          limit: Number(limit || 64),
+          enqueue: false,
+        });
+      },
+      onStatusClick: (record) => {
+        if (!record || (record.status !== "failed" && record.status !== "killed")) return;
+        renderPlayFailureDiagnostics(record, {
+          nodeId: record.node_id || "",
+          path: record.path || "",
+        });
+      },
+    });
+
+  let playViewerContract = playViewerContractFor();
 
   const DEFAULT_AUTOCOMPLETE_BUILTINS = [
     "map",
@@ -449,56 +487,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     selectedTargetIndex = 0;
   };
 
-  const ensurePlayResultViewer = () => {
-    if (playResultViewer || !playResultInspectorEl) return;
-
-    const ctor = window.VoxResultViewer?.ResultViewer;
-    if (typeof ctor === "function") {
-      playResultViewer = new ctor(playResultInspectorEl, {
-        onNavigate: (path) => {
-          const selected = playTargets[selectedTargetIndex];
-          if (!selected?.nodeId) return;
-          inspectPlayTarget(selected.nodeId, path || "", {
-            variable: selected.kind === "variable" ? selected.label : "",
-          });
-        },
-        fetchPage: ({ nodeId, path, offset, limit }) => {
-          const selected = playTargets[selectedTargetIndex];
-          const variable = selected?.kind === "variable" ? selected.label : "";
-          return resolvePlaygroundValuePage({
-            program: programText,
-            nodeId: nodeId || selected?.nodeId || "",
-            variable,
-            path: path || "",
-            offset: Number(offset || 0),
-            limit: Number(limit || 64),
-            enqueue: false,
-          });
-        },
-        onStatusClick: (record) => {
-          if (!record || (record.status !== "failed" && record.status !== "killed")) return;
-          renderPlayFailureDiagnostics(record, {
-            nodeId: record.node_id || "",
-            path: record.path || "",
-          });
-        },
-      });
-      return;
-    }
-
-    playResultViewer = {
-      setLoading: (message) => {
-        playResultInspectorEl.textContent = message || "Loading...";
-      },
-      setError: (message) => {
-        playResultInspectorEl.textContent = message || "Viewer error";
-      },
-      renderRecord: (record) => {
-        playResultInspectorEl.textContent = JSON.stringify(record || {}, null, 2);
-      },
-    };
-  };
-
   const ensureQueueVisualizer = () => {
     if (queueVisualizer || !daskQueueVizEl) return;
 
@@ -670,29 +658,32 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     const detailsText = buildFailureDetailsText(payload, requestState);
     const primaryError = String(payload.error || "Value inspection failed.");
 
-    playResultViewer.renderRecord({
-      available: false,
-      node_id: nodeId,
-      status: badgeStatus,
-      runtime_version: payload.runtime_version || "runtime",
-      updated_at: payload.updated_at || new Date().toISOString(),
-      path,
-      error: primaryError,
-      log_tail: payload.log_tail || "",
-      execution_errors: normalizedExecutionErrors(payload),
-      descriptor: {
-        vox_type: "string",
-        format_version: "voxpod/1",
-        summary: { value: detailsText, length: detailsText.length, truncated: false },
-        navigation: {
-          path: path || "",
-          pageable: false,
-          can_descend: false,
-          default_page_size: 64,
-          max_page_size: 512,
+    playViewerContract = playViewerContractFor({
+      state: "record",
+      record: {
+        available: false,
+        node_id: nodeId,
+        status: badgeStatus,
+        runtime_version: payload.runtime_version || "runtime",
+        updated_at: payload.updated_at || new Date().toISOString(),
+        path,
+        error: primaryError,
+        log_tail: payload.log_tail || "",
+        execution_errors: normalizedExecutionErrors(payload),
+        descriptor: {
+          vox_type: "string",
+          format_version: "voxpod/1",
+          summary: { value: detailsText, length: detailsText.length, truncated: false },
+          navigation: {
+            path: path || "",
+            pageable: false,
+            can_descend: false,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
         },
+        diagnostics: payload.diagnostics || {},
       },
-      diagnostics: payload.diagnostics || {},
     });
 
     playResultMeta = `Unable to inspect ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""}: ${primaryError}`;
@@ -728,7 +719,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     if (isMaterialized && hasRenderableDescriptor) {
       stopValuePolling();
       activeInProgressViewKey = "";
-      playResultViewer.renderRecord(payload);
+      playViewerContract = playViewerContractFor({ state: "record", record: payload });
       playResultMeta = `Inspecting ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} | ${materialization || "materialized"} | status=${computeStatus || "materialized"}`;
       return;
     }
@@ -775,12 +766,15 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
         descriptor,
       };
 
-      if (activeInProgressViewKey === inProgressKey && typeof playResultViewer.refreshPage === "function") {
-        playResultViewer.refreshPage(nodeId, path);
-      } else {
-        playResultViewer.renderRecord(inProgressRecord);
-        activeInProgressViewKey = inProgressKey;
-      }
+      playViewerContract = playViewerContractFor({
+        state: "record",
+        record: inProgressRecord,
+        pageRefresh:
+          activeInProgressViewKey === inProgressKey
+            ? { nodeId, path, preserveRecord: true }
+            : null,
+      });
+      activeInProgressViewKey = inProgressKey;
       playResultMeta = `In progress ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""} | ${computeStatus || "pending"}${jobId ? ` | job ${jobId.slice(0, 12)}` : ""}`;
       subscribeValueSocket({
         nodeId,
@@ -810,11 +804,14 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   };
 
   const inspectPlayTarget = async (nodeId, path = "", options = {}) => {
-    ensurePlayResultViewer();
     stopValuePolling();
 
     const variable = String(options.variable || "");
     playResultMeta = `Resolving ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""}...`;
+    playViewerContract = playViewerContractFor({
+      state: "loading",
+      message: `Resolving ${nodeId.slice(0, 12)}${path ? ` @ ${path}` : ""}...`,
+    });
 
     try {
       const payload = await requestPlayValue({
@@ -826,7 +823,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       applyPlayValuePayload(payload, { nodeId, variable, path });
     } catch (error) {
       stopValuePolling();
-      playResultViewer.setError(`Value lookup failed: ${error.message}`);
+      playViewerContract = playViewerContractFor({ state: "error", message: `Value lookup failed: ${error.message}` });
       playResultMeta = `Unable to inspect ${nodeId.slice(0, 12)}: ${error.message}`;
     }
   };
@@ -937,8 +934,7 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
     stopValuePolling();
     activeInProgressViewKey = "";
     playResultMeta = "Click inspect on a variable to resolve it on demand.";
-    ensurePlayResultViewer();
-    playResultViewer.renderRecord(null);
+    playViewerContract = playViewerContractFor();
 
     parseSelectableTargets();
     selectedTargetIndex = playTargets.length ? 0 : -1;
@@ -1178,7 +1174,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
   }
 
   onMount(() => {
-    ensurePlayResultViewer();
     ensureQueueVisualizer();
     renderQueueVisualizer();
   });
@@ -1194,9 +1189,6 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
 
     if (queueVisualizer && typeof queueVisualizer.destroy === "function") {
       queueVisualizer.destroy();
-    }
-    if (playResultViewer && typeof playResultViewer.destroy === "function") {
-      playResultViewer.destroy();
     }
   });
 </script>
@@ -1346,7 +1338,9 @@ vi_sweep_masks = map(sweep_case, pflair_images)`;
       </div>
 
       <p id="playResultMeta" class="muted">{playResultMeta}</p>
-      <div id="playResultInspector" class="result-inspector compact" bind:this={playResultInspectorEl}></div>
+      <div id="playResultInspector" class="result-inspector compact">
+        <StartViewerHost contract={playViewerContract} />
+      </div>
 
       <h3 class="subheading">Execution Log</h3>
       <p id="playExecSummary" class="muted">{playExecSummary}</p>

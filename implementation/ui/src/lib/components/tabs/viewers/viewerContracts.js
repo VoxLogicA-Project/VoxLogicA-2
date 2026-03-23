@@ -65,6 +65,48 @@ export const buildMedicalViewerContract = ({ niftiUrl = "", layers = [], label =
   };
 };
 
+const normalizeRecordViewerState = ({ state = "empty", record = null, message = "", pageRefresh = null } = {}) => {
+  const normalizedState = ["empty", "loading", "error", "record"].includes(String(state || "").toLowerCase())
+    ? String(state || "empty").toLowerCase()
+    : record && typeof record === "object"
+      ? "record"
+      : message
+        ? "error"
+        : "empty";
+
+  return {
+    state: normalizedState,
+    record: record && typeof record === "object" ? record : null,
+    message: String(message || ""),
+    pageRefresh:
+      pageRefresh && typeof pageRefresh === "object"
+        ? {
+            nodeId: String(pageRefresh?.nodeId || ""),
+            path: String(pageRefresh?.path || ""),
+            preserveRecord: pageRefresh?.preserveRecord === true,
+          }
+        : null,
+  };
+};
+
+export const buildRecordViewerContract = ({
+  label = "value",
+  state = "empty",
+  record = null,
+  message = "",
+  pageRefresh = null,
+  onNavigate = null,
+  fetchPage = null,
+  onStatusClick = null,
+} = {}) => ({
+  adapterKey: "record-viewer",
+  label: String(label || "value"),
+  onNavigate: typeof onNavigate === "function" ? onNavigate : null,
+  fetchPage: typeof fetchPage === "function" ? fetchPage : null,
+  onStatusClick: typeof onStatusClick === "function" ? onStatusClick : null,
+  ...normalizeRecordViewerState({ state, record, message, pageRefresh }),
+});
+
 // Leaf viewers all flow through one contract builder so the host can keep a
 // stable adapter instance and update it in place as records change.
 export const buildLeafViewerContract = ({ descriptor = {}, summary = {}, render = {}, label = "value", fallbackText = "value" } = {}) => {

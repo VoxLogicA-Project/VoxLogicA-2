@@ -81,6 +81,11 @@ This documentation is intended as a living knowledge base for:
 - **[Serve Studio Guide](./user/serve-studio.md)**
   - API and UI guide for playground jobs, quality dashboard, and storage telemetry.
 
+## Stable Specs
+
+- **[Stable UI and Interaction Specs](./specs/README.md)**
+  - Versioned contracts for incremental viewer hosts, tokenized editor surfaces, and other future-extensible UI boundaries.
+
 ---
 
 _This documentation is maintained as a living resource. For questions or contributions, contact the project leads or open an issue in the repository._

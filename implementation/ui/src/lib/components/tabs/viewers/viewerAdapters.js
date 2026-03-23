@@ -132,6 +132,92 @@ const createImageOverlayAdapter = (host) => {
   };
 };
 
+const createRecordViewerFallback = (host) => {
+  const pre = document.createElement("pre");
+  pre.className = "start-viewer-message start-viewer-message--record";
+  host.replaceChildren(pre);
+  return {
+    setLoading(message) {
+      setText(pre, message || "Loading...");
+    },
+    setError(message) {
+      setText(pre, message || "Viewer error");
+    },
+    renderRecord(record) {
+      setText(pre, JSON.stringify(record || {}, null, 2));
+    },
+    refreshPage() {
+      // No paging surface in the fallback viewer.
+    },
+    destroy() {
+      clearHost(host);
+    },
+  };
+};
+
+const createRecordViewerAdapter = (host) => {
+  let viewer = null;
+  const callbacks = {
+    onNavigate: null,
+    fetchPage: null,
+    onStatusClick: null,
+  };
+
+  const ensureViewer = () => {
+    if (viewer) return viewer;
+
+    const ctor = window?.VoxResultViewer?.ResultViewer;
+    if (typeof ctor === "function") {
+      viewer = new ctor(host, {
+        onNavigate: (path) => callbacks.onNavigate?.(path),
+        fetchPage: (request) => callbacks.fetchPage?.(request),
+        onStatusClick: (record) => callbacks.onStatusClick?.(record),
+      });
+      return viewer;
+    }
+
+    viewer = createRecordViewerFallback(host);
+    return viewer;
+  };
+
+  return {
+    update(contract) {
+      callbacks.onNavigate = typeof contract?.onNavigate === "function" ? contract.onNavigate : null;
+      callbacks.fetchPage = typeof contract?.fetchPage === "function" ? contract.fetchPage : null;
+      callbacks.onStatusClick = typeof contract?.onStatusClick === "function" ? contract.onStatusClick : null;
+
+      const activeViewer = ensureViewer();
+      const refresh = contract?.pageRefresh;
+      if (refresh?.nodeId && typeof activeViewer?.refreshPage === "function") {
+        activeViewer.refreshPage(refresh.nodeId, refresh.path || "");
+        if (refresh.preserveRecord) return;
+      }
+
+      switch (String(contract?.state || "empty")) {
+        case "loading":
+          activeViewer?.setLoading?.(String(contract?.message || `Loading ${contract?.label || "value"}...`));
+          return;
+        case "error":
+          activeViewer?.setError?.(String(contract?.message || "Viewer error"));
+          return;
+        case "record":
+          activeViewer?.renderRecord?.(contract?.record || null);
+          return;
+        case "empty":
+        default:
+          activeViewer?.renderRecord?.(null);
+      }
+    },
+    destroy() {
+      if (viewer && typeof viewer.destroy === "function") {
+        viewer.destroy();
+      }
+      viewer = null;
+      clearHost(host);
+    },
+  };
+};
+
 const setLoadingState = (loadingEl, errorEl, { loading = false, error = "" } = {}) => {
   if (loadingEl) loadingEl.style.display = loading ? "block" : "none";
   if (errorEl) {
@@ -454,6 +540,8 @@ const createMedicalAdapter = (host) => {
 export const createViewerAdapter = (host, contract) => {
   const adapterKey = String(contract?.adapterKey || "message");
   switch (adapterKey) {
+    case "record-viewer":
+      return createRecordViewerAdapter(host);
     case "scalar":
       return createScalarAdapter(host);
     case "text":
