@@ -863,6 +863,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     symbolStatuses = next;
   };
 
+  const normalizeSelectionNames = (names = []) =>
+    [...new Set((Array.isArray(names) ? names : [names]).map((name) => String(name || "").trim()).filter(Boolean))];
+
   const syncSymbolMaterializations = (symbols) => {
     const next = {};
     for (const name of Object.keys(symbols || {})) {
@@ -871,9 +874,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     symbolMaterializations = next;
   };
 
-  const syncMaterializedRecords = (symbols) => {
+  const syncMaterializedRecords = (symbols, preservedNames = []) => {
     const next = {};
-    for (const name of Object.keys(symbols || {})) {
+    for (const name of new Set([...Object.keys(symbols || {}), ...normalizeSelectionNames(preservedNames)])) {
       if (materializedRecords?.[name]) {
         next[name] = materializedRecords[name];
       }
@@ -881,9 +884,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     materializedRecords = next;
   };
 
-  const syncSymbolTypeHints = (symbols, staticHints = {}) => {
+  const syncSymbolTypeHints = (symbols, staticHints = {}, preservedNames = []) => {
     const next = {};
-    for (const name of Object.keys(symbols || {})) {
+    for (const name of new Set([...Object.keys(symbols || {}), ...normalizeSelectionNames(preservedNames)])) {
       const hinted = String(staticHints?.[name] || symbolTypeHints?.[name] || "").trim();
       const materializedType = String(materializedRecords?.[name]?.descriptor?.vox_type || "").trim();
       if (materializedType && (!hinted || hinted === "scalar" || hinted === "unknown")) {
@@ -897,12 +900,23 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     symbolTypeHints = next;
   };
 
-  const ensureSelectedVisualSymbols = () => {
+  const ensureSelectedVisualSymbols = ({ preserveRenderedSelection = false } = {}) => {
     const names = Object.keys(symbolTable || {});
-    const retained = selectedVisualSymbols.filter((name) => names.includes(name));
+    const retained = normalizeSelectionNames(selectedVisualSymbols).filter((name) => names.includes(name));
     if (retained.length) {
       selectedVisualSymbols = retained;
       return;
+    }
+    if (preserveRenderedSelection) {
+      const preserved = normalizeSelectionNames(selectedVisualSymbols).filter((name) => materializedRecords?.[name]);
+      if (preserved.length) {
+        selectedVisualSymbols = preserved;
+        return;
+      }
+      if (primaryVariable && materializedRecords?.[primaryVariable]) {
+        selectedVisualSymbols = [primaryVariable];
+        return;
+      }
     }
     if (primaryVariable && names.includes(primaryVariable)) {
       selectedVisualSymbols = [primaryVariable];
@@ -1166,6 +1180,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     stopValueSocket({ logFinal: false });
     valueWs = new WebSocket(`${wsBaseUrl()}/ws/playground/value`);
     valueWs.onopen = () => {
+      if (destroyed) return;
       valueWsAttempts = 0;
       if (!activeValueSubscription) return;
       logValueWatchActivity({
@@ -1190,6 +1205,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       );
     };
     valueWs.onmessage = (event) => {
+      if (destroyed) return;
       try {
         const message = JSON.parse(String(event.data || "{}"));
         if (message?.type === "value" || message?.type === "terminal") {
@@ -1232,6 +1248,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       }
     };
     valueWs.onclose = () => {
+      if (destroyed) return;
       valueWs = null;
       if (!activeValueSubscription) return;
       valueWsAttempts += 1;
@@ -1243,6 +1260,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       }, delay);
     };
     valueWs.onerror = () => {
+      if (destroyed) return;
       try {
         valueWs?.close();
       } catch {
@@ -1469,6 +1487,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   };
 
   const refreshDisplayedValuesAfterEdit = async (token) => {
+    if (destroyed) return;
     if (token !== editRefreshSeq) return;
     if (symbolDiagnostics.length) return;
     const names = [...new Set((selectedVisualSymbols.length ? selectedVisualSymbols : [primaryVariable])
@@ -1489,6 +1508,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           path: variableName === String(primaryVariable || "") ? currentPath : "",
           enqueue: true,
         });
+        if (destroyed) return;
         if (token !== editRefreshSeq) return;
         if (programSnapshot !== String(programText || "")) return;
 
@@ -1555,6 +1575,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         path: "",
         enqueue: false,
       });
+      if (destroyed) return;
       if (token !== probeToken) return;
       const materialization = normalizeStatus(payload?.materialization || "");
       const computeStatus = normalizeStatus(payload?.compute_status || "");
@@ -1756,6 +1777,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       [baseKey]: socket,
     };
     socket.onopen = () => {
+      if (destroyed) return;
       recordPageSocketAttempts = {
         ...recordPageSocketAttempts,
         [baseKey]: 0,
@@ -1772,6 +1794,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       sendSubscribe(socket);
     };
     socket.onmessage = (event) => {
+      if (destroyed) return;
       try {
         const message = JSON.parse(String(event.data || "{}"));
         const messageType = String(message?.type || "").toLowerCase();
@@ -1827,6 +1850,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       }
     };
     socket.onclose = () => {
+      if (destroyed) return;
       const nextSockets = { ...recordPageSockets };
       delete nextSockets[baseKey];
       recordPageSockets = nextSockets;
@@ -1848,6 +1872,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       };
     };
     socket.onerror = () => {
+      if (destroyed) return;
       try {
         socket.close();
       } catch {
@@ -3283,6 +3308,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         path: currentPath,
         enqueue,
       });
+      if (destroyed) {
+        return { state: "stale", reason: "destroyed" };
+      }
       if (request.seq !== resolveRequestSeq || !resolveContextMatches(request)) {
         traceResolve("response-stale", {
           traceId,
@@ -3409,6 +3437,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       );
       return { state: "failed", reason: "unexpected-state" };
     } catch (error) {
+      if (destroyed) {
+        return { state: "stale", reason: "destroyed" };
+      }
       if (request.seq !== resolveRequestSeq || !resolveContextMatches(request)) {
         traceResolve("request-error-stale", {
           traceId,
@@ -3503,7 +3534,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
     try {
       const previousPrimary = String(primaryVariable || "");
-      const previousSelected = Array.isArray(selectedVisualSymbols) ? [...selectedVisualSymbols] : [];
+      const previousSelected = normalizeSelectionNames(selectedVisualSymbols);
       const payload = await getProgramSymbols(programText);
       if (destroyed) return;
       if (token !== loadToken) return;
@@ -3511,18 +3542,22 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       symbolTable = available ? payload.symbol_table || {} : {};
       symbolDiagnostics = payload?.diagnostics || [];
       const staticTypeHints = available ? payload?.symbol_output_kinds || {} : {};
+      const preservedViewNames = normalizeSelectionNames([...previousSelected, previousPrimary]);
       syncSymbolStatuses(symbolTable);
       syncSymbolMaterializations(symbolTable);
-      syncMaterializedRecords(symbolTable);
-      syncSymbolTypeHints(symbolTable, staticTypeHints);
+      syncMaterializedRecords(symbolTable, preservedViewNames);
+      syncSymbolTypeHints(symbolTable, staticTypeHints, preservedViewNames);
 
       const nextNames = Object.keys(symbolTable || {});
       const retainedSelected = previousSelected.filter((name) => nextNames.includes(name));
-      selectedVisualSymbols = retainedSelected;
+      const preservedSelected = previousSelected.filter((name) => materializedRecords?.[name]);
+      selectedVisualSymbols = retainedSelected.length ? retainedSelected : preservedSelected;
       primaryVariable = nextNames.includes(previousPrimary)
         ? previousPrimary
+        : previousPrimary && materializedRecords?.[previousPrimary]
+          ? previousPrimary
         : inferPrimaryVariable(programText, symbolTable);
-      ensureSelectedVisualSymbols();
+      ensureSelectedVisualSymbols({ preserveRenderedSelection: Boolean(preservedSelected.length || materializedRecords?.[previousPrimary]) });
       captionVariable = primaryVariable || "-";
       renderSelectedRecords();
       if (symbolDiagnostics.length) {
@@ -3530,6 +3565,11 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         markStaleValue(summary);
         statusValue = "idle";
         statusText = staleValueVisible ? "Results are stale until editor diagnostics are fixed." : summary;
+        errorText = "";
+      } else if (primaryVariable && !nextNames.includes(primaryVariable) && materializedRecords?.[primaryVariable]) {
+        markStaleValue("Showing the last computed value while the selected symbol settles.");
+        statusValue = "idle";
+        statusText = staleValueVisible ? "Stale while editing." : `Ready to compute ${primaryVariable}.`;
         errorText = "";
       } else if (primaryVariable) {
         clearStaleValue();
@@ -3769,6 +3809,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     probeToken += 1;
     if (pendingSave) clearTimeout(pendingSave);
     if (pendingDreamCleanup) clearTimeout(pendingDreamCleanup);
+    for (const timer of Object.values(recentMaterializeTimers || {})) {
+      clearTimeout(timer);
+    }
     for (const timer of Object.values(recordPagePollTimers || {})) {
       clearTimeout(timer);
     }

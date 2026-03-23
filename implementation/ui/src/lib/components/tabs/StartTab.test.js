@@ -1,6 +1,6 @@
-import { fireEvent, render, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/svelte";
 import { get } from "svelte/store";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import StartTab from "./StartTab.svelte";
 import { clearComputeActivity, ongoingComputeActivity, pushComputeActivity } from "$lib/stores/computeActivity.js";
@@ -32,6 +32,11 @@ describe("StartTab", () => {
     getProgramSymbolsMock.mockReset();
     resolvePlaygroundValueMock.mockReset();
     resolvePlaygroundValuePageMock.mockReset();
+  });
+
+  afterAll(async () => {
+    cleanup();
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   it("loads persisted code and resolves inferred primary variable", async () => {
@@ -129,7 +134,7 @@ describe("StartTab", () => {
           : [],
     }));
 
-    const { container } = render(StartTab, { active: true, capabilities: {} });
+    const { container, unmount } = render(StartTab, { active: true, capabilities: {} });
     const editor = container.querySelector(".vx-editor__textarea");
     expect(editor).not.toBeNull();
     editor.value = "x =";
@@ -212,6 +217,125 @@ describe("StartTab", () => {
 
     expect(resolvePlaygroundValueMock).toHaveBeenCalledTimes(1);
     expect(container.querySelector(".inline-error")).toBeNull();
+  });
+
+  it("keeps the selected overlay viewer stable when edit-time symbols temporarily drop it", async () => {
+    const initialProgram = "img = 1\nmid = 2\nthr = img\nstats = 3";
+    const partialProgram = "img = 1\nmid = 2 +\nthr = img\nstats = 3";
+    const restoredProgram = "img = 1\nmid = 2 + 1\nthr = img\nstats = 3";
+    window.localStorage.setItem("voxlogica.start.program.v1", initialProgram);
+
+    getProgramSymbolsMock.mockImplementation(async (program) => {
+      const source = String(program || "").trim();
+      if (source === partialProgram) {
+        return {
+          available: true,
+          symbol_table: { img: "node-img", mid: "node-mid" },
+          diagnostics: [],
+        };
+      }
+      return {
+        available: true,
+        symbol_table: { img: "node-img", mid: "node-mid", thr: "node-thr", stats: "node-stats" },
+        diagnostics: [],
+      };
+    });
+
+    resolvePlaygroundValueMock.mockImplementation(async ({ variable }) => {
+      if (variable === "thr") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-thr",
+          path: "/",
+          descriptor: {
+            vox_type: "overlay",
+            format_version: "voxpod/1",
+            summary: { layer_count: 2, layer_labels: ["Base", "Mask"] },
+            render: {
+              kind: "image-overlay",
+              layers: [
+                { label: "Base", png_url: "/base-thr.png", opacity: 1.0, visible: true },
+                { label: "Mask", png_url: "/mask-thr.png", opacity: 0.42, visible: true },
+              ],
+            },
+            navigation: {
+              path: "/",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      return {
+        materialization: "computed",
+        compute_status: "completed",
+        node_id: `node-${variable}`,
+        path: "/",
+        descriptor: {
+          vox_type: "integer",
+          format_version: "voxpod/1",
+          summary: { value: variable === "img" ? 1 : variable === "mid" ? 2 : 3 },
+          navigation: {
+            path: "/",
+            pageable: false,
+            can_descend: false,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
+        },
+      };
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(container.querySelectorAll("button.start-value-tag").length).toBe(4);
+    });
+
+    const thrTag = Array.from(container.querySelectorAll("button.start-value-tag")).find((el) =>
+      (el.textContent || "").includes("thr"),
+    );
+    expect(thrTag).not.toBeUndefined();
+    await fireEvent.click(thrTag);
+
+    let shellBefore = null;
+    await waitFor(() => {
+      const caption = container.querySelector(".start-caption-main");
+      shellBefore = container.querySelector(".start-overlay-image-shell");
+      expect(caption?.textContent || "").toContain("thr");
+      expect(shellBefore).not.toBeNull();
+    });
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+
+    editor.value = partialProgram;
+    await fireEvent.input(editor);
+
+    await waitFor(() => {
+      const caption = container.querySelector(".start-caption-main");
+      const shellDuring = container.querySelector(".start-overlay-image-shell");
+      expect(caption?.textContent || "").toContain("thr");
+      expect(shellDuring).toBe(shellBefore);
+      expect(container.querySelector(".start-value-card.is-stale")).not.toBeNull();
+    });
+
+    editor.value = restoredProgram;
+    await fireEvent.input(editor);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    await waitFor(() => {
+      const caption = container.querySelector(".start-caption-main");
+      const shellAfter = container.querySelector(".start-overlay-image-shell");
+      expect(caption?.textContent || "").toContain("thr");
+      expect(shellAfter).toBe(shellBefore);
+      expect(container.querySelector(".start-value-card.is-stale")).toBeNull();
+    });
+
+    cleanup();
+    await Promise.resolve();
   });
 
   it("shows static symbol types on hover before computation", async () => {
