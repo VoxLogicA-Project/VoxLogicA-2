@@ -3845,7 +3845,8 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
                     <div
                       class={`start-value-grid ${viewerRecords.length > 1 ? "is-multi" : "is-single"} ${maximizedViewerIndex >= 0 ? "has-maximized" : ""}`.trim()}
                     >
-                      {#each viewerRecords as record, index (`${record?.node_id || "value"}-${index}`)}
+                      <!-- Keep stable slot keys so viewer hosts can morph in place across value updates. -->
+                      {#each viewerRecords as record, index (index)}
                         {#if maximizedViewerIndex < 0 || maximizedViewerIndex === index}
                           {@const descriptor = recordDescriptor(record)}
                           <article

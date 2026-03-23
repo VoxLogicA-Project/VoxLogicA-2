@@ -1,5 +1,6 @@
 <script>
-  import StartMedicalVolume from "$lib/components/tabs/StartMedicalVolume.svelte";
+  import StartViewerHost from "$lib/components/tabs/StartViewerHost.svelte";
+  import { buildLeafViewerContract } from "$lib/components/tabs/viewers/viewerContracts.js";
 
   export let record = null;
   export let label = "";
@@ -43,7 +44,6 @@
   const DEFAULT_LIMIT = 18;
   const ACTIVE_COLLECTION_ITEM_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting"]);
   const COLLECTION_PENDING_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting", "pending", "missing"]);
-  const isJsdom = typeof navigator !== "undefined" && /jsdom/i.test(String(navigator.userAgent || ""));
   let stageExpanded = false;
 
   const safeText = (value) => {
@@ -228,10 +228,13 @@
   $: renderPngUrl = String(render?.png_url || "");
   $: renderNiftiUrl = String(render?.nifti_url || "");
   $: renderLayers = Array.isArray(render?.layers) ? render.layers.filter((layer) => layer && typeof layer === "object") : [];
-  $: renderableImage = Boolean(renderPngUrl) && renderKind === "image2d";
-  $: renderableVolume = Boolean(renderNiftiUrl) && renderKind === "medical-volume";
-  $: renderableImageOverlay = renderKind === "image-overlay" && renderLayers.some((layer) => layer?.png_url);
-  $: renderableVolumeOverlay = renderKind === "medical-overlay" && renderLayers.some((layer) => layer?.nifti_url);
+  $: leafViewerContract = buildLeafViewerContract({
+    descriptor,
+    summary,
+    render,
+    label: label || "value",
+    fallbackText: previewText(descriptor),
+  });
 
   $: page = (recordPages, recordPagePointers, isCollection ? pageForRecord(record, path) : null);
   $: loading = (recordPagesLoading, isCollection ? pageLoadingForRecord(record, path) : false);
@@ -338,49 +341,8 @@
 <div class="start-value-canvas">
   {#if !record}
     <div class="start-viewer-message">No value</div>
-  {:else if ["integer", "number", "boolean", "null"].includes(voxType)}
-    <div class="start-value-centered">
-      <div class="start-pure-scalar">{safeText(summary.value)}</div>
-    </div>
-  {:else if voxType === "string"}
-    <div class="start-value-centered start-value-centered--text">
-      <pre class="start-pure-text">{safeText(summary.value)}</pre>
-    </div>
-  {:else if voxType === "bytes"}
-    <div class="start-value-centered">
-      <div class="start-pure-scalar">{Number(summary.length || 0)} bytes</div>
-    </div>
-  {:else if renderableImage}
-    <div class="start-value-centered">
-      <img class="start-pure-image" src={renderPngUrl} alt={`${label || "value"} preview`} />
-    </div>
-  {:else if renderableVolume && !isJsdom}
-    <div class="start-value-media-shell">
-      <StartMedicalVolume niftiUrl={renderNiftiUrl} label={label || "value"} />
-    </div>
-  {:else if renderableVolume}
-    <div class="start-viewer-message">Medical viewer unavailable.</div>
-  {:else if renderableImageOverlay}
-    <div class="start-value-centered">
-      <div class="start-overlay-image-shell" aria-label={`${label || "value"} overlay`}>
-        {#each renderLayers as layer, layerIndex}
-          {#if layer?.png_url && layer?.visible !== false}
-            <img
-              class={`start-overlay-image-layer ${layerIndex === 0 ? "is-base" : "is-overlay"}`.trim()}
-              src={layer.png_url}
-              alt={layer?.label || `Layer ${layerIndex + 1}`}
-              style={`--layer-opacity:${Number.isFinite(Number(layer?.opacity)) ? Number(layer.opacity) : layerIndex === 0 ? 1 : 0.4}`}
-            />
-          {/if}
-        {/each}
-      </div>
-    </div>
-  {:else if renderableVolumeOverlay && !isJsdom}
-    <div class="start-value-media-shell">
-      <StartMedicalVolume layers={renderLayers} label={label || "value"} />
-    </div>
-  {:else if renderableVolumeOverlay}
-    <div class="start-viewer-message">Medical viewer unavailable.</div>
+  {:else if !isCollection}
+    <StartViewerHost contract={leafViewerContract} />
   {:else if isCollection}
     {#if level > 0 && !items.length && !loading && !error}
       {#if pagePollingForRecord(record, path) || pendingCollectionStateFor(record)}
@@ -549,10 +511,6 @@
       </section>
       </div>
     {/if}
-  {:else}
-    <div class="start-value-centered">
-      <div class="start-pure-array">{previewText(descriptor)}</div>
-    </div>
   {/if}
 </div>
 
