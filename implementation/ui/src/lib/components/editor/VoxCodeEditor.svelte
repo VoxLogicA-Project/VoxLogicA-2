@@ -5,6 +5,7 @@
     buildDefaultCompletions,
     buildEditorDocument,
     completionContextAt,
+    dragNumberToken,
     expressionContextAt,
     extractTokenInfoAt,
     isOperatorToken,
@@ -42,6 +43,8 @@
   let pendingFocus = false;
   let editorFocused = false;
   let surfaceCursor = "text";
+  let activeNumberDrag = null;
+  let suppressNextClick = false;
 
   let suggestions = [];
   let selectedSuggestion = 0;
@@ -49,6 +52,8 @@
   let completionContext = null;
   let suggestionInteractionMode = "passive";
   let suggestionsPos = { left: 0, top: 0 };
+
+  const NUMBER_DRAG_ACTIVATION_PX = 4;
 
   const diagnosticLocationLabel = (diagnostic) => {
     const location = String(diagnostic?.location || "").trim();
@@ -383,7 +388,9 @@
 
   const handleInput = () => {
     updateModelFromTextarea(true);
-    scheduleCompletion();
+    if (!activeNumberDrag?.active) {
+      scheduleCompletion();
+    }
   };
 
   const handleScroll = () => {
@@ -391,8 +398,108 @@
   };
 
   const handleSelect = () => {
-    if (!suggestionsOpen) return;
+    if (activeNumberDrag?.active || !suggestionsOpen) return;
     scheduleCompletion();
+  };
+
+  const endNumberDrag = () => {
+    if (!activeNumberDrag) return;
+
+    const drag = activeNumberDrag;
+    activeNumberDrag = null;
+
+    if (drag.active) {
+      queueSelectionRestore(drag.start, drag.end, { focus: true });
+    }
+
+    if (textareaEl && typeof textareaEl.releasePointerCapture === "function" && drag.pointerId != null) {
+      try {
+        textareaEl.releasePointerCapture(drag.pointerId);
+      } catch {
+        // Pointer capture is not guaranteed in jsdom or every browser path.
+      }
+    }
+  };
+
+  const handlePointerDown = (event) => {
+    if (readonly || event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey) return;
+
+    const tokenEl = tokenElementFromPoint(event.clientX, event.clientY);
+    if (String(tokenEl?.getAttribute?.("data-token-kind") || "") !== "number") return;
+
+    const tokenText = String(tokenEl.getAttribute("data-token-text") || "");
+    if (!dragNumberToken(tokenText)) return;
+
+    clearSuggestionState(true);
+    suppressNextClick = false;
+    activeNumberDrag = {
+      pointerId: event.pointerId,
+      originX: event.clientX,
+      originY: event.clientY,
+      start: Number(tokenEl.getAttribute("data-start") || 0),
+      end: Number(tokenEl.getAttribute("data-end") || 0),
+      tokenText,
+      lastText: tokenText,
+      active: false,
+    };
+  };
+
+  const handlePointerMove = (event) => {
+    const drag = activeNumberDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+
+    const deltaX = event.clientX - drag.originX;
+    const deltaY = event.clientY - drag.originY;
+    const distance = Math.max(Math.abs(deltaX), Math.abs(deltaY));
+
+    if (!drag.active && distance < NUMBER_DRAG_ACTIVATION_PX) {
+      return;
+    }
+
+    if (!drag.active) {
+      drag.active = true;
+      suppressNextClick = true;
+      surfaceCursor = "ns-resize";
+      if (textareaEl) {
+        textareaEl.focus({ preventScroll: true });
+        if (typeof textareaEl.setPointerCapture === "function") {
+          try {
+            textareaEl.setPointerCapture(event.pointerId);
+          } catch {
+            // Pointer capture is not guaranteed in jsdom or every browser path.
+          }
+        }
+      }
+    }
+
+    const adjustment = dragNumberToken(drag.tokenText, { deltaX, deltaY });
+    if (!adjustment) return;
+
+    surfaceCursor = "ns-resize";
+    if (adjustment.text === drag.lastText) {
+      event.preventDefault();
+      return;
+    }
+
+    replaceTextRange(drag.start, drag.end, adjustment.text, {
+      emitInput: true,
+      focus: true,
+      selectionMode: "select",
+    });
+    drag.end = drag.start + adjustment.text.length;
+    drag.lastText = adjustment.text;
+    event.preventDefault();
+  };
+
+  const handlePointerUp = (event) => {
+    if (!activeNumberDrag || event.pointerId !== activeNumberDrag.pointerId) return;
+    event.preventDefault();
+    endNumberDrag();
+  };
+
+  const handlePointerCancel = (event) => {
+    if (!activeNumberDrag || event.pointerId !== activeNumberDrag.pointerId) return;
+    endNumberDrag();
   };
 
   const handleKeydown = async (event) => {
@@ -441,6 +548,12 @@
   };
 
   const handleTextareaClick = (event) => {
+    if (suppressNextClick) {
+      suppressNextClick = false;
+      event.preventDefault();
+      return;
+    }
+
     const pointToken = tokenElementFromPoint(event.clientX, event.clientY);
     const pointSymbol = String(pointToken?.getAttribute?.("data-token") || "");
     if (pointSymbol) {
@@ -462,6 +575,8 @@
 
     if (symbolToken) {
       surfaceCursor = "pointer";
+    } else if (tokenKind === "number" && !readonly) {
+      surfaceCursor = "ns-resize";
     } else if (tokenKind === "operator" && isOperatorToken(tokenText)) {
       surfaceCursor = "help";
     } else {
@@ -501,6 +616,7 @@
   };
 
   const handleMouseLeave = () => {
+    if (activeNumberDrag?.active) return;
     if (hoverTimer) {
       clearTimeout(hoverTimer);
       hoverTimer = null;
@@ -512,6 +628,7 @@
 
   const handleBlur = () => {
     editorFocused = false;
+    endNumberDrag();
     surfaceCursor = readonly ? "default" : "text";
     dispatch("hoverleave");
     dispatch("symbolleave");
@@ -575,6 +692,7 @@
 
   onDestroy(() => {
     destroyed = true;
+    endNumberDrag();
     clearTimers();
   });
 </script>
@@ -633,6 +751,10 @@
         on:scroll={handleScroll}
         on:select={handleSelect}
         on:click={handleTextareaClick}
+        on:pointerdown={handlePointerDown}
+        on:pointermove={handlePointerMove}
+        on:pointerup={handlePointerUp}
+        on:pointercancel={handlePointerCancel}
         on:mousemove={handleMouseMove}
         on:mouseleave={handleMouseLeave}
         on:focus={handleFocus}
@@ -740,6 +862,10 @@
 
   .vx-editor__surface[data-cursor="help"] .vx-editor__textarea {
     cursor: help;
+  }
+
+  .vx-editor__surface[data-cursor="ns-resize"] .vx-editor__textarea {
+    cursor: ns-resize;
   }
 
   .vx-editor__overlay,

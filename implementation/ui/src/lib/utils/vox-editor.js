@@ -12,9 +12,30 @@ const KEYWORD_SET = new Set(VOX_KEYWORDS);
 const IDENT_START = /[A-Za-z_.$]/;
 const IDENT_CONT = /[A-Za-z0-9_.$]/;
 const NUMBER_CHAR = /[0-9]/;
+const NUMBER_TOKEN = /^\d+(?:\.\d+)?$/;
 const COMPLETION_CHAR = /[A-Za-z0-9_.$]/;
 const BLOCK_TAGS = new Set(["DIV", "P", "LI", "PRE"]);
 const EMPTY_LINE_MARKER = "\u200b";
+
+const numberDecimals = (tokenText) => {
+  const source = String(tokenText || "");
+  const dot = source.indexOf(".");
+  return dot >= 0 ? source.length - dot - 1 : 0;
+};
+
+const dragGranularityLevel = (deltaX, granularityPx) => {
+  const threshold = Math.max(1, Number(granularityPx || 0));
+  const distance = Number(deltaX || 0);
+  if (distance >= 0) return Math.floor(distance / threshold);
+  return -Math.floor(Math.abs(distance) / threshold);
+};
+
+const roundToDecimals = (value, decimals) => {
+  const safeDecimals = Math.max(0, Number(decimals || 0));
+  const scale = 10 ** safeDecimals;
+  const rounded = Math.round((Number(value || 0) + Number.EPSILON) * scale) / scale;
+  return Object.is(rounded, -0) ? 0 : rounded;
+};
 
 export const parseDiagnosticLocation = (diag) => {
   const location = String(diag?.location || "");
@@ -433,6 +454,33 @@ export const extractTokenInfoAt = (text, position) => {
     token: source.slice(start, end).trim(),
     start,
     end,
+  };
+};
+
+export const dragNumberToken = (
+  tokenText,
+  { deltaX = 0, deltaY = 0, pixelsPerStep = 6, granularityPx = 80 } = {},
+) => {
+  const source = String(tokenText || "").trim();
+  if (!NUMBER_TOKEN.test(source)) return null;
+
+  const initialValue = Number(source);
+  if (!Number.isFinite(initialValue)) return null;
+
+  const baseDecimals = numberDecimals(source);
+  const granularityLevel = dragGranularityLevel(deltaX, granularityPx);
+  const step = 10 ** (granularityLevel - baseDecimals);
+  const steps = Math.round((-Number(deltaY || 0)) / Math.max(1, Number(pixelsPerStep || 0)));
+  const renderDecimals = Math.max(baseDecimals, baseDecimals - granularityLevel);
+  const nextValue = roundToDecimals(initialValue + (steps * step), renderDecimals);
+
+  return {
+    value: nextValue,
+    text: nextValue.toFixed(renderDecimals),
+    steps,
+    step,
+    granularityLevel,
+    renderDecimals,
   };
 };
 

@@ -49,6 +49,15 @@ Event payloads should evolve additively.
 
 Pointer-driven interactions on overlay-visible tokens must resolve against the tokenized document model rather than DOM-specific text layout assumptions, so behavior remains stable across overlay rendering changes.
 
+Numeric tokens support direct drag adjustment on the shared surface:
+
+- dragging upward increments the token value
+- dragging downward decrements the token value
+- moving left reduces the step size
+- moving right increases the step size
+
+The textarea remains the editing source of truth during drag updates.
+
 ## Forward Compatibility
 
 Future token interactions should:

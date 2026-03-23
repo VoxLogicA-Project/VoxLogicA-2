@@ -5,6 +5,7 @@ import {
   buildDefaultCompletions,
   buildEditorDocument,
   completionContextAt,
+  dragNumberToken,
   parseDiagnosticLocation,
   readEditableText,
   restoreSelectionWithin,
@@ -91,5 +92,39 @@ describe("vox-editor utils", () => {
     const applied = applyCompletion(source, ctx, { label: "map", insertText: "map" });
     expect(applied.text).toBe("map");
     expect(applied.cursor).toBe(3);
+  });
+
+  it("adjusts numeric tokens with vertical drag and horizontal granularity", () => {
+    expect(dragNumberToken("5", { deltaX: 0, deltaY: -12 })).toMatchObject({
+      text: "7",
+      value: 7,
+      step: 1,
+      steps: 2,
+      granularityLevel: 0,
+    });
+
+    expect(dragNumberToken("5", { deltaX: -80, deltaY: -6 })).toMatchObject({
+      text: "5.1",
+      value: 5.1,
+      step: 0.1,
+      steps: 1,
+      granularityLevel: -1,
+    });
+
+    expect(dragNumberToken("5", { deltaX: 80, deltaY: -6 })).toMatchObject({
+      text: "15",
+      value: 15,
+      step: 10,
+      steps: 1,
+      granularityLevel: 1,
+    });
+
+    expect(dragNumberToken("1.25", { deltaX: 80, deltaY: 6 })).toMatchObject({
+      text: "1.15",
+      value: 1.15,
+      step: 0.1,
+      steps: -1,
+      granularityLevel: 1,
+    });
   });
 });

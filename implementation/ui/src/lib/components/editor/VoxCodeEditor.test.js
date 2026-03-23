@@ -205,4 +205,54 @@ describe("VoxCodeEditor", () => {
       expect(editor.selectionEnd).toBe(7);
     });
   });
+
+  it("rewrites a numeric token while dragging upward with horizontal granularity", async () => {
+    const { container } = render(VoxCodeEditor, {
+      value: "threshold = 5",
+      symbols: {},
+      diagnostics: [],
+    });
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    const numberToken = container.querySelector('.vx-editor__token--number[data-token-text="5"]');
+    expect(editor).not.toBeNull();
+    expect(numberToken).not.toBeNull();
+
+    editor.focus();
+    editor.setSelectionRange(12, 13);
+    numberToken.getBoundingClientRect = () => ({
+      left: 10,
+      right: 30,
+      top: 10,
+      bottom: 30,
+      width: 20,
+      height: 20,
+      x: 10,
+      y: 10,
+      toJSON: () => ({}),
+    });
+
+    await fireEvent.pointerDown(editor, {
+      pointerId: 1,
+      button: 0,
+      clientX: 16,
+      clientY: 24,
+    });
+    await fireEvent.pointerMove(editor, {
+      pointerId: 1,
+      clientX: 16,
+      clientY: 12,
+    });
+    await fireEvent.pointerUp(editor, {
+      pointerId: 1,
+      clientX: 16,
+      clientY: 12,
+    });
+
+    await waitFor(() => {
+      expect(editor.value).toBe("threshold = 7");
+      expect(editor.selectionStart).toBe(12);
+      expect(editor.selectionEnd).toBe(13);
+    });
+  });
 });
