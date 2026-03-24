@@ -21,6 +21,7 @@ from voxlogica.policy import (
     runtime_policy_scope,
 )
 from voxlogica.reducer import reduce_program_with_bindings
+from voxlogica.sequence_identity import resolve_sequence_container_node
 from voxlogica.storage import NoCacheStorageBackend, get_storage
 from voxlogica.value_model import adapt_runtime_value, normalize_path
 
@@ -177,26 +178,32 @@ def _materialize_sequence_focus_path(
     if not tokens:
         return
 
-    target_node_id = str(node_id)
-    for token in tokens:
-        try:
-            index = int(token)
-        except Exception:
-            return
-        if index < 0:
-            return
-        target_node_id = hash_sequence_item(target_node_id, index)
+    try:
+        root_value = materialization_store.get(str(node_id))
+    except Exception:
+        return
+
+    target_node_id = resolve_sequence_container_node(
+        root_node_id=str(node_id),
+        path=normalized,
+        root_value=root_value,
+    )
+    if target_node_id is None:
+        target_node_id = str(node_id)
+        for token in tokens:
+            try:
+                index = int(token)
+            except Exception:
+                return
+            if index < 0:
+                return
+            target_node_id = hash_sequence_item(target_node_id, index)
 
     try:
         if bool(getattr(materialization_store, "has")(target_node_id)):
             return
     except Exception:
         pass
-
-    try:
-        root_value = materialization_store.get(str(node_id))
-    except Exception:
-        return
 
     try:
         resolved = adapt_runtime_value(root_value).resolve(path=normalized)

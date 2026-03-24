@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import inspect
 from pathlib import Path
 from typing import Any, Callable, Iterable
 import itertools
@@ -517,6 +518,17 @@ class InspectableRangeSequence(InspectableSequenceValue):
         total = max(0, self._stop - self._start)
         super().__init__(parent_ref=parent_ref, total_size=total)
 
+    def child_ref(self, index: int) -> ChildRef:
+        safe_index = int(index)
+        if safe_index < 0 or self._start + safe_index >= self._stop:
+            return super().child_ref(safe_index)
+        value = self._start + safe_index
+        return ChildRef(
+            family="range-value-ref",
+            token=value,
+            child_id=hash_child_ref("inspectable-range", family="range-value-ref", token=value),
+        )
+
     def _compute_item(self, index: int, priority: Any) -> Any:
         del priority
         safe_index = int(index)
@@ -620,13 +632,26 @@ class InspectableMappedSequence(InspectableSequenceValue):
         self._source.add_change_listener(self._on_source_change)
         super().__init__(parent_ref=parent_ref, total_size=self._source.length_hint())
 
+    def child_ref(self, index: int) -> ChildRef:
+        safe_index = int(index)
+        source_child = self._source.child_ref(safe_index)
+        token = {
+            "mapper": self._mapper_identity_token(),
+            "source_child_id": source_child.child_id,
+        }
+        return ChildRef(
+            family="mapped-item-ref",
+            token=token,
+            child_id=hash_child_ref("inspectable-mapped", family="mapped-item-ref", token=token),
+        )
+
     def _compute_item(self, index: int, priority: Any) -> Any:
         upstream_snapshot = self._source.peek_item(index)
         if upstream_snapshot.state != "ready":
             upstream_snapshot = self._source.ensure_item(index, priority=priority)
         if upstream_snapshot.state == "ready":
             upstream = upstream_snapshot.value
-            item_runtime_ref = hash_child_ref(self.parent_ref, family="mapped-item", token=int(index))
+            item_runtime_ref = self.child_ref(index).child_id
             if hasattr(self._mapper, "apply_with_ref") and callable(self._mapper.apply_with_ref):
                 return self._mapper.apply_with_ref(upstream, runtime_ref=item_runtime_ref)
             if hasattr(self._mapper, "invoke") and callable(self._mapper.invoke):
@@ -663,6 +688,28 @@ class InspectableMappedSequence(InspectableSequenceValue):
         for index, priority in to_resume:
             self.ensure_item(index, priority=priority)
 
+    def _mapper_identity_token(self) -> Any:
+        captures = getattr(self._mapper, "captures", None)
+        if isinstance(captures, dict):
+            runtime_ref = captures.get("__vox_runtime_ref__")
+            if runtime_ref is not None:
+                return {"runtime_ref": str(runtime_ref)}
+
+        runtime_ref = getattr(self._mapper, "__vox_runtime_ref__", None)
+        if runtime_ref is not None:
+            return {"runtime_ref": str(runtime_ref)}
+
+        module_name = getattr(self._mapper, "__module__", type(self._mapper).__module__)
+        qualname = getattr(self._mapper, "__qualname__", None)
+        if qualname:
+            return {"callable": f"{module_name}.{qualname}"}
+
+        if inspect.ismethod(self._mapper) or inspect.isfunction(self._mapper):
+            name = getattr(self._mapper, "__name__", type(self._mapper).__qualname__)
+            return {"callable": f"{module_name}.{name}"}
+
+        return {"callable_type": f"{type(self._mapper).__module__}.{type(self._mapper).__qualname__}"}
+
 
 class InspectableSubsequence(InspectableSequenceValue):
     """Inspectable view over a contiguous subsequence."""
@@ -684,6 +731,13 @@ class InspectableSubsequence(InspectableSequenceValue):
         if source_length is not None:
             total_size = max(0, min(self._stop, source_length) - min(self._start, source_length))
         super().__init__(parent_ref=parent_ref, total_size=total_size)
+
+    def child_ref(self, index: int) -> ChildRef:
+        safe_index = int(index)
+        absolute_index = self._start + safe_index
+        if safe_index < 0 or absolute_index >= self._stop:
+            return super().child_ref(safe_index)
+        return self._source.child_ref(absolute_index)
 
     def _compute_item(self, index: int, priority: Any) -> Any:
         safe_index = int(index)

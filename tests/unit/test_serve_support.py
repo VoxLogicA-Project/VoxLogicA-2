@@ -738,7 +738,11 @@ def test_playground_manager_inspects_live_runtime_for_running_value_job(
         )
         assert page_preview is not None
         assert page_preview["page"]["items"][0]["status"] == "ready"
-        assert page_preview["page"]["items"][0]["node_id"] == hash_sequence_item("node-live", 0)
+        assert page_preview["page"]["items"][0]["node_id"] == InspectableRangeSequence(
+            parent_ref="node-live",
+            start=80,
+            stop=82,
+        ).child_ref(0).child_id
     finally:
         release.set()
 
@@ -749,7 +753,7 @@ def test_inspect_runtime_value_page_reports_inspectable_item_states() -> None:
     page = inspect_runtime_value_page(node_id="node-seq", value=sequence, path="/", offset=0, limit=2)
     assert page["page"]["items"][0]["status"] == "ready"
     assert page["page"]["items"][0]["state"] == "ready"
-    assert page["page"]["items"][0]["node_id"] == hash_sequence_item("node-seq", 0)
+    assert page["page"]["items"][0]["node_id"] == sequence.child_ref(0).child_id
 
 
 @pytest.mark.unit

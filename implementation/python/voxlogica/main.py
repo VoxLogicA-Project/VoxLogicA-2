@@ -45,6 +45,7 @@ from voxlogica.policy import (
 from voxlogica.priority import compute_priority_context
 from voxlogica.reducer import reduce_program_with_bindings
 from voxlogica.repl import run_interactive_repl
+from voxlogica.sequence_identity import resolve_sequence_container_node, resolve_sequence_reference, stored_sequence_child_node_id
 from voxlogica.serve_support import (
     PERF_REPORT_SVG,
     PERF_REPORT_DIR,
@@ -391,39 +392,11 @@ def _in_progress_descriptor(*, output_kind: str, path: str, status: str) -> dict
 
 
 def _sequence_reference_for_path(root_node_id: str, path: str | None) -> tuple[str, str] | None:
-    tokens = _path_tokens(path)
-    if not tokens:
-        return None
-    current_node = str(root_node_id)
-    consumed = 0
-    for token in tokens:
-        try:
-            index = int(token)
-        except ValueError:
-            break
-        if index < 0:
-            break
-        current_node = hash_sequence_item(current_node, index)
-        consumed += 1
-    if consumed == 0:
-        return None
-    remaining_tokens = tokens[consumed:]
-    remainder = "/" + "/".join(remaining_tokens) if remaining_tokens else ""
-    return current_node, remainder
+    return resolve_sequence_reference(root_node_id=str(root_node_id), path=path, storage=get_storage())
 
 
 def _sequence_container_node_for_path(root_node_id: str, path: str | None) -> str | None:
-    tokens = _path_tokens(path)
-    current_node = str(root_node_id)
-    for token in tokens:
-        try:
-            index = int(token)
-        except ValueError:
-            return None
-        if index < 0:
-            return None
-        current_node = hash_sequence_item(current_node, index)
-    return current_node
+    return resolve_sequence_container_node(root_node_id=str(root_node_id), path=path, storage=get_storage())
 
 
 def _inspect_store_result_best_effort(
@@ -512,7 +485,9 @@ def _transient_sequence_page_from_store(
     if total is None:
         unknown_upper_bound = safe_offset + safe_limit
         for cursor in range(safe_offset, unknown_upper_bound):
-            item_node_id = hash_sequence_item(container_node_id, cursor)
+            item_node_id = stored_sequence_child_node_id(storage, parent_node_id=container_node_id, index=cursor)
+            if item_node_id is None:
+                item_node_id = hash_sequence_item(container_node_id, cursor)
             item_path = _append_sequence_index_path(base_path, cursor)
             try:
                 item_payload, _lookup_state = _inspect_store_result_best_effort(
@@ -557,7 +532,9 @@ def _transient_sequence_page_from_store(
         }
 
     for cursor in range(safe_offset, upper_bound):
-        item_node_id = hash_sequence_item(container_node_id, cursor)
+        item_node_id = stored_sequence_child_node_id(storage, parent_node_id=container_node_id, index=cursor)
+        if item_node_id is None:
+            item_node_id = hash_sequence_item(container_node_id, cursor)
         item_path = _append_sequence_index_path(base_path, cursor)
         item_payload: dict[str, Any] | None
         try:

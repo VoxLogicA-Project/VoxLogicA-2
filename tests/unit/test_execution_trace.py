@@ -110,6 +110,8 @@ def test_strict_strategy_range_goal_is_inspectable(tmp_path: Path) -> None:
         assert isinstance(value, InspectableRangeSequence)
         assert value.page(offset=0, limit=3) == [2, 3, 4]
         assert value.child_ref(1).child_id != value.child_ref(2).child_id
+        overlapping = InspectableRangeSequence(parent_ref="other-range", start=3, stop=6)
+        assert value.child_ref(1).child_id == overlapping.child_ref(0).child_id
     finally:
         db.close()
 
@@ -141,7 +143,7 @@ def test_strict_strategy_map_produces_nested_inspectable_sequences(tmp_path: Pat
         assert isinstance(second, InspectableSequenceValue)
         assert first.page(offset=0, limit=5) == [0, 1]
         assert second.page(offset=0, limit=5) == [0, 1, 2]
-        assert first.child_ref(0).child_id != second.child_ref(0).child_id
+        assert first.child_ref(1).child_id == second.child_ref(1).child_id
     finally:
         db.close()
 

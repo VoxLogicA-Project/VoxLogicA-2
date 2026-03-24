@@ -24,6 +24,7 @@ from voxlogica.pod_codec import (
     loads_json,
 )
 from voxlogica.lazy.hash import hash_sequence_item
+from voxlogica.sequence_identity import sequence_child_node_id
 from voxlogica.value_model import VOX_FORMAT_VERSION, UnsupportedVoxValueError, VoxSequenceValue, adapt_runtime_value
 
 
@@ -298,6 +299,7 @@ class SQLiteResultsDatabase(ResultsDatabase):
         self,
         *,
         parent_node_id: str,
+        sequence_value: Any,
         index: int,
         value: Any,
         descriptor: dict[str, Any],
@@ -305,7 +307,7 @@ class SQLiteResultsDatabase(ResultsDatabase):
         now: float,
         page_size: int,
     ) -> dict[str, Any]:
-        item_node_id = hash_sequence_item(parent_node_id, index)
+        item_node_id = sequence_child_node_id(sequence_value, parent_node_id=parent_node_id, index=index)
         child_metadata = dict(metadata)
         child_metadata.update(
             {
@@ -358,6 +360,7 @@ class SQLiteResultsDatabase(ResultsDatabase):
                 try:
                     ref_item = self._persist_sequence_child_locked(
                         parent_node_id=node_id,
+                        sequence_value=sequence.raw,
                         index=absolute_index,
                         value=item_value,
                         descriptor=descriptor,
@@ -402,6 +405,7 @@ class SQLiteResultsDatabase(ResultsDatabase):
                     try:
                         ref_item = self._persist_sequence_child_locked(
                             parent_node_id=node_id,
+                            sequence_value=sequence.raw,
                             index=absolute_index,
                             value=item_value,
                             descriptor=descriptor_dict,

@@ -32,11 +32,12 @@ def test_hash_child_ref_matches_sequence_item_compatibility_wrapper() -> None:
 def test_inspectable_range_sequence_exposes_deterministic_child_refs() -> None:
     sequence = InspectableRangeSequence(parent_ref="node-range", start=10, stop=14)
     page = sequence.page_snapshot(0, 3)
+    overlapping = InspectableRangeSequence(parent_ref="node-range-overlap", start=11, stop=15)
 
     assert page["total"] == 4
     assert [item.value for item in page["items"]] == [10, 11, 12]
     assert [item.state for item in page["items"]] == ["ready", "ready", "ready"]
-    assert page["items"][1].child_ref.child_id == hash_sequence_item("node-range", 1)
+    assert page["items"][1].child_ref.child_id == overlapping.child_ref(0).child_id
 
 
 def test_inspectable_iterator_sequence_materializes_items_incrementally() -> None:
@@ -122,6 +123,22 @@ def test_inspectable_subsequence_shares_upstream_items_by_index() -> None:
     assert [item.value for item in page["items"] if item.state == "ready"] == [23, 24, 25]
     assert page["total"] == 3
     assert page["has_more"] is False
+    assert sliced.child_ref(0).child_id == source.child_ref(3).child_id
+
+
+def test_inspectable_mapped_sequence_shares_semantic_child_ids_for_overlapping_ranges() -> None:
+    left = InspectableMappedSequence(
+        parent_ref="mapped-left",
+        source=InspectableRangeSequence(parent_ref="left-source", start=1, stop=5),
+        mapper=lambda value: value * 10,
+    )
+    right = InspectableMappedSequence(
+        parent_ref="mapped-right",
+        source=InspectableRangeSequence(parent_ref="right-source", start=2, stop=6),
+        mapper=lambda value: value * 10,
+    )
+
+    assert left.child_ref(2).child_id == right.child_ref(1).child_id
 
 
 def test_vox_iterator_sequence_uses_page_snapshot_when_available() -> None:
