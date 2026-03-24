@@ -249,8 +249,22 @@ export const getPlaygroundJob = (jobId) => apiRequest(`/api/v1/playground/jobs/$
 export const killPlaygroundJob = (jobId) =>
   apiRequest(`/api/v1/playground/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
 
-export const resolvePlaygroundValue = ({ program, nodeId = "", variable = "", path = "", enqueue = true }) => {
-  const payload = { program, execution_strategy: "dask", variable, path, enqueue };
+export const resolvePlaygroundValue = ({
+  program,
+  nodeId = "",
+  variable = "",
+  path = "",
+  enqueue = true,
+  uiAwaited = Boolean(enqueue),
+}) => {
+  const payload = {
+    program,
+    execution_strategy: "dask",
+    variable,
+    path,
+    enqueue,
+    ui_awaited: Boolean(uiAwaited),
+  };
   if (!variable && nodeId) {
     payload.node_id = nodeId;
   }
@@ -269,6 +283,7 @@ export const resolvePlaygroundValuePage = ({
   offset = 0,
   limit = 64,
   enqueue = true,
+  uiAwaited = Boolean(enqueue),
 }) => {
   const payload = {
     program,
@@ -278,6 +293,7 @@ export const resolvePlaygroundValuePage = ({
     offset: Math.max(0, Number(offset || 0)),
     limit: Math.max(1, Number(limit || 64)),
     enqueue,
+    ui_awaited: Boolean(uiAwaited),
   };
   if (!variable && nodeId) {
     payload.node_id = nodeId;

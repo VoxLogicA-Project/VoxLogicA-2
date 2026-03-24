@@ -158,6 +158,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   let hasPersistedViewerRestore = false;
   const MAX_PENDING_POLL_TICKS = 45;
   const COLLECTION_PAGE_SIZE = 18;
+  const EDIT_REQUEST_DEBOUNCE_MS = 160;
   const SPLIT_MIN = 0.32;
   const SPLIT_MAX = 0.68;
   const ACTIVE_COLLECTION_ITEM_STATES = new Set(["queued", "blocked", "running", "persisting"]);
@@ -1593,6 +1594,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           variable: variableName,
           path: variableName === String(primaryVariable || "") ? currentPath : "",
           enqueue: true,
+          uiAwaited: variableName === String(primaryVariable || ""),
         });
         if (destroyed) return;
         if (token !== editRefreshSeq) return;
@@ -3722,13 +3724,27 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     try {
       const previousPrimary = String(primaryVariable || "");
       const previousSelected = normalizeSelectionNames(selectedVisualSymbols);
+      const previousSymbolTable = { ...(symbolTable || {}) };
+      const previousTypeHints = { ...(symbolTypeHints || {}) };
       const payload = await getProgramSymbols(programText);
       if (destroyed) return;
       if (token !== loadToken) return;
+      const nextDiagnostics = Array.isArray(payload?.diagnostics) ? payload.diagnostics : [];
+      const nextSymbolTable = payload?.symbol_table && typeof payload.symbol_table === "object" ? payload.symbol_table : {};
       const available = payload?.available !== false;
-      symbolTable = available ? payload.symbol_table || {} : {};
-      symbolDiagnostics = payload?.diagnostics || [];
-      const staticTypeHints = available ? payload?.symbol_output_kinds || {} : {};
+      const preservePreviousSymbols =
+        !available &&
+        nextDiagnostics.length > 0 &&
+        !Object.keys(nextSymbolTable).length &&
+        Object.keys(previousSymbolTable).length > 0;
+      symbolTable = available ? nextSymbolTable : preservePreviousSymbols ? previousSymbolTable : {};
+      symbolDiagnostics = nextDiagnostics;
+      const staticTypeHints =
+        available
+          ? payload?.symbol_output_kinds || {}
+          : preservePreviousSymbols
+            ? previousTypeHints
+            : {};
       const preservedViewNames = normalizeSelectionNames([...previousSelected, previousPrimary]);
       syncSymbolStatuses(symbolTable);
       syncSymbolMaterializations(symbolTable);
@@ -3800,14 +3816,17 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     activeValueSubscription = null;
     stopValueSocket();
     clearResolutionActivity();
-    await refreshSymbols();
-    if (destroyed) return;
     const token = editRefreshSeq;
     pendingEditRefresh = setTimeout(() => {
       if (destroyed) return;
       pendingEditRefresh = null;
-      void refreshDisplayedValuesAfterEdit(token);
-    }, 120);
+      void (async () => {
+        await refreshSymbols();
+        if (destroyed) return;
+        if (token !== editRefreshSeq) return;
+        void refreshDisplayedValuesAfterEdit(token);
+      })();
+    }, EDIT_REQUEST_DEBOUNCE_MS);
   };
 
   const resolveCurrentPreferCache = async () => {

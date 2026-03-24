@@ -266,6 +266,45 @@ describe("StartTab", () => {
     window.confirm = originalConfirm;
   });
 
+  it("debounces edit-time symbol refresh and only sends the latest editor state", async () => {
+    vi.useFakeTimers();
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { x: "node-x" },
+      diagnostics: [],
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    getProgramSymbolsMock.mockClear();
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+
+    editor.value = "x = 1";
+    await fireEvent.input(editor);
+    editor.value = "x = 2";
+    await fireEvent.input(editor);
+    editor.value = "x = 9";
+    await fireEvent.input(editor);
+
+    expect(getProgramSymbolsMock).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(159);
+    expect(getProgramSymbolsMock).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1);
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalledTimes(1);
+    });
+    expect(getProgramSymbolsMock.mock.calls[0][0]).toBe("x = 9");
+
+    vi.useRealTimers();
+  });
+
   it("surfaces static diagnostics and blocks value resolve", async () => {
     getProgramSymbolsMock.mockImplementation(async (program) => ({
       available: true,
@@ -300,8 +339,8 @@ describe("StartTab", () => {
       const source = String(program || "").trim();
       if (source === "a = 1\nb = a +") {
         return {
-          available: true,
-          symbol_table: { a: "node-a", b: "node-b" },
+          available: false,
+          symbol_table: {},
           diagnostics: [{ code: "E_PARSE", message: "Unexpected token", location: "line 2, column 7" }],
         };
       }
@@ -343,6 +382,8 @@ describe("StartTab", () => {
       expect(container.textContent).toContain("2");
     });
 
+    resolvePlaygroundValueMock.mockClear();
+
     const editor = container.querySelector(".vx-editor__textarea");
     expect(editor).not.toBeNull();
     editor.value = "a = 1\nb = a +";
@@ -354,10 +395,21 @@ describe("StartTab", () => {
       expect(container.querySelector(".start-value-card.is-stale")).not.toBeNull();
       expect(container.querySelector(".start-caption-status")?.textContent || "").toContain("Stale while editing");
       expect(container.querySelector(".start-stale-banner")?.textContent || "").toContain("Stale");
+      expect(container.querySelector('.vx-editor__line--error[data-line="2"]')).not.toBeNull();
+      expect(container.querySelectorAll(".start-value-tag").length).toBe(2);
       expect(container.textContent).toContain("2");
     });
 
-    expect(resolvePlaygroundValueMock).toHaveBeenCalledTimes(1);
+    const aTag = [...container.querySelectorAll(".start-value-tag")].find((button) =>
+      String(button.textContent || "").includes("a"),
+    );
+    expect(aTag).not.toBeNull();
+    await fireEvent.click(aTag);
+
+    await waitFor(() => {
+      expect(container.querySelector(".start-caption-main")?.textContent || "").toContain("a");
+    });
+
     expect(container.querySelector(".inline-error")).toBeNull();
   });
 

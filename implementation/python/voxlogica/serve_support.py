@@ -2375,6 +2375,7 @@ class PlaygroundJob:
     future: Any = None
     log_path: Path | None = None
     priority_class: str = "normal"
+    ui_awaited: bool = False
     runtime_goal_values: dict[str, Any] = field(default_factory=dict)
     runtime_inspectors: dict[str, RuntimeValueInspector] = field(default_factory=dict)
     live_runtime_inspector: LiveRuntimeValueInspector | None = None
@@ -2399,6 +2400,7 @@ class PlaygroundJob:
                 "job_kind": self.request_payload.get("_job_kind", "run"),
                 "priority_node": self.request_payload.get("_priority_node"),
                 "priority_class": self.priority_class,
+                "ui_awaited": self.ui_awaited,
             },
             "metrics": self.metrics,
             "error": self.error,
@@ -2715,6 +2717,7 @@ class PlaygroundJobManager:
                 future=future,
                 log_path=log_path,
                 priority_class=priority_class,
+                ui_awaited=bool(payload.get("_ui_awaited", False)),
                 live_runtime_inspector=live_runtime_inspector,
             )
             self._jobs[job_id] = job
@@ -2727,6 +2730,7 @@ class PlaygroundJobManager:
             status="queued",
             log_path=log_path,
             priority_class=priority_class,
+            ui_awaited=bool(payload.get("_ui_awaited", False)),
         )
         self._jobs[job_id] = job
         if priority_class == "background":

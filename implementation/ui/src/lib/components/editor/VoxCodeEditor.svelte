@@ -676,6 +676,11 @@
     emitViewState();
   };
 
+  const preventNativeTextDrag = (event) => {
+    if (activeNumberDrag?.active) return;
+    event.preventDefault();
+  };
+
   export function getViewState() {
     return currentViewState();
   }
@@ -804,6 +809,7 @@
         bind:this={textareaEl}
         aria-label={ariaLabel}
         spellcheck="false"
+        draggable="false"
         tabindex="0"
         readonly={readonly}
         wrap="off"
@@ -819,6 +825,9 @@
         on:pointercancel={handlePointerCancel}
         on:mousemove={handleMouseMove}
         on:mouseleave={handleMouseLeave}
+        on:dragstart={preventNativeTextDrag}
+        on:drop={preventNativeTextDrag}
+        on:dragover={preventNativeTextDrag}
         on:focus={handleFocus}
         on:blur={handleBlur}
       ></textarea>

@@ -128,6 +128,7 @@ class PlaygroundValueRequest(BaseModel):
     variable: str | None = None
     path: str | None = None
     enqueue: bool = True
+    ui_awaited: bool = True
 
 
 class PlaygroundValuePageRequest(BaseModel):
@@ -141,6 +142,7 @@ class PlaygroundValuePageRequest(BaseModel):
     offset: int = 0
     limit: int = 64
     enqueue: bool = True
+    ui_awaited: bool = True
 
 
 class PlaygroundGraphRequest(BaseModel):
@@ -1672,6 +1674,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
         payload["node_id"] = node_id
         payload["path"] = view_path
         payload["execution_strategy"] = strategy
+        payload["ui_awaited"] = bool(request.ui_awaited)
         if variable_name:
             payload["variable"] = variable_name
         return payload
@@ -2454,6 +2457,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             "_priority_node": node_id,
             "_program_hash": program_hash,
             "_goal_path": view_path,
+            "_ui_awaited": bool(request.ui_awaited),
         },
         program_hash=program_hash,
         node_id=node_id,
@@ -2494,6 +2498,7 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
             variable=request.variable,
             path=request.path,
             enqueue=bool(request.enqueue),
+            ui_awaited=bool(request.ui_awaited),
         )
     )
 
@@ -2580,6 +2585,7 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
                     "_priority_node": node_id,
                     "_program_hash": program_hash,
                     "_goal_path": path,
+                    "_ui_awaited": bool(request.ui_awaited),
                 },
                 program_hash=program_hash,
                 node_id=node_id,

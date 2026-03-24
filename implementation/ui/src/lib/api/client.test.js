@@ -38,4 +38,33 @@ describe("api client compute activity", () => {
     expect(types).toContain("page.request");
     expect(types).toContain("page.response");
   });
+
+  it("sends explicit ui_awaited intent for value and page requests", async () => {
+    globalThis.fetch
+      .mockResolvedValueOnce(makeResponse({ materialization: "pending", compute_status: "queued" }))
+      .mockResolvedValueOnce(makeResponse({ materialization: "pending", compute_status: "queued", page: { items: [] } }));
+
+    await resolvePlaygroundValue({
+      program: "x = 1",
+      variable: "x",
+      path: "/",
+      enqueue: true,
+      uiAwaited: true,
+    });
+    await resolvePlaygroundValuePage({
+      program: "xs = range(0, 10)",
+      variable: "xs",
+      path: "/",
+      offset: 0,
+      limit: 8,
+      enqueue: true,
+      uiAwaited: false,
+    });
+
+    const firstPayload = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+    const secondPayload = JSON.parse(globalThis.fetch.mock.calls[1][1].body);
+
+    expect(firstPayload.ui_awaited).toBe(true);
+    expect(secondPayload.ui_awaited).toBe(false);
+  });
 });

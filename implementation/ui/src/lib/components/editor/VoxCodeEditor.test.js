@@ -319,4 +319,24 @@ describe("VoxCodeEditor", () => {
       ownerDocument.caretRangeFromPoint = originalCaretRangeFromPoint;
     }
   });
+
+  it("prevents native text dragging so numeric drag owns pointer gestures", () => {
+    const { container } = render(VoxCodeEditor, {
+      value: "threshold = 5",
+      symbols: {},
+      diagnostics: [],
+    });
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+
+    const dragEvent = new Event("dragstart", {
+      bubbles: true,
+      cancelable: true,
+    });
+
+    editor.dispatchEvent(dragEvent);
+    expect(dragEvent.defaultPrevented).toBe(true);
+    expect(editor.getAttribute("draggable")).toBe("false");
+  });
 });
