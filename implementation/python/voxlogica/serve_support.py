@@ -1947,6 +1947,30 @@ def inspect_runtime_value_page(
             item_path = append_path(normalized_path, str(item_index))
             item_state = str(getattr(item, "state", "not_loaded") or "not_loaded")
             item_value = getattr(item, "value", None)
+            resolution_error = getattr(item, "error", None)
+            resolution_blocked_on = getattr(item, "blocked_on", None)
+            resolution_state_reason = getattr(item, "state_reason", None)
+            if item_state != "ready":
+                refreshed = _resolve_runtime_value_or_progress(
+                    node_id=node_id,
+                    value=value,
+                    path=item_path,
+                    priority="visible-page",
+                )
+                if refreshed.get("kind") == "resolved":
+                    item_state = "ready"
+                    item_value = getattr(refreshed.get("resolved"), "raw", item_value)
+                    resolution_error = None
+                    resolution_blocked_on = None
+                    resolution_state_reason = None
+                else:
+                    item_state = str(refreshed.get("status") or item_state or "not_loaded")
+                    if refreshed.get("error") is not None:
+                        resolution_error = str(refreshed.get("error"))
+                    if refreshed.get("blocked_on") is not None:
+                        resolution_blocked_on = str(refreshed.get("blocked_on"))
+                    if refreshed.get("state_reason") is not None:
+                        resolution_state_reason = str(refreshed.get("state_reason"))
             if item_state == "ready":
                 item_descriptor = _canonical_descriptor(
                     adapt_runtime_value(item_value).describe(path=item_path),
@@ -1964,15 +1988,12 @@ def inspect_runtime_value_page(
                 "status": item_state,
                 "state": item_state,
             }
-            state_reason = getattr(item, "state_reason", None)
-            blocked_on = getattr(item, "blocked_on", None)
-            error = getattr(item, "error", None)
-            if state_reason:
-                item_payload["state_reason"] = str(state_reason)
-            if blocked_on:
-                item_payload["blocked_on"] = str(blocked_on)
-            if error:
-                item_payload["error"] = str(error)
+            if resolution_state_reason:
+                item_payload["state_reason"] = str(resolution_state_reason)
+            if resolution_blocked_on:
+                item_payload["blocked_on"] = str(resolution_blocked_on)
+            if resolution_error:
+                item_payload["error"] = str(resolution_error)
             items_out.append(item_payload)
 
         payload["page"] = {

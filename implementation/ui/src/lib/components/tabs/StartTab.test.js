@@ -1873,6 +1873,153 @@ describe("StartTab", () => {
     });
   });
 
+  it("switches the stage when clicking a different ready child after the first ready child auto-hydrates", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockImplementation(async ({ path = "" }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-xs",
+          path: "/",
+          descriptor: {
+            vox_type: "sequence",
+            format_version: "voxpod/1",
+            summary: { length: 8 },
+            navigation: {
+              path: "/",
+              pageable: true,
+              can_descend: true,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      if (path === "/0") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-xs",
+          path: "/0",
+          descriptor: {
+            vox_type: "number",
+            format_version: "voxpod/1",
+            summary: { value: 0.11 },
+            navigation: {
+              path: "/0",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      if (path === "/5") {
+        return {
+          materialization: "pending",
+          compute_status: "missing",
+          node_id: "node-xs",
+          path: "/5",
+          descriptor: {
+            vox_type: "number",
+            format_version: "voxpod/1",
+            summary: { value: 0.88 },
+            navigation: {
+              path: "/5",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      return {
+        materialization: "pending",
+        compute_status: "running",
+        node_id: "node-xs",
+        path,
+        descriptor: {
+          vox_type: "unavailable",
+          format_version: "voxpod/1",
+          summary: { reason: "status=pending" },
+          navigation: {
+            path,
+            pageable: false,
+            can_descend: false,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
+        },
+      };
+    });
+    resolvePlaygroundValuePageMock.mockResolvedValue({
+      materialization: "pending",
+      compute_status: "running",
+      path: "/",
+      page: {
+        offset: 0,
+        limit: 18,
+        has_more: false,
+        next_offset: null,
+        items: Array.from({ length: 8 }, (_, index) => ({
+          index,
+          label: `[${index}]`,
+          path: `/${index}`,
+          status: "pending",
+          descriptor: {
+            vox_type: "unavailable",
+            format_version: "voxpod/1",
+            summary: { reason: "status=pending" },
+            navigation: {
+              path: `/${index}`,
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        })),
+      },
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      const stageScalar = container.querySelector(".start-collection-stage .start-pure-scalar");
+      expect(stageScalar?.textContent || "").toContain("0.11");
+      const stageLabel = container.querySelector(".start-collection-stage-label");
+      expect(stageLabel?.textContent || "").toContain("[0]");
+    });
+
+    const rowFive = Array.from(container.querySelectorAll(".start-collection-item"))[5];
+    expect(rowFive).not.toBeUndefined();
+    await fireEvent.click(rowFive);
+
+    await waitFor(() => {
+      const updatedRowFive = Array.from(container.querySelectorAll(".start-collection-item"))[5];
+      expect(updatedRowFive?.textContent || "").toContain("ready");
+      expect(updatedRowFive?.textContent || "").toContain("0.88");
+      const stageScalar = container.querySelector(".start-collection-stage .start-pure-scalar");
+      expect(stageScalar?.textContent || "").toContain("0.88");
+      const stageLabel = container.querySelector(".start-collection-stage-label");
+      expect(stageLabel?.textContent || "").toContain("[5]");
+    });
+  });
+
   it("does not let a later pending page snapshot overwrite a concrete child that is already cached", async () => {
     vi.useFakeTimers();
     getProgramSymbolsMock.mockResolvedValue({

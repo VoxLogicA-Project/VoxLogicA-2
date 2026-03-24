@@ -14,6 +14,7 @@ from voxlogica.inspectable_sequence import (
     InspectableListSequence,
     InspectableRangeSequence,
     InspectableSequenceValue,
+    ItemSnapshot,
 )
 from voxlogica.lazy.hash import hash_sequence_item
 from voxlogica.serve_support import (
@@ -539,6 +540,52 @@ def test_inspect_runtime_value_page_reports_inspectable_item_states() -> None:
     assert page["page"]["items"][0]["status"] == "ready"
     assert page["page"]["items"][0]["state"] == "ready"
     assert page["page"]["items"][0]["node_id"] == hash_sequence_item("node-seq", 0)
+
+
+@pytest.mark.unit
+def test_inspect_runtime_value_page_refreshes_stale_visible_item_states() -> None:
+    class _StaleSnapshotSequence(InspectableSequenceValue):
+        inline_items = True
+
+        def __init__(self) -> None:
+            super().__init__(parent_ref="node-stale-page", total_size=2)
+
+        def _compute_item(self, index: int, priority: str) -> int:
+            del priority
+            if index >= 2:
+                raise IndexError(index)
+            return 100 + index
+
+        def page_snapshot(self, offset: int, limit: int, priority: str = "visible-page") -> dict[str, object]:
+            del priority
+            return {
+                "offset": offset,
+                "limit": limit,
+                "items": [
+                    ItemSnapshot(
+                        index=0,
+                        child_ref=self.child_ref(0),
+                        state="queued",
+                        state_reason="priority:visible-page",
+                    )
+                ],
+                "next_offset": None,
+                "has_more": False,
+                "total": 2,
+            }
+
+    page = inspect_runtime_value_page(
+        node_id="node-stale-page",
+        value=_StaleSnapshotSequence(),
+        path="/",
+        offset=0,
+        limit=1,
+    )
+
+    item = page["page"]["items"][0]
+    assert item["status"] == "ready"
+    assert item["state"] == "ready"
+    assert item["descriptor"]["vox_type"] == "integer"
 
 
 @pytest.mark.unit
