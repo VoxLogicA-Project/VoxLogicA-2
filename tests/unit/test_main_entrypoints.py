@@ -2324,6 +2324,31 @@ def test_playground_symbols_reports_static_diagnostics(monkeypatch: pytest.Monke
 
 
 @pytest.mark.unit
+def test_playground_value_parse_errors_return_structured_diagnostics(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    with TestClient(main_mod.api_app) as client:
+        response = client.post(
+            "/api/v1/playground/value",
+            json={
+                "program": "x =",
+                "variable": "x",
+                "path": "/",
+                "enqueue": False,
+            },
+        )
+        assert response.status_code == 400
+        payload = response.json()
+        assert isinstance(payload.get("detail"), dict)
+        assert "Unexpected token" in str(payload["detail"].get("message", ""))
+        diagnostics = payload["detail"].get("diagnostics", [])
+        assert isinstance(diagnostics, list)
+        assert diagnostics
+        assert "Unexpected token" in str(diagnostics[0].get("message", ""))
+
+
+@pytest.mark.unit
 def test_playground_symbols_reports_static_type_hints(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
     monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)

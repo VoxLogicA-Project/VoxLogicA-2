@@ -261,6 +261,23 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       .join("\n");
   };
 
+  const diagnosticsFromError = (error) => {
+    const direct = Array.isArray(error?.diagnostics) ? error.diagnostics : null;
+    if (direct?.length) return direct;
+    const nested = Array.isArray(error?.detail?.diagnostics) ? error.detail.diagnostics : null;
+    if (nested?.length) return nested;
+    return [];
+  };
+
+  const applyStaticDiagnosticsState = (diagnostics, fallbackMessage = "Static diagnostics detected.") => {
+    symbolDiagnostics = Array.isArray(diagnostics) ? diagnostics : [];
+    const summary = diagnosticsSummaryText() || String(fallbackMessage || "Static diagnostics detected.");
+    markStaleValue(summary);
+    statusValue = "idle";
+    statusText = staleValueVisible ? "Results are stale until editor diagnostics are fixed." : summary;
+    errorText = "";
+  };
+
   const statusRank = {
     idle: 0,
     queued: 1,
@@ -3760,6 +3777,16 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         ensurePendingPoll({ traceId, variable: request.variable, path: currentPath || "/" });
         return { state: "pending", reason: "request-timeout" };
       }
+      const diagnostics = diagnosticsFromError(error);
+      if (diagnostics.length) {
+        stopPoll();
+        activeValueSubscription = null;
+        stopValueSocket();
+        setSymbolStatus(request.variable, "idle");
+        captionVariable = request.variable || "-";
+        applyStaticDiagnosticsState(diagnostics, error?.message || "Static diagnostics detected.");
+        return { state: "failed", reason: "diagnostics" };
+      }
       stopPoll();
       activeValueSubscription = null;
       stopValueSocket();
@@ -3884,6 +3911,20 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       if (token !== loadToken) return;
       probeToken += 1;
       stopProbe();
+      const diagnostics = diagnosticsFromError(error);
+      if (diagnostics.length) {
+        symbolTable = {};
+        symbolStatuses = {};
+        symbolMaterializations = {};
+        materializedRecords = {};
+        symbolTypeHints = {};
+        selectedVisualSymbols = [];
+        primaryVariable = "";
+        captionVariable = "-";
+        resetViewer();
+        applyStaticDiagnosticsState(diagnostics, error?.message || "Unable to refresh symbols.");
+        return;
+      }
       symbolTable = {};
       symbolDiagnostics = [{ code: "E_SYMBOLS", message: error.message || "Unable to refresh symbols." }];
       symbolStatuses = {};
@@ -4003,6 +4044,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       status: statusValue,
       path: currentPath || "/",
     });
+    stopEditRefresh();
     resolveRequestSeq += 1;
     resolveInFlight = false;
     stopPoll();

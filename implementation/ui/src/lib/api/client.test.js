@@ -71,4 +71,24 @@ describe("api client compute activity", () => {
     expect(firstPayload.interaction.intent).toBe("run-primary");
     expect(secondPayload.interaction.intent).toBe("page-nav");
   });
+
+  it("preserves structured diagnostics on API errors", async () => {
+    globalThis.fetch.mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      text: async () =>
+        JSON.stringify({
+          detail: {
+            message: "Unexpected token",
+            diagnostics: [{ code: "E_PARSE", message: "Unexpected token", location: "line 2, column 7" }],
+          },
+        }),
+    });
+
+    await expect(resolvePlaygroundValue({ program: "x =", variable: "x", path: "/", enqueue: true })).rejects.toMatchObject({
+      message: "Unexpected token",
+      diagnostics: [{ code: "E_PARSE", message: "Unexpected token", location: "line 2, column 7" }],
+    });
+  });
 });

@@ -12,6 +12,16 @@ const toErrorMessage = (status, statusText, detail) => {
   return `${status} ${statusText}`;
 };
 
+const buildApiError = (status, statusText, detail) => {
+  const error = new Error(toErrorMessage(status, statusText, detail));
+  error.status = Number(status || 0);
+  error.detail = detail;
+  if (detail && typeof detail === "object" && Array.isArray(detail.diagnostics)) {
+    error.diagnostics = detail.diagnostics;
+  }
+  return error;
+};
+
 const isPlaygroundValueRequest = (path) => String(path || "").startsWith("/api/v1/playground/value");
 const traceValueRequests = () => String(import.meta?.env?.VITE_VOXLOGICA_TRACE_VALUE_REQUESTS || "").trim() === "1";
 const nowMs = () =>
@@ -179,7 +189,7 @@ export const apiRequest = async (path, init = {}) => {
         source: "http",
       });
     }
-    throw new Error(toErrorMessage(response.status, response.statusText, payload?.detail));
+    throw buildApiError(response.status, response.statusText, payload?.detail);
   }
   if (traceValueRequest) {
     console.info("[api.request]", {

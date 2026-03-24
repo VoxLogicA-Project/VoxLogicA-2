@@ -76,6 +76,15 @@ _MAIN_LOG_ENV = "VOXLOGICA_MAIN_LOG_PATH"
 _DEFAULT_MAIN_LOG_RELATIVE = ("tests", "reports", "serve", "voxlogica-main.log")
 
 
+def _diagnostic_http_detail(exc: Exception, fallback: str) -> dict[str, Any]:
+    diagnostics = diagnostics_from_exception(exc)
+    message = diagnostics[0]["message"] if diagnostics else str(fallback or exc or "Request failed")
+    return {
+        "message": str(message),
+        "diagnostics": diagnostics,
+    }
+
+
 class SuccessResponse(BaseModel, Generic[T]):
     """Standard success response model."""
 
@@ -1654,8 +1663,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             _request_elapsed_ms(),
             exc,
         )
-        diagnostics = diagnostics_from_exception(exc)
-        detail = diagnostics[0]["message"] if diagnostics else f"Unable to parse program: {exc}"
+        detail = _diagnostic_http_detail(exc, f"Unable to parse program: {exc}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc
 
     introspection_cache_after = _cached_program_introspection.cache_info()

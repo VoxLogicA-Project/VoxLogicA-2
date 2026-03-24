@@ -335,6 +335,36 @@ describe("StartTab", () => {
     expect(container.querySelector(".inline-error")).toBeNull();
   });
 
+  it("promotes run-time parse failures into editor diagnostics instead of inline request errors", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { x: "node-x" },
+      diagnostics: [],
+    });
+    const error = new Error("Unexpected token");
+    error.detail = {
+      message: "Unexpected token",
+      diagnostics: [{ code: "E_PARSE", message: "Unexpected token", location: "line 1, column 3" }],
+    };
+    error.diagnostics = error.detail.diagnostics;
+    resolvePlaygroundValueMock.mockRejectedValue(error);
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(container.querySelector('.vx-editor__line--error[data-line="1"]')).not.toBeNull();
+      expect(container.querySelector(".inline-error")).toBeNull();
+      expect(container.textContent || "").toContain("Unexpected token");
+    });
+  });
+
   it("keeps the last computed value visible but marks it stale while editing through diagnostics", async () => {
     getProgramSymbolsMock.mockImplementation(async (program) => {
       const source = String(program || "").trim();
