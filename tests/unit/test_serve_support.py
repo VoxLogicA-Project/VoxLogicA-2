@@ -289,6 +289,16 @@ def test_playground_manager_value_resolve_uses_inprocess_future(
         node_id="node-1",
         execution_strategy="dask",
     )
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        final = manager.get_value_job(
+            program_hash="prog-1",
+            node_id="node-1",
+            execution_strategy="dask",
+        )
+        if final is not None and final["status"] == "completed":
+            break
+        time.sleep(0.01)
     assert final is not None
     assert final["status"] == "completed"
     assert calls and str(calls[0]["log_path"]).endswith(f"{created_job_id}.log")
@@ -350,8 +360,23 @@ def test_playground_manager_runtime_inspection_returns_error_payload(
         node_id="node-1",
         execution_strategy="dask",
     )
+    deadline = time.time() + 2.0
+    created = None
+    while time.time() < deadline:
+        job = manager.get_value_job(
+            program_hash="prog-1",
+            node_id="node-1",
+            execution_strategy="dask",
+        )
+        if job is None:
+            time.sleep(0.01)
+            continue
+        created = manager._jobs[str(job["job_id"])]
+        if created.runtime_inspectors.get("node-1") is not None:
+            break
+        time.sleep(0.01)
     assert job is not None
-    created = manager._jobs[str(job["job_id"])]
+    assert created is not None
     inspector = created.runtime_inspectors["node-1"]
     monkeypatch.setattr(inspector, "preview", lambda **kwargs: (_ for _ in ()).throw(KeyError("Unknown primitive: pflair")))
 
@@ -454,6 +479,191 @@ def test_playground_manager_value_resolve_reports_queued_before_thread_start(
         time.sleep(0.01)
     else:
         pytest.fail("second value job did not complete after queue release")
+
+
+@pytest.mark.unit
+def test_playground_manager_promotes_existing_value_job_priority(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import voxlogica.serve_support as serve_support
+
+    monkeypatch.setattr(serve_support, "PLAYGROUND_JOB_LOG_DIR", tmp_path)
+
+    started = threading.Event()
+    release = threading.Event()
+    captured_payloads: list[dict[str, object]] = []
+
+    def _fake_execute(
+        request_payload: dict[str, object],
+        log_path_str: str,
+        live_inspector: LiveRuntimeValueInspector | None = None,
+    ) -> dict[str, object]:
+        del log_path_str, live_inspector
+        captured_payloads.append(dict(request_payload))
+        started.set()
+        release.wait(timeout=2.0)
+        finished = time.time()
+        return {
+            "ok": True,
+            "result": {"execution": {"success": True}},
+            "metrics": {"wall_time_s": 0.01, "cpu_time_s": 0.01},
+            "started_at": finished - 0.01,
+            "finished_at": finished,
+        }
+
+    monkeypatch.setattr(serve_support, "_execute_playground_request", _fake_execute)
+
+    manager = PlaygroundJobManager()
+    first = manager.ensure_value_job(
+        {
+            "program": "x = 1",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-1",
+            "_program_hash": "prog-1",
+            "_priority_context": {
+                "bucket": "visible-page",
+                "urgency_score": 35,
+                "priority_class": "normal",
+                "sequence": 1,
+            },
+        },
+        program_hash="prog-1",
+        node_id="node-1",
+        execution_strategy="dask",
+    )
+    assert started.wait(timeout=1.0) is True
+
+    second = manager.ensure_value_job(
+        {
+            "program": "x = 1",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-1",
+            "_program_hash": "prog-1",
+            "_priority_context": {
+                "bucket": "click",
+                "urgency_score": 98,
+                "priority_class": "interactive",
+                "sequence": 3,
+            },
+        },
+        program_hash="prog-1",
+        node_id="node-1",
+        execution_strategy="dask",
+    )
+
+    assert first["job_id"] == second["job_id"]
+    promoted = manager._jobs[str(first["job_id"])]
+    assert promoted.priority_bucket == "click"
+    assert promoted.urgency_score == 98
+    assert promoted.priority_class == "interactive"
+
+    release.set()
+
+
+@pytest.mark.unit
+def test_playground_manager_uses_urgency_to_pick_next_value_job(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import voxlogica.serve_support as serve_support
+
+    monkeypatch.setattr(serve_support, "PLAYGROUND_JOB_LOG_DIR", tmp_path)
+
+    release_first = threading.Event()
+    first_started = threading.Event()
+    captured_order: list[str] = []
+
+    def _fake_execute(
+        request_payload: dict[str, object],
+        log_path_str: str,
+        live_inspector: LiveRuntimeValueInspector | None = None,
+    ) -> dict[str, object]:
+        del log_path_str, live_inspector
+        node_id = str(request_payload.get("_priority_node", ""))
+        captured_order.append(node_id)
+        if node_id == "node-1":
+            first_started.set()
+            release_first.wait(timeout=2.0)
+        finished = time.time()
+        return {
+            "ok": True,
+            "result": {"execution": {"success": True}},
+            "metrics": {"wall_time_s": 0.01, "cpu_time_s": 0.01},
+            "started_at": finished - 0.01,
+            "finished_at": finished,
+        }
+
+    monkeypatch.setattr(serve_support, "_execute_playground_request", _fake_execute)
+
+    manager = PlaygroundJobManager()
+    manager.ensure_value_job(
+        {
+            "program": "a = 1",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-1",
+            "_program_hash": "prog-2",
+            "_priority_context": {
+                "bucket": "visible-page",
+                "urgency_score": 40,
+                "priority_class": "normal",
+                "sequence": 1,
+            },
+        },
+        program_hash="prog-2",
+        node_id="node-1",
+        execution_strategy="dask",
+    )
+    assert first_started.wait(timeout=1.0) is True
+
+    manager.ensure_value_job(
+        {
+            "program": "b = 2",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-2",
+            "_program_hash": "prog-2",
+            "_priority_context": {
+                "bucket": "visible-page",
+                "urgency_score": 30,
+                "priority_class": "normal",
+                "sequence": 1,
+            },
+        },
+        program_hash="prog-2",
+        node_id="node-2",
+        execution_strategy="dask",
+    )
+
+    manager.ensure_value_job(
+        {
+            "program": "c = 3",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-3",
+            "_program_hash": "prog-2",
+            "_priority_context": {
+                "bucket": "click",
+                "urgency_score": 99,
+                "priority_class": "interactive",
+                "sequence": 2,
+            },
+        },
+        program_hash="prog-2",
+        node_id="node-3",
+        execution_strategy="dask",
+    )
+
+    release_first.set()
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if len(captured_order) >= 2:
+            break
+        time.sleep(0.01)
+
+    assert captured_order[:2] == ["node-1", "node-3"]
 
 
 @pytest.mark.unit

@@ -129,6 +129,17 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   let resolutionActivityRows = [];
   let resolutionActivitySummary = "No resolution activity yet.";
   let activitySeenKeys = new Set();
+  let uiInteractionSeq = 0;
+  let lastUiInteraction = {
+    intent: "primary-refresh",
+    source: "startup",
+    sequence: 0,
+    atMs: 0,
+    variable: "",
+    path: "",
+    direct: false,
+    visible: true,
+  };
   let pendingDreamCleanup = null;
   let currentPath = "";
   let pendingPoll = null;
@@ -441,6 +452,47 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   const activityPathLabel = (path = "") => {
     const text = String(path || "").trim();
     return text || "/";
+  };
+
+  const clockMs = () =>
+    typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+
+  const interactionPathDepth = (path = "") =>
+    String(path || "")
+      .split("/")
+      .map((token) => token.trim())
+      .filter(Boolean).length;
+
+  const noteUiInteraction = ({ intent = "primary-refresh", source = "ui", variable = "", path = "", direct = false, visible = true } = {}) => {
+    uiInteractionSeq += 1;
+    lastUiInteraction = {
+      intent: String(intent || "primary-refresh"),
+      source: String(source || "ui"),
+      sequence: uiInteractionSeq,
+      atMs: clockMs(),
+      variable: String(variable || primaryVariable || ""),
+      path: String(path || currentPath || ""),
+      direct: Boolean(direct),
+      visible: Boolean(visible),
+    };
+    return lastUiInteraction;
+  };
+
+  const buildInteractionContext = ({ intent = "", source = "", variable = "", path = "", direct = null, visible = true, selected = null } = {}) => {
+    const baseline = lastUiInteraction?.sequence ? lastUiInteraction : null;
+    const targetVariable = String(variable || baseline?.variable || primaryVariable || "").trim();
+    const targetPath = String(path || baseline?.path || currentPath || "");
+    const ageMs = baseline?.atMs ? Math.max(0, Math.round(clockMs() - baseline.atMs)) : 0;
+    return {
+      intent: String(intent || baseline?.intent || "primary-refresh"),
+      source: String(source || baseline?.source || "ui"),
+      sequence: Number(baseline?.sequence || 0),
+      age_ms: ageMs,
+      selected: selected ?? Boolean(targetVariable && targetVariable === String(primaryVariable || "")),
+      visible: Boolean(visible),
+      direct: direct ?? Boolean(baseline?.direct),
+      path_depth: interactionPathDepth(targetPath),
+    };
   };
 
   const activityTargetLabel = ({ variable = "", path = "" } = {}) => {
@@ -1595,6 +1647,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           path: variableName === String(primaryVariable || "") ? currentPath : "",
           enqueue: true,
           uiAwaited: variableName === String(primaryVariable || ""),
+          interaction: buildInteractionContext({
+            intent: "edit-refresh",
+            source: "editor",
+            variable: variableName,
+            path: variableName === String(primaryVariable || "") ? currentPath : "",
+            direct: false,
+            visible: variableName === String(primaryVariable || ""),
+          }),
         });
         if (destroyed) return;
         if (token !== editRefreshSeq) return;
@@ -1662,6 +1722,17 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         variable: symbolName,
         path: "",
         enqueue: false,
+        uiAwaited: false,
+        interaction: {
+          intent: "probe",
+          source: "probe",
+          sequence: 0,
+          age_ms: 0,
+          selected: false,
+          visible: false,
+          direct: false,
+          path_depth: 0,
+        },
       });
       if (destroyed) return;
       if (token !== probeToken) return;
@@ -2407,6 +2478,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         variable: variableName,
         path: targetPath,
         enqueue: enqueueFlag,
+        interaction: buildInteractionContext({
+          intent: enqueueFlag ? "path-open" : "live-watch",
+          source: enqueueFlag ? "viewer" : "poll",
+          variable: variableName,
+          path: targetPath,
+          direct: Boolean(enqueueFlag),
+          visible: true,
+        }),
       });
 
     try {
@@ -2743,6 +2822,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           offset: resolvedOffset,
           limit: resolvedLimit,
           enqueue: enqueueFlag,
+          interaction: buildInteractionContext({
+            intent: enqueueFlag ? "page-nav" : "live-watch",
+            source: enqueueFlag ? "viewer" : "poll",
+            variable: variableName,
+            path: resolvedPath,
+            direct: Boolean(enqueueFlag),
+            visible: true,
+          }),
         });
 
       let payload = await requestPage(false);
@@ -3418,7 +3505,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     clearPendingLogs();
   };
 
-  const resolvePrimaryValue = async ({ enqueue = true, path = "", background = false } = {}) => {
+  const resolvePrimaryValue = async ({ enqueue = true, path = "", background = false, interaction = null } = {}) => {
     ensureViewer();
     const traceId = resolveTraceSeq + 1;
     resolveTraceSeq = traceId;
@@ -3496,6 +3583,17 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         variable: request.variable,
         path: currentPath,
         enqueue,
+        interaction:
+          interaction && typeof interaction === "object"
+            ? interaction
+            : buildInteractionContext({
+                intent: background ? "live-watch" : currentPath ? "path-open" : "primary-refresh",
+                source: background ? "poll" : currentPath ? "viewer" : "run",
+                variable: request.variable,
+                path: currentPath,
+                direct: Boolean(enqueue && !background),
+                visible: true,
+              }),
       });
       if (destroyed) {
         return { state: "stale", reason: "destroyed" };
@@ -3829,13 +3927,13 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     }, EDIT_REQUEST_DEBOUNCE_MS);
   };
 
-  const resolveCurrentPreferCache = async () => {
+  const resolveCurrentPreferCache = async (interaction = null) => {
     const variableName = String(primaryVariable || "");
     if (!variableName) return { state: "idle", reason: "no-primary" };
     if (materializedRecords?.[variableName]) {
       renderSelectedRecords();
     }
-    const cachedAttempt = await resolvePrimaryValue({ enqueue: false, path: "", background: true });
+    const cachedAttempt = await resolvePrimaryValue({ enqueue: false, path: "", background: true, interaction });
     if (cachedAttempt?.state === "computed" || cachedAttempt?.state === "pending" || cachedAttempt?.state === "failed") {
       return cachedAttempt;
     }
@@ -3845,7 +3943,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     if (materializedRecords?.[variableName]) {
       return { state: "computed", reason: "local-cache" };
     }
-    return resolvePrimaryValue({ enqueue: true, path: "" });
+    return resolvePrimaryValue({ enqueue: true, path: "", interaction });
   };
 
   const activatePrimarySymbol = async (token) => {
@@ -3856,6 +3954,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         error: `Unknown symbol: ${symbolName || "<empty>"}`,
       };
     }
+    const interaction = noteUiInteraction({
+      intent: "symbol-click",
+      source: "editor",
+      variable: symbolName,
+      path: "",
+      direct: true,
+      visible: true,
+    });
     traceResolve("symbol-click", {
       token: symbolName,
       from: primaryVariable,
@@ -3870,7 +3976,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     const rendered = renderSelectedRecords();
     if (!rendered) viewer.renderRecord(null);
     currentPath = "";
-    const resolution = await resolveCurrentPreferCache();
+    const resolution = await resolveCurrentPreferCache(buildInteractionContext(interaction));
     return {
       ok: true,
       symbol: symbolName,
@@ -3884,6 +3990,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   };
 
   const runPrimary = async () => {
+    const interaction = noteUiInteraction({
+      intent: "run-primary",
+      source: "run-button",
+      variable: primaryVariable,
+      path: currentPath,
+      direct: true,
+      visible: true,
+    });
     traceResolve("run-primary", {
       variable: primaryVariable,
       status: statusValue,
@@ -3894,7 +4008,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     stopPoll();
     await refreshSymbols();
     ensureSelectedVisualSymbols();
-    await resolvePrimaryValue({ enqueue: true, path: "" });
+    await resolvePrimaryValue({ enqueue: true, path: "", interaction: buildInteractionContext(interaction) });
   };
 
   export async function loadProgram(code, runAfterLoad = false) {

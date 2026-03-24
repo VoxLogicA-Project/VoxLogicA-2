@@ -42,6 +42,7 @@ from voxlogica.policy import (
     enforce_workplan_policy_or_raise,
     validate_workplan_policy,
 )
+from voxlogica.priority import compute_priority_context
 from voxlogica.reducer import reduce_program_with_bindings
 from voxlogica.repl import run_interactive_repl
 from voxlogica.serve_support import (
@@ -129,6 +130,7 @@ class PlaygroundValueRequest(BaseModel):
     path: str | None = None
     enqueue: bool = True
     ui_awaited: bool = True
+    interaction: dict[str, Any] | None = None
 
 
 class PlaygroundValuePageRequest(BaseModel):
@@ -143,6 +145,7 @@ class PlaygroundValuePageRequest(BaseModel):
     limit: int = 64
     enqueue: bool = True
     ui_awaited: bool = True
+    interaction: dict[str, Any] | None = None
 
 
 class PlaygroundGraphRequest(BaseModel):
@@ -1706,12 +1709,21 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
     strategy = "dask"
     view_path = request.path or ""
     storage = get_storage()
+    priority_context = compute_priority_context(
+        job_kind="value-resolve",
+        enqueue=bool(request.enqueue),
+        ui_awaited=bool(request.ui_awaited),
+        path=view_path,
+        interaction=request.interaction,
+    )
 
     def _attach_common(payload: dict[str, Any]) -> dict[str, Any]:
         payload["node_id"] = node_id
         payload["path"] = view_path
         payload["execution_strategy"] = strategy
         payload["ui_awaited"] = bool(request.ui_awaited)
+        payload["priority_bucket"] = priority_context.bucket
+        payload["urgency_score"] = priority_context.urgency_score
         if variable_name:
             payload["variable"] = variable_name
         return payload
@@ -2492,6 +2504,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             "_goals": [node_id],
             "_job_kind": "value-resolve",
             "_priority_node": node_id,
+            "_priority_context": priority_context.as_payload(),
             "_program_hash": program_hash,
             "_goal_path": view_path,
             "_ui_awaited": bool(request.ui_awaited),
@@ -2536,6 +2549,7 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
             path=request.path,
             enqueue=bool(request.enqueue),
             ui_awaited=bool(request.ui_awaited),
+            interaction=request.interaction,
         )
     )
 
@@ -2599,6 +2613,10 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
         "runtime-preview",
     } or runtime_persisted_state == "pending"
     runtime_page_available = False
+    runtime_priority = {
+        "bucket": str(value_payload.get("priority_bucket", "visible-page") or "visible-page"),
+        "urgency_score": int(value_payload.get("urgency_score", 0) or 0),
+    }
     if callable(inspect_job_runtime) and (
         str(value_payload.get("store_status", "")) == "missing" or runtime_backed_page_candidate
     ):
@@ -2609,6 +2627,7 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
             path=path,
             page_offset=request.offset,
             page_limit=request.limit,
+            priority=runtime_priority,
         )
         runtime_cached_page = (
             runtime_cached_preview.get("page")
@@ -2643,6 +2662,13 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
                     "_goals": [node_id],
                     "_job_kind": "value-resolve",
                     "_priority_node": node_id,
+                    "_priority_context": compute_priority_context(
+                        job_kind="value-resolve",
+                        enqueue=True,
+                        ui_awaited=bool(request.ui_awaited),
+                        path=path,
+                        interaction=request.interaction,
+                    ).as_payload(),
                     "_program_hash": program_hash,
                     "_goal_path": path,
                     "_ui_awaited": bool(request.ui_awaited),
@@ -3138,6 +3164,8 @@ async def playground_value_stream_endpoint(websocket: WebSocket) -> None:
                         offset=active_request.offset,
                         limit=active_request.limit,
                         enqueue=enqueue_now,
+                        ui_awaited=bool(active_request.ui_awaited),
+                        interaction=active_request.interaction,
                     )
                 )
             else:
@@ -3149,6 +3177,8 @@ async def playground_value_stream_endpoint(websocket: WebSocket) -> None:
                         variable=active_request.variable,
                         path=active_request.path,
                         enqueue=enqueue_now,
+                        ui_awaited=bool(active_request.ui_awaited),
+                        interaction=active_request.interaction,
                     )
                 )
             signature = hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()

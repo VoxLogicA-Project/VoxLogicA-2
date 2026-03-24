@@ -18,24 +18,33 @@ import threading
 
 from voxlogica.execution_strategy.results import SequenceValue
 from voxlogica.lazy.hash import hash_child_ref
+from voxlogica.priority import (
+    DEFAULT_PRIORITY_BUCKET,
+    normalize_priority_bucket,
+    normalize_priority_payload,
+    priority_rank,
+    priority_sort_key,
+    priority_urgency_score,
+)
 
 
-_DEFAULT_PRIORITY = "visible-page"
-_PRIORITY_RANKS = {
-    "click": 0,
-    "focused-child": 0,
-    "visible-page": 1,
-    "background-fill": 2,
-}
+_DEFAULT_PRIORITY = DEFAULT_PRIORITY_BUCKET
 
 
-def _normalize_priority(priority: str | None) -> str:
-    text = str(priority or _DEFAULT_PRIORITY).strip().lower()
-    return text if text in _PRIORITY_RANKS else _DEFAULT_PRIORITY
+def _normalize_priority(priority: Any) -> str:
+    return normalize_priority_bucket(priority)
 
 
-def _priority_rank(priority: str | None) -> int:
-    return _PRIORITY_RANKS[_normalize_priority(priority)]
+def _priority_rank(priority: Any) -> int:
+    return priority_rank(priority)
+
+
+def _priority_urgency(priority: Any) -> int:
+    return priority_urgency_score(priority)
+
+
+def _priority_sort(priority: Any) -> tuple[int, int]:
+    return priority_sort_key(priority)
 
 
 class BlockedComputation(RuntimeError):
@@ -51,7 +60,7 @@ class _ChildTaskScheduler:
     """Minimal priority scheduler for inspectable child tasks."""
 
     def __init__(self, *, workers: int | None = None):
-        self._pending: list[tuple[int, int, Callable[[], None]]] = []
+        self._pending: list[tuple[int, int, int, Callable[[], None]]] = []
         self._counter = itertools.count()
         self._workers = []
         self._worker_count = max(2, min(8, workers or (os.cpu_count() or 4)))
@@ -67,20 +76,20 @@ class _ChildTaskScheduler:
             thread.start()
             self._workers.append(thread)
 
-    def submit(self, *, priority: str, callback: Callable[[], None]) -> None:
-        rank = _PRIORITY_RANKS.get(str(priority or _DEFAULT_PRIORITY), _PRIORITY_RANKS[_DEFAULT_PRIORITY])
+    def submit(self, *, priority: Any, callback: Callable[[], None]) -> None:
+        rank, neg_urgency = _priority_sort(priority)
         with self._condition:
-            self._pending.append((rank, next(self._counter), callback))
-            self._pending.sort(key=lambda item: (item[0], item[1]))
+            self._pending.append((rank, neg_urgency, next(self._counter), callback))
+            self._pending.sort(key=lambda item: (item[0], item[1], item[2]))
             self._condition.notify()
 
-    def _pop_next_locked(self) -> tuple[int, int, Callable[[], None]] | None:
+    def _pop_next_locked(self) -> tuple[int, int, int, Callable[[], None]] | None:
         if not self._pending:
             return None
         noninteractive_capacity = max(1, self._worker_count - self._interactive_reserve)
         for index, item in enumerate(self._pending):
             rank = int(item[0])
-            if rank <= _PRIORITY_RANKS["focused-child"]:
+            if rank <= _priority_rank("focused-child"):
                 return self._pending.pop(index)
             if self._active_noninteractive < noninteractive_capacity:
                 self._active_noninteractive += 1
@@ -95,14 +104,14 @@ class _ChildTaskScheduler:
                 while next_item is None:
                     self._condition.wait()
                     next_item = self._pop_next_locked()
-                rank, _ordinal, callback = next_item
+                rank, _neg_urgency, _ordinal, callback = next_item
             try:
                 callback()
             except Exception:
                 # Child task failures are translated into item snapshots inside the callback.
                 pass
             finally:
-                if rank > _PRIORITY_RANKS["focused-child"]:
+                if rank > _priority_rank("focused-child"):
                     with self._condition:
                         self._active_noninteractive = max(0, self._active_noninteractive - 1)
                         self._condition.notify_all()
@@ -188,7 +197,7 @@ class InspectableSequenceValue(SequenceValue, ABC):
         with self._state_lock:
             return self._snapshot_locked(safe_index)
 
-    def ensure_item(self, index: int, priority: str = _DEFAULT_PRIORITY) -> ItemSnapshot:
+    def ensure_item(self, index: int, priority: Any = _DEFAULT_PRIORITY) -> ItemSnapshot:
         """Request one child item and return the current known snapshot."""
         safe_index = int(index)
         with self._state_lock:
@@ -203,7 +212,7 @@ class InspectableSequenceValue(SequenceValue, ABC):
             self._schedule_locked(safe_index, priority)
             return self._snapshot_locked(safe_index)
 
-    def resolve_item(self, index: int, priority: str = _DEFAULT_PRIORITY) -> Any:
+    def resolve_item(self, index: int, priority: Any = _DEFAULT_PRIORITY) -> Any:
         """Resolve one child value or raise on failure/missing item."""
         safe_index = int(index)
         while True:
@@ -219,7 +228,7 @@ class InspectableSequenceValue(SequenceValue, ABC):
         self,
         offset: int,
         limit: int,
-        priority: str = _DEFAULT_PRIORITY,
+        priority: Any = _DEFAULT_PRIORITY,
     ) -> dict[str, Any]:
         """Return one page worth of item snapshots."""
         safe_offset = max(0, int(offset))
@@ -274,7 +283,7 @@ class InspectableSequenceValue(SequenceValue, ABC):
             index += 1
 
     @abstractmethod
-    def _compute_item(self, index: int, priority: str) -> Any:
+    def _compute_item(self, index: int, priority: Any) -> Any:
         """Compute one child value or raise ``IndexError`` when absent."""
 
     def _snapshot_locked(self, index: int) -> ItemSnapshot:
@@ -314,7 +323,7 @@ class InspectableSequenceValue(SequenceValue, ABC):
             error=meta.get("error"),
         )
 
-    def _compute_inline_locked(self, index: int, priority: str) -> ItemSnapshot:
+    def _compute_inline_locked(self, index: int, priority: Any) -> ItemSnapshot:
         del priority
         try:
             value = self._compute_item(index, _DEFAULT_PRIORITY)
@@ -333,6 +342,7 @@ class InspectableSequenceValue(SequenceValue, ABC):
                 "state_reason": exc.state_reason,
                 "_requested_priority": _DEFAULT_PRIORITY,
                 "_requested_rank": _priority_rank(_DEFAULT_PRIORITY),
+                "_requested_urgency": _priority_urgency(_DEFAULT_PRIORITY),
             }
             self._notify_change_locked()
             return self._snapshot_locked(index)
@@ -347,40 +357,48 @@ class InspectableSequenceValue(SequenceValue, ABC):
         self._notify_change_locked()
         return self._snapshot_locked(index)
 
-    def _schedule_locked(self, index: int, priority: str) -> None:
+    def _schedule_locked(self, index: int, priority: Any) -> None:
         current = self._item_states.get(index, {})
         state = str(current.get("state") or "not_loaded")
-        normalized_priority = _normalize_priority(priority)
+        normalized_priority = normalize_priority_payload(priority)
+        requested_bucket = _normalize_priority(normalized_priority)
         requested_rank = _priority_rank(normalized_priority)
-        current_rank = int(current.get("_requested_rank", _PRIORITY_RANKS[_DEFAULT_PRIORITY]))
+        requested_urgency = _priority_urgency(normalized_priority)
+        requested_sort = _priority_sort(normalized_priority)
+        current_rank = int(current.get("_requested_rank", _priority_rank(_DEFAULT_PRIORITY)))
+        current_urgency = int(current.get("_requested_urgency", 0))
+        current_sort = (current_rank, -current_urgency)
         if state == "running":
-            if requested_rank < current_rank:
+            if requested_sort < current_sort:
                 self._item_states[index] = {
                     **current,
-                    "_requested_priority": normalized_priority,
+                    "_requested_priority": requested_bucket,
                     "_requested_rank": requested_rank,
-                    "state_reason": f"priority:{normalized_priority}",
+                    "_requested_urgency": requested_urgency,
+                    "state_reason": f"priority:{requested_bucket}",
                 }
                 self._notify_change_locked()
             return
-        if state == "queued" and requested_rank >= current_rank:
+        if state == "queued" and requested_sort >= current_sort:
             return
         token = next(self._schedule_tokens)
         self._item_states[index] = {
             **current,
             "state": "queued",
-            "state_reason": f"priority:{normalized_priority}",
-            "_requested_priority": normalized_priority,
+            "state_reason": f"priority:{requested_bucket}",
+            "_requested_priority": requested_bucket,
             "_requested_rank": requested_rank,
+            "_requested_urgency": requested_urgency,
             "_schedule_token": token,
         }
         self._notify_change_locked()
+        scheduler_priority = priority if isinstance(priority, str) else normalized_priority
         _SCHEDULER.submit(
-            priority=normalized_priority,
+            priority=scheduler_priority,
             callback=lambda: self._run_scheduled_item(index, normalized_priority, token),
         )
 
-    def _run_scheduled_item(self, index: int, priority: str, token: int) -> None:
+    def _run_scheduled_item(self, index: int, priority: Any, token: int) -> None:
         with self._state_lock:
             current = self._snapshot_locked(index)
             if current.state in {"ready", "failed"}:
@@ -389,19 +407,28 @@ class InspectableSequenceValue(SequenceValue, ABC):
             current_token = meta.get("_schedule_token")
             if current_token is not None and int(current_token) != int(token):
                 return
-            requested_priority = _normalize_priority(meta.get("_requested_priority", priority))
+            requested_priority = normalize_priority_payload(
+                {
+                    "bucket": meta.get("_requested_priority", _normalize_priority(priority)),
+                    "urgency_score": meta.get("_requested_urgency", _priority_urgency(priority)),
+                }
+            )
+            requested_bucket = _normalize_priority(requested_priority)
             requested_rank = int(meta.get("_requested_rank", _priority_rank(requested_priority)))
+            requested_urgency = int(meta.get("_requested_urgency", _priority_urgency(requested_priority)))
             self._item_states[index] = {
                 **meta,
                 "state": "running",
-                "state_reason": f"priority:{requested_priority}",
-                "_requested_priority": requested_priority,
+                "state_reason": f"priority:{requested_bucket}",
+                "_requested_priority": requested_bucket,
                 "_requested_rank": requested_rank,
+                "_requested_urgency": requested_urgency,
                 "_schedule_token": token,
             }
             self._notify_change_locked()
         try:
-            value = self._compute_item(index, requested_priority)
+            compute_priority = requested_bucket if requested_urgency <= 0 else requested_priority
+            value = self._compute_item(index, compute_priority)
         except IndexError:
             with self._state_lock:
                 if self._total_size is None:
@@ -412,8 +439,9 @@ class InspectableSequenceValue(SequenceValue, ABC):
                     "state": "failed",
                     "state_reason": "out-of-range",
                     "error": "index out of range",
-                    "_requested_priority": requested_priority,
+                    "_requested_priority": requested_bucket,
                     "_requested_rank": requested_rank,
+                    "_requested_urgency": requested_urgency,
                 }
                 self._reconcile_materialized_locked()
                 self._notify_change_locked()
@@ -424,8 +452,9 @@ class InspectableSequenceValue(SequenceValue, ABC):
                     "state": "blocked",
                     "blocked_on": exc.blocked_on,
                     "state_reason": exc.state_reason,
-                    "_requested_priority": requested_priority,
+                    "_requested_priority": requested_bucket,
                     "_requested_rank": requested_rank,
+                    "_requested_urgency": requested_urgency,
                 }
                 self._notify_change_locked()
             return
@@ -436,8 +465,9 @@ class InspectableSequenceValue(SequenceValue, ABC):
                 self._item_states[index] = {
                     "state": "failed",
                     "error": message,
-                    "_requested_priority": requested_priority,
+                    "_requested_priority": requested_bucket,
                     "_requested_rank": requested_rank,
+                    "_requested_urgency": requested_urgency,
                 }
                 self._reconcile_materialized_locked()
                 self._notify_change_locked()
@@ -447,8 +477,9 @@ class InspectableSequenceValue(SequenceValue, ABC):
             self._item_states[index] = {
                 "state": "persisting",
                 "state_reason": "runtime-cache",
-                "_requested_priority": requested_priority,
+                "_requested_priority": requested_bucket,
                 "_requested_rank": requested_rank,
+                "_requested_urgency": requested_urgency,
             }
             self._notify_change_locked()
             self._cache[index] = value
@@ -486,7 +517,7 @@ class InspectableRangeSequence(InspectableSequenceValue):
         total = max(0, self._stop - self._start)
         super().__init__(parent_ref=parent_ref, total_size=total)
 
-    def _compute_item(self, index: int, priority: str) -> Any:
+    def _compute_item(self, index: int, priority: Any) -> Any:
         del priority
         safe_index = int(index)
         if safe_index < 0 or self._start + safe_index >= self._stop:
@@ -503,7 +534,7 @@ class InspectableListSequence(InspectableSequenceValue):
         self._values = list(values)
         super().__init__(parent_ref=parent_ref, total_size=len(self._values))
 
-    def _compute_item(self, index: int, priority: str) -> Any:
+    def _compute_item(self, index: int, priority: Any) -> Any:
         del priority
         safe_index = int(index)
         if safe_index < 0 or safe_index >= len(self._values):
@@ -541,7 +572,7 @@ class InspectableIteratorSequence(InspectableSequenceValue):
                 raise IndexError(index) from exc
             self._cache[len(self._cache)] = next_value
 
-    def _compute_item(self, index: int, priority: str) -> Any:
+    def _compute_item(self, index: int, priority: Any) -> Any:
         del priority
         safe_index = int(index)
         if safe_index < 0:
@@ -589,7 +620,7 @@ class InspectableMappedSequence(InspectableSequenceValue):
         self._source.add_change_listener(self._on_source_change)
         super().__init__(parent_ref=parent_ref, total_size=self._source.length_hint())
 
-    def _compute_item(self, index: int, priority: str) -> Any:
+    def _compute_item(self, index: int, priority: Any) -> Any:
         upstream_snapshot = self._source.peek_item(index)
         if upstream_snapshot.state != "ready":
             upstream_snapshot = self._source.ensure_item(index, priority=priority)
@@ -621,7 +652,14 @@ class InspectableMappedSequence(InspectableSequenceValue):
                     continue
                 upstream_snapshot = self._source.peek_item(index)
                 if upstream_snapshot.state in {"ready", "failed"}:
-                    to_resume.append((int(index), _normalize_priority(meta.get("_requested_priority", _DEFAULT_PRIORITY))))
+                    resumed_bucket = _normalize_priority(meta.get("_requested_priority", _DEFAULT_PRIORITY))
+                    resumed_urgency = int(meta.get("_requested_urgency", 0))
+                    to_resume.append(
+                        (
+                            int(index),
+                            resumed_bucket if resumed_urgency <= 0 else {"bucket": resumed_bucket, "urgency_score": resumed_urgency},
+                        )
+                    )
         for index, priority in to_resume:
             self.ensure_item(index, priority=priority)
 
@@ -647,7 +685,7 @@ class InspectableSubsequence(InspectableSequenceValue):
             total_size = max(0, min(self._stop, source_length) - min(self._start, source_length))
         super().__init__(parent_ref=parent_ref, total_size=total_size)
 
-    def _compute_item(self, index: int, priority: str) -> Any:
+    def _compute_item(self, index: int, priority: Any) -> Any:
         safe_index = int(index)
         if safe_index < 0:
             raise IndexError(safe_index)
@@ -676,6 +714,13 @@ class InspectableSubsequence(InspectableSequenceValue):
                 absolute_index = self._start + int(index)
                 upstream_snapshot = self._source.peek_item(absolute_index)
                 if upstream_snapshot.state in {"ready", "failed"}:
-                    to_resume.append((int(index), _normalize_priority(meta.get("_requested_priority", _DEFAULT_PRIORITY))))
+                    resumed_bucket = _normalize_priority(meta.get("_requested_priority", _DEFAULT_PRIORITY))
+                    resumed_urgency = int(meta.get("_requested_urgency", 0))
+                    to_resume.append(
+                        (
+                            int(index),
+                            resumed_bucket if resumed_urgency <= 0 else {"bucket": resumed_bucket, "urgency_score": resumed_urgency},
+                        )
+                    )
         for index, priority in to_resume:
             self.ensure_item(index, priority=priority)

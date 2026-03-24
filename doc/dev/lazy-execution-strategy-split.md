@@ -39,6 +39,16 @@ DefinitionStore (NodeId -> NodeSpec) is immutable after reduction.
 - `voxlogica.features`
   - Stable facade; orchestrates parser/reducer/runtime selection and output payloads.
 
+## UI-Centered Urgency Contract
+- Interactive value/page requests now carry explicit UI interaction metadata instead of relying on `enqueue` alone.
+- The backend normalizes that metadata into a shared priority context with:
+  - `bucket`: `click`, `focused-child`, `visible-page`, or `background-fill`
+  - `urgency_score`: dynamic score derived from intent, recency, visibility, and focus depth
+  - `priority_class`: `interactive`, `normal`, or `background`
+- Value-resolve jobs are scheduled through a single-worker priority queue so later urgent clicks can outrank earlier passive refreshes.
+- Inspectable child scheduling preserves the existing bucket semantics, but now breaks ties with `urgency_score` so visible user work can leapfrog stale queued siblings.
+- Passive probes, polls, and background fills must always send weaker interaction intent than direct symbol clicks, path opens, and page navigation.
+
 ## Migration Phases
 1. Stabilize primitive API and deterministic registry.
 2. Introduce symbolic IR and hashing.

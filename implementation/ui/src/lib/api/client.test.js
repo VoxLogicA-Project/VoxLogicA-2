@@ -50,6 +50,7 @@ describe("api client compute activity", () => {
       path: "/",
       enqueue: true,
       uiAwaited: true,
+      interaction: { intent: "run-primary", source: "run-button", sequence: 4, age_ms: 0 },
     });
     await resolvePlaygroundValuePage({
       program: "xs = range(0, 10)",
@@ -59,6 +60,7 @@ describe("api client compute activity", () => {
       limit: 8,
       enqueue: true,
       uiAwaited: false,
+      interaction: { intent: "page-nav", source: "viewer", sequence: 5, age_ms: 3 },
     });
 
     const firstPayload = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
@@ -66,5 +68,7 @@ describe("api client compute activity", () => {
 
     expect(firstPayload.ui_awaited).toBe(true);
     expect(secondPayload.ui_awaited).toBe(false);
+    expect(firstPayload.interaction.intent).toBe("run-primary");
+    expect(secondPayload.interaction.intent).toBe("page-nav");
   });
 });

@@ -256,6 +256,7 @@ export const resolvePlaygroundValue = ({
   path = "",
   enqueue = true,
   uiAwaited = Boolean(enqueue),
+  interaction = null,
 }) => {
   const payload = {
     program,
@@ -265,6 +266,9 @@ export const resolvePlaygroundValue = ({
     enqueue,
     ui_awaited: Boolean(uiAwaited),
   };
+  if (interaction && typeof interaction === "object") {
+    payload.interaction = interaction;
+  }
   if (!variable && nodeId) {
     payload.node_id = nodeId;
   }
@@ -284,6 +288,7 @@ export const resolvePlaygroundValuePage = ({
   limit = 64,
   enqueue = true,
   uiAwaited = Boolean(enqueue),
+  interaction = null,
 }) => {
   const payload = {
     program,
@@ -295,6 +300,9 @@ export const resolvePlaygroundValuePage = ({
     enqueue,
     ui_awaited: Boolean(uiAwaited),
   };
+  if (interaction && typeof interaction === "object") {
+    payload.interaction = interaction;
+  }
   if (!variable && nodeId) {
     payload.node_id = nodeId;
   }

@@ -80,6 +80,7 @@ describe("StartTab", () => {
 
     const latest = resolvePlaygroundValueMock.mock.calls.at(-1)?.[0];
     expect(latest?.variable).toBe("b");
+    expect(latest?.interaction?.intent).toBe("run-primary");
     await waitFor(() => {
       const captionName = container.querySelector(".start-caption-main");
       expect(captionName?.textContent || "").toContain("b");
