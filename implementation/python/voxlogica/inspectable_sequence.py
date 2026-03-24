@@ -11,7 +11,6 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from queue import PriorityQueue
 from typing import Any, Callable, Iterable
 import itertools
 import os
@@ -52,11 +51,14 @@ class _ChildTaskScheduler:
     """Minimal priority scheduler for inspectable child tasks."""
 
     def __init__(self, *, workers: int | None = None):
-        self._queue: PriorityQueue[tuple[int, int, Callable[[], None]]] = PriorityQueue()
+        self._pending: list[tuple[int, int, Callable[[], None]]] = []
         self._counter = itertools.count()
         self._workers = []
-        worker_count = max(2, min(8, workers or (os.cpu_count() or 4)))
-        for index in range(worker_count):
+        self._worker_count = max(2, min(8, workers or (os.cpu_count() or 4)))
+        self._interactive_reserve = 1 if self._worker_count > 1 else 0
+        self._active_noninteractive = 0
+        self._condition = threading.Condition()
+        for index in range(self._worker_count):
             thread = threading.Thread(
                 target=self._worker_loop,
                 name=f"vox-inspectable-sequence-{index}",
@@ -67,18 +69,43 @@ class _ChildTaskScheduler:
 
     def submit(self, *, priority: str, callback: Callable[[], None]) -> None:
         rank = _PRIORITY_RANKS.get(str(priority or _DEFAULT_PRIORITY), _PRIORITY_RANKS[_DEFAULT_PRIORITY])
-        self._queue.put((rank, next(self._counter), callback))
+        with self._condition:
+            self._pending.append((rank, next(self._counter), callback))
+            self._pending.sort(key=lambda item: (item[0], item[1]))
+            self._condition.notify()
+
+    def _pop_next_locked(self) -> tuple[int, int, Callable[[], None]] | None:
+        if not self._pending:
+            return None
+        noninteractive_capacity = max(1, self._worker_count - self._interactive_reserve)
+        for index, item in enumerate(self._pending):
+            rank = int(item[0])
+            if rank <= _PRIORITY_RANKS["focused-child"]:
+                return self._pending.pop(index)
+            if self._active_noninteractive < noninteractive_capacity:
+                self._active_noninteractive += 1
+                return self._pending.pop(index)
+            return None
+        return None
 
     def _worker_loop(self) -> None:
         while True:
-            _rank, _ordinal, callback = self._queue.get()
+            with self._condition:
+                next_item = self._pop_next_locked()
+                while next_item is None:
+                    self._condition.wait()
+                    next_item = self._pop_next_locked()
+                rank, _ordinal, callback = next_item
             try:
                 callback()
             except Exception:
                 # Child task failures are translated into item snapshots inside the callback.
                 pass
             finally:
-                self._queue.task_done()
+                if rank > _PRIORITY_RANKS["focused-child"]:
+                    with self._condition:
+                        self._active_noninteractive = max(0, self._active_noninteractive - 1)
+                        self._condition.notify_all()
 
 
 _SCHEDULER = _ChildTaskScheduler()

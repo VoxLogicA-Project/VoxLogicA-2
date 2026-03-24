@@ -11,6 +11,7 @@ from voxlogica.inspectable_sequence import (
 )
 from voxlogica.execution_strategy.strict import StrictExecutionStrategy
 from voxlogica.execution_strategy.dask import DaskExecutionStrategy
+from voxlogica.policy import runtime_policy_scope
 from voxlogica.parser import parse_program_content
 from voxlogica.reducer import reduce_program, reduce_program_with_bindings
 from voxlogica.storage import SQLiteResultsDatabase
@@ -195,5 +196,59 @@ def test_dask_strategy_runtime_closure_map_still_works(tmp_path: Path) -> None:
 
         value = prepared.materialization_store.get(mapped_id)
         assert list(value.iter_values()) == [3, 4]
+    finally:
+        db.close()
+
+
+@pytest.mark.unit
+def test_dask_strategy_serve_mode_range_goal_is_inspectable(tmp_path: Path) -> None:
+    source = parse_program_content('let xs = range(2,5)')
+    workplan, bindings = reduce_program_with_bindings(source)
+    xs_id = bindings["xs"]
+    plan = workplan.to_symbolic_plan()
+
+    db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    try:
+        strategy = DaskExecutionStrategy(results_database=db)
+        prepared = strategy.compile(plan)
+        with runtime_policy_scope(serve_mode=True):
+            result = strategy.run(prepared, goals=[xs_id])
+        assert result.success is True
+
+        value = prepared.materialization_store.get(xs_id)
+        assert isinstance(value, InspectableRangeSequence)
+        assert value.page(offset=0, limit=3) == [2, 3, 4]
+    finally:
+        db.close()
+
+
+@pytest.mark.unit
+def test_dask_strategy_serve_mode_primitive_map_stays_inspectable(tmp_path: Path) -> None:
+    source = parse_program_content(
+        """
+        let mapped = map(range, range(2,4))
+        """
+    )
+    workplan, bindings = reduce_program_with_bindings(source)
+    mapped_id = bindings["mapped"]
+    plan = workplan.to_symbolic_plan()
+
+    db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    try:
+        strategy = DaskExecutionStrategy(results_database=db)
+        prepared = strategy.compile(plan)
+        with runtime_policy_scope(serve_mode=True):
+            result = strategy.run(prepared, goals=[mapped_id])
+        assert result.success is True
+
+        value = prepared.materialization_store.get(mapped_id)
+        assert isinstance(value, InspectableMappedSequence)
+
+        first = value.resolve_item(0)
+        second = value.resolve_item(1)
+        assert isinstance(first, InspectableSequenceValue)
+        assert isinstance(second, InspectableSequenceValue)
+        assert first.page(offset=0, limit=5) == [0, 1]
+        assert second.page(offset=0, limit=5) == [0, 1, 2]
     finally:
         db.close()

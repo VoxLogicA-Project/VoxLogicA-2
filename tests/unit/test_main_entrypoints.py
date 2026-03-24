@@ -3003,3 +3003,121 @@ def test_playground_value_page_enqueues_and_falls_back_for_runtime_backed_nested
     assert payload["compute_status"] == "queued"
     assert payload["materialization"] == "pending"
     assert payload["page"]["items"][0]["path"] == "/0/0"
+
+
+@pytest.mark.unit
+def test_playground_value_page_prefers_transient_materialized_children_over_runtime_preview_regression(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    root_node_id = "root-sequence-node"
+    sequence_descriptor = {
+        "vox_type": "sequence",
+        "format_version": "voxpod/1",
+        "summary": {"length": 2, "page_size": 128},
+        "navigation": {
+            "path": "",
+            "pageable": True,
+            "can_descend": True,
+            "default_page_size": 64,
+            "max_page_size": 512,
+        },
+    }
+
+    async def _fake_value_endpoint(_request):  # noqa: ANN001
+        return {
+            "available": True,
+            "node_id": root_node_id,
+            "status": "materialized",
+            "runtime_version": "2.0.0a2",
+            "metadata": {
+                "source": "runtime",
+                "persisted": "pending",
+            },
+            "error": None,
+            "path": "",
+            "descriptor": sequence_descriptor,
+            "materialization": "computed",
+            "compute_status": "completed",
+            "execution_strategy": "dask",
+            "variable": "segmentations",
+            "runtime_preview_page": {
+                "offset": 0,
+                "limit": 8,
+                "items": [
+                    {
+                        "index": 0,
+                        "path": "/0",
+                        "status": "running",
+                        "state": "running",
+                        "descriptor": {
+                            "vox_type": "unavailable",
+                            "format_version": "voxpod/1",
+                            "summary": {"state": "running"},
+                            "navigation": {
+                                "path": "/0",
+                                "pageable": False,
+                                "can_descend": False,
+                                "default_page_size": 64,
+                                "max_page_size": 512,
+                            },
+                        },
+                    }
+                ],
+                "has_more": False,
+                "next_offset": None,
+                "total": 2,
+            },
+        }
+
+    monkeypatch.setattr(main_mod, "playground_value_endpoint", _fake_value_endpoint)
+    monkeypatch.setattr(
+        main_mod,
+        "_transient_sequence_page_from_store",
+        lambda **kwargs: {
+            "offset": 0,
+            "limit": 8,
+            "items": [
+                {
+                    "index": 0,
+                    "label": "[0]",
+                    "path": "/0",
+                    "status": "materialized",
+                    "descriptor": {
+                        "vox_type": "volume3d",
+                        "format_version": "voxpod/1",
+                        "summary": {"size": [240, 240, 155]},
+                        "navigation": {
+                            "path": "/0",
+                            "pageable": False,
+                            "can_descend": False,
+                            "default_page_size": 64,
+                            "max_page_size": 512,
+                        },
+                    },
+                }
+            ],
+            "has_more": False,
+            "next_offset": None,
+            "total": 2,
+        },
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(inspect_value_job_runtime=lambda **kwargs: None),
+    )
+
+    payload = asyncio.run(
+        main_mod.playground_value_page_endpoint(
+            main_mod.PlaygroundValuePageRequest(
+                program="xs = range(0,1)",
+                variable="segmentations",
+                offset=0,
+                limit=8,
+                enqueue=False,
+            )
+        )
+    )
+
+    assert payload["page"]["items"][0]["status"] == "materialized"
+    assert payload["page"]["items"][0]["descriptor"]["vox_type"] == "volume3d"

@@ -215,3 +215,56 @@ def test_blocked_mapped_item_resumes_with_requested_priority(monkeypatch: pytest
     submissions[2][1]()
     assert mapped.peek_item(0).state == "ready"
     assert mapped.peek_item(0).value == 14
+
+
+def test_scheduler_reserves_interactive_lane_while_siblings_wait_for_idle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = inspectable_sequence_mod._ChildTaskScheduler(workers=2)
+    monkeypatch.setattr(inspectable_sequence_mod, "_SCHEDULER", scheduler)
+
+    first_running = threading.Event()
+    release_first = threading.Event()
+    click_running = threading.Event()
+    sibling_started = threading.Event()
+    started: list[tuple[int, str]] = []
+    started_lock = threading.Lock()
+
+    class _BlockingSequence(InspectableSequenceValue):
+        def __init__(self) -> None:
+            super().__init__(parent_ref="blocking-sequence", total_size=3)
+
+        def _compute_item(self, index: int, priority: str) -> int:
+            with started_lock:
+                started.append((index, priority))
+            if index == 0:
+                first_running.set()
+                release_first.wait(timeout=2.0)
+            elif index == 1:
+                sibling_started.set()
+            elif index == 2:
+                click_running.set()
+            return index
+
+    sequence = _BlockingSequence()
+
+    first = sequence.ensure_item(0, priority="visible-page")
+    assert first.state == "queued"
+    assert first_running.wait(timeout=1.0) is True
+
+    second = sequence.ensure_item(1, priority="visible-page")
+    assert second.state == "queued"
+    time.sleep(0.1)
+    assert sibling_started.is_set() is False
+    assert sequence.peek_item(1).state == "queued"
+
+    clicked = sequence.ensure_item(2, priority="click")
+    assert clicked.state == "queued"
+    assert click_running.wait(timeout=1.0) is True
+    assert sibling_started.is_set() is False
+
+    release_first.set()
+    _wait_until(lambda: sequence.peek_item(1).state == "ready")
+
+    assert started[:2] == [(0, "visible-page"), (2, "click")]
+    assert started[2] == (1, "visible-page")

@@ -656,6 +656,43 @@ def _slice_runtime_preview_page(
     }
 
 
+def _page_richness_tuple(page_payload: dict[str, Any] | None) -> tuple[int, int, int]:
+    if not isinstance(page_payload, dict):
+        return (-1, -1, -1)
+    raw_items = page_payload.get("items")
+    if not isinstance(raw_items, list):
+        return (-1, -1, -1)
+
+    ready_items = 0
+    concrete_items = 0
+    total_items = 0
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        total_items += 1
+        descriptor = item.get("descriptor") if isinstance(item.get("descriptor"), dict) else {}
+        vox_type = str(descriptor.get("vox_type", "")).strip().lower()
+        status = str(item.get("state") or item.get("status") or "").strip().lower()
+        is_concrete = vox_type not in {"", "unavailable", "error"}
+        is_ready = is_concrete or status in {"ready", "materialized", "computed", "cached"}
+        if is_concrete:
+            concrete_items += 1
+        if is_ready:
+            ready_items += 1
+    return (ready_items, concrete_items, total_items)
+
+
+def _prefer_richer_page(*pages: dict[str, Any] | None) -> dict[str, Any] | None:
+    best_page: dict[str, Any] | None = None
+    best_score = (-1, -1, -1)
+    for page in pages:
+        score = _page_richness_tuple(page)
+        if score > best_score:
+            best_page = page
+            best_score = score
+    return best_page
+
+
 def _is_terminal_value_payload(payload: dict[str, Any]) -> bool:
     materialization = str(payload.get("materialization", "missing")).lower()
     compute_status = str(payload.get("compute_status", "missing")).lower()
@@ -2519,15 +2556,37 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
         limit=request.limit,
     )
 
+    def _transient_sequence_page_candidate() -> dict[str, Any] | None:
+        if not isinstance(descriptor_payload, dict) or str(descriptor_payload.get("vox_type", "")) != "sequence":
+            return None
+        container_node_id: str | None = None
+        resolved_node_raw = value_payload.get("resolved_store_node_id")
+        resolved_path_raw = value_payload.get("resolved_store_path")
+        if isinstance(resolved_node_raw, str) and resolved_node_raw.strip():
+            normalized_resolved_path = str(resolved_path_raw or "").strip()
+            if normalized_resolved_path in {"", "/"}:
+                container_node_id = resolved_node_raw.strip()
+        if container_node_id is None:
+            container_node_id = _sequence_container_node_for_path(node_id, path)
+        return _transient_sequence_page_from_store(
+            storage=get_storage(),
+            container_node_id=container_node_id or node_id,
+            descriptor=descriptor_payload,
+            base_path=path,
+            offset=request.offset,
+            limit=request.limit,
+        )
+
     if materialization in {"failed"} or compute_status in {"failed", "killed"}:
         return value_payload
 
     if runtime_preview_page is not None:
+        preferred_page = _prefer_richer_page(runtime_preview_page, _transient_sequence_page_candidate())
         return {
             **value_payload,
             "path": path,
-            "page": runtime_preview_page,
-            "available": bool(runtime_preview_page.get("items")),
+            "page": preferred_page,
+            "available": bool(preferred_page and preferred_page.get("items")),
         }
 
     inspect_job_runtime = getattr(playground_jobs, "inspect_value_job_runtime", None)
@@ -2558,11 +2617,12 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
         )
         if isinstance(runtime_cached_page, dict):
             runtime_page_available = True
+            preferred_page = _prefer_richer_page(runtime_cached_page, _transient_sequence_page_candidate())
             updated_payload = {
                 **value_payload,
                 "path": str(runtime_cached_preview.get("path") or path),
-                "page": runtime_cached_page,
-                "available": bool(runtime_cached_page.get("items")),
+                "page": preferred_page,
+                "available": bool(preferred_page and preferred_page.get("items")),
             }
             runtime_cached_descriptor = runtime_cached_preview.get("descriptor")
             if isinstance(runtime_cached_descriptor, dict):
@@ -2609,24 +2669,7 @@ async def playground_value_page_endpoint(request: PlaygroundValuePageRequest) ->
         or compute_status in {"queued", "running", "persisting", "missing"}
         or runtime_backed_page_candidate
     ):
-        container_node_id: str | None = None
-        if isinstance(descriptor_payload, dict) and str(descriptor_payload.get("vox_type", "")) == "sequence":
-            resolved_node_raw = value_payload.get("resolved_store_node_id")
-            resolved_path_raw = value_payload.get("resolved_store_path")
-            if isinstance(resolved_node_raw, str) and resolved_node_raw.strip():
-                normalized_resolved_path = str(resolved_path_raw or "").strip()
-                if normalized_resolved_path in {"", "/"}:
-                    container_node_id = resolved_node_raw.strip()
-            if container_node_id is None:
-                container_node_id = _sequence_container_node_for_path(node_id, path)
-        transient_page = _transient_sequence_page_from_store(
-            storage=get_storage(),
-            container_node_id=container_node_id or node_id,
-            descriptor=descriptor_payload,
-            base_path=path,
-            offset=request.offset,
-            limit=request.limit,
-        )
+        transient_page = _transient_sequence_page_candidate()
         if transient_page is not None:
             return {
                 **value_payload,

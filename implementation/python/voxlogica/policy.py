@@ -727,6 +727,12 @@ def enforce_runtime_read_path_policy(operator_name: str, args: Iterable[Any]) ->
         _ensure_runtime_read_allowed(operator_name, source_text, context.allowed_read_roots)
 
 
+def runtime_policy_is_serve_mode() -> bool:
+    """Return True when the current execution runs under serve-mode policy."""
+    context = _runtime_policy_or_none()
+    return bool(context is not None and context.serve_mode)
+
+
 __all__ = [
     "SERVE_DATA_DIR_ENV",
     "SERVE_EXTRA_READ_ROOTS_ENV",
@@ -740,6 +746,7 @@ __all__ = [
     "is_effectful_primitive",
     "is_read_operator",
     "resolve_serve_read_roots",
+    "runtime_policy_is_serve_mode",
     "runtime_policy_scope",
     "validate_workplan_policy",
 ]
