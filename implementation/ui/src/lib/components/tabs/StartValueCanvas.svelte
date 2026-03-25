@@ -47,6 +47,7 @@
   const ACTIVE_COLLECTION_ITEM_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting"]);
   const COLLECTION_PENDING_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting", "pending", "missing"]);
   let stageExpanded = false;
+  let nestedCollectionOpened = false;
 
   const stageExpansionKeyFor = (recordValue, recordPathValue, recordSourceVariable) => {
     const normalizedSource = String(recordSourceVariable || "").trim();
@@ -252,6 +253,8 @@
     return `${offset + 1}-${offset + count}`;
   };
 
+  const nestedAutoHydrationEnabled = (depth, expanded) => depth <= 1 || Boolean(expanded);
+
   $: descriptor = recordDescriptor(record);
   $: voxType = recordType(record);
   $: summary = descriptor?.summary && typeof descriptor.summary === "object" ? descriptor.summary : {};
@@ -309,6 +312,7 @@
   $: selectedItemState = selectedItem ? itemStateClass(selectedItem) : "";
   $: stageExpansionKey = isCollection ? stageExpansionKeyFor(record, path, sourceVariable) : "";
   $: stageExpanded = Boolean(stageExpansionKey && expandedCollectionStages?.[stageExpansionKey]);
+  $: autoHydrateNested = nestedAutoHydrationEnabled(level, stageExpanded || nestedCollectionOpened);
 
   $: if (isCollection && visibleItems.length) {
     const nextPath = String(visibleItems[selectedIndex]?.path || "");
@@ -323,9 +327,18 @@
 
   $: if (!isCollection) {
     stageExpanded = false;
+    nestedCollectionOpened = false;
   }
 
-  $: if (record && isCollection && !page && !loading && !error && !pagePollingForRecord(record, path)) {
+  $: if (
+    record &&
+    isCollection &&
+    autoHydrateNested &&
+    !page &&
+    !loading &&
+    !error &&
+    !pagePollingForRecord(record, path)
+  ) {
     void loadRecordPage(record, {
       path,
       offset: 0,
@@ -334,7 +347,7 @@
     });
   }
 
-  $: if (selectedRecord && level < MAX_DEPTH && collectionRecord(selectedRecord)) {
+  $: if (selectedRecord && level < MAX_DEPTH && collectionRecord(selectedRecord) && autoHydrateNested) {
     const nestedPath = recordPath(selectedRecord);
     const nestedPage = pageForRecord(selectedRecord, nestedPath);
     const waitingForNestedDetail =
@@ -380,7 +393,23 @@
   {:else if !isCollection}
     <StartViewerHost contract={leafViewerContract} />
   {:else if isCollection}
-    {#if level > 0 && !items.length && !loading && !error}
+    {#if level >= 2 && !autoHydrateNested && !items.length && !loading && !error}
+      <div class="start-collection-collapsed">
+        <div class="start-collection-collapsed-copy">
+          <span class="start-collection-collapsed-label">Nested collection</span>
+          <span class="start-collection-collapsed-preview">{previewText(descriptor)}</span>
+        </div>
+        <button
+          class="btn btn-ghost btn-small"
+          type="button"
+          on:click={() => {
+            nestedCollectionOpened = true;
+          }}
+        >
+          Open
+        </button>
+      </div>
+    {:else if level > 0 && !items.length && !loading && !error}
       {#if pagePollingForRecord(record, path) || pendingCollectionStateFor(record)}
         <div class="start-collection-stage-loading" aria-label="Waiting for values">
           <span></span>
@@ -504,6 +533,22 @@
                 <div class="start-collection-stage-loading">
                   <span></span>
                 </div>
+              {:else if level >= 2 && collectionRecord(selectedRecord) && !autoHydrateNested}
+                <div class="start-collection-collapsed">
+                  <div class="start-collection-collapsed-copy">
+                    <span class="start-collection-collapsed-label">Nested collection</span>
+                    <span class="start-collection-collapsed-preview">{previewText(selectedDescriptor)}</span>
+                  </div>
+                  <button
+                    class="btn btn-ghost btn-small"
+                    type="button"
+                    on:click={() => {
+                      nestedCollectionOpened = true;
+                    }}
+                  >
+                    Open
+                  </button>
+                </div>
               {:else if level >= MAX_DEPTH}
                 <div class="start-pure-array">{previewText(selectedDescriptor)}</div>
               {:else}
@@ -599,6 +644,40 @@
     color: #8b3040;
     border-color: rgba(205, 94, 111, 0.36);
     background: rgba(255, 241, 244, 0.96);
+  }
+
+  .start-collection-collapsed {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.9rem;
+    padding: 1rem 1.05rem;
+    border-radius: 18px;
+    border: 1px solid rgba(160, 178, 205, 0.3);
+    background:
+      linear-gradient(180deg, rgba(252, 253, 255, 0.96), rgba(244, 247, 252, 0.92)),
+      radial-gradient(circle at top left, rgba(99, 138, 255, 0.1), transparent 46%);
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.82);
+  }
+
+  .start-collection-collapsed-copy {
+    min-width: 0;
+    display: grid;
+    gap: 0.16rem;
+  }
+
+  .start-collection-collapsed-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #5f7190;
+  }
+
+  .start-collection-collapsed-preview {
+    min-width: 0;
+    color: #21344f;
+    font-size: 0.95rem;
   }
 
   .start-overlay-image-shell {

@@ -1918,12 +1918,18 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             payload["variable"] = variable_name
         return payload
 
-    def _attach_and_log(payload: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    def _attach_and_log(
+        payload: dict[str, Any],
+        *,
+        reason: str,
+        log_level: int = logging.INFO,
+    ) -> dict[str, Any]:
         attached = _attach_common(payload)
         timings_summary = ",".join(
             f"{phase}={duration_ms:.1f}ms" for phase, duration_ms in phase_timings_ms.items()
         ) or "-"
-        value_logger.info(
+        value_logger.log(
+            log_level,
             "[value:%s] %s materialization=%s compute_status=%s store_status=%s enqueued=%s job=%s "
             "introspection_cache=%s timings=%s elapsed=%.1fms",
             request_id,
@@ -2553,7 +2559,10 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                             "job_id": tracked_job.get("job_id"),
                             "store_status": "missing",
                             "request_enqueued": False,
-                            "descriptor": root_descriptor if isinstance(root_descriptor, dict) else None,
+                            "descriptor": _pending_descriptor(
+                                path=view_path or "/",
+                                reason="status=persisting",
+                            ),
                             "resolved_store_node_id": node_id,
                             "resolved_store_path": "",
                             "diagnostics": {
@@ -2563,6 +2572,7 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
                             },
                         },
                         reason="job-completed-persisting-nested",
+                        log_level=logging.DEBUG,
                     )
             if transient_descriptor is not None and view_path in {"", "/"}:
                 persisted_state = transient_metadata.get("persisted") if isinstance(transient_metadata, dict) else None

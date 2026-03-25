@@ -1695,6 +1695,101 @@ describe("StartTab", () => {
     expect(container.querySelector(".start-value-tag--failed")).toBeNull();
   });
 
+  it("rechecks a directly clicked symbol instead of trusting stale known-pending state", async () => {
+    vi.useFakeTimers();
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { a: "node-a", b: "node-b" },
+      diagnostics: [],
+    });
+
+    let phase = 1;
+    resolvePlaygroundValueMock.mockImplementation(async (payload) => {
+      if (payload?.variable !== "b") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: `node-${payload?.variable || "a"}`,
+          path: "/",
+          descriptor: {
+            vox_type: "integer",
+            format_version: "voxpod/1",
+            summary: { value: 1 },
+            navigation: {
+              path: "/",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+
+      if (phase === 1) {
+        return {
+          materialization: "pending",
+          compute_status: "running",
+          node_id: "node-b",
+          path: "/",
+          request_enqueued: true,
+          job_id: "job-b",
+        };
+      }
+
+      if (payload?.enqueue === false) {
+        return {
+          materialization: "missing",
+          compute_status: "missing",
+          node_id: "node-b",
+          path: "/",
+          request_enqueued: false,
+        };
+      }
+
+      return {
+        materialization: "computed",
+        compute_status: "completed",
+        node_id: "node-b",
+        path: "/",
+        descriptor: {
+          vox_type: "integer",
+          format_version: "voxpod/1",
+          summary: { value: 2 },
+          navigation: {
+            path: "/",
+            pageable: false,
+            can_descend: false,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
+        },
+      };
+    });
+
+    const { component } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    await component.selectSymbol("b");
+    await waitFor(() => {
+      const firstCalls = resolvePlaygroundValueMock.mock.calls.map(([payload]) => payload);
+      expect(firstCalls.some((payload) => payload?.variable === "b" && payload?.enqueue === false)).toBe(true);
+    });
+
+    resolvePlaygroundValueMock.mockClear();
+    phase = 2;
+
+    await component.selectSymbol("b");
+
+    await waitFor(() => {
+      const secondCalls = resolvePlaygroundValueMock.mock.calls.map(([payload]) => payload);
+      expect(secondCalls.some((payload) => payload?.variable === "b" && payload?.enqueue === false)).toBe(true);
+      expect(secondCalls.some((payload) => payload?.variable === "b" && payload?.enqueue === true)).toBe(true);
+    });
+  });
+
   it("uses non-enqueue paging requests for collection previews", async () => {
     getProgramSymbolsMock.mockResolvedValue({
       available: true,
@@ -2310,6 +2405,130 @@ describe("StartTab", () => {
       const stageLabel = container.querySelector(".start-collection-stage-label");
       expect(stageLabel?.textContent || "").toContain("[5]");
     });
+  });
+
+  it("stops automatic collection hydration before it recurses into deeper single-child paths", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-xs",
+      path: "/",
+      descriptor: {
+        vox_type: "sequence",
+        format_version: "voxpod/1",
+        summary: { length: 1 },
+        navigation: {
+          path: "/",
+          pageable: true,
+          can_descend: true,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+    });
+    resolvePlaygroundValuePageMock.mockImplementation(async ({ path = "", offset = 0, limit = 64 }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          path: "/",
+          page: {
+            offset,
+            limit,
+            has_more: false,
+            next_offset: null,
+            total: 1,
+            items: [
+              {
+                index: 0,
+                label: "[0]",
+                path: "/0",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "sequence",
+                  format_version: "voxpod/1",
+                  summary: { length: 1 },
+                  navigation: {
+                    path: "/0",
+                    pageable: true,
+                    can_descend: true,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+            ],
+          },
+        };
+      }
+      if (path === "/0") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          path: "/0",
+          page: {
+            offset,
+            limit,
+            has_more: false,
+            next_offset: null,
+            total: 1,
+            items: [
+              {
+                index: 0,
+                label: "[0]",
+                path: "/0/0",
+                status: "materialized",
+                descriptor: {
+                  vox_type: "sequence",
+                  format_version: "voxpod/1",
+                  summary: { length: 1 },
+                  navigation: {
+                    path: "/0/0",
+                    pageable: true,
+                    can_descend: true,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+            ],
+          },
+        };
+      }
+      return {
+        materialization: "computed",
+        compute_status: "completed",
+        path,
+        page: {
+          offset,
+          limit,
+          has_more: false,
+          next_offset: null,
+          total: 0,
+          items: [],
+        },
+      };
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(resolvePlaygroundValuePageMock.mock.calls.some(([payload]) => payload?.path === "/0")).toBe(true);
+    });
+
+    expect(resolvePlaygroundValuePageMock.mock.calls.some(([payload]) => payload?.path === "/0/0")).toBe(false);
   });
 
   it("does not let a later pending page snapshot overwrite a concrete child that is already cached", async () => {

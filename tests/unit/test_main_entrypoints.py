@@ -1370,6 +1370,108 @@ def test_playground_value_pages_nested_sequence_path_while_root_is_persisting(
 
 
 @pytest.mark.unit
+def test_playground_value_does_not_fabricate_nested_sequence_descriptor_for_pending_child_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeRegistry:
+        @staticmethod
+        def get_feature(name: str):
+            if name == "version":
+                return SimpleNamespace(handler=lambda: OperationResult.ok({"version": "2.0.0"}))
+            if name == "run":
+                return SimpleNamespace(handler=lambda **kwargs: OperationResult.ok({"ok": True, "args": kwargs}))
+            return None
+
+    monkeypatch.setattr(main_mod, "FeatureRegistry", FakeRegistry)
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+
+    def _job_payload(node_id: str) -> dict[str, object]:
+        return {
+            "job_id": "value-persisting-flat-seq",
+            "status": "completed",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "result": {
+                "goal_results": [
+                    {
+                        "node_id": node_id,
+                        "status": "materialized",
+                        "metadata": {"persisted": "pending"},
+                        "runtime_descriptor": {
+                            "available": True,
+                            "node_id": node_id,
+                            "status": "materialized",
+                            "runtime_version": "runtime",
+                            "path": "",
+                            "descriptor": {
+                                "vox_type": "sequence",
+                                "format_version": "voxpod/1",
+                                "summary": {"length": 2},
+                                "navigation": {
+                                    "path": "",
+                                    "pageable": True,
+                                    "can_descend": True,
+                                    "default_page_size": 64,
+                                    "max_page_size": 512,
+                                },
+                            },
+                        },
+                    }
+                ]
+            },
+            "log_tail": "",
+        }
+
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            get_value_job=lambda **kwargs: _job_payload(str(kwargs.get("node_id", ""))),
+            ensure_value_job=lambda payload, **kwargs: {"job_id": "unused", "status": "running", "log_tail": ""},
+        ),
+    )
+
+    try:
+        with TestClient(main_mod.api_app) as client:
+            value_resp = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "xs = range(0,2)",
+                    "variable": "xs",
+                    "path": "/0",
+                    "enqueue": False,
+                },
+            )
+            assert value_resp.status_code == 200
+            value_payload = value_resp.json()
+            assert value_payload["compute_status"] == "persisting"
+            assert value_payload["materialization"] == "pending"
+            assert value_payload["descriptor"]["vox_type"] == "unavailable"
+            assert value_payload["descriptor"]["navigation"]["path"] == "/0"
+
+            page_resp = client.post(
+                "/api/v1/playground/value/page",
+                json={
+                    "program": "xs = range(0,2)",
+                    "variable": "xs",
+                    "path": "/0",
+                    "offset": 0,
+                    "limit": 4,
+                    "enqueue": False,
+                },
+            )
+            assert page_resp.status_code == 200
+            page_payload = page_resp.json()
+            assert page_payload["descriptor"]["vox_type"] == "unavailable"
+            assert page_payload["page"]["items"] == []
+    finally:
+        fake_storage.close()
+
+
+@pytest.mark.unit
 def test_playground_value_page_rebases_sequence_item_paths_for_materialized_nested_sequence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

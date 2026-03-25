@@ -4046,6 +4046,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
   const resolveCurrentPreferCache = async (interaction = null) => {
     const variableName = String(primaryVariable || "");
+    const directRequest = Boolean(interaction?.direct);
     if (!variableName) return { state: "idle", reason: "no-primary" };
     if (materializedRecords?.[variableName]) {
       renderSelectedRecords();
@@ -4053,7 +4054,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         return { state: "computed", reason: "local-cache" };
       }
     }
-    if (hasKnownPendingState(variableName)) {
+    if (hasKnownPendingState(variableName) && !directRequest) {
       subscribeValueSocket({ variable: variableName, path: currentPath || "", enqueue: false });
       ensurePendingPoll({ variable: variableName, path: currentPath || "/" });
       return { state: "pending", reason: "known-pending" };
@@ -4178,6 +4179,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   const handleVisualTagClick = async (symbolName, event) => {
     const name = String(symbolName || "");
     if (!name || !symbolTable?.[name]) return;
+    const interaction = noteUiInteraction({
+      intent: "symbol-click",
+      source: "results-tag",
+      variable: name,
+      path: "",
+      direct: true,
+      visible: true,
+    });
     const additive = Boolean(event?.metaKey || event?.ctrlKey || event?.shiftKey);
     if (additive) {
       if (selectedVisualSymbols.includes(name)) {
@@ -4201,7 +4210,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     ensureSelectedVisualSymbols();
     const rendered = renderSelectedRecords();
     if (!rendered) viewer.renderRecord(null);
-    await resolveCurrentPreferCache();
+    await resolveCurrentPreferCache(buildInteractionContext(interaction));
   };
 
   $: editorSymbolTypes = Object.fromEntries(
