@@ -1026,6 +1026,15 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     symbolStatuses = { ...symbolStatuses, [symbolName]: nextStatus };
   };
 
+  const hasKnownPendingState = (variableName = "") => {
+    const symbolName = String(variableName || "").trim();
+    if (!symbolName || !symbolTable?.[symbolName]) return false;
+    const status = normalizeStatus(symbolStatuses?.[symbolName] || "idle");
+    const materialization = normalizeMaterialization(symbolMaterializations?.[symbolName] || "unresolved");
+    return ["queued", "running", "persisting"].includes(status)
+      || ["pending", "queued", "running", "persisting"].includes(materialization);
+  };
+
   const symbolNamesByNodeId = () => {
     const byNode = {};
     for (const [name, node] of Object.entries(symbolTable || {})) {
@@ -1662,8 +1671,8 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           program: programSnapshot,
           variable: variableName,
           path: variableName === String(primaryVariable || "") ? currentPath : "",
-          enqueue: true,
-          uiAwaited: variableName === String(primaryVariable || ""),
+          enqueue: false,
+          uiAwaited: false,
           interaction: buildInteractionContext({
             intent: "edit-refresh",
             source: "editor",
@@ -1713,7 +1722,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
     const primaryName = String(primaryVariable || "");
     if (anyPending && primaryName && names.includes(primaryName)) {
-      subscribeValueSocket({ variable: primaryName, path: currentPath, enqueue: true });
+      subscribeValueSocket({ variable: primaryName, path: currentPath, enqueue: false });
       pendingEditRefresh = setTimeout(() => {
         if (destroyed) return;
         pendingEditRefresh = null;
@@ -3954,7 +3963,6 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     stopPoll();
     activeValueSubscription = null;
     stopValueSocket();
-    clearResolutionActivity();
     const token = editRefreshSeq;
     pendingEditRefresh = setTimeout(() => {
       if (destroyed) return;
@@ -3973,6 +3981,14 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     if (!variableName) return { state: "idle", reason: "no-primary" };
     if (materializedRecords?.[variableName]) {
       renderSelectedRecords();
+      if (!currentPath) {
+        return { state: "computed", reason: "local-cache" };
+      }
+    }
+    if (hasKnownPendingState(variableName)) {
+      subscribeValueSocket({ variable: variableName, path: currentPath || "", enqueue: false });
+      ensurePendingPoll({ variable: variableName, path: currentPath || "/" });
+      return { state: "pending", reason: "known-pending" };
     }
     const cachedAttempt = await resolvePrimaryValue({ enqueue: false, path: "", background: true, interaction });
     if (cachedAttempt?.state === "computed" || cachedAttempt?.state === "pending" || cachedAttempt?.state === "failed") {
@@ -4015,8 +4031,8 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     stopPoll();
     resolveRequestSeq += 1;
     const rendered = renderSelectedRecords();
-    if (!rendered) viewer.renderRecord(null);
     currentPath = "";
+    if (!rendered) viewer.setLoading(`Loading ${symbolName}...`);
     const resolution = await resolveCurrentPreferCache(buildInteractionContext(interaction));
     return {
       ok: true,

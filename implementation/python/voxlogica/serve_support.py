@@ -1957,6 +1957,7 @@ def inspect_runtime_value_page(
         payload["sequence_version"] = raw_root.version()
         snapshot = raw_root.page_snapshot(safe_offset, safe_limit, priority=priority)
         items_out: list[dict[str, Any]] = []
+        truncated_for_out_of_range = False
         for item in snapshot.get("items", []):
             item_index = int(getattr(item, "index", 0))
             item_path = append_path(normalized_path, str(item_index))
@@ -1986,6 +1987,12 @@ def inspect_runtime_value_page(
                         resolution_blocked_on = str(refreshed.get("blocked_on"))
                     if refreshed.get("state_reason") is not None:
                         resolution_state_reason = str(refreshed.get("state_reason"))
+            if item_state == "failed" and (
+                str(resolution_state_reason or "").strip().lower() == "out-of-range"
+                or "out of range" in str(resolution_error or "").strip().lower()
+            ):
+                truncated_for_out_of_range = True
+                break
             if item_state == "ready":
                 item_descriptor = _canonical_descriptor(
                     adapt_runtime_value(item_value).describe(path=item_path),
@@ -2011,13 +2018,22 @@ def inspect_runtime_value_page(
                 item_payload["error"] = str(resolution_error)
             items_out.append(item_payload)
 
+        page_total = snapshot.get("total")
+        next_offset = snapshot.get("next_offset")
+        has_more = bool(snapshot.get("has_more", False))
+        if truncated_for_out_of_range:
+            if not isinstance(page_total, int):
+                page_total = safe_offset + len(items_out)
+            next_offset = None
+            has_more = False
+
         payload["page"] = {
             "offset": int(snapshot.get("offset", safe_offset)),
             "limit": int(snapshot.get("limit", safe_limit)),
             "items": items_out,
-            "next_offset": snapshot.get("next_offset"),
-            "has_more": bool(snapshot.get("has_more", False)),
-            "total": snapshot.get("total"),
+            "next_offset": next_offset,
+            "has_more": has_more,
+            "total": page_total,
         }
         return payload
 

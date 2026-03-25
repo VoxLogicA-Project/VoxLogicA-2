@@ -508,6 +508,10 @@ def _transient_sequence_page_from_store(
             except UnsupportedVoxValueError:
                 item_payload = None
 
+            if _sequence_child_out_of_range(item_payload):
+                total = cursor
+                break
+
             item_status = "pending"
             item_descriptor: dict[str, Any]
             if isinstance(item_payload, dict):
@@ -535,9 +539,9 @@ def _transient_sequence_page_from_store(
             "offset": safe_offset,
             "limit": safe_limit,
             "items": items_out,
-            "next_offset": next_offset,
-            "has_more": bool(has_more),
-            "total": None,
+            "next_offset": next_offset if total is None else None,
+            "has_more": bool(has_more if total is None else False),
+            "total": total,
         }
 
     for cursor in range(safe_offset, upper_bound):
@@ -555,6 +559,11 @@ def _transient_sequence_page_from_store(
             )
         except UnsupportedVoxValueError:
             item_payload = None
+
+        if _sequence_child_out_of_range(item_payload):
+            total = cursor
+            upper_bound = min(upper_bound, total)
+            break
 
         item_status = "pending"
         item_descriptor: dict[str, Any]
@@ -701,6 +710,18 @@ def _payload_sequence_version(payload: dict[str, Any]) -> int | None:
         return int(raw_version)
     except Exception:
         return None
+
+
+def _sequence_child_out_of_range(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    error_text = str(payload.get("error") or "").strip().lower()
+    if "out of range" in error_text:
+        return True
+    descriptor = payload.get("descriptor") if isinstance(payload.get("descriptor"), dict) else {}
+    summary = descriptor.get("summary") if isinstance(descriptor.get("summary"), dict) else {}
+    reason_text = str(summary.get("reason") or summary.get("error") or "").strip().lower()
+    return "out of range" in reason_text
 
 
 class ElapsedMsFormatter(logging.Formatter):

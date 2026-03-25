@@ -803,6 +803,48 @@ def test_inspect_runtime_value_page_refreshes_stale_visible_item_states() -> Non
 
 
 @pytest.mark.unit
+def test_inspect_runtime_value_page_omits_stale_out_of_range_items() -> None:
+    class _ShortSequenceWithStaleSnapshot(InspectableSequenceValue):
+        inline_items = True
+
+        def __init__(self) -> None:
+            super().__init__(parent_ref="node-short-stale", total_size=None)
+
+        def _compute_item(self, index: int, priority: str) -> int:
+            del priority
+            if index >= 3:
+                raise IndexError(index)
+            return 100 + index
+
+        def page_snapshot(self, offset: int, limit: int, priority: str = "visible-page") -> dict[str, object]:
+            del priority
+            return {
+                "offset": offset,
+                "limit": limit,
+                "items": [
+                    ItemSnapshot(index=index, child_ref=self.child_ref(index), state="queued")
+                    for index in range(offset, offset + limit)
+                ],
+                "next_offset": offset + limit,
+                "has_more": True,
+                "total": None,
+            }
+
+    page = inspect_runtime_value_page(
+        node_id="node-short-stale",
+        value=_ShortSequenceWithStaleSnapshot(),
+        path="/",
+        offset=0,
+        limit=8,
+    )
+
+    assert [item["index"] for item in page["page"]["items"]] == [0, 1, 2]
+    assert page["page"]["has_more"] is False
+    assert page["page"]["next_offset"] is None
+    assert page["page"]["total"] == 3
+
+
+@pytest.mark.unit
 def test_describe_runtime_value_preserves_blocked_inspectable_child_state() -> None:
     class _BlockedSequence(InspectableSequenceValue):
         def __init__(self) -> None:

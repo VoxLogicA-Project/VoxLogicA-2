@@ -128,6 +128,73 @@ describe("StartTab", () => {
     vi.useRealTimers();
   });
 
+  it("uses cache-first value refreshes while editing instead of enqueueing new work", async () => {
+    vi.useFakeTimers();
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { x: "node-x" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock
+      .mockResolvedValueOnce({
+        materialization: "computed",
+        compute_status: "completed",
+        node_id: "node-x",
+        path: "/",
+        descriptor: {
+          vox_type: "integer",
+          format_version: "voxpod/1",
+          summary: { value: 1 },
+          navigation: {
+            path: "/",
+            pageable: false,
+            can_descend: false,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
+        },
+      })
+      .mockResolvedValue({
+        materialization: "pending",
+        compute_status: "running",
+        node_id: "node-x",
+        path: "/",
+      });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(resolvePlaygroundValueMock).toHaveBeenCalledTimes(1);
+    });
+
+    resolvePlaygroundValueMock.mockClear();
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+    editor.value = "x = 2";
+    await fireEvent.input(editor);
+
+    vi.advanceTimersByTime(500);
+
+    await waitFor(() => {
+      expect(resolvePlaygroundValueMock).toHaveBeenCalled();
+    });
+
+    for (const [payload] of resolvePlaygroundValueMock.mock.calls) {
+      expect(payload?.enqueue).toBe(false);
+      expect(payload?.uiAwaited).toBe(false);
+    }
+
+    vi.useRealTimers();
+  });
+
   it("restores persisted editor, layout, and viewer state from unified UI state", async () => {
     window.localStorage.setItem(
       UI_STATE_STORAGE_KEY,
