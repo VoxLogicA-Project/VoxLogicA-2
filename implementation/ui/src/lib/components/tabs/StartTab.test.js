@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/svelte";
 import { get } from "svelte/store";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import StartTab from "./StartTab.svelte";
 import { clearComputeActivity, ongoingComputeActivity, pushComputeActivity } from "$lib/stores/computeActivity.js";
@@ -35,6 +35,10 @@ describe("StartTab", () => {
     getProgramSymbolsMock.mockReset();
     resolvePlaygroundValueMock.mockReset();
     resolvePlaygroundValuePageMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   afterAll(async () => {
@@ -135,50 +139,69 @@ describe("StartTab", () => {
       symbol_table: { x: "node-x" },
       diagnostics: [],
     });
-    resolvePlaygroundValueMock
-      .mockResolvedValueOnce({
-        materialization: "computed",
-        compute_status: "completed",
-        node_id: "node-x",
-        path: "/",
-        descriptor: {
-          vox_type: "integer",
-          format_version: "voxpod/1",
-          summary: { value: 1 },
-          navigation: {
-            path: "/",
-            pageable: false,
-            can_descend: false,
-            default_page_size: 64,
-            max_page_size: 512,
+    let initialResolve = true;
+    resolvePlaygroundValueMock.mockImplementation(async (payload) => {
+      if (initialResolve) {
+        initialResolve = false;
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-x",
+          path: "/",
+          descriptor: {
+            vox_type: "integer",
+            format_version: "voxpod/1",
+            summary: { value: 1 },
+            navigation: {
+              path: "/",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
           },
-        },
-      })
-      .mockResolvedValueOnce({
+        };
+      }
+
+      if (payload?.interaction?.intent === "edit-refresh" && payload?.enqueue === false) {
+        return {
+          materialization: "missing",
+          compute_status: "missing",
+          node_id: "node-x",
+          path: "/",
+          request_enqueued: false,
+        };
+      }
+
+      if (payload?.interaction?.intent === "edit-refresh" && payload?.enqueue === true) {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-x",
+          path: "/",
+          descriptor: {
+            vox_type: "integer",
+            format_version: "voxpod/1",
+            summary: { value: 2 },
+            navigation: {
+              path: "/",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+
+      return {
         materialization: "missing",
         compute_status: "missing",
         node_id: "node-x",
         path: "/",
         request_enqueued: false,
-      })
-      .mockResolvedValueOnce({
-        materialization: "computed",
-        compute_status: "completed",
-        node_id: "node-x",
-        path: "/",
-        descriptor: {
-          vox_type: "integer",
-          format_version: "voxpod/1",
-          summary: { value: 2 },
-          navigation: {
-            path: "/",
-            pageable: false,
-            can_descend: false,
-            default_page_size: 64,
-            max_page_size: 512,
-          },
-        },
-      });
+      };
+    });
 
     const { container } = render(StartTab, { active: true, capabilities: {} });
     await waitFor(() => {
@@ -200,17 +223,120 @@ describe("StartTab", () => {
     editor.value = "x = 2";
     await fireEvent.input(editor);
 
-    vi.advanceTimersByTime(500);
+    await vi.advanceTimersByTimeAsync(1200);
 
     await waitFor(() => {
-      expect(container.textContent).toContain("2");
+      const editCalls = resolvePlaygroundValueMock.mock.calls
+        .map(([payload]) => payload)
+        .filter((payload) => payload?.interaction?.intent === "edit-refresh");
+      expect(editCalls.some((payload) => payload?.enqueue === false && payload?.uiAwaited === false)).toBe(true);
+      expect(editCalls.some((payload) => payload?.enqueue === true && payload?.uiAwaited === false)).toBe(true);
+    });
+  });
+
+  it("escalates an edit-time pending placeholder without progress into a real enqueue", async () => {
+    vi.useFakeTimers();
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { x: "node-x" },
+      diagnostics: [],
     });
 
-    const editCalls = resolvePlaygroundValueMock.mock.calls.map(([payload]) => payload).slice(0);
-    expect(editCalls.some((payload) => payload?.enqueue === false && payload?.uiAwaited === false)).toBe(true);
-    expect(editCalls.some((payload) => payload?.enqueue === true && payload?.uiAwaited === false)).toBe(true);
+    let initialResolve = true;
+    resolvePlaygroundValueMock.mockImplementation(async (payload) => {
+      if (initialResolve) {
+        initialResolve = false;
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-x",
+          path: "/",
+          descriptor: {
+            vox_type: "integer",
+            format_version: "voxpod/1",
+            summary: { value: 1 },
+            navigation: {
+              path: "/",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
 
-    vi.useRealTimers();
+      if (payload?.uiAwaited === false && payload?.enqueue === false) {
+        return {
+          materialization: "pending",
+          compute_status: "missing",
+          node_id: "node-x",
+          path: "/",
+          request_enqueued: false,
+        };
+      }
+
+      if (payload?.uiAwaited === false && payload?.enqueue === true) {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-x",
+          path: "/",
+          descriptor: {
+            vox_type: "integer",
+            format_version: "voxpod/1",
+            summary: { value: 2 },
+            navigation: {
+              path: "/",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+
+      throw new Error(`Unexpected resolve payload: ${JSON.stringify(payload)}`);
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(resolvePlaygroundValueMock).toHaveBeenCalledTimes(1);
+    });
+
+    resolvePlaygroundValueMock.mockClear();
+
+    const editor = container.querySelector(".vx-editor__textarea");
+    expect(editor).not.toBeNull();
+    editor.value = "x = 2";
+    await fireEvent.input(editor);
+
+    await vi.advanceTimersByTimeAsync(1200);
+
+    await waitFor(() => {
+      const editCalls = resolvePlaygroundValueMock.mock.calls
+        .map(([payload]) => payload)
+        .filter((payload) => payload?.interaction?.intent === "edit-refresh");
+      expect(editCalls.some((payload) => payload?.uiAwaited === false && payload?.enqueue === false)).toBe(true);
+      expect(editCalls.some((payload) => payload?.uiAwaited === false && payload?.enqueue === true)).toBe(true);
+    });
+
+    await vi.advanceTimersByTimeAsync(1200);
+
+    const editCalls = resolvePlaygroundValueMock.mock.calls
+      .map(([payload]) => payload)
+      .filter((payload) => payload?.interaction?.intent === "edit-refresh");
+    expect(editCalls.filter((payload) => payload?.uiAwaited === false && payload?.enqueue === false)).toHaveLength(1);
+    expect(editCalls.filter((payload) => payload?.uiAwaited === false && payload?.enqueue === true)).toHaveLength(1);
   });
 
   it("does not strand a selected scalar on a missing placeholder before enqueue fallback resolves", async () => {

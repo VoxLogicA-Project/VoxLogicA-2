@@ -12,7 +12,9 @@ import logging
 import os
 from pathlib import Path
 import queue
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -74,6 +76,13 @@ T = TypeVar("T")
 logger = logging.getLogger("voxlogica.main")
 _MAIN_LOG_ENV = "VOXLOGICA_MAIN_LOG_PATH"
 _DEFAULT_MAIN_LOG_RELATIVE = ("tests", "reports", "serve", "voxlogica-main.log")
+
+
+def _resolve_typer_option(value: Any) -> Any:
+    """Unwrap Typer option metadata when command functions are called directly."""
+    if isinstance(value, typer.models.OptionInfo):
+        return value.default
+    return value
 
 
 def _diagnostic_http_detail(exc: Exception, fallback: str) -> dict[str, Any]:
@@ -1371,6 +1380,181 @@ def _terminate_child_process(process: subprocess.Popen[str] | None, *, name: str
     process.wait(timeout=3.0)
 
 
+def _address_matches_port(address: str, port: int) -> bool:
+    """Return True when a host:port string points at the requested TCP port."""
+    text = str(address or "").strip()
+    if not text:
+        return False
+    try:
+        return int(text.rsplit(":", 1)[-1]) == int(port)
+    except (TypeError, ValueError):
+        return False
+
+
+def _query_listening_pids_lsof(port: int) -> list[int] | None:
+    """Query listening TCP pids for one port via lsof."""
+    if shutil.which("lsof") is None:
+        return None
+    completed = subprocess.run(
+        ["lsof", "-nP", f"-iTCP:{int(port)}", "-sTCP:LISTEN", "-t"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode not in {0, 1}:
+        logger.debug("lsof query failed for port %s: exit=%s", port, completed.returncode)
+        return []
+    return sorted({int(line.strip()) for line in completed.stdout.splitlines() if line.strip().isdigit()})
+
+
+def _query_listening_pids_ss(port: int) -> list[int] | None:
+    """Query listening TCP pids for one port via ss."""
+    if shutil.which("ss") is None:
+        return None
+    completed = subprocess.run(
+        ["ss", "-ltnpH"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        logger.debug("ss query failed for port %s: exit=%s", port, completed.returncode)
+        return []
+    pid_pattern = re.compile(r"pid=(\d+)")
+    pids: set[int] = set()
+    for line in completed.stdout.splitlines():
+        columns = line.split()
+        if len(columns) < 4:
+            continue
+        if not _address_matches_port(columns[3], port):
+            continue
+        pids.update(int(match) for match in pid_pattern.findall(line))
+    return sorted(pids)
+
+
+def _query_listening_pids_netstat_unix(port: int) -> list[int] | None:
+    """Query listening TCP pids for one port via Unix netstat."""
+    if shutil.which("netstat") is None:
+        return None
+    completed = subprocess.run(
+        ["netstat", "-ltnp"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        logger.debug("netstat query failed for port %s: exit=%s", port, completed.returncode)
+        return []
+    pids: set[int] = set()
+    for line in completed.stdout.splitlines():
+        columns = line.split()
+        if len(columns) < 7:
+            continue
+        if "LISTEN" not in columns:
+            continue
+        if not _address_matches_port(columns[3], port):
+            continue
+        pid_column = columns[-1].split("/", 1)[0].strip()
+        if pid_column.isdigit():
+            pids.add(int(pid_column))
+    return sorted(pids)
+
+
+def _query_listening_pids_netstat_windows(port: int) -> list[int] | None:
+    """Query listening TCP pids for one port via Windows netstat."""
+    if shutil.which("netstat") is None:
+        return None
+    completed = subprocess.run(
+        ["netstat", "-ano", "-p", "tcp"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        logger.debug("netstat query failed for port %s: exit=%s", port, completed.returncode)
+        return []
+    pids: set[int] = set()
+    for line in completed.stdout.splitlines():
+        columns = line.split()
+        if len(columns) < 5:
+            continue
+        if columns[0].upper() != "TCP":
+            continue
+        if columns[3].upper() != "LISTENING":
+            continue
+        if not _address_matches_port(columns[1], port):
+            continue
+        if columns[4].isdigit():
+            pids.add(int(columns[4]))
+    return sorted(pids)
+
+
+def _find_listening_pids_for_port(port: int) -> list[int]:
+    """Discover process ids currently listening on one TCP port."""
+    safe_port = int(port)
+    if sys.platform.startswith("win"):
+        listeners = _query_listening_pids_netstat_windows(safe_port)
+        if listeners is None:
+            raise RuntimeError("Unable to inspect port listeners on Windows because netstat is not available.")
+        return listeners
+    for query in (_query_listening_pids_lsof, _query_listening_pids_ss, _query_listening_pids_netstat_unix):
+        listeners = query(safe_port)
+        if listeners is not None:
+            return listeners
+    raise RuntimeError("Unable to inspect port listeners because lsof, ss, and netstat are unavailable.")
+
+
+def _pid_exists(pid: int) -> bool:
+    """Return True when a pid is still alive."""
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _terminate_pid(pid: int, *, timeout_s: float = 3.0) -> None:
+    """Terminate one pid, escalating if needed."""
+    safe_pid = int(pid)
+    if safe_pid <= 0 or safe_pid == os.getpid():
+        return
+    if sys.platform.startswith("win"):
+        subprocess.run(
+            ["taskkill", "/PID", str(safe_pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(safe_pid, signal.SIGTERM)
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while time.monotonic() < deadline:
+        if not _pid_exists(safe_pid):
+            return
+        time.sleep(0.05)
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(safe_pid, signal.SIGKILL)
+
+
+def _kill_listening_processes_on_port(port: int, *, label: str) -> list[int]:
+    """Kill any processes currently listening on one TCP port."""
+    safe_port = int(port)
+    listeners = [pid for pid in _find_listening_pids_for_port(safe_port) if pid != os.getpid()]
+    if not listeners:
+        logger.info("No existing %s listener found on port %s.", label, safe_port)
+        return []
+    logger.warning("Killing %d existing %s listener(s) on port %s: %s", len(listeners), label, safe_port, listeners)
+    for pid in listeners:
+        _terminate_pid(pid)
+    remaining = [pid for pid in _find_listening_pids_for_port(safe_port) if pid != os.getpid()]
+    if remaining:
+        raise RuntimeError(f"Unable to clear {label} listener(s) from port {safe_port}: remaining pids {remaining}")
+    return listeners
+
+
 def _stdin_command_bridge(
     *,
     on_command: Callable[[str], None],
@@ -2482,12 +2666,11 @@ async def playground_value_endpoint(request: PlaygroundValueRequest) -> dict[str
             path=view_path,
             status="missing",
         )
-        descriptor_vox_type = str(descriptor.get("vox_type", "unavailable"))
         return _attach_and_log(
             {
                 "available": False,
-                "materialization": "pending" if descriptor_vox_type in {"sequence", "mapping", "overlay"} else "missing",
-                "compute_status": "running" if descriptor_vox_type in {"sequence", "mapping", "overlay"} else "missing",
+                "materialization": "missing",
+                "compute_status": "missing",
                 "store_status": "missing",
                 "request_enqueued": False,
                 "descriptor": descriptor,
@@ -3330,8 +3513,17 @@ def dev(
     frontend_port: int = typer.Option(5173, help="Vite frontend port"),
     debug: bool = typer.Option(False, "--debug", help="Enable verbose backend logging"),
     backend_watch: bool = typer.Option(True, "--backend-watch/--no-backend-watch", help="Auto-restart backend on Python-side file changes"),
+    kill: bool = typer.Option(False, "--kill", help="Kill processes already listening on the backend/frontend ports before starting"),
 ) -> None:
     """Run backend API and Vite frontend together with one supervisor process."""
+
+    backend_host = str(_resolve_typer_option(backend_host))
+    backend_port = int(_resolve_typer_option(backend_port))
+    frontend_host = str(_resolve_typer_option(frontend_host))
+    frontend_port = int(_resolve_typer_option(frontend_port))
+    debug = bool(_resolve_typer_option(debug))
+    backend_watch = bool(_resolve_typer_option(backend_watch))
+    kill = bool(_resolve_typer_option(kill))
 
     setup_logging(debug=debug, verbose=False)
     repo_root = Path(__file__).resolve().parents[3]
@@ -3401,6 +3593,16 @@ def dev(
     exit_code = 0
     command_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
 
+    def _start_backend_process() -> subprocess.Popen[str]:
+        if kill:
+            _kill_listening_processes_on_port(backend_port, label="backend")
+        return subprocess.Popen(backend_cmd, cwd=repo_root, env=env)
+
+    def _start_frontend_process() -> subprocess.Popen[str]:
+        if kill:
+            _kill_listening_processes_on_port(frontend_port, label="frontend")
+        return subprocess.Popen(frontend_cmd, cwd=ui_dir, env=env)
+
     def _print_dev_help() -> None:
         logger.info("[dev stdin] commands: h/help/? | o/open | rb (restart backend) | rf (restart frontend) | r (restart both) | q/quit")
 
@@ -3409,8 +3611,8 @@ def dev(
 
     bridge = _stdin_command_bridge(on_command=_on_dev_command, label="dev")
     try:
-        backend_proc = subprocess.Popen(backend_cmd, cwd=repo_root, env=env)
-        frontend_proc = subprocess.Popen(frontend_cmd, cwd=ui_dir, env=env)
+        backend_proc = _start_backend_process()
+        frontend_proc = _start_frontend_process()
         if backend_watch:
             backend_watch_observer = _start_dev_backend_watcher(
                 repo_root,
@@ -3455,7 +3657,7 @@ def dev(
 
             if restart_frontend:
                 _terminate_child_process(frontend_proc, name="frontend")
-                frontend_proc = subprocess.Popen(frontend_cmd, cwd=ui_dir, env=env)
+                frontend_proc = _start_frontend_process()
                 if restart_backend:
                     logger.info("[dev stdin] frontend restarted")
                 else:
@@ -3463,7 +3665,7 @@ def dev(
 
             if restart_backend or auto_backend_changes:
                 _terminate_child_process(backend_proc, name="backend")
-                backend_proc = subprocess.Popen(backend_cmd, cwd=repo_root, env=env)
+                backend_proc = _start_backend_process()
                 if auto_backend_changes and not restart_backend:
                     changed = sorted(auto_backend_changes)
                     lead = changed[0]
@@ -3534,8 +3736,16 @@ def serve(
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
     build_ui: bool = typer.Option(True, "--build-ui/--no-build-ui", help="Build Svelte UI assets before starting server"),
     force_ui_build: bool = typer.Option(False, "--force-ui-build", help="Force a UI rebuild even when assets appear fresh"),
+    kill: bool = typer.Option(False, "--kill", help="Kill any process already listening on the requested port before starting"),
 ) -> None:
     """Start VoxLogicA API server."""
+
+    host = str(_resolve_typer_option(host))
+    port = int(_resolve_typer_option(port))
+    debug = bool(_resolve_typer_option(debug))
+    build_ui = bool(_resolve_typer_option(build_ui))
+    force_ui_build = bool(_resolve_typer_option(force_ui_build))
+    kill = bool(_resolve_typer_option(kill))
 
     setup_logging(debug=debug, verbose=False)
     try:
@@ -3543,6 +3753,12 @@ def serve(
     except RuntimeError as exc:
         logger.error("Unable to prepare UI assets: %s", exc)
         raise typer.Exit(code=1) from exc
+    if kill:
+        try:
+            _kill_listening_processes_on_port(port, label="api server")
+        except RuntimeError as exc:
+            logger.error("Unable to clear port %s before starting server: %s", port, exc)
+            raise typer.Exit(code=1) from exc
     app_url = f"http://{host}:{port}/"
     docs_url = f"http://{host}:{port}/docs"
     logger.info("Starting VoxLogicA API server version %s on %s:%s", get_version(), host, port)

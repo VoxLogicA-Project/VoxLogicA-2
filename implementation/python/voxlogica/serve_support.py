@@ -67,6 +67,9 @@ DEFAULT_PLAYGROUND_LOAD_DIR = REPO_ROOT / "tests"
 PLAYGROUND_LOAD_DIR_ENV = "VOXLOGICA_SERVE_LOAD_DIR"
 MAX_PLAYGROUND_PROGRAM_BYTES = 2 * 1024 * 1024
 MAX_RESULT_LIST_LIMIT = 300
+_INTERACTIVE_VALUE_LANE = "interactive-value"
+_BACKGROUND_PROCESS_LANE = "background-process"
+_FOREGROUND_PROCESS_LANE = "foreground-process"
 
 _PLAYGROUND_COMMENT = re.compile(
     r"<!--\s*vox:playground(?P<meta>.*?)-->\s*```imgql\s*(?P<code>.*?)\s*```",
@@ -2233,7 +2236,11 @@ def _execute_playground_request(
     tracemalloc.start()
     packet: dict[str, Any] = {"ok": False, "error": "Unknown worker failure"}
     try:
-        capture_runtime_goal_values = str(request_payload.get("_job_kind", "")).strip().lower() == "value-resolve"
+        capture_override = request_payload.get("_capture_runtime_goal_values")
+        if capture_override is None:
+            capture_runtime_goal_values = str(request_payload.get("_job_kind", "")).strip().lower() == "value-resolve"
+        else:
+            capture_runtime_goal_values = bool(capture_override)
         _append_log(
             {
                 "event": "playground.run.started",
@@ -2416,6 +2423,7 @@ class PlaygroundJob:
     job_id: str
     request_payload: dict[str, Any]
     created_at: float
+    execution_lane: str = _FOREGROUND_PROCESS_LANE
     status: str = "queued"
     started_at: float | None = None
     finished_at: float | None = None
@@ -2473,7 +2481,7 @@ class PlaygroundJob:
 
 
 class PlaygroundJobManager:
-    """Multiprocess playground execution manager with explicit kill semantics."""
+    """Playground execution manager with a reserved UI lane and preemptible passive work."""
 
     def __init__(
         self,
@@ -2521,16 +2529,57 @@ class PlaygroundJobManager:
         )
         return computed.as_payload()
 
-    def _priority_class_for_payload(self, payload: dict[str, Any]) -> str:
-        return str(self._priority_metadata_for_payload(payload).get("priority_class", "normal"))
+    def _is_value_job_payload(self, payload: dict[str, Any]) -> bool:
+        return str(payload.get("_job_kind", "")).strip().lower() == "value-resolve"
 
-    def _priority_bucket_for_payload(self, payload: dict[str, Any]) -> str:
-        return str(self._priority_metadata_for_payload(payload).get("bucket", "visible-page"))
+    def _payload_ui_awaited(self, payload: dict[str, Any]) -> bool:
+        if "_ui_awaited" not in payload and self._is_value_job_payload(payload):
+            return True
+        return bool(payload.get("_ui_awaited", False))
 
-    def _urgency_score_for_payload(self, payload: dict[str, Any]) -> int:
-        return int(self._priority_metadata_for_payload(payload).get("urgency_score", 0))
+    def _execution_lane_for_payload(
+        self,
+        payload: dict[str, Any],
+        priority_metadata: dict[str, Any] | None = None,
+    ) -> str:
+        metadata = priority_metadata or self._priority_metadata_for_payload(payload)
+        if self._is_value_job_payload(payload):
+            if self._payload_ui_awaited(payload) or str(metadata.get("priority_class", "normal")) == "interactive":
+                return _INTERACTIVE_VALUE_LANE
+            return _BACKGROUND_PROCESS_LANE
+        if str(metadata.get("priority_class", "normal")) == "background":
+            return _BACKGROUND_PROCESS_LANE
+        return _FOREGROUND_PROCESS_LANE
+
+    def _prepare_job_payload_locked(
+        self,
+        request_payload: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any], str]:
+        payload = dict(request_payload)
+        payload["execute"] = bool(payload.get("execute", True))
+        priority_metadata = self._priority_metadata_for_payload(payload)
+        payload["_priority_context"] = priority_metadata
+        execution_lane = self._execution_lane_for_payload(payload, priority_metadata)
+        if self._is_value_job_payload(payload):
+            payload["_capture_runtime_goal_values"] = execution_lane == _INTERACTIVE_VALUE_LANE
+        return payload, priority_metadata, execution_lane
+
+    def _is_interactive_value_job(self, job: PlaygroundJob) -> bool:
+        return str(job.execution_lane) == _INTERACTIVE_VALUE_LANE
+
+    def _job_blocks_background_lane(self, job: PlaygroundJob) -> bool:
+        if job.status not in {"queued", "running"}:
+            return False
+        if self._is_interactive_value_job(job):
+            return True
+        return str(job.execution_lane) == _FOREGROUND_PROCESS_LANE and str(job.priority_class) == "interactive"
 
     def _value_job_sort_key_locked(self, job: PlaygroundJob) -> tuple[int, int, int, float]:
+        metadata = self._priority_metadata_for_payload(job.request_payload)
+        sequence = int(metadata.get("sequence", 0) or 0)
+        return (*priority_sort_key(metadata), -sequence, float(job.created_at))
+
+    def _background_job_sort_key_locked(self, job: PlaygroundJob) -> tuple[int, int, int, float]:
         metadata = self._priority_metadata_for_payload(job.request_payload)
         sequence = int(metadata.get("sequence", 0) or 0)
         return (*priority_sort_key(metadata), -sequence, float(job.created_at))
@@ -2543,7 +2592,7 @@ class PlaygroundJobManager:
                 continue
             seen_job_ids.add(job_id)
             job = self._jobs.get(job_id)
-            if job is None or str(job.request_payload.get("_job_kind", "")) != "value-resolve":
+            if job is None or not self._is_interactive_value_job(job):
                 continue
             if job.status != "queued":
                 continue
@@ -2564,11 +2613,12 @@ class PlaygroundJobManager:
             if job.status != "queued":
                 continue
             queued_jobs.append(job)
+        queued_jobs.sort(key=self._background_job_sort_key_locked)
         return queued_jobs
 
     def _queue_metadata_for_job_locked(self, job: PlaygroundJob) -> dict[str, Any] | None:
         job_kind = str(job.request_payload.get("_job_kind", ""))
-        if job_kind == "value-resolve":
+        if job_kind == "value-resolve" and self._is_interactive_value_job(job):
             queued_jobs = self._queued_value_jobs_in_priority_order_locked()
             if self._value_active_job_id == job.job_id and job.status == "running":
                 return {
@@ -2624,7 +2674,7 @@ class PlaygroundJobManager:
         stale_ids: list[str] = []
         for job_id in list(self._value_queue):
             job = self._jobs.get(job_id)
-            if job is None or str(job.request_payload.get("_job_kind", "")) != "value-resolve":
+            if job is None or not self._is_interactive_value_job(job):
                 stale_ids.append(job_id)
                 continue
             if job.status != "queued":
@@ -2640,6 +2690,30 @@ class PlaygroundJobManager:
         if best_job is None:
             return None
         self._value_queue = deque([job_id for job_id in self._value_queue if job_id != best_job.job_id])
+        return best_job
+
+    def _pick_next_background_job_locked(self) -> PlaygroundJob | None:
+        best_job: PlaygroundJob | None = None
+        best_key: tuple[int, int, int, float] | None = None
+        stale_ids: list[str] = []
+        for job_id in list(self._background_queue):
+            job = self._jobs.get(job_id)
+            if job is None or not self._is_background_job(job):
+                stale_ids.append(job_id)
+                continue
+            if job.status != "queued":
+                stale_ids.append(job_id)
+                continue
+            current_key = self._background_job_sort_key_locked(job)
+            if best_key is None or current_key < best_key:
+                best_key = current_key
+                best_job = job
+        if stale_ids:
+            stale_set = set(stale_ids)
+            self._background_queue = deque([job_id for job_id in self._background_queue if job_id not in stale_set])
+        if best_job is None:
+            return None
+        self._background_queue = deque([job_id for job_id in self._background_queue if job_id != best_job.job_id])
         return best_job
 
     def _apply_result_packet_locked(self, job: PlaygroundJob, packet: dict[str, Any]) -> None:
@@ -2683,14 +2757,20 @@ class PlaygroundJobManager:
             next_metadata = current_metadata
         else:
             next_payload["_priority_context"] = next_metadata
+        if self._is_value_job_payload(next_payload):
+            next_payload["_capture_runtime_goal_values"] = self._is_interactive_value_job(job)
         job.request_payload = next_payload
         job.priority_class = str(next_metadata.get("priority_class", job.priority_class))
         job.priority_bucket = str(next_metadata.get("bucket", job.priority_bucket))
         job.urgency_score = int(next_metadata.get("urgency_score", job.urgency_score))
-        job.ui_awaited = bool(next_payload.get("_ui_awaited", job.ui_awaited))
-        if job.status == "queued" and job.job_id not in self._value_queue and str(job.request_payload.get("_job_kind", "")) == "value-resolve":
-            self._value_queue.append(job.job_id)
+        job.ui_awaited = self._payload_ui_awaited(next_payload)
+        if job.status == "queued":
+            if self._is_interactive_value_job(job) and job.job_id not in self._value_queue:
+                self._value_queue.append(job.job_id)
+            elif self._is_background_job(job) and job.job_id not in self._background_queue:
+                self._background_queue.append(job.job_id)
         self._value_condition.notify_all()
+        self._dispatch_background_locked()
 
     def _value_worker_loop(self) -> None:
         while True:
@@ -2734,13 +2814,11 @@ class PlaygroundJobManager:
                 self._dispatch_background_locked()
 
     def _is_background_job(self, job: PlaygroundJob) -> bool:
-        return str(job.priority_class) == "background"
+        return str(job.execution_lane) == _BACKGROUND_PROCESS_LANE
 
     def _has_active_interactive_locked(self) -> bool:
         for job in self._jobs.values():
-            if str(job.priority_class) != "interactive":
-                continue
-            if job.status in {"queued", "running"}:
+            if self._job_blocks_background_lane(job):
                 return True
         return False
 
@@ -2773,33 +2851,30 @@ class PlaygroundJobManager:
             self._background_active_job_id = None
         if self._has_active_interactive_locked():
             return
-        while self._background_queue:
-            next_job_id = self._background_queue.popleft()
-            job = self._jobs.get(next_job_id)
-            if job is None or not self._is_background_job(job):
-                continue
-            if job.status in {"completed", "failed", "killed"}:
-                continue
-            self._start_process_job_locked(job)
-            self._background_active_job_id = job.job_id
+        next_job = self._pick_next_background_job_locked()
+        if next_job is None:
             return
+        self._start_process_job_locked(next_job)
+        self._background_active_job_id = next_job.job_id
 
-    def _pause_background_job_locked(self, job: PlaygroundJob, reason: str) -> None:
-        if not self._is_background_job(job):
-            return
+    def _stop_process_job_locked(self, job: PlaygroundJob) -> None:
         process = job.process
         if process is not None and process.is_alive():
-            process.terminate()
-            process.join(timeout=2.0)
-            if process.is_alive():
+            with contextlib.suppress(Exception):
                 process.kill()
-                process.join(timeout=1.0)
+            with contextlib.suppress(Exception):
+                process.join(timeout=0.0)
         if job.recv_conn is not None:
             with contextlib.suppress(Exception):
                 job.recv_conn.close()
         job.process = None
         job.recv_conn = None
         job.future = None
+
+    def _pause_background_job_locked(self, job: PlaygroundJob, reason: str) -> None:
+        if not self._is_background_job(job):
+            return
+        self._stop_process_job_locked(job)
         job.status = "queued"
         job.started_at = None
         job.finished_at = None
@@ -2817,6 +2892,16 @@ class PlaygroundJobManager:
             active = self._jobs.get(self._background_active_job_id)
             if active is not None and active.status == "running":
                 self._pause_background_job_locked(active, reason="Preempted by interactive value resolve")
+
+    def _remove_job_from_queues_locked(self, job: PlaygroundJob) -> None:
+        if job.job_id in self._value_queue:
+            self._value_queue = deque([job_id for job_id in self._value_queue if job_id != job.job_id])
+        if job.job_id in self._background_queue:
+            self._background_queue = deque([job_id for job_id in self._background_queue if job_id != job.job_id])
+        if self._value_active_job_id == job.job_id:
+            self._value_active_job_id = None
+        if self._background_active_job_id == job.job_id:
+            self._background_active_job_id = None
 
     def _poll_locked(self, job: PlaygroundJob) -> None:
         if job.status in {"completed", "failed", "killed"}:
@@ -2852,7 +2937,7 @@ class PlaygroundJobManager:
             if self._background_active_job_id == job.job_id and job.status in {"completed", "failed", "killed"}:
                 self._background_active_job_id = None
 
-        if str(job.request_payload.get("_job_kind", "")) == "value-resolve":
+        if self._is_interactive_value_job(job):
             if self._value_active_job_id == job.job_id:
                 job.status = "running"
                 if job.started_at is None:
@@ -2904,11 +2989,8 @@ class PlaygroundJobManager:
         self._dispatch_background_locked()
 
     def _kill_locked(self, job: PlaygroundJob, reason: str) -> None:
-        if str(job.request_payload.get("_job_kind", "")) == "value-resolve":
-            if job.job_id in self._value_queue:
-                self._value_queue = deque([job_id for job_id in self._value_queue if job_id != job.job_id])
-            if self._value_active_job_id == job.job_id:
-                self._value_active_job_id = None
+        self._remove_job_from_queues_locked(job)
+        if self._is_interactive_value_job(job):
             job.future = None
             job.status = "killed"
             job.error = reason
@@ -2927,47 +3009,35 @@ class PlaygroundJobManager:
                 job.finished_at = time.time()
             return
 
-        process = job.process
-        if process is not None and process.is_alive():
-            process.terminate()
-            process.join(timeout=2.0)
-            if process.is_alive():
-                process.kill()
-                process.join(timeout=1.0)
-        if job.recv_conn is not None:
-            job.recv_conn.close()
-            job.recv_conn = None
-        job.process = None
+        self._stop_process_job_locked(job)
         job.status = "killed"
         job.error = reason
         if job.finished_at is None:
             job.finished_at = time.time()
 
     def _create_job_locked(self, request_payload: dict[str, Any]) -> PlaygroundJob:
-        payload = dict(request_payload)
-        payload["execute"] = bool(payload.get("execute", True))
+        payload, priority_metadata, execution_lane = self._prepare_job_payload_locked(request_payload)
         job_id = uuid.uuid4().hex
         created_at = time.time()
         PLAYGROUND_JOB_LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = PLAYGROUND_JOB_LOG_DIR / f"{job_id}.log"
-        priority_metadata = self._priority_metadata_for_payload(payload)
-        payload["_priority_context"] = priority_metadata
         priority_class = str(priority_metadata.get("priority_class", "normal"))
         priority_bucket = str(priority_metadata.get("bucket", "visible-page"))
         urgency_score = int(priority_metadata.get("urgency_score", 0))
-        if str(payload.get("_job_kind", "")).strip().lower() == "value-resolve":
+        if execution_lane == _INTERACTIVE_VALUE_LANE:
             live_runtime_inspector = LiveRuntimeValueInspector()
             job = PlaygroundJob(
                 job_id=job_id,
                 request_payload=payload,
                 created_at=created_at,
+                execution_lane=execution_lane,
                 status="queued",
                 started_at=None,
                 log_path=log_path,
                 priority_class=priority_class,
                 priority_bucket=priority_bucket,
                 urgency_score=urgency_score,
-                ui_awaited=bool(payload.get("_ui_awaited", False)),
+                ui_awaited=self._payload_ui_awaited(payload),
                 live_runtime_inspector=live_runtime_inspector,
             )
             self._jobs[job_id] = job
@@ -2978,15 +3048,16 @@ class PlaygroundJobManager:
             job_id=job_id,
             request_payload=payload,
             created_at=created_at,
+            execution_lane=execution_lane,
             status="queued",
             log_path=log_path,
             priority_class=priority_class,
             priority_bucket=priority_bucket,
             urgency_score=urgency_score,
-            ui_awaited=bool(payload.get("_ui_awaited", False)),
+            ui_awaited=self._payload_ui_awaited(payload),
         )
         self._jobs[job_id] = job
-        if priority_class == "background":
+        if execution_lane == _BACKGROUND_PROCESS_LANE:
             self._background_queue.append(job_id)
             self._dispatch_background_locked()
             return job
@@ -3029,20 +3100,26 @@ class PlaygroundJobManager:
     ) -> dict[str, Any]:
         with self._lock:
             self._cleanup_locked()
-            self._preempt_background_for_interactive_locked()
+            request_metadata = self._priority_metadata_for_payload(request_payload)
+            request_execution_lane = self._execution_lane_for_payload(request_payload, request_metadata)
+            if request_execution_lane == _INTERACTIVE_VALUE_LANE:
+                self._preempt_background_for_interactive_locked()
             existing = self._find_latest_value_job_locked(
                 program_hash=program_hash,
                 node_id=node_id,
                 execution_strategy=execution_strategy,
             )
             if existing is not None and existing.status in {"queued", "running"}:
-                self._refresh_job_priority_locked(existing, request_payload)
-                return existing.as_public(
-                    include_result=True,
-                    include_log_tail=True,
-                    tail_lines=120,
-                    queue=self._queue_metadata_for_job_locked(existing),
-                )
+                if request_execution_lane == _INTERACTIVE_VALUE_LANE and not self._is_interactive_value_job(existing):
+                    self._kill_locked(existing, reason="Superseded by interactive value resolve")
+                else:
+                    self._refresh_job_priority_locked(existing, request_payload)
+                    return existing.as_public(
+                        include_result=True,
+                        include_log_tail=True,
+                        tail_lines=120,
+                        queue=self._queue_metadata_for_job_locked(existing),
+                    )
             job = self._create_job_locked(request_payload)
             return job.as_public(
                 include_result=False,

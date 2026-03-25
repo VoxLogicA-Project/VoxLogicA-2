@@ -70,11 +70,12 @@ Start the VoxLogicA API server (FastAPI).
 python -m voxlogica.main serve [OPTIONS]
 ```
 
-| Option    | Type | Description                 |
-| --------- | ---- | --------------------------- |
-| `--host`  | str  | Host to bind the API server |
-| `--port`  | int  | Port to bind the API server |
-| `--debug` | flag | Enable debug mode           |
+| Option    | Type | Description                                                           |
+| --------- | ---- | --------------------------------------------------------------------- |
+| `--host`  | str  | Host to bind the API server                                           |
+| `--port`  | int  | Port to bind the API server                                           |
+| `--debug` | flag | Enable debug mode                                                     |
+| `--kill`  | flag | Kill any process already listening on the requested port before start |
 
 **Example:**
 
@@ -86,6 +87,38 @@ Or equivalently:
 
 ```sh
 python -m voxlogica.main serve --host 0.0.0.0 --port 8080 --debug
+```
+
+#### `dev`
+
+Run the backend API and Vite frontend together under one supervisor.
+
+**Usage:**
+
+```sh
+python -m voxlogica.main dev [OPTIONS]
+```
+
+| Option             | Type | Description                                                            |
+| ------------------ | ---- | ---------------------------------------------------------------------- |
+| `--backend-host`   | str  | Host to bind the backend server                                        |
+| `--backend-port`   | int  | Port to bind the backend server                                        |
+| `--frontend-host`  | str  | Host to bind the Vite frontend                                         |
+| `--frontend-port`  | int  | Port to bind the Vite frontend                                         |
+| `--debug`          | flag | Enable verbose backend logging                                         |
+| `--backend-watch`  | flag | Auto-restart backend on Python-side file changes                       |
+| `--kill`           | flag | Kill processes already listening on the backend and frontend ports     |
+
+**Example:**
+
+```sh
+./voxlogica dev --kill
+```
+
+Or equivalently:
+
+```sh
+python -m voxlogica.main dev --kill
 ```
 
 #### `repl`

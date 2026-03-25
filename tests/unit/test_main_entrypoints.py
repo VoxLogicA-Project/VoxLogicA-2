@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
@@ -114,6 +115,48 @@ def test_list_primitives_and_repl_and_serve(capsys: pytest.CaptureFixture[str], 
 
 
 @pytest.mark.unit
+def test_find_listening_pids_for_port_parses_lsof_output(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: "/usr/bin/lsof" if name == "lsof" else None)
+
+    def _fake_run(cmd, capture_output=False, text=False, check=False, **kwargs):  # noqa: ANN001
+        del capture_output, text, check, kwargs
+        assert cmd[:2] == ["lsof", "-nP"]
+        return subprocess.CompletedProcess(cmd, 0, "321\n654\n321\n", "")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", _fake_run)
+
+    assert main_mod._find_listening_pids_for_port(8000) == [321, 654]
+
+
+@pytest.mark.unit
+def test_serve_kill_option_clears_requested_port(monkeypatch: pytest.MonkeyPatch):
+    called: dict[str, object] = {"kills": []}
+    monkeypatch.setattr(main_mod, "_build_ui_assets_if_needed", lambda **_kwargs: None)
+    monkeypatch.setattr(main_mod, "_stdin_command_bridge", lambda **_kwargs: (SimpleNamespace(set=lambda: None), None))
+    monkeypatch.setattr(
+        main_mod,
+        "_kill_listening_processes_on_port",
+        lambda port, *, label: called["kills"].append((port, label)),
+    )
+
+    class _FakeServer:
+        def __init__(self, config):  # noqa: ANN001
+            called["config"] = config
+            self.should_exit = False
+
+        def run(self) -> None:
+            called["ran"] = True
+
+    monkeypatch.setattr(main_mod.uvicorn, "Server", _FakeServer)
+
+    main_mod.serve(host="127.0.0.1", port=9001, debug=False, kill=True)
+
+    assert called["kills"] == [(9001, "api server")]
+    assert called["ran"] is True
+
+
+@pytest.mark.unit
 def test_dev_supervisor_prefixes_repo_pythonpath(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(main_mod.shutil, "which", lambda _name: "/usr/bin/npm")
     monkeypatch.setattr(main_mod, "setup_logging", lambda debug, verbose: None)
@@ -144,6 +187,35 @@ def test_dev_supervisor_prefixes_repo_pythonpath(monkeypatch: pytest.MonkeyPatch
     pythonpath = backend_env.get("PYTHONPATH", "")
     assert pythonpath
     assert pythonpath.split(os.pathsep)[0] == expected_prefix
+
+
+@pytest.mark.unit
+def test_dev_kill_option_clears_backend_and_frontend_ports(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main_mod.shutil, "which", lambda _name: "/usr/bin/npm")
+    monkeypatch.setattr(main_mod, "setup_logging", lambda debug, verbose: None)
+    monkeypatch.setattr(main_mod, "_terminate_child_process", lambda proc, name: None)
+    monkeypatch.setattr(main_mod, "_start_dev_backend_watcher", lambda repo_root, on_change: None)
+    monkeypatch.setattr(main_mod, "_stop_dev_backend_watcher", lambda observer: None)
+    monkeypatch.setattr(main_mod.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(main_mod.subprocess, "run", lambda *args, **kwargs: None)
+
+    kills: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        main_mod,
+        "_kill_listening_processes_on_port",
+        lambda port, *, label: kills.append((port, label)),
+    )
+
+    class _FakeProc:
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(main_mod.subprocess, "Popen", lambda *args, **kwargs: _FakeProc())
+
+    with pytest.raises(typer.Exit):
+        main_mod.dev(kill=True, backend_watch=False)
+
+    assert kills == [(8000, "backend"), (5173, "frontend")]
 
 
 @pytest.mark.unit
@@ -1138,6 +1210,67 @@ def test_playground_value_returns_pending_quickly_when_store_lock_is_busy(
     finally:
         release_lock.set()
         holder.join(timeout=1.0)
+        fake_storage.close()
+
+
+@pytest.mark.unit
+def test_playground_value_no_enqueue_miss_reports_missing_without_fake_running(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeRegistry:
+        @staticmethod
+        def get_feature(name: str):
+            if name == "version":
+                return SimpleNamespace(handler=lambda: OperationResult.ok({"version": "2.0.0"}))
+            if name == "run":
+                return SimpleNamespace(handler=lambda **kwargs: OperationResult.ok({"ok": True, "args": kwargs}))
+            return None
+
+    monkeypatch.setattr(main_mod, "FeatureRegistry", FakeRegistry)
+    fake_storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    monkeypatch.setattr(main_mod, "get_storage", lambda: fake_storage)
+    monkeypatch.setattr(main_mod, "start_file_watcher", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_file_watcher", lambda: None)
+    ensure_calls: list[dict[str, object]] = []
+
+    def _unexpected_enqueue(payload: dict[str, object], **kwargs: object) -> dict[str, object]:
+        ensure_calls.append(dict(payload))
+        return {"job_id": "unexpected", "status": "running", "log_tail": ""}
+
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            get_value_job=lambda **kwargs: None,
+            ensure_value_job=_unexpected_enqueue,
+        ),
+    )
+
+    try:
+        with TestClient(main_mod.api_app) as client:
+            symbols = client.post("/api/v1/playground/symbols", json={"program": "xs = range(0,2)"})
+            assert symbols.status_code == 200
+            node_id = symbols.json()["symbol_table"]["xs"]
+
+            value_resp = client.post(
+                "/api/v1/playground/value",
+                json={
+                    "program": "xs = range(0,2)",
+                    "variable": "xs",
+                    "enqueue": False,
+                },
+            )
+            assert value_resp.status_code == 200
+            payload = value_resp.json()
+            assert payload["materialization"] == "missing"
+            assert payload["compute_status"] == "missing"
+            assert payload["store_status"] == "missing"
+            assert payload["request_enqueued"] is False
+            assert payload["descriptor"]["vox_type"] == "sequence"
+            assert payload["resolved_store_node_id"] == node_id
+            assert ensure_calls == []
+    finally:
         fake_storage.close()
 
 

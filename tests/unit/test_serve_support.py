@@ -791,6 +791,245 @@ def test_playground_manager_reports_effective_value_queue_positions(
 
 
 @pytest.mark.unit
+def test_playground_manager_routes_passive_value_job_to_background_lane(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import voxlogica.serve_support as serve_support
+
+    monkeypatch.setattr(serve_support, "PLAYGROUND_JOB_LOG_DIR", tmp_path)
+
+    manager = PlaygroundJobManager()
+
+    def _fake_start_process(job: PlaygroundJob) -> None:
+        job.status = "running"
+        job.started_at = time.time()
+
+    monkeypatch.setattr(manager, "_start_process_job_locked", _fake_start_process)
+
+    created = manager.ensure_value_job(
+        {
+            "program": "x = 1",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-passive",
+            "_program_hash": "prog-passive",
+            "_ui_awaited": False,
+            "_priority_context": {
+                "bucket": "visible-page",
+                "urgency_score": 36,
+                "priority_class": "normal",
+                "sequence": 1,
+            },
+        },
+        program_hash="prog-passive",
+        node_id="node-passive",
+        execution_strategy="dask",
+    )
+
+    created_job = manager._jobs[str(created["job_id"])]
+    assert created_job.execution_lane == "background-process"
+    assert created_job.request_payload["_capture_runtime_goal_values"] is False
+    assert created_job.live_runtime_inspector is None
+    assert created["queue"] == {
+        "lane": "background",
+        "worker": "process",
+        "active": True,
+        "position": 0,
+        "queued_ahead": 0,
+        "queued_total": 0,
+    }
+    assert (
+        manager.inspect_value_job_runtime(
+            program_hash="prog-passive",
+            node_id="node-passive",
+            execution_strategy="dask",
+            path="/",
+        )
+        is None
+    )
+
+
+@pytest.mark.unit
+def test_playground_manager_preempts_running_passive_value_job_for_interactive_request(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import voxlogica.serve_support as serve_support
+
+    monkeypatch.setattr(serve_support, "PLAYGROUND_JOB_LOG_DIR", tmp_path)
+
+    manager = PlaygroundJobManager()
+
+    def _fake_start_process(job: PlaygroundJob) -> None:
+        job.status = "running"
+        job.started_at = time.time()
+
+    monkeypatch.setattr(manager, "_start_process_job_locked", _fake_start_process)
+
+    interactive_started = threading.Event()
+    release_interactive = threading.Event()
+
+    def _fake_execute(
+        request_payload: dict[str, object],
+        log_path_str: str,
+        live_inspector: LiveRuntimeValueInspector | None = None,
+    ) -> dict[str, object]:
+        del request_payload, log_path_str, live_inspector
+        interactive_started.set()
+        release_interactive.wait(timeout=2.0)
+        finished = time.time()
+        return {
+            "ok": True,
+            "result": {"execution": {"success": True}},
+            "metrics": {"wall_time_s": 0.01, "cpu_time_s": 0.01},
+            "started_at": finished - 0.01,
+            "finished_at": finished,
+        }
+
+    monkeypatch.setattr(serve_support, "_execute_playground_request", _fake_execute)
+
+    passive = manager.ensure_value_job(
+        {
+            "program": "a = 1",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-passive",
+            "_program_hash": "prog-preempt",
+            "_ui_awaited": False,
+            "_priority_context": {
+                "bucket": "visible-page",
+                "urgency_score": 32,
+                "priority_class": "normal",
+                "sequence": 1,
+            },
+        },
+        program_hash="prog-preempt",
+        node_id="node-passive",
+        execution_strategy="dask",
+    )
+
+    interactive = manager.ensure_value_job(
+        {
+            "program": "b = 2",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-interactive",
+            "_program_hash": "prog-preempt",
+            "_ui_awaited": True,
+            "_priority_context": {
+                "bucket": "click",
+                "urgency_score": 98,
+                "priority_class": "interactive",
+                "sequence": 2,
+            },
+        },
+        program_hash="prog-preempt",
+        node_id="node-interactive",
+        execution_strategy="dask",
+    )
+
+    assert interactive_started.wait(timeout=1.0) is True
+
+    passive_job = manager._jobs[str(passive["job_id"])]
+    interactive_job = manager._jobs[str(interactive["job_id"])]
+    assert passive_job.status == "queued"
+    assert passive_job.metrics["preemptions"] == 1
+    assert passive_job.metrics["last_preempt_reason"] == "Preempted by interactive value resolve"
+    assert interactive_job.process is None
+    assert interactive_job.live_runtime_inspector is not None
+    release_interactive.set()
+
+
+@pytest.mark.unit
+def test_playground_manager_replaces_queued_passive_value_job_with_interactive_job_for_same_node(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import voxlogica.serve_support as serve_support
+
+    monkeypatch.setattr(serve_support, "PLAYGROUND_JOB_LOG_DIR", tmp_path)
+
+    manager = PlaygroundJobManager()
+    monkeypatch.setattr(manager, "_dispatch_background_locked", lambda: None)
+
+    interactive_started = threading.Event()
+
+    def _fake_execute(
+        request_payload: dict[str, object],
+        log_path_str: str,
+        live_inspector: LiveRuntimeValueInspector | None = None,
+    ) -> dict[str, object]:
+        del request_payload, log_path_str, live_inspector
+        interactive_started.set()
+        finished = time.time()
+        return {
+            "ok": True,
+            "result": {"execution": {"success": True}},
+            "metrics": {"wall_time_s": 0.01, "cpu_time_s": 0.01},
+            "started_at": finished - 0.01,
+            "finished_at": finished,
+        }
+
+    monkeypatch.setattr(serve_support, "_execute_playground_request", _fake_execute)
+
+    passive = manager.ensure_value_job(
+        {
+            "program": "x = 1",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-1",
+            "_program_hash": "prog-same-node",
+            "_ui_awaited": False,
+            "_priority_context": {
+                "bucket": "visible-page",
+                "urgency_score": 24,
+                "priority_class": "normal",
+                "sequence": 1,
+            },
+        },
+        program_hash="prog-same-node",
+        node_id="node-1",
+        execution_strategy="dask",
+    )
+
+    interactive = manager.ensure_value_job(
+        {
+            "program": "x = 1",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-1",
+            "_program_hash": "prog-same-node",
+            "_ui_awaited": True,
+            "_priority_context": {
+                "bucket": "click",
+                "urgency_score": 99,
+                "priority_class": "interactive",
+                "sequence": 2,
+            },
+        },
+        program_hash="prog-same-node",
+        node_id="node-1",
+        execution_strategy="dask",
+    )
+
+    assert interactive_started.wait(timeout=1.0) is True
+
+    passive_job = manager._jobs[str(passive["job_id"])]
+    interactive_job = manager._jobs[str(interactive["job_id"])]
+    assert passive_job.status == "killed"
+    assert passive_job.error == "Superseded by interactive value resolve"
+    assert interactive["job_id"] != passive["job_id"]
+    assert interactive_job.process is None
+    assert interactive_job.live_runtime_inspector is not None
+
+
+@pytest.mark.unit
 def test_playground_manager_inspects_live_runtime_for_running_value_job(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

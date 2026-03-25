@@ -160,6 +160,20 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     return "idle";
   };
 
+  const isActiveComputeStatus = (status) =>
+    ["queued", "running", "persisting"].includes(String(status || "").trim().toLowerCase());
+
+  const isPendingLikePayload = (payload = null) => {
+    const materialization = String(payload?.materialization || "").trim().toLowerCase();
+    const computeStatus = String(payload?.compute_status || "").trim().toLowerCase();
+    return ["pending", "missing"].includes(materialization) || isActiveComputeStatus(computeStatus);
+  };
+
+  const hasLiveProgressSignal = (payload = null) =>
+    isActiveComputeStatus(payload?.compute_status) ||
+    Boolean(payload?.request_enqueued) ||
+    Boolean(payload?.job_id);
+
   const traceResolve = (event, details = {}) => {
     try {
       console.info("[start-tab.resolve]", {
@@ -292,9 +306,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         enqueue: false,
       });
       if (token !== probeToken) return;
-      const materialization = normalizeStatus(payload?.materialization || "");
-      const computeStatus = normalizeStatus(payload?.compute_status || "");
-      if (materialization === "computed") {
+      const materialization = String(payload?.materialization || "").trim().toLowerCase();
+      const computeStatus = String(payload?.compute_status || "").trim().toLowerCase();
+      if (materialization === "computed" || materialization === "cached") {
         setSymbolStatus(symbolName, "computed");
         pushResolutionActivity({
           variableName: symbolName,
@@ -310,7 +324,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         setSymbolStatus(symbolName, "failed");
         return;
       }
-      if (["queued", "running", "persisting"].includes(computeStatus)) {
+      if (isActiveComputeStatus(computeStatus)) {
         setSymbolStatus(symbolName, computeStatus);
         return;
       }
@@ -614,12 +628,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       const computeStatus = String(payload?.compute_status || "");
       const descriptor = payload?.descriptor && typeof payload.descriptor === "object" ? payload.descriptor : null;
       const isMaterialized = (materialization === "cached" || materialization === "computed") && !!descriptor;
-      const isPending =
-        materialization === "pending" ||
-        materialization === "missing" ||
-        computeStatus === "queued" ||
-        computeStatus === "running" ||
-        computeStatus === "persisting";
+      const isPending = isPendingLikePayload(payload);
 
       if (isMaterialized) {
         traceResolve("branch-materialized", {
@@ -650,14 +659,30 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       }
 
       if (isPending) {
+        const hasProgressSignal = hasLiveProgressSignal(payload);
         traceResolve("branch-pending", {
           traceId,
           variable: primaryVariable,
           path: currentPath || "/",
           materialization,
           computeStatus,
+          hasProgressSignal,
           pollActive: Boolean(pendingPoll),
         });
+        if (!hasProgressSignal) {
+          stopPoll();
+          statusValue = "idle";
+          statusText = `${primaryVariable} is not ready yet. Click Run or click the tag again to refresh.`;
+          captionVariable = primaryVariable;
+          captionType = "value";
+          errorText = "";
+          setSymbolStatus(primaryVariable, "idle");
+          viewerContract = technicalViewerContractFor({
+            state: "loading",
+            message: `Value not ready for ${primaryVariable}${currentPath ? ` @ ${currentPath}` : ""}.`,
+          });
+          return;
+        }
         applyPending(payload, primaryVariable);
         if (!pendingPoll) {
           traceResolve("poll-start", {
