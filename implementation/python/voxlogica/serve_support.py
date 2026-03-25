@@ -2440,6 +2440,7 @@ class PlaygroundJob:
         *,
         include_log_tail: bool = False,
         tail_lines: int = 120,
+        queue: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "job_id": self.job_id,
@@ -2462,6 +2463,8 @@ class PlaygroundJob:
             "error": self.error,
             "log_path": str(self.log_path) if self.log_path is not None else None,
         }
+        if isinstance(queue, dict) and queue:
+            payload["queue"] = queue
         if include_result:
             payload["result"] = self.result
         if include_log_tail:
@@ -2531,6 +2534,89 @@ class PlaygroundJobManager:
         metadata = self._priority_metadata_for_payload(job.request_payload)
         sequence = int(metadata.get("sequence", 0) or 0)
         return (*priority_sort_key(metadata), -sequence, float(job.created_at))
+
+    def _queued_value_jobs_in_priority_order_locked(self) -> list[PlaygroundJob]:
+        queued_jobs: list[PlaygroundJob] = []
+        seen_job_ids: set[str] = set()
+        for job_id in list(self._value_queue):
+            if job_id in seen_job_ids:
+                continue
+            seen_job_ids.add(job_id)
+            job = self._jobs.get(job_id)
+            if job is None or str(job.request_payload.get("_job_kind", "")) != "value-resolve":
+                continue
+            if job.status != "queued":
+                continue
+            queued_jobs.append(job)
+        queued_jobs.sort(key=self._value_job_sort_key_locked)
+        return queued_jobs
+
+    def _queued_background_jobs_locked(self) -> list[PlaygroundJob]:
+        queued_jobs: list[PlaygroundJob] = []
+        seen_job_ids: set[str] = set()
+        for job_id in list(self._background_queue):
+            if job_id in seen_job_ids:
+                continue
+            seen_job_ids.add(job_id)
+            job = self._jobs.get(job_id)
+            if job is None or not self._is_background_job(job):
+                continue
+            if job.status != "queued":
+                continue
+            queued_jobs.append(job)
+        return queued_jobs
+
+    def _queue_metadata_for_job_locked(self, job: PlaygroundJob) -> dict[str, Any] | None:
+        job_kind = str(job.request_payload.get("_job_kind", ""))
+        if job_kind == "value-resolve":
+            queued_jobs = self._queued_value_jobs_in_priority_order_locked()
+            if self._value_active_job_id == job.job_id and job.status == "running":
+                return {
+                    "lane": "value",
+                    "worker": "vox-playground-value",
+                    "active": True,
+                    "position": 0,
+                    "queued_ahead": 0,
+                    "queued_total": len(queued_jobs),
+                }
+            for index, queued_job in enumerate(queued_jobs, start=1):
+                if queued_job.job_id != job.job_id:
+                    continue
+                return {
+                    "lane": "value",
+                    "worker": "vox-playground-value",
+                    "active": False,
+                    "position": index,
+                    "queued_ahead": index - 1,
+                    "queued_total": len(queued_jobs),
+                }
+            return None
+
+        if not self._is_background_job(job):
+            return None
+
+        queued_jobs = self._queued_background_jobs_locked()
+        if self._background_active_job_id == job.job_id and job.status == "running":
+            return {
+                "lane": "background",
+                "worker": "process",
+                "active": True,
+                "position": 0,
+                "queued_ahead": 0,
+                "queued_total": len(queued_jobs),
+            }
+        for index, queued_job in enumerate(queued_jobs, start=1):
+            if queued_job.job_id != job.job_id:
+                continue
+            return {
+                "lane": "background",
+                "worker": "process",
+                "active": False,
+                "position": index,
+                "queued_ahead": index - 1,
+                "queued_total": len(queued_jobs),
+            }
+        return None
 
     def _pick_next_value_job_locked(self) -> PlaygroundJob | None:
         best_job: PlaygroundJob | None = None
@@ -2931,7 +3017,7 @@ class PlaygroundJobManager:
         with self._lock:
             self._cleanup_locked()
             job = self._create_job_locked(request_payload)
-            return job.as_public(include_result=False)
+            return job.as_public(include_result=False, queue=self._queue_metadata_for_job_locked(job))
 
     def ensure_value_job(
         self,
@@ -2951,9 +3037,19 @@ class PlaygroundJobManager:
             )
             if existing is not None and existing.status in {"queued", "running"}:
                 self._refresh_job_priority_locked(existing, request_payload)
-                return existing.as_public(include_result=True, include_log_tail=True, tail_lines=120)
+                return existing.as_public(
+                    include_result=True,
+                    include_log_tail=True,
+                    tail_lines=120,
+                    queue=self._queue_metadata_for_job_locked(existing),
+                )
             job = self._create_job_locked(request_payload)
-            return job.as_public(include_result=False, include_log_tail=True, tail_lines=80)
+            return job.as_public(
+                include_result=False,
+                include_log_tail=True,
+                tail_lines=80,
+                queue=self._queue_metadata_for_job_locked(job),
+            )
 
     def get_value_job(
         self,
@@ -2972,7 +3068,12 @@ class PlaygroundJobManager:
             if job is None:
                 return None
             self._poll_locked(job)
-            return job.as_public(include_result=True, include_log_tail=True, tail_lines=120)
+            return job.as_public(
+                include_result=True,
+                include_log_tail=True,
+                tail_lines=120,
+                queue=self._queue_metadata_for_job_locked(job),
+            )
 
     def inspect_value_job_runtime(
         self,
@@ -3080,7 +3181,14 @@ class PlaygroundJobManager:
                 reverse=True,
             )
             return {
-                "jobs": [job.as_public(include_result=False, include_log_tail=False) for job in jobs[:60]],
+                "jobs": [
+                    job.as_public(
+                        include_result=False,
+                        include_log_tail=False,
+                        queue=self._queue_metadata_for_job_locked(job),
+                    )
+                    for job in jobs[:60]
+                ],
                 "total_jobs": len(self._jobs),
                 "generated_at": _iso_utc(time.time()),
             }
@@ -3092,7 +3200,12 @@ class PlaygroundJobManager:
             if job is None:
                 return None
             self._poll_locked(job)
-            return job.as_public(include_result=True, include_log_tail=True, tail_lines=180)
+            return job.as_public(
+                include_result=True,
+                include_log_tail=True,
+                tail_lines=180,
+                queue=self._queue_metadata_for_job_locked(job),
+            )
 
     def kill_job(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -3107,7 +3220,12 @@ class PlaygroundJobManager:
             if job.status in {"running", "queued"}:
                 self._kill_locked(job, reason="Killed by user request")
             self._dispatch_background_locked()
-            return job.as_public(include_result=True, include_log_tail=True, tail_lines=180)
+            return job.as_public(
+                include_result=True,
+                include_log_tail=True,
+                tail_lines=180,
+                queue=self._queue_metadata_for_job_locked(job),
+            )
 
 
 @dataclass

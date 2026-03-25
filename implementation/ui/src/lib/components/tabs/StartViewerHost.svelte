@@ -53,3 +53,14 @@
 </script>
 
 <div bind:this={hostEl} class="start-viewer-host"></div>
+
+<style>
+  .start-viewer-host {
+    min-height: 0;
+    min-width: 0;
+    height: 100%;
+    width: 100%;
+    display: grid;
+    overflow: hidden;
+  }
+</style>

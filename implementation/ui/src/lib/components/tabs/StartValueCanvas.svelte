@@ -231,6 +231,27 @@
     return "";
   };
 
+  const emptyCollectionMessage = (value, currentPage) => {
+    const descriptor = recordDescriptor(value);
+    const nextSummary = descriptor?.summary && typeof descriptor.summary === "object" ? descriptor.summary : {};
+    const length = Number(nextSummary?.length);
+    if (Number.isFinite(length) && length <= 0) {
+      return "This range has no values.";
+    }
+    if (currentPage && Number(currentPage?.offset || 0) > 0) {
+      return "No values on this page.";
+    }
+    return "This collection has no values yet.";
+  };
+
+  const pageSummaryLabel = (currentPage, currentItems) => {
+    if (!currentPage) return "Loading";
+    const count = Array.isArray(currentItems) ? currentItems.length : 0;
+    if (!count) return "Empty";
+    const offset = Math.max(0, Number(currentPage?.offset || 0));
+    return `${offset + 1}-${offset + count}`;
+  };
+
   $: descriptor = recordDescriptor(record);
   $: voxType = recordType(record);
   $: summary = descriptor?.summary && typeof descriptor.summary === "object" ? descriptor.summary : {};
@@ -365,7 +386,7 @@
           <span></span>
         </div>
       {:else}
-        <div class="start-viewer-message">No values yet</div>
+        <div class="start-viewer-message">{emptyCollectionMessage(record, page)}</div>
       {/if}
     {:else}
       <div class={`start-collection-shell ${level > 0 ? "is-nested" : ""} ${stageExpanded ? "is-stage-maximized" : ""}`.trim()}>
@@ -381,11 +402,9 @@
           </button>
           <div class="start-collection-nav-meta">
             {#if page}
-              <span>
-                {Number(page?.offset || 0) + (items.length ? 1 : 0)}-{Number(page?.offset || 0) + items.length}
-              </span>
+              <span>{pageSummaryLabel(page, items)}</span>
             {:else}
-              <span>0-0</span>
+              <span>Loading</span>
             {/if}
           </div>
           <button
@@ -455,7 +474,7 @@
             {/each}
           </div>
         {:else}
-          <div class="start-viewer-message">No values yet</div>
+          <div class="start-viewer-message">{emptyCollectionMessage(record, page)}</div>
         {/if}
       </aside>
 
@@ -530,7 +549,7 @@
             </div>
           {/key}
         {:else}
-          <div class="start-viewer-message">No selected value</div>
+          <div class="start-viewer-message">{emptyCollectionMessage(record, page)}</div>
         {/if}
       </section>
       </div>

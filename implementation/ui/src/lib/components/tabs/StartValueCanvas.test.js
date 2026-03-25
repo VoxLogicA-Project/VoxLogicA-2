@@ -64,14 +64,50 @@ const medicalOverlayRecord = (baseUrl, overlayUrl) => ({
 
 describe("StartValueCanvas", () => {
   let niivueInstances = [];
+  let resizeObserverInstances = [];
 
   beforeEach(() => {
     niivueInstances = [];
+    resizeObserverInstances = [];
     window.niivue = undefined;
+    globalThis.ResizeObserver = class MockResizeObserver {
+      constructor(callback) {
+        this.callback = callback;
+        this.observe = vi.fn();
+        this.disconnect = vi.fn();
+        resizeObserverInstances.push(this);
+      }
+    };
   });
 
   afterEach(() => {
     delete window.niivue;
+    delete globalThis.ResizeObserver;
+  });
+
+  it("shows an explicit empty-range message for empty collections", async () => {
+    const { getAllByText, getByText, queryByText } = render(StartValueCanvas, {
+      record: {
+        node_id: "empty-seq",
+        path: "/",
+        descriptor: {
+          vox_type: "sequence",
+          summary: { length: 0 },
+          navigation: { ...baseNavigation, pageable: true },
+        },
+      },
+      label: "Flair paths",
+      sourceVariable: "flair_paths",
+      collectionRecord: () => true,
+      pageForRecord: () => ({ offset: 0, limit: 18, items: [], has_more: false, next_offset: null }),
+      collectionItemsForPage: (page) => page.items || [],
+      collectionSelectionFor: () => ({ selectedIndex: 0, selectedAbsoluteIndex: 0, selectedPath: "" }),
+    });
+
+    expect(getAllByText("This range has no values.")).toHaveLength(2);
+    expect(getByText("Empty")).toBeTruthy();
+    expect(queryByText("No selected value")).toBeNull();
+    expect(queryByText("0-0")).toBeNull();
   });
 
   it("morphs image overlays in place without replacing the DOM host", async () => {
@@ -127,7 +163,7 @@ describe("StartValueCanvas", () => {
       },
     };
 
-    const { container, rerender } = render(StartValueCanvas, {
+    const { container, rerender, unmount } = render(StartValueCanvas, {
       record: medicalVolumeRecord("/base-a.nii.gz"),
       label: "Medical",
     });
@@ -135,6 +171,8 @@ describe("StartValueCanvas", () => {
     await waitFor(() => {
       expect(niivueInstances).toHaveLength(1);
       expect(niivueInstances[0].loadVolumes).toHaveBeenCalledTimes(1);
+      expect(resizeObserverInstances).toHaveLength(1);
+      expect(resizeObserverInstances[0].observe).toHaveBeenCalled();
     });
 
     const shellBefore = container.querySelector(".start-medical-volume");
@@ -152,5 +190,8 @@ describe("StartValueCanvas", () => {
       expect(instance.loadVolumes).toHaveBeenCalledTimes(2);
       expect(instance.loadVolumes.mock.calls[1]?.[0]).toHaveLength(2);
     });
+
+    unmount();
+    expect(resizeObserverInstances[0].disconnect).toHaveBeenCalled();
   });
 });

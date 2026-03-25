@@ -667,6 +667,130 @@ def test_playground_manager_uses_urgency_to_pick_next_value_job(monkeypatch: pyt
 
 
 @pytest.mark.unit
+def test_playground_manager_reports_effective_value_queue_positions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import voxlogica.serve_support as serve_support
+
+    monkeypatch.setattr(serve_support, "PLAYGROUND_JOB_LOG_DIR", tmp_path)
+
+    release_first = threading.Event()
+    first_started = threading.Event()
+
+    def _fake_execute(
+        request_payload: dict[str, object],
+        log_path_str: str,
+        live_inspector: LiveRuntimeValueInspector | None = None,
+    ) -> dict[str, object]:
+        del log_path_str, live_inspector
+        if str(request_payload.get("_priority_node", "")) == "node-1":
+            first_started.set()
+            release_first.wait(timeout=2.0)
+        finished = time.time()
+        return {
+            "ok": True,
+            "result": {"execution": {"success": True}},
+            "metrics": {"wall_time_s": 0.01, "cpu_time_s": 0.01},
+            "started_at": finished - 0.01,
+            "finished_at": finished,
+        }
+
+    monkeypatch.setattr(serve_support, "_execute_playground_request", _fake_execute)
+
+    manager = PlaygroundJobManager()
+    first = manager.ensure_value_job(
+        {
+            "program": "a = 1",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-1",
+            "_program_hash": "prog-qpos",
+            "_priority_context": {
+                "bucket": "visible-page",
+                "urgency_score": 40,
+                "priority_class": "normal",
+                "sequence": 1,
+            },
+        },
+        program_hash="prog-qpos",
+        node_id="node-1",
+        execution_strategy="dask",
+    )
+    assert first_started.wait(timeout=1.0) is True
+
+    second = manager.ensure_value_job(
+        {
+            "program": "b = 2",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-2",
+            "_program_hash": "prog-qpos",
+            "_priority_context": {
+                "bucket": "visible-page",
+                "urgency_score": 30,
+                "priority_class": "normal",
+                "sequence": 1,
+            },
+        },
+        program_hash="prog-qpos",
+        node_id="node-2",
+        execution_strategy="dask",
+    )
+    third = manager.ensure_value_job(
+        {
+            "program": "c = 3",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-3",
+            "_program_hash": "prog-qpos",
+            "_priority_context": {
+                "bucket": "click",
+                "urgency_score": 99,
+                "priority_class": "interactive",
+                "sequence": 2,
+            },
+        },
+        program_hash="prog-qpos",
+        node_id="node-3",
+        execution_strategy="dask",
+    )
+
+    listed_jobs = manager.list_jobs()["jobs"]
+    by_id = {str(job["job_id"]): job for job in listed_jobs}
+
+    assert by_id[str(first["job_id"])]["queue"] == {
+        "lane": "value",
+        "worker": "vox-playground-value",
+        "active": True,
+        "position": 0,
+        "queued_ahead": 0,
+        "queued_total": 2,
+    }
+    assert by_id[str(third["job_id"])]["queue"] == {
+        "lane": "value",
+        "worker": "vox-playground-value",
+        "active": False,
+        "position": 1,
+        "queued_ahead": 0,
+        "queued_total": 2,
+    }
+    assert by_id[str(second["job_id"])]["queue"] == {
+        "lane": "value",
+        "worker": "vox-playground-value",
+        "active": False,
+        "position": 2,
+        "queued_ahead": 1,
+        "queued_total": 2,
+    }
+
+    release_first.set()
+
+
+@pytest.mark.unit
 def test_playground_manager_inspects_live_runtime_for_running_value_job(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

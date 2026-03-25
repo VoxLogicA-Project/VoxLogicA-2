@@ -128,7 +128,7 @@ describe("StartTab", () => {
     vi.useRealTimers();
   });
 
-  it("uses cache-first value refreshes while editing instead of enqueueing new work", async () => {
+  it("enqueues the selected value after an edit-time cache miss so the viewer refreshes", async () => {
     vi.useFakeTimers();
     getProgramSymbolsMock.mockResolvedValue({
       available: true,
@@ -154,11 +154,30 @@ describe("StartTab", () => {
           },
         },
       })
-      .mockResolvedValue({
-        materialization: "pending",
-        compute_status: "running",
+      .mockResolvedValueOnce({
+        materialization: "missing",
+        compute_status: "missing",
         node_id: "node-x",
         path: "/",
+        request_enqueued: false,
+      })
+      .mockResolvedValueOnce({
+        materialization: "computed",
+        compute_status: "completed",
+        node_id: "node-x",
+        path: "/",
+        descriptor: {
+          vox_type: "integer",
+          format_version: "voxpod/1",
+          summary: { value: 2 },
+          navigation: {
+            path: "/",
+            pageable: false,
+            can_descend: false,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
+        },
       });
 
     const { container } = render(StartTab, { active: true, capabilities: {} });
@@ -184,15 +203,64 @@ describe("StartTab", () => {
     vi.advanceTimersByTime(500);
 
     await waitFor(() => {
-      expect(resolvePlaygroundValueMock).toHaveBeenCalled();
+      expect(container.textContent).toContain("2");
     });
 
-    for (const [payload] of resolvePlaygroundValueMock.mock.calls) {
-      expect(payload?.enqueue).toBe(false);
-      expect(payload?.uiAwaited).toBe(false);
-    }
+    const editCalls = resolvePlaygroundValueMock.mock.calls.map(([payload]) => payload).slice(0);
+    expect(editCalls.some((payload) => payload?.enqueue === false && payload?.uiAwaited === false)).toBe(true);
+    expect(editCalls.some((payload) => payload?.enqueue === true && payload?.uiAwaited === false)).toBe(true);
 
     vi.useRealTimers();
+  });
+
+  it("does not strand a selected scalar on a missing placeholder before enqueue fallback resolves", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { x: "node-x" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock
+      .mockResolvedValueOnce({
+        materialization: "missing",
+        compute_status: "missing",
+        node_id: "node-x",
+        path: "/",
+        request_enqueued: false,
+      })
+      .mockResolvedValueOnce({
+        materialization: "computed",
+        compute_status: "completed",
+        node_id: "node-x",
+        path: "/",
+        descriptor: {
+          vox_type: "integer",
+          format_version: "voxpod/1",
+          summary: { value: 7 },
+          navigation: {
+            path: "/",
+            pageable: false,
+            can_descend: false,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
+        },
+      });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const tag = container.querySelector(".start-value-tag");
+    expect(tag).not.toBeNull();
+    await fireEvent.click(tag);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("7");
+    });
+
+    expect(container.textContent).not.toContain("status=missing");
+    expect(resolvePlaygroundValueMock.mock.calls.map(([payload]) => payload?.enqueue)).toEqual([false, true]);
   });
 
   it("restores persisted editor, layout, and viewer state from unified UI state", async () => {

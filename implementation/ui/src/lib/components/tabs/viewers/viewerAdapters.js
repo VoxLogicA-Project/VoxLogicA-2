@@ -291,6 +291,7 @@ const createMedicalAdapter = (host) => {
   let updateSeq = 0;
   let attached = false;
   let loadedFingerprint = "";
+  let resizeObserver = null;
 
   const setTimeoutSafe = (callback, ms) => {
     const scheduler = typeof globalThis.setTimeout === "function" ? globalThis.setTimeout.bind(globalThis) : null;
@@ -326,8 +327,18 @@ const createMedicalAdapter = (host) => {
     }
   };
 
+  const disconnectResizeObserver = () => {
+    if (!resizeObserver || typeof resizeObserver.disconnect !== "function") return;
+    try {
+      resizeObserver.disconnect();
+    } catch {
+      // Best-effort cleanup only.
+    }
+    resizeObserver = null;
+  };
+
   const syncCanvasSize = () => {
-    const rect = canvasEl.getBoundingClientRect();
+    const rect = shell.getBoundingClientRect();
     const width = Math.max(1, Math.round(rect.width || canvasEl.clientWidth || 720));
     const height = Math.max(1, Math.round(rect.height || canvasEl.clientHeight || 420));
     const dpr = Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
@@ -335,6 +346,23 @@ const createMedicalAdapter = (host) => {
     canvasEl.style.height = `${height}px`;
     canvasEl.width = Math.max(1, Math.round(width * dpr));
     canvasEl.height = Math.max(1, Math.round(height * dpr));
+    if (attached && typeof niivueInstance?.drawScene === "function") {
+      try {
+        niivueInstance.drawScene();
+      } catch {
+        // Best-effort redraw only.
+      }
+    }
+  };
+
+  const ensureResizeObserver = () => {
+    if (resizeObserver || typeof ResizeObserver !== "function") return;
+    resizeObserver = new ResizeObserver(() => {
+      if (destroyed) return;
+      syncCanvasSize();
+    });
+    resizeObserver.observe(host);
+    resizeObserver.observe(shell);
   };
 
   const waitForConnectedCanvas = async (token) => {
@@ -510,6 +538,7 @@ const createMedicalAdapter = (host) => {
 
       const connected = await waitForConnectedCanvas(token);
       if (!connected || destroyed || token !== updateSeq || typeof window === "undefined") return;
+      ensureResizeObserver();
 
       setLoadingState(loadingEl, errorEl, { loading: true, error: "" });
       try {
@@ -527,6 +556,7 @@ const createMedicalAdapter = (host) => {
     destroy() {
       destroyed = true;
       updateSeq += 1;
+      disconnectResizeObserver();
       destroyNiivue();
       clearHost(host);
     },

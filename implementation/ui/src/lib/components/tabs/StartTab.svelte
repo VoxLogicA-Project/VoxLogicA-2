@@ -1662,6 +1662,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
     const programSnapshot = String(programText || "");
     let anyPending = false;
+    const primaryName = String(primaryVariable || "");
 
     for (const variableName of names) {
       if (token !== editRefreshSeq) return;
@@ -1696,6 +1697,11 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           computeStatus === "queued" ||
           computeStatus === "running" ||
           computeStatus === "persisting";
+        const hasProgressSignal =
+          materialization === "pending" ||
+          ["queued", "running", "persisting"].includes(computeStatus) ||
+          Boolean(payload?.request_enqueued) ||
+          Boolean(payload?.job_id);
 
         if (isMaterialized) {
           applyDisplayedValueRefresh(payload, variableName);
@@ -1708,8 +1714,63 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
         }
 
         if (isPending) {
-          anyPending = true;
-          markDisplayedValueRefreshPending(payload, variableName);
+          if (hasProgressSignal) {
+            anyPending = true;
+            markDisplayedValueRefreshPending(payload, variableName);
+            continue;
+          }
+
+          if (variableName === primaryName) {
+            const livePayload = await resolvePlaygroundValue({
+              program: programSnapshot,
+              variable: variableName,
+              path: currentPath,
+              enqueue: true,
+              uiAwaited: false,
+              interaction: buildInteractionContext({
+                intent: "edit-refresh",
+                source: "editor",
+                variable: variableName,
+                path: currentPath,
+                direct: false,
+                visible: true,
+              }),
+            });
+            if (destroyed) return;
+            if (token !== editRefreshSeq) return;
+            if (programSnapshot !== String(programText || "")) return;
+
+            const liveMaterialization = String(livePayload?.materialization || "").toLowerCase();
+            const liveComputeStatus = String(livePayload?.compute_status || "").toLowerCase();
+            const liveDescriptor = livePayload?.descriptor && typeof livePayload.descriptor === "object" ? livePayload.descriptor : null;
+            const liveMaterialized = (liveMaterialization === "cached" || liveMaterialization === "computed") && !!liveDescriptor;
+            const livePending =
+              liveMaterialization === "pending" ||
+              liveMaterialization === "missing" ||
+              liveComputeStatus === "queued" ||
+              liveComputeStatus === "running" ||
+              liveComputeStatus === "persisting";
+            const liveHasProgressSignal =
+              liveMaterialization === "pending" ||
+              ["queued", "running", "persisting"].includes(liveComputeStatus) ||
+              Boolean(livePayload?.request_enqueued) ||
+              Boolean(livePayload?.job_id);
+
+            if (liveMaterialized) {
+              applyDisplayedValueRefresh(livePayload, variableName);
+              continue;
+            }
+
+            if (liveMaterialization === "failed" || liveComputeStatus === "failed" || liveComputeStatus === "killed") {
+              markDisplayedValueRefreshFailed(livePayload, variableName);
+              continue;
+            }
+
+            if (livePending && liveHasProgressSignal) {
+              anyPending = true;
+              markDisplayedValueRefreshPending(livePayload, variableName);
+            }
+          }
           continue;
         }
       } catch {
@@ -1720,7 +1781,6 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     if (token !== editRefreshSeq) return;
     if (programSnapshot !== String(programText || "")) return;
 
-    const primaryName = String(primaryVariable || "");
     if (anyPending && primaryName && names.includes(primaryName)) {
       subscribeValueSocket({ variable: primaryName, path: currentPath, enqueue: false });
       pendingEditRefresh = setTimeout(() => {
@@ -3706,11 +3766,13 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           hasProgressSignal,
           pollActive: Boolean(pendingPoll),
         });
-        applyPending(payload, request.variable);
         if (!hasProgressSignal) {
           activeValueSubscription = null;
           stopValueSocket();
           stopPoll();
+          if (!preserveCurrentView) {
+            viewer.setLoading(`Loading ${request.variable}${currentPath ? ` @ ${currentPath}` : ""}...`);
+          }
           statusValue = "idle";
           statusText = `${request.variable} is not ready yet. Click Run or click the tag again to refresh.`;
           setSymbolStatus(request.variable, "idle");
@@ -3718,6 +3780,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           dissolveDream();
           return { state: "idle", reason: "no-progress" };
         }
+        applyPending(payload, request.variable);
         const subscribed = subscribeValueSocket({ variable: request.variable, path: currentPath || "/", enqueue });
         ensurePendingPoll({ traceId, variable: request.variable, path: currentPath || "/" });
         if (!subscribed) {
