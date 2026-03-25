@@ -508,7 +508,7 @@ def _transient_sequence_page_from_store(
                 item_node_id = hash_sequence_item(container_node_id, cursor)
             item_path = _append_sequence_index_path(base_path, cursor)
             try:
-                item_payload, _lookup_state = _inspect_store_result_best_effort(
+                item_payload, lookup_state = _inspect_store_result_best_effort(
                     storage,
                     node_id=item_node_id,
                     path="",
@@ -516,9 +516,16 @@ def _transient_sequence_page_from_store(
                 )
             except UnsupportedVoxValueError:
                 item_payload = None
+                lookup_state = "missing"
 
             if _sequence_child_out_of_range(item_payload):
                 total = cursor
+                break
+
+            # When sequence length is unknown, avoid inventing a full page of
+            # placeholder rows. Show only the contiguous prefix that is
+            # actually observable from storage.
+            if item_payload is None and lookup_state in {"missing", "busy"}:
                 break
 
             item_status = "pending"
@@ -542,14 +549,14 @@ def _transient_sequence_page_from_store(
                     "status": item_status,
                 }
             )
-        has_more = True
-        next_offset = safe_offset + len(items_out)
+        has_more = total is None and len(items_out) >= safe_limit
+        next_offset = safe_offset + len(items_out) if has_more else None
         return {
             "offset": safe_offset,
             "limit": safe_limit,
             "items": items_out,
-            "next_offset": next_offset if total is None else None,
-            "has_more": bool(has_more if total is None else False),
+            "next_offset": next_offset,
+            "has_more": bool(has_more),
             "total": total,
         }
 

@@ -3407,3 +3407,28 @@ def test_transient_sequence_page_stops_at_out_of_range_child_failures(tmp_path: 
         assert page["total"] == 3
     finally:
         storage.close()
+
+
+@pytest.mark.unit
+def test_transient_sequence_page_with_unknown_length_does_not_invent_placeholder_rows(tmp_path: Path) -> None:
+    storage = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
+    container_node_id = "node-unknown-short-seq"
+    try:
+        for index, value in enumerate([11, 22]):
+            storage.put_success(hash_sequence_item(container_node_id, index), value)
+
+        page = main_mod._transient_sequence_page_from_store(
+            storage=storage,
+            container_node_id=container_node_id,
+            base_path="",
+            descriptor={"vox_type": "sequence", "summary": {"length": None}},
+            offset=0,
+            limit=18,
+        )
+
+        assert [item["index"] for item in page["items"]] == [0, 1]
+        assert page["has_more"] is False
+        assert page["next_offset"] is None
+        assert page["total"] is None
+    finally:
+        storage.close()
