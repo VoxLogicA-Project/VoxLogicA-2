@@ -13,13 +13,14 @@
     }
   },
   "runArgs": [
-    // Podman: bind-mount the host's /usr/bin/nvidia-smi if present and add devices
     "--device=/dev/dri",
     "--device=/dev/nvidiactl",
     "--device=/dev/nvidia-uvm",
+    "--device=/dev/nvidia-uvm-tools",
+    "--device=/dev/nvidia-modeset",
     "--device=/dev/nvidia0",
-    "-v",
-    "/usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro",
+    // recommend users install the NVIDIA Container Toolkit on the host instead
+    // do not bind-mount host libraries into the container (ABI mismatch risk)
     "-e",
     "NVIDIA_VISIBLE_DEVICES=all",
     "-e",
@@ -27,59 +28,4 @@
   ],
   "workspaceFolder": "/workspaces/VoxLogicA-2",
   "postCreateCommand": "echo 'Devcontainer created'"
-}
-{
-  "build": {
-    "dockerfile": "Dockerfile"
-  },
-  "containerEnv": {
-    "SHELL": "/bin/bash",
-    "NVIDIA_VISIBLE_DEVICES": "all",
-    "NVIDIA_DRIVER_CAPABILITIES": "all"
-  },
-  "mounts": [
-    {
-      "type": "bind",
-      "source": "/biggie/home/VoxLogicA",
-      "target": "/home/VoxLogicA"
-    },
-    {
-      "type": "bind",
-      "source": "${env:HOME}",
-      "target": "${env:HOME}"
-    },
-    {
-      "type": "bind",
-      "source": "/biggie",
-      "target": "/biggie"
-    }
-  ],
-  "runArgs": [
-    "--gpus=all",
-    "-w",
-    "${env:HOME}",
-    "--userns=keep-id",
-    "--group-add=keep-groups"
-  ],
-  "customizations": {
-    "vscode": {
-      "settings": {
-        "terminal.integrated.defaultProfile.linux": "bash",
-        "terminal.integrated.profiles.linux": {
-          "bash": {
-            "path": "/bin/bash"
-          }
-        },
-        "python.defaultInterpreterPath": "/usr/bin/python3.13"
-      },
-      "extensions": [
-        "ms-python.python",
-        "Tyriar.luna-paint",
-        "ms-toolsai.jupyter",
-        "ms-azuretools.vscode-docker",
-        "ms-python.black-formatter"
-      ]
-    }
-  },
-  "shutdownAction": "none"
 }

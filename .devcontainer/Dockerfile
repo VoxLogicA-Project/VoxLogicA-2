@@ -1,13 +1,17 @@
 FROM python:3.13-slim-bullseye
 
+# Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
 
-# Install minimal build tools and helper packages. Keep distro default compilers
-# (older, stable toolchain) to avoid Triton/Inductor compiler issues.
+# Pre-seed tzdata to make apt installs non-interactive
 RUN apt-get update \
+    && apt-get install -y --no-install-recommends debconf-utils \
+    && echo "tzdata tzdata/Areas select Etc" | debconf-set-selections \
+    && echo "tzdata tzdata/Zones/Etc select UTC" | debconf-set-selections \
     && apt-get install -y --no-install-recommends \
     build-essential git curl wget ca-certificates unzip pkg-config \
-    python3-venv python3-distutils \
+    python3-venv python3-distutils tzdata \
     && python3 -m pip install --upgrade pip setuptools wheel \
     && rm -rf /var/lib/apt/lists/*
 
