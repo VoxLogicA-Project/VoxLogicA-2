@@ -370,8 +370,9 @@ description: Skeleton for nnUNet training from directory datasets.
 import "nnunet"
 images = "/data/my_dataset/imagesTr"
 labels = "/data/my_dataset/labelsTr"
+modalities = ["T1"]
 out = "/data/work/nnunet"
-train_job = nnunet.train_directory(images,labels,out,1,"Dataset999","3d_fullres",5)
+train_job = nnunet.train_directory(images, labels, modalities, out, 999, "Dataset999", "3d_fullres", 5)
 ```
 
 ## 8. Test Module (Synthetic and Workflow Primitives)

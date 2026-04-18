@@ -195,15 +195,15 @@ Enable debug logging to get detailed information:
 
 ## Technical Details
 
-The nnUNet namespace is implemented as a thin wrapper around the `nnunet_wrapper.py` module, which provides:
+The nnUNet namespace is implemented directly in the primitive kernels and uses a shared internal pipeline for:
 
-- Dask bag integration
-- nnU-Net v2 API abstraction
-- Automatic dataset format conversion
-- Resume functionality
-- Error handling and logging
+- dataset materialization from Dask bags or directory layouts
+- nnU-Net dataset metadata generation
+- preprocessing and planning
+- fold-by-fold training execution
+- error handling and logging
 
-For advanced use cases, users can extend the wrapper or create custom primitives following the same patterns.
+This keeps the public API stable while making the training path easier to validate and maintain.
 
 ## Implementation Details
 

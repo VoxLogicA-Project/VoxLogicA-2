@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/.."
 
 if [ "${VOXLOGICA_SKIP_TEST_DEPS_INSTALL:-0}" != "1" ]; then
-  python3 "$PROJECT_DIR/bootstrap.py" --with-test
+  python3 "$PROJECT_DIR/bootstrap.py"
 fi
 
 if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then

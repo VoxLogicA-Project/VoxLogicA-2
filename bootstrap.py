@@ -13,6 +13,8 @@ import sys
 
 REPO_ROOT = Path(__file__).resolve().parent
 VENV_DIR = REPO_ROOT / ".venv"
+UV_STATE_DIR = REPO_ROOT / ".cache" / "uv"
+UV_PYTHON_INSTALL_DIR = UV_STATE_DIR / "python"
 RUNTIME_REQ = REPO_ROOT / "implementation" / "python" / "requirements.txt"
 TEST_REQ = REPO_ROOT / "implementation" / "python" / "requirements-test.txt"
 PYTHON_VERSION_FILE = REPO_ROOT / ".python-version"
@@ -123,7 +125,12 @@ def _detect_uv(explicit: str | None) -> list[str]:
 
 
 def _run_uv(uv_cmd: list[str], args: list[str]) -> None:
-    subprocess.check_call([*uv_cmd, *args], cwd=REPO_ROOT)
+    UV_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    UV_PYTHON_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env.setdefault("UV_CACHE_DIR", str(UV_STATE_DIR))
+    env.setdefault("UV_PYTHON_INSTALL_DIR", str(UV_PYTHON_INSTALL_DIR))
+    subprocess.check_call([*uv_cmd, *args], cwd=REPO_ROOT, env=env)
 
 
 def _ensure_venv(
@@ -218,9 +225,9 @@ def _sync_requirements(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create/sync deterministic VoxLogicA virtualenv with uv.")
     parser.add_argument(
-        "--with-test",
+        "--runtime-only",
         action="store_true",
-        help="Also install implementation/python/requirements-test.txt",
+        help="Install only implementation/python/requirements.txt and skip test dependencies.",
     )
     parser.add_argument(
         "--force",
@@ -251,7 +258,7 @@ def main() -> None:
     _sync_requirements(
         uv_cmd,
         venv_python,
-        include_test=bool(args.with_test),
+        include_test=not bool(args.runtime_only),
         force=bool(args.force),
         python_spec=normalized_target,
         resolved_version=resolved,
