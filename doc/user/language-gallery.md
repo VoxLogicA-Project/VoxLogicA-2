@@ -375,6 +375,56 @@ out = "/data/work/nnunet"
 train_job = nnunet.train_directory(images, labels, modalities, out, 999, "Dataset999", "3d_fullres", 5)
 ```
 
+### Training and prediction workflow
+
+<!-- vox:playground
+id: nnunet-train-and-predict
+title: nnUNet train and predict workflow
+module: nnunet
+level: expert
+strategy: strict
+description: Complete workflow combining training and prediction on a dataset.
+-->
+```imgql
+import "nnunet"
+
+// Define directories (populate with medical images before running)
+train_images_dir = "/data/dataset/imagesTr"
+train_labels_dir = "/data/dataset/labelsTr"
+test_images_dir = "/data/dataset/imagesTs"
+work_dir = "/tmp/nnunet_work"
+
+// Step 1: Train nnUNet model
+// Directory structure should be:
+//   imagesTr: case_001_0000.nii.gz, case_002_0000.nii.gz, ... (training images)
+//   labelsTr: case_001.nii.gz, case_002.nii.gz, ... (binary segmentation labels)
+//   imagesTs: case_test_0000.nii.gz, ... (test images, no labels needed)
+training_result = nnunet.train_directory(
+    train_images_dir,
+    train_labels_dir,
+    ["T1"],              // Modality names
+    work_dir,
+    100,                 // Dataset ID
+    "MyMedicalDataset",  // Dataset name
+    "3d_fullres",        // Configuration
+    5                    // Number of folds for cross-validation
+)
+
+// Step 2: Use trained model for prediction
+prediction_result = nnunet.predict(
+    test_images_dir,
+    training_result["model_path"],
+    concat(work_dir, "/predictions"),
+    "3d_fullres"
+)
+
+// Return results
+training_status = training_result["status"]
+model_location = training_result["model_path"]
+prediction_status = prediction_result["status"]
+predictions_location = prediction_result["output_path"]
+```
+
 ## 8. Test Module (Synthetic and Workflow Primitives)
 
 ### Structured synthetic payloads
