@@ -45,6 +45,7 @@
   const MAX_DEPTH = 7;
   const DEFAULT_LIMIT = 18;
   const ACTIVE_COLLECTION_ITEM_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting"]);
+  const DETAIL_FETCH_SUPPRESSED_STATES = new Set(["queued", "blocked", "running", "persisting"]);
   const COLLECTION_PENDING_STATES = new Set(["not_loaded", "queued", "blocked", "running", "persisting", "pending", "missing"]);
   let stageExpanded = false;
   let nestedCollectionOpened = false;
@@ -176,6 +177,16 @@
     return false;
   };
 
+  const itemHasActiveStatusSignal = (item) => {
+    const rowState = normalizeCollectionItemState(item?.state || item?.status, item?.descriptor);
+    if (DETAIL_FETCH_SUPPRESSED_STATES.has(rowState)) return true;
+    const resolved = resolvedItemRecord(item);
+    const computeStatus = String(resolved?.compute_status || "").trim().toLowerCase();
+    if (DETAIL_FETCH_SUPPRESSED_STATES.has(computeStatus)) return true;
+    const materialization = String(resolved?.materialization || "").trim().toLowerCase();
+    return DETAIL_FETCH_SUPPRESSED_STATES.has(materialization);
+  };
+
   const displayRecordForItem = (item) => {
     const itemPath = itemTargetPath(item);
     if (!itemPath) return null;
@@ -196,6 +207,7 @@
     const resolved = displayRecordForItem(item);
     const targetPath = itemTargetPath(item);
     const itemDescriptor = effectiveDescriptorForItem(item);
+    const itemState = normalizeCollectionItemState(item?.state || item?.status, item?.descriptor);
     if (collectionDescriptor(itemDescriptor)) {
       const nestedRecord = nestedRecordFromItem(record, item);
       const nestedPath = recordPath(nestedRecord);
@@ -212,10 +224,12 @@
       const materialization = String(resolved?.materialization || "").toLowerCase();
       const computeStatus = String(resolved?.compute_status || "").toLowerCase();
       if (materialization === "failed" || computeStatus === "failed" || computeStatus === "killed") return "failed";
-      if (concreteDescriptor(resolved?.descriptor)) return "ready";
-      if ((materialization === "computed" || materialization === "cached") && resolved?.descriptor) return "ready";
+      if (DETAIL_FETCH_SUPPRESSED_STATES.has(itemState)) return itemState;
+      if (computeStatus === "blocked") return "blocked";
       if (String(selectedPath || "") === targetPath && ["queued", "running", "persisting"].includes(computeStatus)) return "loading";
       if (["queued", "running", "persisting"].includes(computeStatus)) return computeStatus;
+      if (concreteDescriptor(resolved?.descriptor)) return "ready";
+      if ((materialization === "computed" || materialization === "cached") && resolved?.descriptor) return "ready";
       if (["pending", "missing"].includes(materialization)) {
         return normalizeCollectionItemState(item?.state || item?.status, effectiveDescriptorForItem(item));
       }
@@ -375,8 +389,28 @@
     !selectedRecordDetail &&
     !selectedDetailLoading &&
     !selectedDetailError &&
+    !itemHasActiveStatusSignal(selectedItem) &&
     descriptorNeedsExplicitDetail(selectedItem?.descriptor) &&
     !pathRecordPollingFor(sourceVariable, selectedPath)
+  ) {
+    void loadPathRecord({
+      sourceVariable,
+      path: selectedPath,
+      enqueueFallback: true,
+    });
+  }
+
+  $: if (
+    isCollection &&
+    selectedItem &&
+    sourceVariable &&
+    selectedPath &&
+    !selectedRecordDetail &&
+    !selectedDetailLoading &&
+    !selectedDetailError &&
+    descriptorNeedsExplicitDetail(selectedItem?.descriptor) &&
+    !pathRecordPollingFor(sourceVariable, selectedPath) &&
+    ["not_loaded", "queued", "running", "persisting"].includes(selectedItemState)
   ) {
     void loadPathRecord({
       sourceVariable,
@@ -531,6 +565,10 @@
                 <div class="viewer-error">{selectedDetailError}</div>
               {:else if selectedDetailLoading && !selectedRecordDetail}
                 <div class="start-collection-stage-loading">
+                  <span></span>
+                </div>
+              {:else if ["loading", "queued", "blocked", "running", "persisting"].includes(selectedItemState)}
+                <div class="start-collection-stage-loading" aria-label={`Waiting for ${selectedItemState}`}>
                   <span></span>
                 </div>
               {:else if level >= 2 && collectionRecord(selectedRecord) && !autoHydrateNested}

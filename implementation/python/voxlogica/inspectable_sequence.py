@@ -163,6 +163,21 @@ class InspectableSequenceValue(SequenceValue, ABC):
         self._schedule_tokens = itertools.count()
         super().__init__(self.iter_values, total_size=total_size)
 
+    def __getstate__(self) -> dict[str, Any]:
+        state = dict(self.__dict__)
+        state.pop("_state_lock", None)
+        state.pop("_change_condition", None)
+        state["_listeners"] = []
+        state.pop("_schedule_tokens", None)
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._state_lock = threading.RLock()
+        self._change_condition = threading.Condition(self._state_lock)
+        self._listeners = []
+        self._schedule_tokens = itertools.count()
+
     def length_hint(self) -> int | None:
         """Return known child count when available."""
         return self._total_size

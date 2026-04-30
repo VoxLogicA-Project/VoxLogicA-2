@@ -11,6 +11,7 @@ import base64
 import copy
 import concurrent.futures
 import contextlib
+import cloudpickle
 import multiprocessing as mp
 import json
 import logging
@@ -30,7 +31,7 @@ import uuid
 
 from voxlogica.pod_codec import decode_runtime_value
 from voxlogica.execution_strategy.results import SequenceValue
-from voxlogica.inspectable_sequence import InspectableSequenceValue
+from voxlogica.inspectable_sequence import InspectableListSequence, InspectableSequenceValue
 from voxlogica.priority import (
     compute_priority_context,
     normalize_priority_bucket,
@@ -67,6 +68,7 @@ DEFAULT_PLAYGROUND_LOAD_DIR = REPO_ROOT / "tests"
 PLAYGROUND_LOAD_DIR_ENV = "VOXLOGICA_SERVE_LOAD_DIR"
 MAX_PLAYGROUND_PROGRAM_BYTES = 2 * 1024 * 1024
 MAX_RESULT_LIST_LIMIT = 300
+_MAX_EAGER_RUNTIME_SEQUENCE_FREEZE = 64
 _INTERACTIVE_VALUE_LANE = "interactive-value"
 _BACKGROUND_PROCESS_LANE = "background-process"
 _FOREGROUND_PROCESS_LANE = "foreground-process"
@@ -205,6 +207,17 @@ class MemoizedSequenceValue(SequenceValue):
         self._exhausted = False
         self._lock = threading.RLock()
 
+    def __getstate__(self) -> dict[str, Any]:
+        state = dict(self.__dict__)
+        state.pop("_lock", None)
+        # Active iterators are not serializable; restart lazily from the source.
+        state["_source_iter"] = None
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._lock = threading.RLock()
+
     @classmethod
     def from_sequence(cls, sequence: SequenceValue) -> "MemoizedSequenceValue":
         total_size = sequence.total_size
@@ -291,6 +304,63 @@ def freeze_runtime_value(value: Any) -> Any:
     return value
 
 
+def _freeze_runtime_transport_value(value: Any) -> Any:
+    """Freeze runtime values for worker-to-parent transport without live evaluator state."""
+    if isinstance(value, InspectableSequenceValue):
+        total_size = value.length_hint()
+        if isinstance(total_size, int) and 0 <= total_size <= _MAX_EAGER_RUNTIME_SEQUENCE_FREEZE:
+            items = [_freeze_runtime_transport_value(value.resolve_item(index)) for index in range(total_size)]
+            return InspectableListSequence(parent_ref=value.parent_ref, values=items)
+        return MemoizedSequenceValue.from_sequence(value)
+    if isinstance(value, MemoizedSequenceValue):
+        return value
+    if isinstance(value, SequenceValue):
+        return MemoizedSequenceValue.from_sequence(value)
+    if _is_dask_bag(value):
+        def _iter_bag():
+            for delayed_partition in value.to_delayed():
+                for item in delayed_partition.compute():
+                    yield _freeze_runtime_transport_value(item)
+
+        return MemoizedSequenceValue(_iter_bag, total_size=None)
+    if isinstance(value, OverlayValue):
+        layers = [
+            OverlayLayer(
+                value=_freeze_runtime_transport_value(layer.value),
+                label=layer.label,
+                opacity=layer.opacity,
+                colormap=layer.colormap,
+                visible=layer.visible,
+            )
+            for layer in value.layers
+        ]
+        metadata = {str(key): _freeze_runtime_transport_value(raw) for key, raw in value.metadata.items()}
+        return OverlayValue(layers=tuple(layers), metadata=metadata)
+    if isinstance(value, dict):
+        return {key: _freeze_runtime_transport_value(raw) for key, raw in value.items()}
+    if isinstance(value, list):
+        return [_freeze_runtime_transport_value(raw) for raw in value]
+    if isinstance(value, tuple):
+        return tuple(_freeze_runtime_transport_value(raw) for raw in value)
+    return value
+
+
+def _serialize_runtime_goal_values(values: dict[str, Any]) -> bytes:
+    """Serialize runtime goal values for cross-process delivery."""
+    frozen = {str(node_id): _freeze_runtime_transport_value(raw_value) for node_id, raw_value in values.items()}
+    return cloudpickle.dumps(frozen)
+
+
+def _deserialize_runtime_goal_values(payload: Any) -> dict[str, Any]:
+    """Deserialize runtime goal values delivered by a worker process."""
+    if isinstance(payload, bytes):
+        restored = cloudpickle.loads(payload)
+        return restored if isinstance(restored, dict) else {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
 def build_runtime_preview(
     *,
     node_id: str,
@@ -338,6 +408,38 @@ def build_runtime_preview(
     return preview
 
 
+def runtime_preview_is_stable(preview: dict[str, Any] | None) -> bool:
+    """Return True when a runtime preview can be safely memoized."""
+    if not isinstance(preview, dict):
+        return False
+    pending_states = {"not_loaded", "queued", "blocked", "running", "persisting", "pending", "missing"}
+    status = str(preview.get("status") or "").strip().lower()
+    if status in pending_states:
+        return False
+    descriptor = preview.get("descriptor")
+    if isinstance(descriptor, dict):
+        materialization = descriptor.get("materialization")
+        if isinstance(materialization, dict):
+            descriptor_status = str(materialization.get("status") or "").strip().lower()
+            if descriptor_status in pending_states:
+                return False
+    page = preview.get("page")
+    if isinstance(page, dict):
+        items = page.get("items")
+        if not isinstance(items, list):
+            return False
+        total = page.get("total")
+        if total is None:
+            return False
+        for item in items:
+            if not isinstance(item, dict):
+                return False
+            item_state = str(item.get("state") or item.get("status") or "").strip().lower()
+            if item_state in pending_states:
+                return False
+    return True
+
+
 @dataclass
 class RuntimeValueInspector:
     """Path-aware memoized inspector for completed in-memory goal values."""
@@ -364,7 +466,7 @@ class RuntimeValueInspector:
         key = (normalized, safe_offset, safe_limit, priority_bucket, priority_score)
         with self._lock:
             cached = self._cache.get(key)
-            if isinstance(cached, dict):
+            if isinstance(cached, dict) and runtime_preview_is_stable(cached):
                 return copy.deepcopy(cached)
         preview = build_runtime_preview(
             node_id=self.node_id,
@@ -375,7 +477,10 @@ class RuntimeValueInspector:
             priority=priority,
         )
         with self._lock:
-            self._cache[key] = copy.deepcopy(preview)
+            if runtime_preview_is_stable(preview):
+                self._cache[key] = copy.deepcopy(preview)
+            else:
+                self._cache.pop(key, None)
         return preview
 
     def wait_for_change(
@@ -2295,7 +2400,7 @@ def _execute_playground_request(
             execution_summary.pop("node_events", None)
             packet = {"ok": True, "result": result_payload}
             if runtime_goal_values:
-                packet["_runtime_goal_values"] = runtime_goal_values
+                packet["_runtime_goal_values"] = _serialize_runtime_goal_values(runtime_goal_values)
             _append_log(
                 {
                     "event": "playground.run.completed",
@@ -2561,7 +2666,11 @@ class PlaygroundJobManager:
         payload["_priority_context"] = priority_metadata
         execution_lane = self._execution_lane_for_payload(payload, priority_metadata)
         if self._is_value_job_payload(payload):
-            payload["_capture_runtime_goal_values"] = execution_lane == _INTERACTIVE_VALUE_LANE
+            # Completed nested-path inspection must remain available even when
+            # the scoped value-resolve job ran on the passive/background lane.
+            # Otherwise child requests fall back to async persistence and can
+            # get stranded in "persisting" behind a slow results DB.
+            payload["_capture_runtime_goal_values"] = True
         return payload, priority_metadata, execution_lane
 
     def _is_interactive_value_job(self, job: PlaygroundJob) -> bool:
@@ -2727,8 +2836,9 @@ class PlaygroundJobManager:
             job.result = result if isinstance(result, dict) else {"payload": result}
             job.runtime_goal_values = {}
             job.runtime_inspectors = {}
-            if isinstance(raw_runtime_goal_values, dict):
-                for raw_node_id, raw_value in raw_runtime_goal_values.items():
+            runtime_goal_values = _deserialize_runtime_goal_values(raw_runtime_goal_values)
+            if isinstance(runtime_goal_values, dict):
+                for raw_node_id, raw_value in runtime_goal_values.items():
                     node_id = str(raw_node_id).strip()
                     if not node_id:
                         continue
@@ -2758,7 +2868,7 @@ class PlaygroundJobManager:
         else:
             next_payload["_priority_context"] = next_metadata
         if self._is_value_job_payload(next_payload):
-            next_payload["_capture_runtime_goal_values"] = self._is_interactive_value_job(job)
+            next_payload["_capture_runtime_goal_values"] = True
         job.request_payload = next_payload
         job.priority_class = str(next_metadata.get("priority_class", job.priority_class))
         job.priority_bucket = str(next_metadata.get("bucket", job.priority_bucket))

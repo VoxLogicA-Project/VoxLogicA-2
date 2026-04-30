@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 import json
@@ -14,6 +15,37 @@ from voxlogica.policy import runtime_policy_is_serve_mode
 from voxlogica.execution_strategy.results import SequenceValue
 from voxlogica.inspectable_sequence import InspectableMappedSequence
 from voxlogica.execution_strategy.strict import StrictExecutionStrategy
+
+
+@dataclass
+class _InteractiveClosureMapper:
+    """Pickle-safe mapper wrapper for serve-mode inspectable sequences."""
+
+    strategy: StrictExecutionStrategy
+    closure: Any
+    parent_ref: str
+
+    def apply_with_ref(self, upstream: Any, *, runtime_ref: str) -> Any:
+        closure = self.closure
+        if hasattr(closure, "apply_with_ref") and callable(closure.apply_with_ref):
+            value = closure.apply_with_ref(upstream, runtime_ref=runtime_ref)
+        elif hasattr(closure, "invoke") and callable(closure.invoke):
+            value = closure.invoke([upstream], runtime_ref=runtime_ref)
+        elif hasattr(closure, "apply") and callable(closure.apply):
+            value = closure.apply(upstream)
+        elif callable(closure):
+            value = closure(upstream)
+        else:
+            raise ValueError("map closure is not callable")
+
+        if self.strategy._looks_sequence_like(value):
+            child_ref = hash_child_ref(
+                self.parent_ref,
+                family="mapped-child",
+                token={"runtime_ref": runtime_ref},
+            )
+            return StrictExecutionStrategy._coerce_sequence(self.strategy, value, parent_ref=child_ref)
+        return value
 
 
 class DaskExecutionStrategy(StrictExecutionStrategy):
@@ -130,31 +162,7 @@ class DaskExecutionStrategy(StrictExecutionStrategy):
         return iterator_factory
 
     def _interactive_mapper(self, closure: Any, *, parent_ref: str):
-        strategy = self
-
-        class _Mapper:
-            def apply_with_ref(self, upstream: Any, *, runtime_ref: str) -> Any:
-                if hasattr(closure, "apply_with_ref") and callable(closure.apply_with_ref):
-                    value = closure.apply_with_ref(upstream, runtime_ref=runtime_ref)
-                elif hasattr(closure, "invoke") and callable(closure.invoke):
-                    value = closure.invoke([upstream], runtime_ref=runtime_ref)
-                elif hasattr(closure, "apply") and callable(closure.apply):
-                    value = closure.apply(upstream)
-                elif callable(closure):
-                    value = closure(upstream)
-                else:
-                    raise ValueError("map closure is not callable")
-
-                if strategy._looks_sequence_like(value):
-                    child_ref = hash_child_ref(
-                        parent_ref,
-                        family="mapped-child",
-                        token={"runtime_ref": runtime_ref},
-                    )
-                    return StrictExecutionStrategy._coerce_sequence(strategy, value, parent_ref=child_ref)
-                return value
-
-        return _Mapper()
+        return _InteractiveClosureMapper(strategy=self, closure=closure, parent_ref=parent_ref)
 
     def _looks_sequence_like(self, value: Any) -> bool:
         if isinstance(value, SequenceValue):

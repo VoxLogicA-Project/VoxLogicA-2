@@ -259,6 +259,18 @@ const buildLoadAttempts = (sources) => {
   return attempts;
 };
 
+const medicalLoadLooksTransient = (error) => {
+  const message = String(error?.message || error || "").toLowerCase();
+  if (!message) return false;
+  return (
+    message.includes("404") ||
+    message.includes("not found") ||
+    message.includes("failed to fetch") ||
+    message.includes("networkerror") ||
+    message.includes("loadvolume")
+  );
+};
+
 const snapshotMedicalViewState = (niivueInstance) => ({
   crosshairPos: Array.isArray(niivueInstance?.scene?.crosshairPos) ? [...niivueInstance.scene.crosshairPos] : null,
 });
@@ -483,39 +495,48 @@ const createMedicalAdapter = (host) => {
     const snapshot = snapshotMedicalViewState(niivueInstance);
     let loaded = false;
     let loadError = null;
-    for (const candidateSources of buildLoadAttempts(sources)) {
-      try {
-        if (destroyed || token !== updateSeq) return;
-        await withTimeout(
-          Promise.resolve(
-            niivueInstance.loadVolumes(
-              candidateSources.map((source, index) => ({
-                url: source.url,
-                name: source.url.includes(".gz") ? `${source.label || `Layer ${index + 1}`}.nii.gz` : `${source.label || `Layer ${index + 1}`}.nii`,
-              })),
+    const attempts = buildLoadAttempts(sources);
+    const transientRetryDelaysMs = [180, 360, 720];
+    for (let retryIndex = 0; retryIndex <= transientRetryDelaysMs.length && !loaded; retryIndex += 1) {
+      for (const candidateSources of attempts) {
+        try {
+          if (destroyed || token !== updateSeq) return;
+          await withTimeout(
+            Promise.resolve(
+              niivueInstance.loadVolumes(
+                candidateSources.map((source, index) => ({
+                  url: source.url,
+                  name: source.url.includes(".gz") ? `${source.label || `Layer ${index + 1}`}.nii.gz` : `${source.label || `Layer ${index + 1}`}.nii`,
+                })),
+              ),
             ),
-          ),
-          18000,
-          "Niivue load",
-        );
-        if (!Array.isArray(niivueInstance.volumes) || !niivueInstance.volumes.length) {
-          throw new Error("Empty volume data.");
-        }
-        for (const volume of niivueInstance.volumes) {
-          if (!volume || !Number.isFinite(volume.global_min) || !Number.isFinite(volume.global_max)) continue;
-          if (!Number.isFinite(volume.cal_min) || !Number.isFinite(volume.cal_max) || volume.cal_max <= volume.cal_min) {
-            volume.cal_min = Number(volume.global_min);
-            volume.cal_max = Math.max(Number(volume.global_max), Number(volume.global_min) + 1);
+            18000,
+            "Niivue load",
+          );
+          if (!Array.isArray(niivueInstance.volumes) || !niivueInstance.volumes.length) {
+            throw new Error("Empty volume data.");
           }
+          for (const volume of niivueInstance.volumes) {
+            if (!volume || !Number.isFinite(volume.global_min) || !Number.isFinite(volume.global_max)) continue;
+            if (!Number.isFinite(volume.cal_min) || !Number.isFinite(volume.cal_max) || volume.cal_max <= volume.cal_min) {
+              volume.cal_min = Number(volume.global_min);
+              volume.cal_max = Math.max(Number(volume.global_max), Number(volume.global_min) + 1);
+            }
+          }
+          applyVolumeStyles(niivueInstance, ns, candidateSources);
+          restoreMedicalViewState(niivueInstance, snapshot);
+          loadedFingerprint = nextFingerprint;
+          loaded = true;
+          break;
+        } catch (error) {
+          loadError = error;
         }
-        applyVolumeStyles(niivueInstance, ns, candidateSources);
-        restoreMedicalViewState(niivueInstance, snapshot);
-        loadedFingerprint = nextFingerprint;
-        loaded = true;
-        break;
-      } catch (error) {
-        loadError = error;
       }
+      if (loaded) break;
+      if (!medicalLoadLooksTransient(loadError) || retryIndex >= transientRetryDelaysMs.length) {
+        break;
+      }
+      await sleep(transientRetryDelaysMs[retryIndex]);
     }
 
     if (!loaded) {

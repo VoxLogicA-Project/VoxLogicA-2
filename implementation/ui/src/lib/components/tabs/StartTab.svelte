@@ -360,11 +360,11 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     if (materialization === "failed" || ["failed", "killed"].includes(computeStatus)) {
       return "failed";
     }
-    if (hasConcreteDescriptor(payload?.descriptor)) {
-      return "ready";
-    }
     if (["queued", "blocked", "running", "persisting"].includes(computeStatus)) {
       return computeStatus;
+    }
+    if (hasConcreteDescriptor(payload?.descriptor)) {
+      return "ready";
     }
     if (["computed", "cached", "materialized", "completed"].includes(materialization)) {
       return "ready";
@@ -419,7 +419,12 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
       nextStatus = collectionItemStatusFromState(baseState);
       nextError = String(baseItem?.error || nextError || "");
     }
-    if (hasConcreteDescriptor(baseItem?.descriptor) && !hasConcreteDescriptor(preferredItem?.descriptor) && !failedPreferred) {
+    if (
+      hasConcreteDescriptor(baseItem?.descriptor) &&
+      !hasConcreteDescriptor(preferredItem?.descriptor) &&
+      !failedPreferred &&
+      !["queued", "blocked", "running", "persisting"].includes(preferredState)
+    ) {
       nextState = baseState;
       nextStatus = collectionItemStatusFromState(baseState);
       nextError = String(baseItem?.error || nextError || "");
@@ -1637,6 +1642,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
 
   const applyDisplayedValueRefresh = (payload, variableName) => {
     refreshVariableNestedCaches(variableName, payload);
+    cacheInlinePreviewPageForRecord(payload, variableName, String(payload?.path || currentPath || "/"));
     const descriptor = payload?.descriptor && typeof payload.descriptor === "object" ? payload.descriptor : null;
     const materialization = String(payload?.materialization || payload?.status || "materialized");
     setSymbolStatus(variableName, "computed");
@@ -2446,13 +2452,74 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     );
   };
 
+  const clearRecordPageCacheForVariable = (sourceVariable = "") => {
+    const variableName = String(sourceVariable || "").trim();
+    if (!variableName) return;
+
+    const cacheKeysToDrop = new Set(
+      Object.entries(recordPageSources || {})
+        .filter(([, source]) => String(source || "").trim() === variableName)
+        .map(([cacheKey]) => cacheKey),
+    );
+    const baseKeysToDrop = new Set(
+      [...cacheKeysToDrop]
+        .map((cacheKey) => {
+          const marker = String(cacheKey || "").indexOf("@");
+          return marker >= 0 ? String(cacheKey || "").slice(0, marker) : "";
+        })
+        .filter(Boolean),
+    );
+
+    for (const [baseKey, subscription] of Object.entries(recordPageSubscriptions || {})) {
+      if (String(subscription?.variable || "").trim() === variableName) {
+        baseKeysToDrop.add(String(baseKey || ""));
+      }
+    }
+
+    for (const baseKey of baseKeysToDrop) {
+      clearRecordPagePoll(baseKey);
+      stopRecordPageSocket(baseKey, { logFinal: false });
+    }
+
+    recordPages = Object.fromEntries(
+      Object.entries(recordPages || {}).filter(([cacheKey]) => !cacheKeysToDrop.has(String(cacheKey || ""))),
+    );
+    recordPagesLoading = Object.fromEntries(
+      Object.entries(recordPagesLoading || {}).filter(([cacheKey]) => !cacheKeysToDrop.has(String(cacheKey || ""))),
+    );
+    recordPageSources = Object.fromEntries(
+      Object.entries(recordPageSources || {}).filter(([cacheKey]) => !cacheKeysToDrop.has(String(cacheKey || ""))),
+    );
+    recordPagePointers = Object.fromEntries(
+      Object.entries(recordPagePointers || {}).filter(([baseKey]) => !baseKeysToDrop.has(String(baseKey || ""))),
+    );
+    recordPagesErrors = Object.fromEntries(
+      Object.entries(recordPagesErrors || {}).filter(([baseKey]) => !baseKeysToDrop.has(String(baseKey || ""))),
+    );
+    collectionSelections = Object.fromEntries(
+      Object.entries(collectionSelections || {}).filter(([baseKey]) => !baseKeysToDrop.has(String(baseKey || ""))),
+    );
+  };
+
+  const clearNestedCachesForVariable = (sourceVariable = "") => {
+    const variableName = String(sourceVariable || "").trim();
+    if (!variableName) return;
+    clearPathRecordCacheForVariable(variableName);
+    clearRecordPageCacheForVariable(variableName);
+    expandedCollectionStages = Object.fromEntries(
+      Object.entries(expandedCollectionStages || {}).filter(
+        ([key]) => !String(key || "").startsWith(`${variableName}:`),
+      ),
+    );
+  };
+
   const refreshVariableNestedCaches = (sourceVariable = "", nextRecord = null) => {
     const variableName = String(sourceVariable || "").trim();
     if (!variableName || !nextRecord || typeof nextRecord !== "object") return;
     const previousNodeId = String(materializedRecords?.[variableName]?.node_id || "").trim();
     const nextNodeId = String(nextRecord?.node_id || "").trim();
     if (!previousNodeId || !nextNodeId || previousNodeId === nextNodeId) return;
-    clearPathRecordCacheForVariable(variableName);
+    clearNestedCachesForVariable(variableName);
   };
 
   const pathRecordFor = (sourceVariable = "", path = "") => pathRecords?.[pathRecordKey(sourceVariable, path)] || null;
@@ -2491,6 +2558,18 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     if (inlinePage) {
       cacheRecordPage(payload, String(payload?.path || path || "/"), inlinePage, sourceVariable);
     }
+  };
+
+  const cacheInlinePreviewPageForRecord = (record = null, sourceVariable = "", path = "") => {
+    if (!record || typeof record !== "object") return;
+    const inlinePage =
+      record?.runtime_preview_page && typeof record.runtime_preview_page === "object"
+        ? record.runtime_preview_page
+        : record?.page && typeof record.page === "object"
+          ? record.page
+          : null;
+    if (!inlinePage) return;
+    cacheRecordPage(record, String(path || record?.path || "/"), inlinePage, sourceVariable);
   };
 
   const clearPathRecordPoll = (key = "") => {
@@ -2969,23 +3048,20 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           status: payloadStatus || payloadMaterialization || "running",
           detail: `items=${effectiveItems.length} · pending-items=${effectiveItems.filter((item) => ACTIVE_COLLECTION_ITEM_STATES.has(normalizeCollectionItemState(item))).length}`,
         });
-        if (!ensureRecordPageSocket(record, {
+        ensureRecordPageSocket(record, {
           path: resolvedPath,
           offset: resolvedOffset,
           limit: resolvedLimit,
           sourceVariable: variableName,
           enqueue: false,
-        })) {
-          scheduleRecordPagePoll(record, {
-            path: resolvedPath,
-            offset: resolvedOffset,
-            limit: resolvedLimit,
-            sourceVariable: variableName,
-            delayMs: 950,
-          });
-        } else {
-          clearRecordPagePoll(baseKey);
-        }
+        });
+        scheduleRecordPagePoll(record, {
+          path: resolvedPath,
+          offset: resolvedOffset,
+          limit: resolvedLimit,
+          sourceVariable: variableName,
+          delayMs: 950,
+        });
       } else {
         logPageLoadActivity({
           phase: "finish",
@@ -3013,21 +3089,20 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
           status: "running",
           detail: "page request timed out; waiting for retry",
         });
-        if (!ensureRecordPageSocket(record, {
+        ensureRecordPageSocket(record, {
           path: resolvedPath,
           offset: resolvedOffset,
           limit: resolvedLimit,
           sourceVariable: variableName,
           enqueue: false,
-        })) {
-          scheduleRecordPagePoll(record, {
-            path: resolvedPath,
-            offset: resolvedOffset,
-            limit: resolvedLimit,
-            sourceVariable: variableName,
-            delayMs: 1100,
-          });
-        }
+        });
+        scheduleRecordPagePoll(record, {
+          path: resolvedPath,
+          offset: resolvedOffset,
+          limit: resolvedLimit,
+          sourceVariable: variableName,
+          delayMs: 1100,
+        });
         const cached = recordPages?.[cacheKey] || null;
         if (cached) {
           recordPagePointers = { ...recordPagePointers, [baseKey]: cacheKey };
@@ -3529,6 +3604,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     activateDream(payload);
     setSymbolStatus(variableName, state);
     setSymbolMaterialization(variableName, payload?.materialization || state);
+    cacheInlinePreviewPageForRecord(payload, variableName, String(payload?.path || currentPath || "/"));
     applyPendingLogs(payload, state);
     viewer.renderRecord({
       ...payload,
@@ -3556,6 +3632,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
   const applyMaterialized = (payload, variableName) => {
     clearStaleValue();
     refreshVariableNestedCaches(variableName, payload);
+    cacheInlinePreviewPageForRecord(payload, variableName, String(payload?.path || currentPath || "/"));
     const descriptor = payload?.descriptor && typeof payload.descriptor === "object" ? payload.descriptor : null;
     const materialization = String(payload?.materialization || payload?.status || "materialized");
     traceResolve("materialized", {
@@ -3606,6 +3683,7 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     ensureViewer();
     const traceId = resolveTraceSeq + 1;
     resolveTraceSeq = traceId;
+    const rootPathRequest = !String(path || "").trim();
     if (!primaryVariable) {
       traceResolve("skip-no-primary", { traceId, enqueue, path });
       statusValue = "idle";
@@ -3640,6 +3718,9 @@ vi_sweep_overlays = map(sweep_case_overlays, flair_images)`;
     }
 
     currentPath = String(path || "");
+    if (enqueue && !background && rootPathRequest) {
+      clearNestedCachesForVariable(primaryVariable);
+    }
     const request = {
       seq: resolveRequestSeq + 1,
       variable: String(primaryVariable || ""),

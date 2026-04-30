@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 from pathlib import Path
 import threading
 import time
@@ -116,6 +117,22 @@ def test_build_test_dashboard_snapshot_reads_junit_coverage_and_perf(tmp_path: P
     assert snapshot["coverage"]["summary"]["line_percent"] == 80.0
     assert snapshot["performance"]["available"] is True
     assert snapshot["performance"]["speed_ratio"] == 1.5
+
+
+@pytest.mark.unit
+def test_frozen_inspectable_sequence_is_pickle_safe():
+    frozen = freeze_runtime_value(
+        InspectableListSequence(
+            parent_ref="pickle-seq",
+            values=[1, 2, 3],
+        )
+    )
+
+    payload = pickle.dumps(frozen)
+    restored = pickle.loads(payload)
+
+    assert restored.resolve_item(0) == 1
+    assert restored.resolve_item(2) == 3
 
 
 @pytest.mark.unit
@@ -830,7 +847,7 @@ def test_playground_manager_routes_passive_value_job_to_background_lane(
 
     created_job = manager._jobs[str(created["job_id"])]
     assert created_job.execution_lane == "background-process"
-    assert created_job.request_payload["_capture_runtime_goal_values"] is False
+    assert created_job.request_payload["_capture_runtime_goal_values"] is True
     assert created_job.live_runtime_inspector is None
     assert created["queue"] == {
         "lane": "background",
@@ -849,6 +866,130 @@ def test_playground_manager_routes_passive_value_job_to_background_lane(
         )
         is None
     )
+
+
+@pytest.mark.unit
+def test_playground_manager_retains_runtime_inspector_for_completed_passive_value_job(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import voxlogica.serve_support as serve_support
+
+    monkeypatch.setattr(serve_support, "PLAYGROUND_JOB_LOG_DIR", tmp_path)
+
+    manager = PlaygroundJobManager()
+
+    def _fake_start_process(job: PlaygroundJob) -> None:
+        job.status = "running"
+        job.started_at = time.time()
+
+    monkeypatch.setattr(manager, "_start_process_job_locked", _fake_start_process)
+
+    created = manager.ensure_value_job(
+        {
+            "program": "xs = range(10,11)",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-passive",
+            "_program_hash": "prog-passive-runtime",
+            "_ui_awaited": False,
+            "_priority_context": {
+                "bucket": "visible-page",
+                "urgency_score": 40,
+                "priority_class": "normal",
+                "sequence": 1,
+            },
+        },
+        program_hash="prog-passive-runtime",
+        node_id="node-passive",
+        execution_strategy="dask",
+    )
+
+    created_job = manager._jobs[str(created["job_id"])]
+    manager._apply_result_packet_locked(
+        created_job,
+        {
+            "ok": True,
+            "started_at": time.time() - 0.1,
+            "finished_at": time.time(),
+            "metrics": {"wall_time_s": 0.1},
+            "result": {"execution": {"success": True}},
+            "_runtime_goal_values": {
+                "node-passive": freeze_runtime_value(
+                    InspectableListSequence(parent_ref="node-passive", values=[123])
+                ),
+            },
+        },
+    )
+
+    preview = manager.inspect_value_job_runtime(
+        program_hash="prog-passive-runtime",
+        node_id="node-passive",
+        execution_strategy="dask",
+        path="/0",
+    )
+
+    assert created_job.status == "completed"
+    assert preview is not None
+    assert preview["path"] == "/0"
+    assert preview["status"] in {"queued", "running", "persisting", "materialized"}
+
+
+@pytest.mark.unit
+def test_playground_manager_refresh_preserves_runtime_capture_for_passive_value_job(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import voxlogica.serve_support as serve_support
+
+    monkeypatch.setattr(serve_support, "PLAYGROUND_JOB_LOG_DIR", tmp_path)
+
+    manager = PlaygroundJobManager()
+
+    def _fake_start_process(job: PlaygroundJob) -> None:
+        job.status = "queued"
+
+    monkeypatch.setattr(manager, "_start_process_job_locked", _fake_start_process)
+
+    created = manager.ensure_value_job(
+        {
+            "program": "xs = range(0,1)",
+            "execute": True,
+            "execution_strategy": "dask",
+            "_job_kind": "value-resolve",
+            "_priority_node": "node-passive-refresh",
+            "_program_hash": "prog-passive-refresh",
+            "_ui_awaited": False,
+            "_priority_context": {
+                "bucket": "visible-page",
+                "urgency_score": 32,
+                "priority_class": "normal",
+                "sequence": 1,
+            },
+        },
+        program_hash="prog-passive-refresh",
+        node_id="node-passive-refresh",
+        execution_strategy="dask",
+    )
+
+    job = manager._jobs[str(created["job_id"])]
+    with manager._lock:
+        manager._refresh_job_priority_locked(
+            job,
+            {
+                "_job_kind": "value-resolve",
+                "_ui_awaited": False,
+                "_priority_context": {
+                    "bucket": "visible-page",
+                    "urgency_score": 40,
+                    "priority_class": "normal",
+                    "sequence": 2,
+                },
+            },
+        )
+
+    assert job.request_payload["_capture_runtime_goal_values"] is True
 
 
 @pytest.mark.unit
@@ -1255,6 +1396,63 @@ def test_runtime_value_inspector_preview_does_not_report_out_of_range_for_blocke
     assert preview["status"] in {"queued", "running", "blocked"}
     assert preview["descriptor"]["vox_type"] == "unavailable"
     assert "error" not in preview
+
+
+@pytest.mark.unit
+def test_runtime_value_inspector_does_not_cache_transient_child_preview(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    def _fake_build_runtime_preview(**kwargs):  # noqa: ANN003
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {
+                "path": str(kwargs.get("path") or ""),
+                "status": "queued",
+                "descriptor": {
+                    "vox_type": "unavailable",
+                    "format_version": "voxpod/1",
+                    "summary": {"reason": "status=queued"},
+                    "navigation": {
+                        "path": str(kwargs.get("path") or ""),
+                        "pageable": False,
+                        "can_descend": False,
+                        "default_page_size": 64,
+                        "max_page_size": 512,
+                    },
+                },
+            }
+        return {
+            "path": str(kwargs.get("path") or ""),
+            "status": "materialized",
+            "descriptor": {
+                "vox_type": "integer",
+                "format_version": "voxpod/1",
+                "summary": {"value": 99},
+                "navigation": {
+                    "path": str(kwargs.get("path") or ""),
+                    "pageable": False,
+                    "can_descend": False,
+                    "default_page_size": 64,
+                    "max_page_size": 512,
+                },
+            },
+            "value": 99,
+        }
+
+    monkeypatch.setattr("voxlogica.serve_support.build_runtime_preview", _fake_build_runtime_preview)
+
+    inspector = RuntimeValueInspector(
+        node_id="node-eventually-ready",
+        value=freeze_runtime_value([99]),
+    )
+
+    first = inspector.preview(path="/0")
+    second = inspector.preview(path="/0")
+
+    assert first["status"] == "queued"
+    assert second["status"] == "materialized"
+    assert second["value"] == 99
+    assert calls["count"] == 2
 
 
 @pytest.mark.unit

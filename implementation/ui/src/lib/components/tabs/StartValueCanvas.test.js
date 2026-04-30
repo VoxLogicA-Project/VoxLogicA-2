@@ -194,4 +194,57 @@ describe("StartValueCanvas", () => {
     unmount();
     expect(resizeObserverInstances[0].disconnect).toHaveBeenCalled();
   });
+
+  it("keeps medical volumes in a loading state through a transient first-load 404 and then recovers", async () => {
+    class MockNiivue {
+      constructor() {
+        this.attachToCanvas = vi.fn(async () => {});
+        this.loadVolumes = vi
+          .fn()
+          .mockRejectedValueOnce(new Error("404 Not Found"))
+          .mockImplementation(async (volumes) => {
+            this.volumes = volumes.map(() => ({
+              global_min: 0,
+              global_max: 1,
+              cal_min: 0,
+              cal_max: 1,
+            }));
+          });
+        this.setOpacity = vi.fn();
+        this.setColormap = vi.fn();
+        this.setSliceType = vi.fn();
+        this.updateGLVolume = vi.fn();
+        this.drawScene = vi.fn();
+        this.destroy = vi.fn();
+        this.scene = { crosshairPos: [0.5, 0.5, 0.5] };
+        this.volumes = [];
+        niivueInstances.push(this);
+      }
+    }
+
+    window.niivue = {
+      Niivue: MockNiivue,
+      SLICE_TYPE: {
+        MULTIPLANAR: "MULTIPLANAR",
+      },
+    };
+
+    const { container } = render(StartValueCanvas, {
+      record: medicalVolumeRecord("/base-racy.nii"),
+      label: "Medical",
+    });
+
+    const loadingEl = container.querySelector(".start-medical-volume-loading");
+    const errorEl = container.querySelector(".start-medical-volume-error");
+
+    await waitFor(() => {
+      expect(niivueInstances).toHaveLength(1);
+      expect(niivueInstances[0].loadVolumes).toHaveBeenCalledTimes(2);
+      expect(errorEl?.textContent || "").toBe("");
+    });
+
+    expect(loadingEl).not.toBeNull();
+    expect(errorEl).not.toBeNull();
+    expect(errorEl?.style.display).not.toBe("block");
+  });
 });

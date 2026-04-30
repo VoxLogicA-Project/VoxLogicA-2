@@ -1635,6 +1635,147 @@ describe("StartTab", () => {
     }
   });
 
+  it("keeps a page poll fallback when page websocket subscriptions stay silent", async () => {
+    vi.useFakeTimers();
+    const originalWebSocket = globalThis.WebSocket;
+
+    class SilentWebSocket {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 3;
+
+      constructor() {
+        this.readyState = SilentWebSocket.CONNECTING;
+        setTimeout(() => {
+          this.readyState = SilentWebSocket.OPEN;
+          this.onopen?.();
+        }, 0);
+      }
+
+      send() {}
+
+      close() {
+        this.readyState = SilentWebSocket.CLOSED;
+        this.onclose?.();
+      }
+    }
+
+    try {
+      Object.defineProperty(globalThis, "WebSocket", {
+        value: SilentWebSocket,
+        configurable: true,
+      });
+    } catch {
+      // best effort for environments where WebSocket is not configurable
+    }
+
+    try {
+      getProgramSymbolsMock.mockResolvedValue({
+        available: true,
+        symbol_table: { xs: "node-xs" },
+        diagnostics: [],
+      });
+      resolvePlaygroundValueMock.mockResolvedValue({
+        materialization: "computed",
+        compute_status: "completed",
+        node_id: "node-xs",
+        path: "/",
+        descriptor: {
+          vox_type: "sequence",
+          format_version: "voxpod/1",
+          summary: { length: 1 },
+          navigation: {
+            path: "/",
+            pageable: true,
+            can_descend: true,
+            default_page_size: 64,
+            max_page_size: 512,
+          },
+        },
+      });
+      resolvePlaygroundValuePageMock
+        .mockResolvedValueOnce({
+          materialization: "pending",
+          compute_status: "running",
+          path: "/",
+          page: {
+            offset: 0,
+            limit: 18,
+            has_more: false,
+            next_offset: null,
+            total: null,
+            items: [],
+          },
+        })
+        .mockResolvedValue({
+          materialization: "cached",
+          compute_status: "cached",
+          path: "/",
+          page: {
+            offset: 0,
+            limit: 18,
+            has_more: false,
+            next_offset: null,
+            total: 1,
+            items: [
+              {
+                index: 0,
+                label: "[0]",
+                path: "/0",
+                node_id: "child-0",
+                status: "ready",
+                state: "ready",
+                descriptor: {
+                  vox_type: "number",
+                  format_version: "voxpod/1",
+                  summary: { value: 21 },
+                  navigation: {
+                    path: "/0",
+                    pageable: false,
+                    can_descend: false,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+            ],
+          },
+        });
+
+      const { container } = render(StartTab, { active: true, capabilities: {} });
+      await waitFor(() => {
+        expect(getProgramSymbolsMock).toHaveBeenCalled();
+      });
+
+      const runButton = container.querySelector(".btn.btn-primary");
+      expect(runButton).not.toBeNull();
+      await fireEvent.click(runButton);
+
+      await waitFor(() => {
+        expect(resolvePlaygroundValuePageMock).toHaveBeenCalledTimes(1);
+        expect(container.querySelector(".start-collection-loading, .start-collection-stage-loading")).not.toBeNull();
+      });
+
+      vi.advanceTimersByTime(1200);
+
+      await waitFor(() => {
+        expect(resolvePlaygroundValuePageMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(container.textContent).toContain("21");
+        expect(container.querySelector(".start-collection-item-state--ready")).not.toBeNull();
+      });
+    } finally {
+      try {
+        Object.defineProperty(globalThis, "WebSocket", {
+          value: originalWebSocket,
+          configurable: true,
+        });
+      } catch {
+        // best effort restore
+      }
+      vi.useRealTimers();
+    }
+  });
+
   it("renders value tags with visual states and resolves clicked tags", async () => {
     getProgramSymbolsMock.mockResolvedValue({
       available: true,
@@ -2000,6 +2141,237 @@ describe("StartTab", () => {
       (button.textContent || "").includes("[1]"),
     );
     expect(blockedButton?.getAttribute("title") || "").toContain("blocked on /0");
+  });
+
+  it("keeps blocked collection items blocked even when a concrete descriptor arrives", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockImplementation(async ({ path = "" }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-xs",
+          path: "/",
+          descriptor: {
+            vox_type: "sequence",
+            format_version: "voxpod/1",
+            summary: { length: 3 },
+            navigation: {
+              path: "/",
+              pageable: true,
+              can_descend: true,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      throw new Error(`unexpected nested value fetch for ${path}`);
+    });
+    resolvePlaygroundValuePageMock.mockResolvedValue({
+      materialization: "running",
+      compute_status: "running",
+      page: {
+        offset: 0,
+        limit: 8,
+        has_more: false,
+        next_offset: null,
+        items: [
+          {
+            index: 0,
+            label: "[0]",
+            path: "/0",
+            state: "blocked",
+            blocked_on: "/source/0",
+            descriptor: {
+              vox_type: "volume3d",
+              format_version: "voxpod/1",
+              summary: { size: [240, 240, 155] },
+              navigation: {
+                path: "/0",
+                pageable: false,
+                can_descend: false,
+                default_page_size: 64,
+                max_page_size: 512,
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("blocked");
+      expect(container.textContent).not.toContain("ready");
+    });
+    expect(container.querySelector(".start-collection-stage-loading")).not.toBeNull();
+
+    const blockedButton = Array.from(container.querySelectorAll(".start-collection-item")).find((button) =>
+      (button.textContent || "").includes("[0]"),
+    );
+    expect(blockedButton?.getAttribute("title") || "").toContain("blocked on /source/0");
+    expect(resolvePlaygroundValueMock.mock.calls.some(([payload]) => payload?.path === "/0")).toBe(false);
+  });
+
+  it("clears stale nested caches before rerunning the same variable", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+
+    resolvePlaygroundValueMock.mockImplementation(async ({ path = "" }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-xs",
+          path: "/",
+          descriptor: {
+            vox_type: "sequence",
+            format_version: "voxpod/1",
+            summary: { length: 1 },
+            navigation: {
+              path: "/",
+              pageable: true,
+              can_descend: true,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      if (path === "/0") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-xs",
+          path: "/0",
+          descriptor: {
+            vox_type: "volume3d",
+            format_version: "voxpod/1",
+            summary: { size: [240, 240, 155] },
+            navigation: {
+              path: "/0",
+              pageable: false,
+              can_descend: false,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      return {
+        materialization: "missing",
+        compute_status: "missing",
+        node_id: "node-xs",
+        path,
+      };
+    });
+
+    let runIndex = 0;
+    resolvePlaygroundValuePageMock.mockImplementation(async () => {
+      runIndex += 1;
+      if (runIndex === 1) {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          page: {
+            offset: 0,
+            limit: 8,
+            has_more: false,
+            next_offset: null,
+            items: [
+              {
+                index: 0,
+                label: "[0]",
+                path: "/0",
+                state: "ready",
+                descriptor: {
+                  vox_type: "volume3d",
+                  format_version: "voxpod/1",
+                  summary: { size: [240, 240, 155] },
+                  navigation: {
+                    path: "/0",
+                    pageable: false,
+                    can_descend: false,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+            ],
+          },
+        };
+      }
+      return {
+        materialization: "running",
+        compute_status: "running",
+        page: {
+          offset: 0,
+          limit: 8,
+          has_more: false,
+          next_offset: null,
+          items: [
+            {
+              index: 0,
+              label: "[0]",
+              path: "/0",
+              state: "blocked",
+              blocked_on: "/source/0",
+              descriptor: {
+                vox_type: "volume3d",
+                format_version: "voxpod/1",
+                summary: { size: [240, 240, 155] },
+                navigation: {
+                  path: "/0",
+                  pageable: false,
+                  can_descend: false,
+                  default_page_size: 64,
+                  max_page_size: 512,
+                },
+              },
+            },
+          ],
+        },
+      };
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(resolvePlaygroundValueMock.mock.calls.some(([payload]) => payload?.path === "/0")).toBe(true);
+      expect(container.textContent).toContain("ready");
+    });
+
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(runIndex).toBeGreaterThanOrEqual(2);
+      expect(container.textContent).toContain("blocked");
+    });
+    expect(container.textContent).not.toContain("blocked on /source/0 ready");
+    expect(resolvePlaygroundValueMock.mock.calls.filter(([payload]) => payload?.path === "/0")).toHaveLength(1);
   });
 
   it("keeps the selected collection row in sync with the resolved stage value", async () => {
@@ -2842,6 +3214,143 @@ describe("StartTab", () => {
     });
   });
 
+  it("auto-resolves the initially selected pending child without requiring an extra click", async () => {
+    const pathCounts = new Map();
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockImplementation(async ({ path = "" }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "computed",
+          compute_status: "completed",
+          node_id: "node-xs",
+          path: "/",
+          descriptor: {
+            vox_type: "sequence",
+            format_version: "voxpod/1",
+            summary: { length: 1 },
+            navigation: {
+              path: "/",
+              pageable: true,
+              can_descend: true,
+              default_page_size: 64,
+              max_page_size: 512,
+            },
+          },
+        };
+      }
+      const nextCount = Number(pathCounts.get(path) || 0) + 1;
+      pathCounts.set(path, nextCount);
+      if (path === "/0") {
+        return {
+          materialization: nextCount >= 2 ? "computed" : "pending",
+          compute_status: nextCount >= 2 ? "completed" : "queued",
+          node_id: "node-xs",
+          path: "/0",
+          descriptor:
+            nextCount >= 2
+              ? {
+                  vox_type: "number",
+                  format_version: "voxpod/1",
+                  summary: { value: 21 },
+                  navigation: {
+                    path: "/0",
+                    pageable: false,
+                    can_descend: false,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                }
+              : {
+                  vox_type: "unavailable",
+                  format_version: "voxpod/1",
+                  summary: { reason: "status=queued" },
+                  navigation: {
+                    path: "/0",
+                    pageable: false,
+                    can_descend: false,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+        };
+      }
+      return {
+        materialization: "pending",
+        compute_status: "running",
+        node_id: "node-xs",
+        path,
+      };
+    });
+    resolvePlaygroundValuePageMock.mockImplementation(async ({ path = "" }) => {
+      if (!path || path === "/") {
+        return {
+          materialization: "pending",
+          compute_status: "running",
+          path: "/",
+          page: {
+            offset: 0,
+            limit: 18,
+            has_more: false,
+            next_offset: null,
+            total: 1,
+            items: [
+              {
+                index: 0,
+                label: "[0]",
+                path: "/0",
+                status: "pending",
+                descriptor: {
+                  vox_type: "unavailable",
+                  format_version: "voxpod/1",
+                  summary: { reason: "status=pending" },
+                  navigation: {
+                    path: "/0",
+                    pageable: false,
+                    can_descend: false,
+                    default_page_size: 64,
+                    max_page_size: 512,
+                  },
+                },
+              },
+            ],
+          },
+        };
+      }
+      return {
+        materialization: "pending",
+        compute_status: "running",
+        path,
+        page: {
+          offset: 0,
+          limit: 18,
+          has_more: false,
+          next_offset: null,
+          items: [],
+        },
+      };
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(pathCounts.get("/0") || 0).toBeGreaterThanOrEqual(1);
+    });
+    await waitFor(() => {
+      expect(container.textContent).toContain("21");
+    });
+  });
+
   it("clears the stage immediately when switching from a resolved item to an unresolved item", async () => {
     getProgramSymbolsMock.mockResolvedValue({
       available: true,
@@ -3396,6 +3905,120 @@ describe("StartTab", () => {
     await waitFor(() => {
       expect(container.textContent).toContain("1201");
       expect(resolvePlaygroundValuePageMock.mock.calls.some(([payload]) => payload?.path === "/2")).toBe(false);
+    });
+  });
+
+  it("reuses inline root runtime preview pages before the explicit page refresh settles", async () => {
+    getProgramSymbolsMock.mockResolvedValue({
+      available: true,
+      symbol_table: { xs: "node-xs" },
+      diagnostics: [],
+    });
+    resolvePlaygroundValueMock.mockResolvedValue({
+      materialization: "computed",
+      compute_status: "completed",
+      node_id: "node-xs",
+      path: "/",
+      descriptor: {
+        vox_type: "sequence",
+        format_version: "voxpod/1",
+        summary: { length: 1 },
+        navigation: {
+          path: "/",
+          pageable: true,
+          can_descend: true,
+          default_page_size: 64,
+          max_page_size: 512,
+        },
+      },
+      runtime_preview_page: {
+        offset: 0,
+        limit: 18,
+        has_more: false,
+        next_offset: null,
+        total: 1,
+        items: [
+          {
+            index: 0,
+            label: "[0]",
+            path: "/0",
+            state: "running",
+            blocked_on: "upstream-node",
+            descriptor: {
+              vox_type: "unavailable",
+              format_version: "voxpod/1",
+              summary: { state: "running" },
+              navigation: { path: "/0", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
+            },
+          },
+        ],
+      },
+    });
+    const delayedRootPage = deferred();
+    resolvePlaygroundValuePageMock.mockImplementation(async ({ path = "" }) => {
+      if (!path || path === "/") {
+        return delayedRootPage.promise;
+      }
+      return {
+        materialization: "computed",
+        compute_status: "completed",
+        path,
+        page: {
+          offset: 0,
+          limit: 18,
+          has_more: false,
+          next_offset: null,
+          total: 0,
+          items: [],
+        },
+      };
+    });
+
+    const { container } = render(StartTab, { active: true, capabilities: {} });
+    await waitFor(() => {
+      expect(getProgramSymbolsMock).toHaveBeenCalled();
+    });
+
+    const runButton = container.querySelector(".btn.btn-primary");
+    expect(runButton).not.toBeNull();
+    await fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("running");
+      const row = Array.from(container.querySelectorAll(".start-collection-item")).find((button) =>
+        (button.textContent || "").includes("[0]"),
+      );
+      expect(row?.getAttribute("title") || "").toContain("blocked on upstream-node");
+    });
+
+    await waitFor(() => {
+      expect(resolvePlaygroundValuePageMock).toHaveBeenCalled();
+    });
+    delayedRootPage.resolve({
+      materialization: "computed",
+      compute_status: "completed",
+      path: "/",
+      page: {
+        offset: 0,
+        limit: 18,
+        has_more: false,
+        next_offset: null,
+        total: 1,
+        items: [
+          {
+            index: 0,
+            label: "[0]",
+            path: "/0",
+            status: "materialized",
+            descriptor: {
+              vox_type: "integer",
+              format_version: "voxpod/1",
+              summary: { value: 42 },
+              navigation: { path: "/0", pageable: false, can_descend: false, default_page_size: 64, max_page_size: 512 },
+            },
+          },
+        ],
+      },
     });
   });
 

@@ -3048,6 +3048,120 @@ def test_playground_value_resolves_runtime_nested_overlay_without_persisted_chil
 
 
 @pytest.mark.unit
+def test_playground_value_completed_job_nested_path_recovers_after_transient_runtime_preview(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    preview_calls = {"count": 0}
+
+    def _job_payload(node_id: str) -> dict[str, object]:
+        return {
+            "job_id": "completed-nested-job",
+            "status": "completed",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "result": {
+                "goal_results": [
+                    {
+                        "node_id": node_id,
+                        "status": "materialized",
+                        "metadata": {"persisted": "pending"},
+                    }
+                ]
+            },
+            "log_tail": "",
+        }
+
+    def _inspect_runtime(**kwargs):  # noqa: ANN003
+        preview_calls["count"] += 1
+        path = str(kwargs.get("path", ""))
+        if preview_calls["count"] == 1:
+            return {
+                "path": path,
+                "status": "queued",
+                "descriptor": {
+                    "vox_type": "unavailable",
+                    "format_version": "voxpod/1",
+                    "summary": {"reason": "status=queued"},
+                    "navigation": {
+                        "path": path,
+                        "pageable": False,
+                        "can_descend": False,
+                        "default_page_size": 64,
+                        "max_page_size": 512,
+                    },
+                    "materialization": {"status": "queued"},
+                },
+            }
+        return {
+            "path": path,
+            "status": "materialized",
+            "descriptor": {
+                "vox_type": "volume3d",
+                "format_version": "voxpod/1",
+                "summary": {
+                    "dimension": 3,
+                    "size": [2, 2, 2],
+                    "spacing": [1.0, 1.0, 1.0],
+                    "origin": [0.0, 0.0, 0.0],
+                    "direction": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                    "pixel_id": "8-bit unsigned integer",
+                },
+                "navigation": {
+                    "path": path,
+                    "pageable": False,
+                    "can_descend": False,
+                    "default_page_size": 64,
+                    "max_page_size": 512,
+                },
+                "render": {
+                    "kind": "medical-volume",
+                    "nifti_url": f"/api/v1/results/store/node-xs/render/nii?path={path}",
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        main_mod,
+        "playground_jobs",
+        SimpleNamespace(
+            get_value_job=lambda **kwargs: _job_payload(str(kwargs.get("node_id", ""))),
+            inspect_value_job_runtime=_inspect_runtime,
+            ensure_value_job=lambda payload, **kwargs: {"job_id": "unused", "status": "running", "log_tail": ""},
+        ),
+    )
+
+    with TestClient(main_mod.api_app) as client:
+        first = client.post(
+            "/api/v1/playground/value",
+            json={
+                "program": "flair_images = range(0,1)",
+                "variable": "flair_images",
+                "path": "/0",
+                "enqueue": False,
+            },
+        )
+        assert first.status_code == 200
+        first_payload = first.json()
+        assert first_payload["materialization"] == "pending"
+        assert first_payload["compute_status"] in {"queued", "running", "blocked"}
+
+        second = client.post(
+            "/api/v1/playground/value",
+            json={
+                "program": "flair_images = range(0,1)",
+                "variable": "flair_images",
+                "path": "/0",
+                "enqueue": False,
+            },
+        )
+        assert second.status_code == 200
+        second_payload = second.json()
+        assert second_payload["materialization"] == "computed"
+        assert second_payload["compute_status"] == "completed"
+        assert second_payload["descriptor"]["vox_type"] == "volume3d"
+        assert preview_calls["count"] >= 2
+
+
+@pytest.mark.unit
 def test_playground_value_page_uses_runtime_inspector_for_cached_runtime_backed_nested_sequence(
     monkeypatch: pytest.MonkeyPatch,
 ):
