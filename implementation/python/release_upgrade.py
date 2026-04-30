@@ -83,7 +83,7 @@ def main() -> None:
 
     _validate_pinned_requirements()
 
-    bootstrap_cmd = [sys.executable, str(BOOTSTRAP), "--with-test", "--force"]
+    bootstrap_cmd = [sys.executable, str(BOOTSTRAP), "--force"]
     if args.python_version:
         bootstrap_cmd.extend(["--python-version", args.python_version])
     _run(bootstrap_cmd)

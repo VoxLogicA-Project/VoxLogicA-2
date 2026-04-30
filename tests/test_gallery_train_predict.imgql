@@ -1,0 +1,33 @@
+import "nnunet"
+
+// Define directories (populate with medical images before running)
+train_images_dir = "/data/dataset/imagesTr"
+train_labels_dir = "/data/dataset/labelsTr"
+test_images_dir = "/data/dataset/imagesTs"
+work_dir = "/tmp/nnunet_work"
+
+// Step 1: Train nnUNet model
+training_result = nnunet.train_directory(
+    train_images_dir,
+    train_labels_dir,
+    ["T1"],
+    work_dir,
+    100,
+    "MyMedicalDataset",
+    "3d_fullres",
+    5
+)
+
+// Step 2: Use trained model for prediction
+prediction_result = nnunet.predict(
+    test_images_dir,
+    training_result["model_path"],
+    concat(work_dir, "/predictions"),
+    "3d_fullres"
+)
+
+// Return results
+training_status = training_result["status"]
+model_location = training_result["model_path"]
+prediction_status = prediction_result["status"]
+predictions_location = prediction_result["output_path"]

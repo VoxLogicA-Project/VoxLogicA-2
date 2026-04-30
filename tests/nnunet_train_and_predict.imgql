@@ -1,0 +1,53 @@
+import "nnunet"
+import "simpleitk"
+
+// Demonstrate nnUNet training and prediction workflow
+// This example shows how to:
+// 1. Train an nnUNet model from organized medical images
+// 2. Use the trained model for prediction on new images
+
+// Define data directories
+// In practice, these should contain:
+// - imagesTr/: Training images in format case_XXXX_0000.nii.gz, case_XXXX_0001.nii.gz, etc.
+// - labelsTr/: Training labels in format case_XXXX.nii.gz
+// - imagesTs/: Test images in the same format as training images
+train_images_dir = "/tmp/voxlogica_demo/imagesTr"
+train_labels_dir = "/tmp/voxlogica_demo/labelsTr"
+test_images_dir = "/tmp/voxlogica_demo/imagesTs"
+work_dir = "/tmp/voxlogica_demo/work"
+
+// Step 1: Train nnUNet model
+// This assumes the directories above have been populated with medical imaging data
+// Each training case needs both images and labels
+// Example structure:
+//   case_001_0000.nii.gz (T1 modality) + case_001.nii.gz (label)
+//   case_002_0000.nii.gz (T1 modality) + case_002.nii.gz (label)
+//   case_003_0000.nii.gz (T1 modality) + case_003.nii.gz (label)
+//   ... etc (use at least 5-10 cases for meaningful results)
+training_result = nnunet.train_directory(
+    train_images_dir,
+    train_labels_dir,
+    ["T1"],              // Modalities to use
+    work_dir,
+    1,                   // Dataset ID
+    "DemoDataset",       // Human-readable dataset name
+    "3d_fullres",        // Configuration (or "2d", "3d_lowres")
+    1                    // Number of folds (1 for quick demo, 5+ for production)
+)
+
+// Step 2: Check training status
+training_status = training_result["status"]
+
+// Step 3: Run prediction using the trained model
+// The test images should have the same format as training images (without labels)
+prediction_result = nnunet.predict(
+    test_images_dir,
+    training_result["model_path"],
+    concat(work_dir, "/predictions"),
+    "3d_fullres"
+)
+
+// Return results
+prediction_status = prediction_result["status"]
+model_path = training_result["model_path"]
+predictions_path = prediction_result["output_path"]

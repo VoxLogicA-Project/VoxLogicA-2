@@ -17,8 +17,8 @@ Run from repo root:
 # Install uv once (https://docs.astral.sh/uv/)
 # Example (macOS/Linux): curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Deterministic environment sync (creates/updates .venv using .python-version + pinned requirements)
-python3 bootstrap.py --with-test
+# Deterministic environment sync (creates/updates .venv using .python-version + pinned requirements, including pytest)
+python3 bootstrap.py
 
 # Show CLI help
 ./voxlogica --help
@@ -61,6 +61,9 @@ python3 bootstrap.py --with-test
 
 # Or direct
 .venv/bin/python -m pytest
+
+# Runtime-only sync if you explicitly want to skip test tooling
+python3 bootstrap.py --runtime-only
 ```
 
 ## Release Upgrade

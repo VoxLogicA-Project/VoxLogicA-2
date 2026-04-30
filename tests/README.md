@@ -9,8 +9,11 @@ From repo root:
 ```bash
 # install uv once (https://docs.astral.sh/uv/)
 
-python3 bootstrap.py --with-test
+python3 bootstrap.py
 ```
+
+By default, bootstrap installs both runtime and test requirements so `.venv/bin/python -m pytest` is always available.
+Use `python3 bootstrap.py --runtime-only` only when you explicitly want a smaller runtime-only environment.
 
 `requirements-test.txt` includes `hypothesis`.
 
