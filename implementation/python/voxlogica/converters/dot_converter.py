@@ -1,25 +1,28 @@
-"""DOT (Graphviz) converter for symbolic WorkPlan objects."""
+"""Render symbolic plans as Graphviz DOT.
+
+The DOT output is intended for human inspection of dependency structure rather
+than for execution.
+"""
 
 from __future__ import annotations
 
 from typing import Optional, Dict, Any
 
-from voxlogica.converters.common import coerce_plan, iter_sorted_nodes
+from voxlogica.converters.common import coerce_plan, iter_topological_nodes, node_dependency_ids
 
 
 def _node_arguments(node: Any) -> list[str]:
-    args = list(getattr(node, "args", ()))
-    kwargs = [value for _, value in getattr(node, "kwargs", ())]
-    return args + kwargs
+    """Return every dependency node id, flattening args and kwargs alike."""
+    return list(node_dependency_ids(node))
 
 
 def to_dot(work_plan: Any, buffer_assignment: Optional[Dict[str, int]] = None) -> str:
-    """Convert WorkPlan to DOT format."""
+    """Convert a symbolic plan into Graphviz DOT text."""
     plan = coerce_plan(work_plan)
 
     lines = ["digraph {"]
 
-    for node_id, node in iter_sorted_nodes(plan):
+    for node_id, node in iter_topological_nodes(plan):
         if node.kind == "primitive":
             label = node.operator
             if buffer_assignment and node_id in buffer_assignment:

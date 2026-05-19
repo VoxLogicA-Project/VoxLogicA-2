@@ -1,4 +1,9 @@
-"""Pure for-loop primitive used as a legacy fallback kernel."""
+"""Primitive that applies a closure to each item in an iterable.
+
+The reducer lowers ``for ... in ... do ...`` expressions into this primitive
+plus a symbolic closure node. The strict runtime reconstructs that closure and
+passes it into this kernel.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,7 @@ from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_f
 
 
 def _apply_closure(closure: Any, value: Any) -> Any:
+    """Call either a runtime closure object or a plain Python callable."""
     if hasattr(closure, "apply") and callable(closure.apply):
         return closure.apply(value)
     if callable(closure):
@@ -16,7 +22,7 @@ def _apply_closure(closure: Any, value: Any) -> Any:
 
 
 def execute(**kwargs) -> list[Any]:
-    """Apply closure across an iterable and return a list (strict fallback)."""
+    """Apply a closure across an iterable and return a materialized list."""
     if "0" not in kwargs:
         raise ValueError("for_loop requires iterable argument at key '0'")
 

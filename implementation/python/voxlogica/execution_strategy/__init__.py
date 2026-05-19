@@ -1,28 +1,20 @@
-"""Execution strategy implementations."""
+"""Execution strategy package.
 
-from __future__ import annotations
+The DAG-only branch exposes a single strict in-process strategy, but this
+package boundary keeps the planning and runtime concerns decoupled.
+"""
 
 from voxlogica.execution_strategy.base import ExecutionStrategy
 from voxlogica.execution_strategy.results import ExecutionResult, PageResult, PreparedPlan, SequenceValue
+from voxlogica.execution_strategy.sequential import SequentialExecutionStrategy
+from voxlogica.execution_strategy.strict import StrictExecutionStrategy
 
 __all__ = [
     "ExecutionResult",
     "ExecutionStrategy",
-    "DaskExecutionStrategy",
     "PageResult",
     "PreparedPlan",
+    "SequentialExecutionStrategy",
     "SequenceValue",
     "StrictExecutionStrategy",
 ]
-
-
-def __getattr__(name: str):
-    if name == "DaskExecutionStrategy":
-        from voxlogica.execution_strategy.dask import DaskExecutionStrategy
-
-        return DaskExecutionStrategy
-    if name == "StrictExecutionStrategy":
-        from voxlogica.execution_strategy.strict import StrictExecutionStrategy
-
-        return StrictExecutionStrategy
-    raise AttributeError(name)

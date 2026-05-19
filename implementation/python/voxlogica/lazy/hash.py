@@ -1,17 +1,21 @@
-"""Deterministic hashing for symbolic nodes."""
+"""Deterministic hashing for symbolic nodes and child references.
+
+Stable hashes let the reducer deduplicate equivalent nodes and let the runtime
+cache results by structural identity rather than by construction order.
+"""
 
 from __future__ import annotations
 
 from dataclasses import is_dataclass, fields
 from typing import Any
 import hashlib
-
-import canonicaljson
+import json
 
 from voxlogica.lazy.ir import NodeId, NodeSpec
 
 
 def _normalize_value(value: Any) -> Any:
+    """Convert rich Python objects into hash-stable JSON-compatible values."""
     if hasattr(value, "to_syntax") and callable(value.to_syntax):
         return value.to_syntax()
 
@@ -28,6 +32,7 @@ def _normalize_value(value: Any) -> Any:
 
 
 def node_payload(node: NodeSpec) -> dict[str, Any]:
+    """Build the canonical payload that represents one symbolic node."""
     return {
         "kind": node.kind,
         "operator": node.operator,
@@ -39,9 +44,10 @@ def node_payload(node: NodeSpec) -> dict[str, Any]:
 
 
 def hash_node(node: NodeSpec) -> NodeId:
+    """Hash one symbolic node into its stable DAG identifier."""
     payload = node_payload(node)
-    canonical = canonicaljson.encode_canonical_json(payload)
-    return hashlib.sha256(canonical).hexdigest()
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def hash_sequence_item(parent_node_id: str, index: int) -> NodeId:
@@ -56,5 +62,5 @@ def hash_child_ref(parent_node_id: str, *, family: str, token: Any) -> NodeId:
         "parent_node_id": str(parent_node_id),
         "token": _normalize_value(token),
     }
-    canonical = canonicaljson.encode_canonical_json(payload)
-    return hashlib.sha256(canonical).hexdigest()
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

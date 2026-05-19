@@ -1,4 +1,9 @@
-"""Map primitive fallback kernel."""
+"""Map primitive that applies a closure across a sequence.
+
+The reducer uses this primitive for higher-order sequence mapping. The strict
+runtime reconstructs the closure object and this kernel materializes the mapped
+result as a Python list.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,7 @@ from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_f
 
 
 def _apply(func: Any, value: Any) -> Any:
+    """Call the runtime closure protocol or a plain Python callable."""
     if hasattr(func, "apply") and callable(func.apply):
         return func.apply(value)
     if callable(func):
@@ -16,7 +22,7 @@ def _apply(func: Any, value: Any) -> Any:
 
 
 def execute(**kwargs) -> list[Any]:
-    """Strict fallback: materialize mapped sequence as list."""
+    """Materialize the mapped sequence eagerly under the strict runtime."""
     if "0" not in kwargs:
         raise ValueError("map requires sequence argument at key '0'")
 

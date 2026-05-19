@@ -1,4 +1,8 @@
-"""Shared result and prepared-plan contracts for execution strategies."""
+"""Shared execution data structures.
+
+These types model the hand-off points between symbolic planning, runtime
+evaluation, and user-facing reporting.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,6 @@ from typing import Any, Callable, Iterable
 import time
 
 from voxlogica.lazy.ir import NodeId, SymbolicPlan
-from voxlogica.storage import DefinitionStore, MaterializationStore
 
 
 class SequenceValue:
@@ -18,18 +21,23 @@ class SequenceValue:
         iterator_factory: Callable[[], Iterable[Any]],
         total_size: int | None = None,
     ):
+        """Store a factory that can produce a fresh iterator on each access."""
         self._iterator_factory = iterator_factory
         self._total_size = total_size
 
     @classmethod
     def from_iterable(cls, iterable: Iterable[Any], total_size: int | None = None) -> "SequenceValue":
+        """Materialize an iterable once and expose it through ``SequenceValue``."""
         cached = list(iterable)
-        return cls(lambda: iter(cached), total_size=total_size if total_size is not None else len(cached))
+        size = total_size if total_size is not None else len(cached)
+        return cls(lambda: iter(cached), total_size=size)
 
     def iter_values(self) -> Iterable[Any]:
+        """Return a new iterator over the sequence contents."""
         return self._iterator_factory()
 
     def page(self, offset: int, limit: int) -> list[Any]:
+        """Read a half-open window from the sequence without exposing slicing."""
         if offset < 0 or limit < 0:
             raise ValueError("offset and limit must be non-negative")
 
@@ -47,17 +55,19 @@ class SequenceValue:
 
     @property
     def total_size(self) -> int | None:
+        """Return the known size hint, if the producer can provide one."""
         return self._total_size
 
 
 @dataclass
 class PreparedPlan:
-    """Compiled plan representation used by an execution strategy."""
+    """Compiled plan plus the mutable state accumulated during one run."""
 
     plan: SymbolicPlan
-    definition_store: DefinitionStore
-    materialization_store: MaterializationStore
-    strategy_name: str
+    values: dict[NodeId, Any] = field(default_factory=dict)
+    failures: dict[NodeId, str] = field(default_factory=dict)
+    completed_nodes: set[NodeId] = field(default_factory=set)
+    strategy_name: str = "strict"
     compiled_at: float = field(default_factory=time.time)
 
 
@@ -73,7 +83,7 @@ class PageResult:
 
 @dataclass
 class ExecutionResult:
-    """Execution outcome payload shared by facade and features."""
+    """Execution outcome payload shared by facade and CLI."""
 
     success: bool
     completed_operations: set[NodeId]

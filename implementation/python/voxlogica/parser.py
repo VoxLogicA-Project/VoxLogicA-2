@@ -1,5 +1,9 @@
-"""
-VoxLogicA Parser module - Python implementation using Lark
+"""Parser for the VoxLogicA surface language.
+
+This module defines the AST dataclasses, the Lark grammar used to parse source
+text, and the transformer that turns parse trees into reducer-friendly syntax
+objects. It is intentionally syntax-only: name resolution and execution happen
+in later stages.
 """
 
 from dataclasses import dataclass

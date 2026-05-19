@@ -1,4 +1,8 @@
-"""Stable primitives API contracts."""
+"""Public contracts for defining primitives.
+
+Primitive authors use these types to describe both the symbolic DAG node shape
+and the runtime kernel that implements the operation.
+"""
 
 from __future__ import annotations
 
@@ -22,13 +26,16 @@ class AritySpec:
 
     @classmethod
     def fixed(cls, count: int) -> "AritySpec":
+        """Construct an arity contract that requires exactly ``count`` args."""
         return cls(min_args=count, max_args=count)
 
     @classmethod
     def variadic(cls, min_args: int = 0) -> "AritySpec":
+        """Construct an arity contract with no upper bound."""
         return cls(min_args=min_args, max_args=None)
 
     def validate(self, count: int) -> None:
+        """Raise when the provided argument count violates this contract."""
         if count < self.min_args:
             raise ValueError(
                 f"Expected at least {self.min_args} arguments, got {count}"
@@ -41,13 +48,17 @@ class AritySpec:
 
 @dataclass(frozen=True)
 class PrimitiveCall:
-    """A purely symbolic primitive invocation."""
+    """A purely symbolic primitive invocation.
+
+    Primitive calls refer to dependency node ids rather than to concrete values.
+    """
 
     args: tuple[NodeId, ...] = ()
     kwargs: tuple[tuple[str, NodeId], ...] = ()
     attrs: dict[str, Any] = field(default_factory=dict)
 
     def kwargs_dict(self) -> dict[str, NodeId]:
+        """Return keyword arguments as a normal dictionary for convenience."""
         return dict(self.kwargs)
 
 
@@ -71,13 +82,15 @@ class PrimitiveSpec:
 
     @property
     def qualified_name(self) -> str:
+        """Return the fully qualified `<namespace>.<name>` primitive name."""
         return f"{self.namespace}.{self.name}"
 
 
 def default_planner_factory(operator_name: str, kind: PrimitiveKind = "scalar") -> PlannerFn:
-    """Return a planner that maps PrimitiveCall directly to a primitive NodeSpec."""
+    """Return the standard planner for a direct primitive-to-node mapping."""
 
     def _planner(call: PrimitiveCall) -> "NodeSpec":
+        """Translate one symbolic primitive call into the standard node shape."""
         from voxlogica.lazy.ir import NodeSpec
 
         return NodeSpec(
@@ -93,7 +106,7 @@ def default_planner_factory(operator_name: str, kind: PrimitiveKind = "scalar") 
 
 
 def validate_spec(spec: PrimitiveSpec) -> None:
-    """Validate a primitive spec before registration."""
+    """Validate a primitive specification before registration."""
 
     if not spec.name:
         raise ValueError("Primitive name cannot be empty")

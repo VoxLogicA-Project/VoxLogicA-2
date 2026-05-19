@@ -1,24 +1,11 @@
-"""
-Subtraction primitive for VoxLogica-2
-
-Implements subtraction operation for numeric types.
-"""
+"""Subtraction primitive for scalar values and aligned sequences."""
 
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 from voxlogica.primitives.default._sequence_math import apply_binary_op
 
 
 def execute(left, right):
-    """
-    Execute subtraction operation
-    
-    Args:
-        left: Left operand (number)
-        right: Right operand (number)
-        
-    Returns:
-        Difference of left and right
-    """
+    """Return ``left - right`` using the shared scalar/sequence semantics."""
     return apply_binary_op(
         "Subtraction",
         left,

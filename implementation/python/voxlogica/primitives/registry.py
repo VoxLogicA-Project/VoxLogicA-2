@@ -1,4 +1,8 @@
-"""Deterministic primitive discovery and resolution registry."""
+"""Deterministic primitive discovery and resolution.
+
+The registry is the single place that knows how primitive namespaces are
+scanned, imported, validated, and resolved into runtime kernels.
+"""
 
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ _FORBIDDEN_KERNEL_PARAMS = {"engine", "storage", "session"}
 
 
 class PrimitiveRegistry:
-    """Registry with deterministic namespace loading and name resolution."""
+    """Discover, validate, and resolve primitives from namespace packages."""
 
     def __init__(self, primitives_dir: Path | None = None) -> None:
         if primitives_dir is None:
@@ -47,9 +51,11 @@ class PrimitiveRegistry:
 
     @property
     def imported_namespaces(self) -> tuple[str, ...]:
+        """Return namespaces in the order they were explicitly imported."""
         return tuple(self._import_order)
 
     def _discover_namespaces(self) -> None:
+        """Eagerly scan the primitives directory for namespace packages."""
         if not self.primitives_dir.exists():
             return
         for item in sorted(self.primitives_dir.iterdir(), key=lambda p: p.name):
@@ -58,6 +64,7 @@ class PrimitiveRegistry:
             self._load_namespace(item.name)
 
     def _load_namespace(self, namespace: str) -> None:
+        """Import one namespace package and register everything it exports."""
         if namespace in self._loaded_namespaces:
             return
 
@@ -71,6 +78,7 @@ class PrimitiveRegistry:
         namespace_specs = self._specs_by_namespace.setdefault(namespace, OrderedDict())
         namespace_exports: list[Command] = []
 
+        # Each non-private module may contribute one file-backed primitive.
         for py_file in sorted(namespace_dir.glob("*.py"), key=lambda p: p.name):
             if py_file.name.startswith("_"):
                 continue
@@ -132,6 +140,11 @@ class PrimitiveRegistry:
         module: Any,
         module_name: str,
     ) -> tuple[PrimitiveSpec, KernelFn] | None:
+        """Extract a primitive definition from one imported Python module.
+
+        The registry supports multiple contracts for compatibility, but the
+        preferred modern form is ``PRIMITIVE_SPEC`` plus ``KERNEL``.
+        """
         if hasattr(module, "PRIMITIVE_SPEC"):
             spec = module.PRIMITIVE_SPEC
             if not isinstance(spec, PrimitiveSpec):
@@ -160,6 +173,7 @@ class PrimitiveRegistry:
         return None
 
     def _emit_legacy_warning(self, module_name: str) -> None:
+        """Emit a deprecation warning once per legacy primitive source."""
         if module_name in self._legacy_warning_emitted:
             return
         warnings.warn(
@@ -178,6 +192,7 @@ class PrimitiveRegistry:
         primitive_name: str,
         kernel: KernelFn,
     ) -> PrimitiveSpec:
+        """Synthesize a modern spec for an old-style ``execute`` function."""
         arity = _infer_arity(kernel)
         qualified_name = f"{namespace}.{primitive_name}"
         return PrimitiveSpec(
@@ -193,6 +208,7 @@ class PrimitiveRegistry:
         )
 
     def register(self, spec: PrimitiveSpec, kernel: KernelFn) -> None:
+        """Register one validated primitive spec and its runtime kernel."""
         validate_spec(spec)
 
         qualified_name = spec.qualified_name
@@ -210,6 +226,7 @@ class PrimitiveRegistry:
         self._specs_by_namespace.setdefault(spec.namespace, OrderedDict())[spec.name] = spec
 
     def import_namespace(self, namespace: str) -> None:
+        """Ensure a namespace is loaded and mark it as part of lookup order."""
         if namespace not in self._loaded_namespaces:
             self._load_namespace(namespace)
 
@@ -217,15 +234,18 @@ class PrimitiveRegistry:
             self._import_order.append(namespace)
 
     def apply_imports(self, imported_namespaces: list[str] | tuple[str, ...]) -> None:
+        """Replay reducer-recorded namespace imports before execution begins."""
         for namespace in imported_namespaces:
             self.import_namespace(namespace)
 
     def namespace_imgql_exports(self, namespace: str) -> tuple[Command, ...]:
+        """Return `.imgql` commands exported by one primitive namespace."""
         if namespace not in self._loaded_namespaces:
             self._load_namespace(namespace)
         return self._imgql_exports_by_namespace.get(namespace, ())
 
     def resolve(self, name: str) -> PrimitiveSpec:
+        """Resolve either a qualified or unqualified primitive name."""
         if "." in name:
             namespace, primitive_name = name.split(".", 1)
             if namespace and primitive_name and namespace in self._specs_by_namespace:
@@ -241,7 +261,8 @@ class PrimitiveRegistry:
             if namespace != "default":
                 ordered.append(namespace)
 
-        # Ensure deterministic behavior even for not-yet-imported namespaces.
+        # Namespace traversal order is explicit so unqualified resolution
+        # remains reproducible.
         for namespace in sorted(self._specs_by_namespace.keys()):
             if namespace not in ordered:
                 ordered.append(namespace)
@@ -254,6 +275,7 @@ class PrimitiveRegistry:
         raise KeyError(f"Unknown primitive: {name}")
 
     def load_kernel(self, name: str) -> KernelFn:
+        """Resolve a primitive name and return the executable runtime kernel."""
         spec = self.resolve(name)
         return self._kernels_by_name[spec.kernel_name]
 
@@ -262,12 +284,15 @@ class PrimitiveRegistry:
         return self.load_kernel(name)
 
     def get_spec(self, name: str) -> PrimitiveSpec:
+        """Resolve a primitive name and return only its symbolic specification."""
         return self.resolve(name)
 
     def list_namespaces(self) -> list[str]:
+        """List all known primitive namespaces in sorted order."""
         return sorted(self._specs_by_namespace.keys())
 
     def list_primitives(self, namespace_name: str | None = None) -> dict[str, str]:
+        """List primitive descriptions, optionally restricted to one namespace."""
         if namespace_name is not None:
             if namespace_name not in self._loaded_namespaces:
                 self._load_namespace(namespace_name)
@@ -292,6 +317,7 @@ class PrimitiveRegistry:
         return output
 
     def reset_runtime_state(self) -> None:
+        """Call optional namespace reset hooks before a fresh execution run."""
         for namespace in self.list_namespaces():
             namespace_module = self._namespace_modules.get(namespace)
             if namespace_module is None:
@@ -302,6 +328,7 @@ class PrimitiveRegistry:
 
 
 def _infer_arity(kernel: KernelFn) -> AritySpec:
+    """Infer arity from a Python callable when adapting legacy primitives."""
     signature = inspect.signature(kernel)
     required = 0
     optional = 0
@@ -328,6 +355,7 @@ def _infer_arity(kernel: KernelFn) -> AritySpec:
 
 
 def _validate_kernel_signature(spec: PrimitiveSpec, kernel: KernelFn) -> None:
+    """Reject kernels that depend on disallowed runtime-internal parameters."""
     signature = inspect.signature(kernel)
     forbidden = _FORBIDDEN_KERNEL_PARAMS.intersection(signature.parameters.keys())
     if forbidden:
@@ -349,6 +377,7 @@ def adapt_legacy_execute(kernel: KernelFn) -> Callable[[dict[str, Any]], Any]:
 def primitive_call_from_refs(
     args: tuple[str, ...], kwargs: dict[str, str] | None = None, attrs: dict[str, Any] | None = None
 ) -> PrimitiveCall:
+    """Build a ``PrimitiveCall`` from already-resolved dependency node ids."""
     return PrimitiveCall(
         args=args,
         kwargs=tuple(sorted((kwargs or {}).items())),

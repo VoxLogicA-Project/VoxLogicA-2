@@ -1,4 +1,8 @@
-"""Print primitive for VoxLogicA."""
+"""Primitive that renders and prints a label/value pair.
+
+Unlike top-level ``print`` goals, this is a regular primitive node that can
+appear inside the graph when explicit effectful output is desired.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +10,7 @@ from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_f
 
 
 def execute(**kwargs):
-    """Print label=value and return the rendered string."""
+    """Print ``label=value`` and return the same rendered string."""
     if "0" not in kwargs or "1" not in kwargs:
         raise ValueError("print_primitive requires keys '0' (label) and '1' (value)")
 

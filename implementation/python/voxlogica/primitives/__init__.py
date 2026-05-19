@@ -1,6 +1,5 @@
-# VoxLogica-2 Primitives Directory
-"""
-This directory contains primitive operation implementations for VoxLogica-2.
-Primitives are registered through `PrimitiveSpec` contracts and resolved
-by `PrimitiveRegistry` with deterministic namespace rules.
+"""Primitive namespaces for the DAG executor.
+
+Each subpackage contributes runtime kernels and symbolic metadata that the
+registry can discover and load deterministically.
 """

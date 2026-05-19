@@ -1,24 +1,11 @@
-"""
-Multiplication primitive for VoxLogica-2
-
-Implements multiplication operation for numeric types.
-"""
+"""Multiplication primitive for scalar values and aligned sequences."""
 
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 from voxlogica.primitives.default._sequence_math import apply_binary_op
 
 
 def execute(left, right):
-    """
-    Execute multiplication operation
-    
-    Args:
-        left: Left operand (number)
-        right: Right operand (number)
-        
-    Returns:
-        Product of left and right
-    """
+    """Return ``left * right`` using the shared scalar/sequence semantics."""
     return apply_binary_op(
         "Multiplication",
         left,

@@ -1,4 +1,8 @@
-"""Dataset loader primitive fallback."""
+"""Primitive for loading simple datasets from disk or in-memory values.
+
+The DAG-only branch keeps loading conservative: small textual formats are
+decoded into Python values, while unknown files are returned as raw bytes.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +13,7 @@ from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_f
 
 
 def execute(**kwargs):
-    """Load dataset from path at runtime.
+    """Load a dataset from disk or normalize an in-memory iterable.
 
     Supported forms:
     - list/tuple input: returned as-is

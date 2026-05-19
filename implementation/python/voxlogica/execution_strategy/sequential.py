@@ -1,4 +1,4 @@
-"""Strict in-process interpreter for symbolic plans.
+"""Sequential in-process interpreter for symbolic plans.
 
 This strategy evaluates the DAG directly in Python, memoizing node results in
 the prepared plan and reconstructing reducer-generated closures on demand.
@@ -28,13 +28,13 @@ class RuntimeFunction:
     parameters: list[str]
     expression: Expression
     captures: dict[str, Any]
-    evaluator: "StrictExecutionStrategy"
+    evaluator: "SequentialExecutionStrategy"
 
     def invoke(self, args: list[Any]) -> Any:
         if len(args) != len(self.parameters):
             raise ValueError(f"Function expects {len(self.parameters)} args, got {len(args)}")
         env = dict(self.captures)
-        for parameter, value in zip(self.parameters, args, strict=True):
+        for parameter, value in zip(self.parameters, args, strict=False):
             env[parameter] = value
         return self.evaluator._evaluate_runtime_expression(self.expression, env)
 
@@ -46,7 +46,7 @@ class RuntimeClosure:
     parameter: str
     body_expression: Expression
     captures: dict[str, Any]
-    evaluator: "StrictExecutionStrategy"
+    evaluator: "SequentialExecutionStrategy"
 
     def apply(self, value: Any) -> Any:
         env = dict(self.captures)
@@ -57,10 +57,10 @@ class RuntimeClosure:
         return self.apply(value)
 
 
-class StrictExecutionStrategy(ExecutionStrategy):
+class SequentialExecutionStrategy(ExecutionStrategy):
     """Strategy that evaluates the symbolic graph locally."""
 
-    name = "strict"
+    name = "sequential"
 
     def __init__(self, registry: PrimitiveRegistry | None = None):
         self.registry = registry or PrimitiveRegistry()
@@ -75,19 +75,25 @@ class StrictExecutionStrategy(ExecutionStrategy):
         started = time.time()
         failures: dict[NodeId, str] = {}
         target_goals = [goal.id for goal in prepared.plan.goals] if goals is None else list(goals)
+        target_goal_set = set(target_goals)
 
-        for goal_id in target_goals:
-            try:
-                self._evaluate_node(prepared, goal_id)
+        for node_id, node in prepared.plan.nodes.items():
+            try: 
+                if node_id in prepared.values:
+                    continue
+                value = self._evaluate_node_sequential(prepared, node)
+                prepared.values[node_id] = value
+                prepared.completed_nodes.add(node_id)
             except Exception as exc:  # noqa: BLE001
-                failures[goal_id] = str(exc)
+                prepared.failures[node_id] = str(exc)
+                failures[node_id] = str(exc)
 
         if goals is None:
             for goal in prepared.plan.goals:
-                if goal.id not in target_goals:
+                if goal.id not in target_goal_set:
                     continue
                 try:
-                    value = self._evaluate_node(prepared, goal.id)
+                    value = prepared.values[goal.id]
                     self._run_goal_side_effect(goal.operation, goal.name, value)
                 except Exception as exc:  # noqa: BLE001
                     failures[goal.id] = str(exc)
@@ -104,7 +110,7 @@ class StrictExecutionStrategy(ExecutionStrategy):
         if chunk_size <= 0:
             raise ValueError("chunk_size must be > 0")
 
-        sequence = self._coerce_sequence(self._evaluate_node(prepared, node))
+        sequence = self._coerce_sequence(self._ensure_node_value(prepared, node))
         chunk: list[object] = []
         for item in sequence.iter_values():
             chunk.append(item)
@@ -115,7 +121,7 @@ class StrictExecutionStrategy(ExecutionStrategy):
             yield chunk
 
     def page(self, prepared: PreparedPlan, node: NodeId, offset: int, limit: int) -> PageResult:
-        value = self._evaluate_node(prepared, node)
+        value = self._ensure_node_value(prepared, node)
         try:
             sequence = self._coerce_sequence(value)
             items = sequence.page(offset=offset, limit=limit)
@@ -127,52 +133,46 @@ class StrictExecutionStrategy(ExecutionStrategy):
             next_offset = None
         return PageResult(items=items, offset=offset, limit=limit, next_offset=next_offset)
 
-    def _evaluate_node(self, prepared: PreparedPlan, node_id: NodeId) -> Any:
-        """Evaluate one node, recursively materializing its dependencies first."""
-        if node_id in prepared.values:
-            return prepared.values[node_id]
-        if node_id in prepared.failures:
-            raise ValueError(prepared.failures[node_id])
+    def _evaluate_node_sequential(self, prepared: PreparedPlan, node: NodeSpec) -> Any:
+        if node.kind == "constant":
+            return node.attrs.get("value")
 
-        node = prepared.plan.nodes[node_id]
-        try:
-            if node.kind == "constant":
-                value = node.attrs.get("value")
-            elif node.kind == "closure":
-                value = self._build_runtime_closure(prepared, node)
-            elif node.kind == "primitive":
-                value = self._execute_primitive(prepared, node)
-            else:
-                raise ValueError(f"Unsupported node kind: {node.kind}")
-        except Exception as exc:  # noqa: BLE001
-            prepared.failures[node_id] = str(exc)
-            raise
+        if node.kind == "closure":
+            return self._build_runtime_closure_from_values(prepared, node)
 
-        prepared.values[node_id] = value
-        prepared.completed_nodes.add(node_id)
-        return value
+        if node.kind == "primitive":
+            kernel = self.registry.load_kernel(node.operator)
+            args = [prepared.values[arg_id] for arg_id in node.args]
+            kwargs = {key: prepared.values[value_id] for key, value_id in node.kwargs}
+            return self._invoke_kernel(kernel, args, kwargs)
 
-    def _build_runtime_closure(self, prepared: PreparedPlan, node: NodeSpec) -> RuntimeClosure:
-        """Rebuild a runtime closure from the symbolic node payload."""
+        raise ValueError(f"Unsupported node kind: {node.kind}")
+
+
+    def _build_runtime_closure_from_values(self, prepared: PreparedPlan, node: NodeSpec) -> RuntimeClosure:
         body = parse_expression_content(str(node.attrs.get("body", "")))
         parameter = str(node.attrs.get("parameter", "arg"))
         capture_names = list(node.attrs.get("capture_names", []))
+
         captures = {
-            name: self._evaluate_node(prepared, node_id)
+            name: prepared.values[node_id]
             for name, node_id in zip(capture_names, node.args, strict=True)
         }
+
         for name, spec in dict(node.attrs.get("function_captures", {})).items():
-            captures[name] = self._build_runtime_function(prepared, spec)
+            captures[name] = self._build_runtime_function_from_values(prepared, spec)
+
         return RuntimeClosure(parameter=parameter, body_expression=body, captures=captures, evaluator=self)
 
-    def _build_runtime_function(self, prepared: PreparedPlan, spec: dict[str, Any]) -> RuntimeFunction:
+
+    def _build_runtime_function_from_values(self, prepared: PreparedPlan, spec: dict[str, Any]) -> RuntimeFunction:
         expression = parse_expression_content(str(spec["body"]))
         captures = {
-            name: self._evaluate_node(prepared, node_id)
+            name: prepared.values[node_id]
             for name, node_id in dict(spec.get("captures", {})).items()
         }
         for name, nested_spec in dict(spec.get("functions", {})).items():
-            captures[name] = self._build_runtime_function(prepared, nested_spec)
+            captures[name] = self._build_runtime_function_from_values(prepared, nested_spec)
         return RuntimeFunction(
             parameters=list(spec.get("parameters", [])),
             expression=expression,
@@ -183,9 +183,22 @@ class StrictExecutionStrategy(ExecutionStrategy):
     def _execute_primitive(self, prepared: PreparedPlan, node: NodeSpec) -> Any:
         """Load the primitive kernel, materialize inputs, and invoke it."""
         kernel = self.registry.load_kernel(node.operator)
-        args = [self._evaluate_node(prepared, arg_id) for arg_id in node.args]
-        kwargs = {key: self._evaluate_node(prepared, value_id) for key, value_id in node.kwargs}
+        args = [prepared.values[arg_id] for arg_id in node.args]
+        kwargs = {key: prepared.values[value_id] for key, value_id in node.kwargs}
         return self._invoke_kernel(kernel, args, kwargs)
+
+    def _ensure_node_value(self, prepared: PreparedPlan, node_id: NodeId) -> Any:
+        if node_id in prepared.values:
+            return prepared.values[node_id]
+        for current_id, node in prepared.plan.nodes.items():
+            if current_id in prepared.values:
+                continue
+            value = self._evaluate_node_sequential(prepared, node)
+            prepared.values[current_id] = value
+            prepared.completed_nodes.add(current_id)
+            if current_id == node_id:
+                return value
+        raise KeyError(f"Node not found in prepared plan: {node_id}")
 
     def _evaluate_runtime_expression(self, expression: Expression, env: dict[str, Any]) -> Any:
         """Evaluate deferred closure bodies using the same primitive runtime."""

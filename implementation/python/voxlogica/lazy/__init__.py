@@ -1,8 +1,11 @@
-"""Lazy planning package."""
+"""Symbolic planning primitives.
+
+The historical package name remains, but in this branch it mainly hosts the
+symbolic IR and hashing helpers used to build stable DAG nodes.
+"""
 
 from voxlogica.lazy.hash import hash_node
 from voxlogica.lazy.ir import GoalSpec, NodeId, NodeSpec, Ref, SymbolicPlan
-from voxlogica.lazy.plan import SymbolicPlanner
 
 __all__ = [
     "GoalSpec",
@@ -10,6 +13,5 @@ __all__ = [
     "NodeSpec",
     "Ref",
     "SymbolicPlan",
-    "SymbolicPlanner",
     "hash_node",
 ]

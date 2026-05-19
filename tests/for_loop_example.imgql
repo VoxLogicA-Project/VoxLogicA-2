@@ -1,0 +1,10 @@
+// Example program showing the VoxLogicA for expression.
+// It builds a symbolic sequence by applying the body to every item in range(0,5).
+
+values = range(0,5)
+incremented = for i in values do addition(i, 1)
+squares = for i in values do multiplication(i, i)
+
+print "values" values
+print "incremented" incremented
+print "squares" squares

@@ -1,4 +1,8 @@
-"""JSON converter for symbolic WorkPlan objects."""
+"""Render symbolic plans as JSON-friendly Python data.
+
+The output shape is stable and deliberately plain so it can be consumed by
+external tools without knowledge of the Python implementation classes.
+"""
 
 from __future__ import annotations
 
@@ -6,10 +10,12 @@ from typing import Optional, Dict, Any
 import json
 import dataclasses
 
-from voxlogica.converters.common import coerce_plan, iter_sorted_nodes, node_arguments
+from voxlogica.converters.common import coerce_plan, iter_topological_nodes, node_arguments
 
 
 class WorkPlanJSONEncoder(json.JSONEncoder):
+    """JSON encoder that recursively unwraps the dataclasses used by the DAG."""
+
     def default(self, o):  # noqa: D401
         return self._unwrap(o)
 
@@ -27,12 +33,12 @@ class WorkPlanJSONEncoder(json.JSONEncoder):
 
 
 def to_json(work_plan: Any, buffer_assignment: Optional[Dict[str, int]] = None) -> dict:
-    """Convert WorkPlan to JSON-ready dict."""
+    """Convert a symbolic plan into a JSON-ready dictionary."""
     plan = coerce_plan(work_plan)
     encoder = WorkPlanJSONEncoder()
 
     nodes_list = []
-    for node_id, node in iter_sorted_nodes(plan):
+    for node_id, node in iter_topological_nodes(plan):
         if node.kind == "primitive":
             node_dict = {
                 "id": node_id,

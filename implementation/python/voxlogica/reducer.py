@@ -1,4 +1,9 @@
-"""Symbolic reducer: AST -> SymbolicPlan."""
+"""Reducer from parsed AST to symbolic DAG.
+
+This module bridges parsing and execution. It resolves lexical bindings,
+expands imports, lowers language constructs to primitive calls, and emits a
+deterministic symbolic graph where identical nodes collapse to the same id.
+"""
 
 from __future__ import annotations
 
@@ -31,14 +36,16 @@ from voxlogica.parser import (
 )
 from voxlogica.primitives.api import PrimitiveCall
 from voxlogica.primitives.registry import PrimitiveRegistry
-from voxlogica.policy import StaticAnalysisError, StaticDiagnostic
-
 logger = logging.getLogger(__name__)
 
 identifier = str
 Stack = list[tuple[str, str]]
 
 _PRIMITIVE_OPERATOR_ALIASES: dict[str, str] = {
+    "+": "addition",
+    "-": "subtraction",
+    "*": "multiplication",
+    "/": "division",
     "!": "not_compat",
     "!=": "num_neq",
     "&&": "bool_and_scalar",
@@ -49,6 +56,28 @@ _PRIMITIVE_OPERATOR_ALIASES: dict[str, str] = {
     ">=": "num_geq",
     ">": "num_gt",
 }
+
+
+class StaticDiagnostic(Exception):
+    """Structured reducer diagnostic."""
+
+    def __init__(self, code: str, message: str, location: str | None = None, symbol: str | None = None):
+        """Capture a machine-readable static analysis failure."""
+        self.code = code
+        self.message = message
+        self.location = location
+        self.symbol = symbol
+        super().__init__(message)
+
+
+class StaticAnalysisError(RuntimeError):
+    """Raised when static resolution fails before execution."""
+
+    def __init__(self, diagnostics: list[StaticDiagnostic]):
+        """Bundle one or more reducer diagnostics into a raised exception."""
+        self.diagnostics = tuple(diagnostics)
+        message = diagnostics[0].message if diagnostics else "Static analysis failed"
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -82,7 +111,7 @@ Node = NodeSpec
 
 @dataclass
 class WorkPlan:
-    """Reducer output container with compatibility helpers."""
+    """Mutable reducer output before it is frozen into a ``SymbolicPlan``."""
 
     nodes: dict[NodeId, NodeSpec] = field(default_factory=dict)
     goals: list[GoalSpec] = field(default_factory=list)
@@ -90,21 +119,25 @@ class WorkPlan:
     registry: PrimitiveRegistry = field(default_factory=PrimitiveRegistry, repr=False)
 
     def add_node(self, node: NodeSpec) -> NodeId:
+        """Hash-cons a node and return the stable id assigned to it."""
         node_id = hash_node(node)
         if node_id not in self.nodes:
             self.nodes[node_id] = node
         return node_id
 
     def add_goal(self, operation: str, operation_id: NodeId, name: str) -> None:
+        """Record a top-level materialization goal such as print or save."""
         self.goals.append(GoalSpec(operation=operation, id=operation_id, name=name))
 
     def import_namespace(self, namespace: str) -> None:
+        """Import one primitive namespace and track it in reducer order."""
         self.registry.import_namespace(namespace)
         if namespace not in self.imported_namespaces:
             self.imported_namespaces.append(namespace)
 
     @property
     def operations(self) -> dict[NodeId, Operation]:
+        """Expose primitive nodes through the older ``operations`` view."""
         output: dict[NodeId, Operation] = {}
         for node_id, node in self.nodes.items():
             if node.kind != "primitive":
@@ -120,6 +153,7 @@ class WorkPlan:
 
     @property
     def constants(self) -> dict[NodeId, ConstantValue]:
+        """Expose constant nodes through the older ``constants`` view."""
         return {
             node_id: ConstantValue(value=node.attrs.get("value"))
             for node_id, node in self.nodes.items()
@@ -128,6 +162,7 @@ class WorkPlan:
 
     @property
     def closures(self) -> dict[NodeId, ClosureValue]:
+        """Expose closure nodes through the older ``closures`` view."""
         output: dict[NodeId, ClosureValue] = {}
         for node_id, node in self.nodes.items():
             if node.kind != "closure":
@@ -146,6 +181,7 @@ class WorkPlan:
         return output
 
     def to_symbolic_plan(self) -> SymbolicPlan:
+        """Freeze the mutable reducer state into the immutable execution IR."""
         return SymbolicPlan(
             nodes=dict(self.nodes),
             goals=list(self.goals),
@@ -154,9 +190,11 @@ class WorkPlan:
 
     @property
     def definition_store(self) -> dict[NodeId, NodeSpec]:
+        """Return the raw node dictionary for compatibility with old callers."""
         return self.nodes
 
     def __str__(self) -> str:
+        """Return a short human-readable summary of the work plan."""
         return (
             "WorkPlan(" 
             f"nodes={len(self.nodes)}, goals={len(self.goals)}, "
@@ -188,17 +226,21 @@ class Environment:
     """Lexical environment for reducer bindings."""
 
     def __init__(self, bindings: Optional[dict[identifier, DVal]] = None):
+        """Create an environment from an optional binding map."""
         self.bindings = bindings or {}
 
     def try_find(self, ide: identifier) -> Optional[DVal]:
+        """Look up one identifier, returning ``None`` when it is unbound."""
         return self.bindings.get(ide)
 
     def bind(self, ide: identifier, expr: DVal) -> "Environment":
+        """Return a new environment extended with one additional binding."""
         new_bindings = dict(self.bindings)
         new_bindings[ide] = expr
         return Environment(new_bindings)
 
     def bind_list(self, ide_list: list[identifier], expr_list: Sequence[DVal]) -> "Environment":
+        """Return a new environment extended by multiple aligned bindings."""
         if len(ide_list) != len(expr_list):
             raise RuntimeError("Reducer internal error: arity mismatch")
 
@@ -210,6 +252,7 @@ class Environment:
 
 
 def _collect_referenced_variables(expr: Expression) -> set[str]:
+    """Collect free variable names referenced by one expression tree."""
     if isinstance(expr, EArray):
         refs: set[str] = set()
         for item in expr.items:
@@ -248,6 +291,7 @@ def _collect_referenced_variables(expr: Expression) -> set[str]:
 
 
 def _create_constant_node(work_plan: WorkPlan, value: Any) -> NodeId:
+    """Intern one constant into the plan and return its stable node id."""
     return work_plan.add_node(
         NodeSpec(
             kind="constant",
@@ -259,6 +303,7 @@ def _create_constant_node(work_plan: WorkPlan, value: Any) -> NodeId:
 
 
 def _normalize_primitive_identifier(identifier: str) -> str:
+    """Map operator syntax to primitive names and normalize trivial whitespace."""
     normalized = str(identifier or "").strip()
     return _PRIMITIVE_OPERATOR_ALIASES.get(normalized, normalized)
 
@@ -268,6 +313,7 @@ def _serialize_function_capture(
     function_value: FunctionVal,
     seen: set[str],
 ) -> dict[str, Any]:
+    """Serialize a captured function into closure metadata for runtime rebuild."""
     if name in seen:
         return {
             "parameters": list(function_value.parameters),
@@ -311,6 +357,7 @@ def _create_closure_node(
     environment: Environment,
     work_plan: WorkPlan,
 ) -> NodeId:
+    """Create a symbolic closure node by capturing referenced outer bindings."""
     referenced = _collect_referenced_variables(expression)
     referenced.discard(variable)
 
@@ -351,6 +398,7 @@ def _plan_primitive_call(
     output_kind: OutputKind = "scalar",
     position: str | None = None,
 ) -> NodeId:
+    """Validate a primitive call and add its symbolic node to the plan."""
     attrs = dict(attrs or {})
     identifier = _normalize_primitive_identifier(identifier)
     call = PrimitiveCall(args=args, kwargs=kwargs, attrs=attrs)
@@ -404,6 +452,7 @@ def _reduce_map_call(
     call_expr: ECall,
     stack: Stack,
 ) -> NodeId:
+    """Lower a ``map`` call into a sequence node plus a closure argument."""
     function_expr = call_expr.arguments[0]
     sequence_expr = call_expr.arguments[1]
 
@@ -473,6 +522,7 @@ def reduce_expression(
     expr: Expression,
     stack: Optional[Stack] = None,
 ) -> NodeId:
+    """Reduce one AST expression to the id of a symbolic node."""
     current_stack: Stack = [] if stack is None else stack
 
     if isinstance(expr, ENumber):
@@ -629,6 +679,7 @@ def reduce_command(
     parsed_imports: set[str],
     command: Command,
 ) -> tuple[Environment, list[Command]]:
+    """Reduce one top-level command and return any imported commands to queue."""
     if isinstance(command, Declaration):
         if not command.arguments:
             op_id = reduce_expression(env, work_plan, command.expression)
@@ -680,6 +731,7 @@ def _reduce_program_internal(
     *,
     collect_bindings: bool = False,
 ) -> tuple[WorkPlan, dict[str, NodeId]]:
+    """Reduce a whole program, optionally tracking final declaration bindings."""
     work_plan = WorkPlan()
     env = Environment()
     parsed_imports: set[str] = set()
@@ -709,6 +761,8 @@ def _reduce_program_internal(
         except Exception as exc:
             logger.warning("Failed to load stdlib: %s", exc)
 
+    # Imported commands are pushed to the front of the queue so the reducer sees
+    # them in a deterministic, source-like order.
     commands = list(program.commands)
     while commands:
         command = commands.pop(0)
@@ -720,10 +774,11 @@ def _reduce_program_internal(
 
 
 def reduce_program(program: Program) -> WorkPlan:
+    """Reduce a parsed program into a work plan without exposing bindings."""
     work_plan, _bindings = _reduce_program_internal(program, collect_bindings=False)
     return work_plan
 
 
 def reduce_program_with_bindings(program: Program) -> tuple[WorkPlan, dict[str, NodeId]]:
-    """Reduce program and return final declaration->node_id mapping."""
+    """Reduce a program and also return final declaration-to-node bindings."""
     return _reduce_program_internal(program, collect_bindings=True)

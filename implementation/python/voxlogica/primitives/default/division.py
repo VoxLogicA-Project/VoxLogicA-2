@@ -1,28 +1,16 @@
-"""
-Division primitive for VoxLogica-2
-
-Implements division operation for numeric types.
-"""
+"""Division primitive for scalar values and aligned sequences."""
 
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 from voxlogica.primitives.default._sequence_math import apply_binary_op
 
 
 def execute(left, right):
-    """
-    Execute division operation
-    
-    Args:
-        left: Left operand (number)
-        right: Right operand (number)
-        
-    Returns:
-        Quotient of left and right
-    """
+    """Return ``left / right`` while preserving shared sequence semantics."""
     return apply_binary_op("Division", left, right, _safe_divide)
 
 
 def _safe_divide(left, right):
+    """Guard against division by zero before applying Python division."""
     if right == 0:
         raise ValueError("Division by zero")
     return left / right

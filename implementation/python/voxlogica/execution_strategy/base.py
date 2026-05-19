@@ -1,4 +1,8 @@
-"""Execution strategy interface."""
+"""Abstract execution strategy contract.
+
+All runtime implementations consume the same symbolic plan but may differ in how
+they evaluate, cache, or materialize results.
+"""
 
 from __future__ import annotations
 

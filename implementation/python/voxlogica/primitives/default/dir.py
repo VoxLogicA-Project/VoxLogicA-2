@@ -1,4 +1,9 @@
-"""Directory listing primitive with optional glob filtering."""
+"""Directory listing primitive with optional glob filtering.
+
+This primitive is intentionally small and filesystem-oriented: it resolves one
+root directory, applies an optional pattern, and returns the matching entries in
+a deterministic sorted order.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,7 @@ from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_f
 
 
 def _to_bool(value: object, *, name: str) -> bool:
+    """Parse a small set of bool-like values used by the primitive API."""
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
@@ -22,7 +28,7 @@ def _to_bool(value: object, *, name: str) -> bool:
 
 
 def execute(**kwargs) -> list[str]:
-    """List file/directory names under a root directory.
+    """List file or directory names under a root directory.
 
     Positional arguments:
     - `0` (required): root directory path

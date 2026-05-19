@@ -1,4 +1,8 @@
-"""Symbolic IR types for lazy planning."""
+"""Symbolic intermediate representation for the DAG.
+
+These dataclasses define the immutable graph language shared by the reducer,
+exporters, and execution layer.
+"""
 
 from __future__ import annotations
 

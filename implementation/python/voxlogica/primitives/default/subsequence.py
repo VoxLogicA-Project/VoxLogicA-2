@@ -1,4 +1,8 @@
-"""Slice-like subsequence primitive for sequence values."""
+"""Subsequence primitive with explicit start/stop bounds.
+
+This is similar to ``slice`` but models the common case where callers already
+have concrete integer bounds and want the half-open interval ``[start, stop)``.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_f
 
 
 def _as_int(value: Any, *, name: str) -> int:
+    """Normalize subsequence bounds to integers."""
     if isinstance(value, bool):
         raise ValueError(f"{name} must be an integer, got bool")
     if isinstance(value, int):
@@ -41,6 +46,7 @@ def _slice_sequence_value(
     start: int,
     stop: int,
 ) -> SequenceValue:
+    """Return a lazy subsequence view over a ``SequenceValue``."""
     total_size = sequence.total_size
     sliced_total_size: int | None = None
     if total_size is not None:

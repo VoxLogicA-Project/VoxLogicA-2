@@ -1,4 +1,8 @@
-"""Python-like slicing primitive for sequence values."""
+"""Python-style slice primitive for sequence-like values.
+
+This module supports eager containers, ``SequenceValue`` instances, and an
+optional Dask bag fallback when such values reach the strict runtime.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_f
 
 
 def _normalize_bound(value: Any, *, name: str) -> int | None:
+    """Parse one optional slice boundary into an integer or ``None``."""
     if value is None:
         return None
     if isinstance(value, bool):
@@ -41,6 +46,7 @@ def _is_dask_bag(value: Any) -> bool:
 
 
 def _slice_sequence_value(sequence: SequenceValue, start: int | None, stop: int | None) -> SequenceValue:
+    """Return a lazily sliced ``SequenceValue`` without full materialization."""
     normalized_start = 0 if start is None else max(0, start)
     normalized_stop = stop
     total_size = sequence.total_size
@@ -51,6 +57,8 @@ def _slice_sequence_value(sequence: SequenceValue, start: int | None, stop: int 
         sliced_total_size = max(0, effective_stop - effective_start)
 
     def iterator_factory():
+        # Preserve lazy access by trimming the sequence during iteration instead
+        # of forcing a full list first.
         index = 0
         for item in sequence.iter_values():
             if index < normalized_start:

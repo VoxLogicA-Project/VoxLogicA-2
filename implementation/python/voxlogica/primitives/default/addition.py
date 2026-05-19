@@ -1,7 +1,7 @@
-"""
-Addition primitive for VoxLogica-2
+"""Addition primitive for scalar values and aligned sequences.
 
-Implements addition operation for numeric types.
+Runtime behavior is delegated to ``apply_binary_op`` so all arithmetic
+primitives share the same sequence semantics.
 """
 
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
@@ -9,16 +9,7 @@ from voxlogica.primitives.default._sequence_math import apply_binary_op
 
 
 def execute(left, right):
-    """
-    Execute addition operation
-    
-    Args:
-        left: Left operand (number)
-        right: Right operand (number)
-        
-    Returns:
-        Sum of left and right
-    """
+    """Return ``left + right`` using the shared scalar/sequence semantics."""
     return apply_binary_op(
         "Addition",
         left,
