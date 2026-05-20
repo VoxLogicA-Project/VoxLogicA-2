@@ -8,6 +8,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         "lark>=1.2.0",
+        "SimpleITK>=2.0.0",
     ],
     entry_points={
         "console_scripts": [
