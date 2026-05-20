@@ -1,7 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use bash parameter expansion instead of the `dirname` binary to avoid
+# glibc version mismatches when running inside a container.
+_script_src="${BASH_SOURCE[0]}"
+case "$_script_src" in
+  */*) SCRIPT_DIR="$(cd "${_script_src%/*}" && pwd)" ;;
+  *)   SCRIPT_DIR="$PWD" ;;
+esac
 VENV_DIR="$SCRIPT_DIR/.venv"
 
 python3 "$SCRIPT_DIR/bootstrap.py"

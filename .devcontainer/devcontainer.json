@@ -4,28 +4,6 @@
     "dockerfile": "Dockerfile",
     "context": ".."
   },
-  "customizations": {
-    "vscode": {
-      "settings": {
-        "terminal.integrated.shell.linux": "/bin/bash"
-      },
-      "extensions": []
-    }
-  },
-  "runArgs": [
-    "--device=/dev/dri",
-    "--device=/dev/nvidiactl",
-    "--device=/dev/nvidia-uvm",
-    "--device=/dev/nvidia-uvm-tools",
-    "--device=/dev/nvidia-modeset",
-    "--device=/dev/nvidia0",
-    // recommend users install the NVIDIA Container Toolkit on the host instead
-    // do not bind-mount host libraries into the container (ABI mismatch risk)
-    "-e",
-    "NVIDIA_VISIBLE_DEVICES=all",
-    "-e",
-    "NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics"
-  ],
   "workspaceFolder": "/workspaces/VoxLogicA-2",
   "postCreateCommand": "echo 'Devcontainer created'"
 }
