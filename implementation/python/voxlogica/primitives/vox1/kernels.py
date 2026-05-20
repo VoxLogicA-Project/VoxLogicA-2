@@ -188,6 +188,96 @@ def num_gt(left: float, right: float) -> bool:
     return float(left) > float(right)
 
 
+def _comparison_values(left: object, right: object, op_name: str) -> object:
+    if _is_image(left) and _is_image(right):
+        _remember_base_from_values(left, right)
+        return getattr(sitk, op_name)(left, right)
+    if _is_image(left):
+        _remember_base(left)
+        return getattr(sitk, op_name)(left, float(cast(SupportsFloat, right)))
+    if _is_image(right):
+        _remember_base(right)
+        flipped = {
+            "Equal": "Equal",
+            "NotEqual": "NotEqual",
+            "Less": "Greater",
+            "LessEqual": "GreaterEqual",
+            "Greater": "Less",
+            "GreaterEqual": "LessEqual",
+        }[op_name]
+        return getattr(sitk, flipped)(right, float(cast(SupportsFloat, left)))
+
+    left_value = float(cast(SupportsFloat, left))
+    right_value = float(cast(SupportsFloat, right))
+    if op_name == "Equal":
+        return left_value == right_value
+    if op_name == "NotEqual":
+        return left_value != right_value
+    if op_name == "Less":
+        return left_value < right_value
+    if op_name == "LessEqual":
+        return left_value <= right_value
+    if op_name == "Greater":
+        return left_value > right_value
+    if op_name == "GreaterEqual":
+        return left_value >= right_value
+    raise ValueError(f"Unsupported comparison operator: {op_name}")
+
+
+def equal(left: object, right: object) -> object:
+    return apply_binary_op(
+        "Equal",
+        left,
+        right,
+        lambda a, b: _comparison_values(a, b, "Equal"),
+    )
+
+
+def not_equal(left: object, right: object) -> object:
+    return apply_binary_op(
+        "NotEqual",
+        left,
+        right,
+        lambda a, b: _comparison_values(a, b, "NotEqual"),
+    )
+
+
+def less(left: object, right: object) -> object:
+    return apply_binary_op(
+        "Less",
+        left,
+        right,
+        lambda a, b: _comparison_values(a, b, "Less"),
+    )
+
+
+def less_equal(left: object, right: object) -> object:
+    return apply_binary_op(
+        "LessEqual",
+        left,
+        right,
+        lambda a, b: _comparison_values(a, b, "LessEqual"),
+    )
+
+
+def greater(left: object, right: object) -> object:
+    return apply_binary_op(
+        "Greater",
+        left,
+        right,
+        lambda a, b: _comparison_values(a, b, "Greater"),
+    )
+
+
+def greater_equal(left: object, right: object) -> object:
+    return apply_binary_op(
+        "GreaterEqual",
+        left,
+        right,
+        lambda a, b: _comparison_values(a, b, "GreaterEqual"),
+    )
+
+
 def bconstant(value: bool) -> sitk.Image:
     if bool(value):
         return tt()

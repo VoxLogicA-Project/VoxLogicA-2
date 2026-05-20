@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from lark.exceptions import UnexpectedInput
 
@@ -71,7 +73,7 @@ def test_namespace_imgql_exports_are_applied_on_namespace_import():
     result = strategy.run(prepared)
     assert result.success
     goal_id = prepared.plan.goals[0].id
-    assert prepared.materialization_store.get(goal_id) == 5.0
+    assert prepared.values.get(goal_id) == 5.0
 
 
 @pytest.mark.unit
@@ -88,7 +90,7 @@ def test_uppercase_identifier_uses_regular_call_syntax():
     result = strategy.run(prepared)
     assert result.success
     res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
-    assert prepared.materialization_store.get(res_goal.id) == 9.0
+    assert prepared.values.get(res_goal.id) == 9.0
 
 
 @pytest.mark.unit
@@ -105,7 +107,21 @@ def test_plain_scalar_comparison_operator_resolves_without_unknown_callable():
     result = strategy.run(prepared)
     assert result.success
     res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
-    assert prepared.materialization_store.get(res_goal.id) is True
+    assert prepared.values.get(res_goal.id) is True
+
+
+@pytest.mark.unit
+def test_brats_segmentation_example_reduces_plain_vox1_comparison_operators():
+    program = parse_program_content(
+        Path("tests/brats_brain_tumour_segmentation.imgql").read_text(encoding="utf-8")
+        + '\nprint "pdt_check" pdt(tt)\n'
+        + '\nprint "smoothen_check" smoothen(tt, 1.0)\n'
+    )
+    work_plan = reduce_program(program)
+    operators = {node.operator for node in work_plan.nodes.values()}
+    assert "vox1.>" in operators
+    assert "vox1.<=" in operators
+    assert "vox1.>=" in operators
 
 
 @pytest.mark.unit
@@ -123,7 +139,7 @@ def test_plain_scalar_boolean_and_inequality_operators_resolve():
     result = strategy.run(prepared)
     assert result.success
     res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
-    assert prepared.materialization_store.get(res_goal.id) is True
+    assert prepared.values.get(res_goal.id) is True
 
 
 @pytest.mark.unit
@@ -166,7 +182,7 @@ def test_array_literals_and_bracket_access_execute():
     result = strategy.run(prepared)
     assert result.success
     res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
-    assert prepared.materialization_store.get(res_goal.id) == 5.0
+    assert prepared.values.get(res_goal.id) == 5.0
 
 
 @pytest.mark.unit
@@ -186,7 +202,7 @@ def test_slice_syntax_variants_execute():
     result = strategy.run(prepared)
     assert result.success
     goal_values = {
-        goal.name: prepared.materialization_store.get(goal.id)
+        goal.name: prepared.values.get(goal.id)
         for goal in prepared.plan.goals
     }
     assert goal_values["mid"] == [1.0, 2.0, 3.0]
@@ -210,7 +226,7 @@ def test_slice_syntax_works_inside_runtime_closure_bodies():
     result = strategy.run(prepared)
     assert result.success
     res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
-    assert prepared.materialization_store.get(res_goal.id) == 5.0
+    assert prepared.values.get(res_goal.id) == 5.0
 
 
 @pytest.mark.unit
@@ -227,7 +243,7 @@ def test_array_literals_materialize_as_sequences():
     result = strategy.run(prepared)
     assert result.success
     res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
-    value = prepared.materialization_store.get(res_goal.id)
+    value = prepared.values.get(res_goal.id)
     assert [float(item) for item in value] == [1.0, 3.0, 4.0]
 
 
@@ -245,7 +261,7 @@ def test_symbol_identifier_can_be_used_infix():
     result = strategy.run(prepared)
     assert result.success
     res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
-    assert prepared.materialization_store.get(res_goal.id) == 9.0
+    assert prepared.values.get(res_goal.id) == 9.0
 
 
 @pytest.mark.unit
@@ -285,5 +301,6 @@ def test_map_accepts_uppercase_function_identifier():
     result = strategy.run(prepared)
     assert result.success
     res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
-    value = prepared.materialization_store.get(res_goal.id)
-    assert [float(item) for item in value.iter_values()] == [1.0, 2.0, 3.0]
+    value = prepared.values.get(res_goal.id)
+    values = value.iter_values() if hasattr(value, "iter_values") else value
+    assert [float(item) for item in values] == [1.0, 2.0, 3.0]

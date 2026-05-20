@@ -42,19 +42,9 @@ identifier = str
 Stack = list[tuple[str, str]]
 
 _PRIMITIVE_OPERATOR_ALIASES: dict[str, str] = {
-    "+": "addition",
-    "-": "subtraction",
-    "*": "multiplication",
-    "/": "division",
     "!": "not_compat",
-    "!=": "num_neq",
     "&&": "bool_and_scalar",
     "||": "bool_or_scalar",
-    "==": "num_eq",
-    "<=": "num_leq",
-    "<": "num_lt",
-    ">=": "num_geq",
-    ">": "num_gt",
 }
 
 
