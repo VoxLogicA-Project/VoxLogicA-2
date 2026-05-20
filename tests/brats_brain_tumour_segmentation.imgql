@@ -1,4 +1,5 @@
 import "simpleitk"
+import "vox1"
 
 N(a) = near(a)
 touch(a,b) = through(N(b), a)
@@ -35,3 +36,6 @@ segment_case(pflair) =
 flair_images = map(read_image, flair_paths)
 pflair_images = map(preprocess_flair, map(to_intensity, flair_images))
 segmentations = map(segment_case, pflair_images)
+
+result = map(volume,segmentations)
+
