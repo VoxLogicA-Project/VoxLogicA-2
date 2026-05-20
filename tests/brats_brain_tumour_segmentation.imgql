@@ -38,4 +38,4 @@ pflair_images = map(preprocess_flair, map(to_intensity, flair_images))
 segmentations = map(segment_case, pflair_images)
 
 result = map(volume,segmentations)
-
+print "result" result
