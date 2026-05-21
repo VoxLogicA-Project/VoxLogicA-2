@@ -82,11 +82,11 @@ def run_command(args: argparse.Namespace) -> int:
     if args.execute:
         storage = NoCacheStorageBackend() if args.no_cache else SQLiteResultsDatabase(db_path=args.store_db)
         execution_result = ExecutionEngine(storage_backend=storage, no_cache=args.no_cache).execute_workplan(workplan)
+        print(json.dumps(_summary_payload(workplan, execution_result), indent=2))
         if not execution_result.success:
             logger.error("DAG execution failed")
             return 1
 
-    print(json.dumps(_summary_payload(workplan, execution_result), indent=2))
     return 0
 
 
