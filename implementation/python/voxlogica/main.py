@@ -17,6 +17,7 @@ from voxlogica.converters.json_converter import WorkPlanJSONEncoder, to_json
 from voxlogica.execution import ExecutionEngine
 from voxlogica.parser import parse_program_content
 from voxlogica.reducer import reduce_program
+from voxlogica.storage import NoCacheStorageBackend, SQLiteResultsDatabase
 
 logger = logging.getLogger("voxlogica.main")
 
@@ -56,6 +57,7 @@ def _summary_payload(workplan, execution_result: Any | None) -> dict[str, Any]:
             "failed_operations": execution_result.failed_operations,
             "execution_time": execution_result.execution_time,
             "total_operations": execution_result.total_operations,
+            "cache_summary": execution_result.cache_summary,
         }
     return payload
 
@@ -78,7 +80,8 @@ def run_command(args: argparse.Namespace) -> int:
 
     execution_result = None
     if args.execute:
-        execution_result = ExecutionEngine().execute_workplan(workplan)
+        storage = NoCacheStorageBackend() if args.no_cache else SQLiteResultsDatabase(db_path=args.store_db)
+        execution_result = ExecutionEngine(storage_backend=storage, no_cache=args.no_cache).execute_workplan(workplan)
         if not execution_result.success:
             logger.error("DAG execution failed")
             return 1
@@ -89,7 +92,7 @@ def run_command(args: argparse.Namespace) -> int:
 
 def list_primitives_command(_args: argparse.Namespace) -> int:
     """Implement the ``list-primitives`` subcommand."""
-    engine = ExecutionEngine()
+    engine = ExecutionEngine(no_cache=True)
     payload = {
         "namespaces": engine.primitives.list_namespaces(),
         "primitives": engine.primitives.list_primitives(),
@@ -110,6 +113,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--save-task-graph-as-json")
     run_parser.add_argument("--save-syntax")
     run_parser.add_argument("--execute", action=argparse.BooleanOptionalAction, default=True)
+    run_parser.add_argument("--no-cache", action="store_true", help="Force recomputation without reading or writing the store")
+    run_parser.add_argument("--store-db", help="Path to the persistent results SQLite database")
     run_parser.add_argument("--debug", action="store_true")
     run_parser.set_defaults(handler=run_command)
 

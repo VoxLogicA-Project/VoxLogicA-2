@@ -19,6 +19,7 @@ from voxlogica.execution_strategy.results import ExecutionResult, PageResult, Pr
 from voxlogica.lazy.ir import NodeId, NodeSpec, SymbolicPlan
 from voxlogica.parser import EArray, EBool, ECall, EFor, ELet, ENumber, ESlice, EString, Expression, parse_expression_content
 from voxlogica.primitives.registry import PrimitiveRegistry
+from voxlogica.storage import DefinitionStore, MaterializationStore, ResultsDatabase
 
 
 @dataclass
@@ -62,18 +63,34 @@ class SequentialExecutionStrategy(ExecutionStrategy):
 
     name = "sequential"
 
-    def __init__(self, registry: PrimitiveRegistry | None = None):
+    def __init__(self, registry: PrimitiveRegistry | None = None, results_database: ResultsDatabase | None = None):
         self.registry = registry or PrimitiveRegistry()
+        self.results_database = results_database
+        self._cache_summary: dict[str, Any] = {}
+        self._node_events: list[dict[str, Any]] = []
 
     def compile(self, plan: SymbolicPlan) -> PreparedPlan:
         """Prepare a plan for execution and reset namespace runtime state."""
         self.registry.apply_imports(plan.imported_namespaces)
         self.registry.reset_runtime_state()
-        return PreparedPlan(plan=plan, strategy_name=self.name)
+        if self.results_database is not None:
+            self.results_database.put_plan_definitions(plan)
+        return PreparedPlan(
+            plan=plan,
+            definition_store=DefinitionStore(plan.nodes),
+            materialization_store=MaterializationStore(
+                backend=self.results_database,
+                read_through=True,
+                write_through=True,
+            ),
+            strategy_name=self.name,
+        )
 
     def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None) -> ExecutionResult:
         started = time.time()
         failures: dict[NodeId, str] = {}
+        self._cache_summary = {"computed": 0, "cached_local": 0, "cached_store": 0, "failed": 0}
+        self._node_events = []
         target_goals = [goal.id for goal in prepared.plan.goals] if goals is None else list(goals)
         target_goal_set = set(target_goals)
 
@@ -81,12 +98,31 @@ class SequentialExecutionStrategy(ExecutionStrategy):
             try: 
                 if node_id in prepared.values:
                     continue
+                if prepared.materialization_store is not None and prepared.materialization_store.has(node_id):
+                    value = prepared.materialization_store.get(node_id)
+                    prepared.values[node_id] = value
+                    prepared.completed_nodes.add(node_id)
+                    source = str(prepared.materialization_store.metadata(node_id).get("source", "runtime-local"))
+                    if source == "results-db":
+                        self._cache_summary["cached_store"] = int(self._cache_summary.get("cached_store", 0)) + 1
+                    else:
+                        self._cache_summary["cached_local"] = int(self._cache_summary.get("cached_local", 0)) + 1
+                    self._node_events.append({"node_id": node_id, "status": "cached", "cache_source": source})
+                    continue
                 value = self._evaluate_node_sequential(prepared, node)
                 prepared.values[node_id] = value
                 prepared.completed_nodes.add(node_id)
+                if prepared.materialization_store is not None:
+                    prepared.materialization_store.put(node_id, value, metadata={"source": "runtime", "operator": node.operator})
+                self._cache_summary["computed"] = int(self._cache_summary.get("computed", 0)) + 1
+                self._node_events.append({"node_id": node_id, "status": "computed", "cache_source": "runtime"})
             except Exception as exc:  # noqa: BLE001
                 prepared.failures[node_id] = str(exc)
                 failures[node_id] = str(exc)
+                if prepared.materialization_store is not None:
+                    prepared.materialization_store.fail(node_id, str(exc))
+                self._cache_summary["failed"] = int(self._cache_summary.get("failed", 0)) + 1
+                self._node_events.append({"node_id": node_id, "status": "failed", "error": str(exc)})
 
         if goals is None:
             for goal in prepared.plan.goals:
@@ -98,12 +134,17 @@ class SequentialExecutionStrategy(ExecutionStrategy):
                 except Exception as exc:  # noqa: BLE001
                     failures[goal.id] = str(exc)
 
+        if prepared.materialization_store is not None:
+            prepared.materialization_store.flush(timeout_s=10.0)
+
         return ExecutionResult(
             success=not failures,
             completed_operations=set(prepared.completed_nodes),
             failed_operations=failures,
             execution_time=time.time() - started,
             total_operations=len(prepared.plan.nodes),
+            cache_summary=dict(self._cache_summary),
+            node_events=list(self._node_events),
         )
 
     def stream(self, prepared: PreparedPlan, node: NodeId, chunk_size: int) -> Iterable[list[object]]:
