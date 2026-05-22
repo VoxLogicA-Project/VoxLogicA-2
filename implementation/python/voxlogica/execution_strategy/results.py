@@ -67,7 +67,7 @@ class PreparedPlan:
     values: dict[NodeId, Any] = field(default_factory=dict)
     failures: dict[NodeId, str] = field(default_factory=dict)
     completed_nodes: set[NodeId] = field(default_factory=set)
-    definition_store: Any | None = None
+    # definition_store: Any | None = None
     materialization_store: Any | None = None
     strategy_name: str = "sequential"
     compiled_at: float = field(default_factory=time.time)

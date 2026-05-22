@@ -321,21 +321,23 @@ def close_storage() -> None:
 @dataclass
 class MaterializationRecord:
     status: str
+    expression: Any = None
+    dependencies: list[str] = field(default_factory=list)
     value: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-class DefinitionStore:
-    """Immutable symbolic definition store."""
-
-    def __init__(self, definitions: dict[str, NodeSpec] | None = None):
-        self._definitions = dict(definitions or {})
-
-    def get(self, node_id: str) -> NodeSpec:
-        return self._definitions[node_id]
-
-    def items(self):
-        return self._definitions.items()
+# class DefinitionStore:
+#     """Immutable symbolic definition store."""
+# 
+#     def __init__(self, definitions: dict[str, NodeSpec] | None = None):
+#         self._definitions = dict(definitions or {})
+# 
+#     def get(self, node_id: str) -> NodeSpec:
+#         return self._definitions[node_id]
+# 
+#     def items(self):
+#         return self._definitions.items()
 
 
 class MaterializationStore:
@@ -362,6 +364,8 @@ class MaterializationStore:
             return None
         materialized = MaterializationRecord(
             status=MATERIALIZED_STATUS,
+            expression=record.expression,
+            dependencies=record.dependencies,
             value=record.value,
             metadata={**record.metadata, "source": "results-db", "cache_hit": True},
         )
@@ -383,10 +387,10 @@ class MaterializationStore:
                 raise KeyError(f"No materialized record for node {node_id}")
             return record.value
 
-    def put(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None) -> None:
+    def put(self, node_id: str, expression: Any, dependencies: list[str], value: Any, metadata: dict[str, Any] | None = None) -> None:
         with self._lock:
             record_metadata = dict(metadata or {})
-            self._records[node_id] = MaterializationRecord(MATERIALIZED_STATUS, value, record_metadata)
+            self._records[node_id] = MaterializationRecord(MATERIALIZED_STATUS, expression, dependencies, value, record_metadata)
             if self._backend is None or not self._write_through:
                 return
             supported, reason = can_serialize_value(value)
@@ -397,9 +401,9 @@ class MaterializationStore:
             self._records[node_id].metadata["persisted"] = "pending"
             self._persist_queue.put((node_id, value, record_metadata))
 
-    def fail(self, node_id: str, message: str) -> None:
-        with self._lock:
-            self._records[node_id] = MaterializationRecord("failed", None, {"error": str(message)})
+    # def fail(self, node_id: str, message: str) -> None:
+    #     with self._lock:
+    #         self._records[node_id] = MaterializationRecord("failed", None, {"error": str(message)})
 
     def metadata(self, node_id: str) -> dict[str, Any]:
         with self._lock:

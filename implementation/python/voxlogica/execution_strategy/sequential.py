@@ -19,7 +19,7 @@ from voxlogica.execution_strategy.results import ExecutionResult, PageResult, Pr
 from voxlogica.lazy.ir import NodeId, NodeSpec, SymbolicPlan
 from voxlogica.parser import EArray, EBool, ECall, EFor, ELet, ENumber, ESlice, EString, Expression, parse_expression_content
 from voxlogica.primitives.registry import PrimitiveRegistry
-from voxlogica.storage import DefinitionStore, MaterializationStore, ResultsDatabase
+from voxlogica.storage import MaterializationStore, ResultsDatabase
 
 
 @dataclass
@@ -77,7 +77,7 @@ class SequentialExecutionStrategy(ExecutionStrategy):
             self.results_database.put_plan_definitions(plan)
         return PreparedPlan(
             plan=plan,
-            definition_store=DefinitionStore(plan.nodes),
+            # definition_store=DefinitionStore(plan.nodes),
             materialization_store=MaterializationStore(
                 backend=self.results_database,
                 read_through=True,
@@ -110,17 +110,19 @@ class SequentialExecutionStrategy(ExecutionStrategy):
                     self._node_events.append({"node_id": node_id, "status": "cached", "cache_source": source})
                     continue
                 value = self._evaluate_node_sequential(prepared, node)
+                expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
+                dependencies = list(node.args) + [value_id for _, value_id in node.kwargs]
                 prepared.values[node_id] = value
                 prepared.completed_nodes.add(node_id)
                 if prepared.materialization_store is not None:
-                    prepared.materialization_store.put(node_id, value, metadata={"source": "runtime", "operator": node.operator})
+                    prepared.materialization_store.put(node_id, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
                 self._cache_summary["computed"] = int(self._cache_summary.get("computed", 0)) + 1
                 self._node_events.append({"node_id": node_id, "status": "computed", "cache_source": "runtime"})
             except Exception as exc:  # noqa: BLE001
                 prepared.failures[node_id] = str(exc)
                 failures[node_id] = str(exc)
-                if prepared.materialization_store is not None:
-                    prepared.materialization_store.fail(node_id, str(exc))
+                # if prepared.materialization_store is not None:
+                #     prepared.materialization_store.fail(node_id, str(exc))
                 self._cache_summary["failed"] = int(self._cache_summary.get("failed", 0)) + 1
                 self._node_events.append({"node_id": node_id, "status": "failed", "error": str(exc)})
 
