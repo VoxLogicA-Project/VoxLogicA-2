@@ -385,7 +385,7 @@ class MaterializationStore:
 
     def get(self, node_id: str) -> Any:
         with self._lock:
-            record = self._records.get(node_id) or self._materialize_from_backend(node_id)
+            record = self._records.get(node_id)
             if record is not None and record.value == node_id:
                 if self._backend is not None:
                     backend_record = self._backend.get_record(node_id)
@@ -399,9 +399,9 @@ class MaterializationStore:
     def put(self, node_id: str, expression: Any, dependencies: list[str], value: Any, metadata: dict[str, Any] | None = None) -> None:
         with self._lock:
             record_metadata = dict(metadata or {})
-            record = encode_for_storage(value).vox_type if can_serialize_value(value)[0] else ""
-            format_version = record.format_version if record is not None else ""
-            vox_type = record.vox_type if record is not None else ""     
+            encoded = encode_for_storage(value) if can_serialize_value(value)[0] else None
+            format_version = encoded.format_version if encoded is not None else ""
+            vox_type = encoded.vox_type if encoded is not None else ""     
             if vox_type == "bytes" or vox_type == "ndarray":
                 stored_value = node_id
                 self._backend.put_success(node_id, value, metadata=record_metadata) if self._backend is not None else None
