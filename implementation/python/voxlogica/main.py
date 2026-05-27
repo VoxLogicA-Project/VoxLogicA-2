@@ -84,7 +84,7 @@ def run_command(args: argparse.Namespace) -> int:
         execution_result = ExecutionEngine(storage_backend=storage, no_cache=args.no_cache).execute_workplan(workplan)
         print(json.dumps(_summary_payload(workplan, execution_result), indent=2))
         if not execution_result.success:
-            logger.error("DAG execution failed")
+            logger.error("DAG execution failed", exc_info=True)
             return 1
 
     return 0
