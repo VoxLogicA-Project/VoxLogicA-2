@@ -19,7 +19,7 @@ hi_thr = 0.93
 vi_thr = 0.88
 
 all_flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
-flair_paths = subsequence(all_flair_paths, dataset_slice_start, dataset_slice_stop)
+// flair_paths = subsequence(all_flair_paths, dataset_slice_start, dataset_slice_stop)
 
 read_image(path) = ReadImage(path)
 to_intensity(img) = intensity(img)
@@ -33,9 +33,14 @@ segment_case(pflair) =
   let very_intense = smoothen(geq_sv(vi_thr, pflair), 2.0) in
   grow(hyper_intense, very_intense)
 
-flair_images = map(read_image, flair_paths)
-pflair_images = map(preprocess_flair, map(to_intensity, flair_images))
-segmentations = map(segment_case, pflair_images)
+process_path(path) =
+  let img = read_image(path) in
+  let pflair = preprocess_flair(to_intensity(img)) in
+  segment_case(pflair)
 
-result = map(volume,segmentations)
+// Using for construct to iterate over dataset paths and compute volumes
+result = for path in all_flair_paths do
+  let seg = process_path(path) in
+  volume(seg)
+
 print "result" result

@@ -404,22 +404,21 @@ class MaterializationStore:
             vox_type = encoded.vox_type if encoded is not None else ""     
             if vox_type == "bytes" or vox_type == "ndarray":
                 stored_value = node_id
-                self._backend.put_success(node_id, value, metadata=record_metadata) if self._backend is not None else None
+                # self._backend.put_success(node_id, value, metadata=record_metadata) if self._backend is not None else None
             else:
                 stored_value = value
             self._records[node_id] = MaterializationRecord(MATERIALIZED_STATUS, expression, dependencies, stored_value, record_metadata, format_version=format_version, vox_type=vox_type)
-            return
             #if vox_type == "bytes" or vox_type == "ndarray":
             #    return
-            #if self._backend is None or not self._write_through:
-            #    return
-            #supported, reason = can_serialize_value(value)
-            #if not supported:
-            #    self._records[node_id].metadata["persisted"] = False
-            #    self._records[node_id].metadata["persist_error"] = reason
-            #    return
-            #self._records[node_id].metadata["persisted"] = "pending"
-            #self._persist_queue.put((node_id, value, record_metadata))
+            if self._backend is None or not self._write_through:
+                return
+            supported, reason = can_serialize_value(value)
+            if not supported:
+                self._records[node_id].metadata["persisted"] = False
+                self._records[node_id].metadata["persist_error"] = reason
+                return
+            self._records[node_id].metadata["persisted"] = "pending"
+            self._persist_queue.put((node_id, value, record_metadata))
 
     # def fail(self, node_id: str, message: str) -> None:
     #     with self._lock:
