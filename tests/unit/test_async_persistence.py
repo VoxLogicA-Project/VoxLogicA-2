@@ -12,7 +12,7 @@ def test_async_persistence_flushes_after_compute(tmp_path: Path) -> None:
     db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
     store = MaterializationStore(backend=db, read_through=False, write_through=True)
     try:
-        store.put("node-async", 123, metadata={"source": "runtime"})
+        store.put("node-async", "test.expression", [], 123, metadata={"source": "runtime"})
         meta = store.metadata("node-async")
         assert meta.get("source") == "runtime"
         assert meta.get("persisted") in {"pending", True}
@@ -21,4 +21,3 @@ def test_async_persistence_flushes_after_compute(tmp_path: Path) -> None:
     finally:
         store.close()
         db.close()
-

@@ -30,9 +30,15 @@ def test_unsupported_runtime_value_is_not_persisted(tmp_path: Path) -> None:
     db = SQLiteResultsDatabase(db_path=tmp_path / "results.db")
     store = MaterializationStore(backend=db, read_through=False, write_through=True)
     try:
-        store.put("node-unsupported", _UnsupportedPayload(), metadata={"source": "runtime"})
+        store.put(
+            "node-unsupported",
+            "test.expression",
+            [],
+            _UnsupportedPayload(),
+            metadata={"source": "runtime"},
+        )
         meta = store.metadata("node-unsupported")
-        warning = meta.get("persist_warning")
+        warning = meta.get("persist_error")
         assert meta.get("persisted") is False
         assert isinstance(warning, dict)
         assert warning.get("code") == "E_UNSPECIFIED_VALUE_TYPE"
@@ -70,4 +76,3 @@ def test_inspect_unsupported_value_path_raises_spec_error() -> None:
     with pytest.raises(UnsupportedVoxValueError) as exc:
         inspect_store_result(storage, node_id="node-seq", path="/0")
     assert exc.value.code == "E_UNSPECIFIED_VALUE_TYPE"
-

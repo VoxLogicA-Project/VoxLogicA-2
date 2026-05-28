@@ -429,7 +429,7 @@ def test_playground_manager_value_resolve_reports_queued_before_thread_start(
         if str(request_payload.get("_priority_node", "")) == "node-1":
             if live_inspector is not None:
                 store = MaterializationStore(backend=None, read_through=False, write_through=False)
-                store.put("node-1", [10, 11, 12], metadata={"source": "runtime"})
+                store.put("node-1", "test.expression", [], [10, 11, 12], metadata={"source": "runtime"})
                 live_inspector.attach_materialization_store(store)
             first_started.set()
             release_first.wait(timeout=2.0)
@@ -1189,7 +1189,13 @@ def test_playground_manager_inspects_live_runtime_for_running_value_job(
     ) -> dict[str, object]:
         del request_payload, log_path_str
         store = MaterializationStore(backend=None, read_through=False, write_through=False)
-        store.put("node-live", InspectableRangeSequence(parent_ref="node-live", start=80, stop=82), metadata={"source": "runtime"})
+        store.put(
+            "node-live",
+            "test.expression",
+            [],
+            InspectableRangeSequence(parent_ref="node-live", start=80, stop=82),
+            metadata={"source": "runtime"},
+        )
         if live_inspector is not None:
             live_inspector.attach_materialization_store(store)
         started.set()
