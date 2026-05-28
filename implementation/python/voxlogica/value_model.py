@@ -85,6 +85,15 @@ def _import_numpy():
         return None
 
 
+def _import_simpleitk():
+    try:
+        import SimpleITK as sitk
+
+        return sitk
+    except Exception:
+        return None
+
+
 def _is_sequence_value(value: Any) -> bool:
     try:
         from voxlogica.execution_strategy.results import SequenceValue
@@ -206,8 +215,69 @@ class VoxOverlayValue(VoxValue):
         return payload
 
 
+class VoxImageValue(VoxValue):
+    vox_type = "image"
+
+    def as_array(self) -> Any:
+        sitk = _import_simpleitk()
+        if sitk is not None and isinstance(self.raw, sitk.Image):
+            return sitk.GetArrayFromImage(self.raw)
+        if hasattr(self.raw, "__array__"):
+            np = _import_numpy()
+            if np is not None:
+                return np.asarray(self.raw)
+        raise UnsupportedVoxValueError(self.raw)
+
+    def storage_metadata(self) -> dict[str, Any]:
+        sitk = _import_simpleitk()
+        if sitk is not None and isinstance(self.raw, sitk.Image):
+            return {
+                "runtime": "simpleitk",
+                "spacing": [float(v) for v in self.raw.GetSpacing()],
+                "origin": [float(v) for v in self.raw.GetOrigin()],
+                "direction": [float(v) for v in self.raw.GetDirection()],
+                "components": int(self.raw.GetNumberOfComponentsPerPixel()),
+            }
+        return {"runtime": "array"}
+
+    def describe(self, *, path: str = "") -> dict[str, Any]:
+        array = self.as_array()
+        payload = self.descriptor_base(path=path, can_descend=True)
+        payload["summary"] = {
+            "dtype": str(array.dtype),
+            "shape": [int(v) for v in array.shape],
+            "size": int(array.size),
+            **self.storage_metadata(),
+        }
+        return payload
+
+
+def restore_runtime_image(payload_json: dict[str, Any], array: Any) -> Any:
+    metadata = dict(payload_json.get("metadata") or {})
+    if metadata.get("runtime") != "simpleitk":
+        return array
+
+    sitk = _import_simpleitk()
+    if sitk is None:
+        raise RuntimeError("SimpleITK is required to decode image values.")
+
+    components = int(metadata.get("components") or 1)
+    image = sitk.GetImageFromArray(array, isVector=components > 1)
+    spacing = metadata.get("spacing")
+    origin = metadata.get("origin")
+    direction = metadata.get("direction")
+    if isinstance(spacing, list):
+        image.SetSpacing(tuple(float(v) for v in spacing))
+    if isinstance(origin, list):
+        image.SetOrigin(tuple(float(v) for v in origin))
+    if isinstance(direction, list):
+        image.SetDirection(tuple(float(v) for v in direction))
+    return image
+
+
 def adapt_runtime_value(value: Any) -> VoxValue:
     np = _import_numpy()
+    sitk = _import_simpleitk()
     if value is None:
         return VoxScalarValue(value, "null")
     if isinstance(value, bool):
@@ -228,4 +298,6 @@ def adapt_runtime_value(value: Any) -> VoxValue:
         return VoxMappingValue(value)
     if _is_sequence_value(value) or isinstance(value, (list, tuple, range)):
         return VoxSequenceValue(value)
+    if sitk is not None and isinstance(value, sitk.Image):
+        return VoxImageValue(value)
     raise UnsupportedVoxValueError(value)

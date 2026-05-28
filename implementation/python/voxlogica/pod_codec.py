@@ -18,8 +18,10 @@ from voxlogica.value_model import (
     VoxNdArrayValue,
     VoxOverlayValue,
     VoxSequenceValue,
+    VoxImageValue,
     adapt_runtime_value,
     normalize_overlay_layer,
+    restore_runtime_image,
 )
 
 
@@ -124,6 +126,19 @@ def encode_for_storage(value: Any, *, page_size: int = 128) -> EncodedRecord:
             payload_json={"encoding": "scalar-json-v1", "value": _json_native_or_raise(payload_value, context=vox_type)},
         )
 
+    if isinstance(adapted, VoxImageValue):
+        array = adapted.as_array()
+        payload_json = {
+            "encoding": "image-array-binary-v1",
+            "dtype": str(array.dtype),
+            "shape": [int(v) for v in array.shape],
+            "order": "C",
+            "byte_order": "little",
+            "metadata": adapted.storage_metadata(),
+        }
+        payload_bin = bytes(array.tobytes(order="C"))
+        return EncodedRecord(VOX_FORMAT_VERSION, "image", descriptor, payload_json, payload_bin)
+
     if isinstance(adapted, VoxBytesValue):
         return EncodedRecord(
             format_version=VOX_FORMAT_VERSION,
@@ -193,6 +208,13 @@ def decode_runtime_value(vox_type: str, payload_json: dict[str, Any], payload_bi
         dtype = np.dtype(str(payload_json["dtype"]))
         shape = tuple(int(v) for v in payload_json["shape"])
         return np.frombuffer(payload_bin or b"", dtype=dtype).reshape(shape, order="C")
+    if vox_type == "image":
+        if np is None:
+            raise RuntimeError("NumPy is required to decode image values.")
+        dtype = np.dtype(str(payload_json["dtype"]))
+        shape = tuple(int(v) for v in payload_json["shape"])
+        array = np.frombuffer(payload_bin or b"", dtype=dtype).reshape(shape, order="C")
+        return restore_runtime_image(payload_json, array)
     if vox_type == "overlay":
         layers = []
         for index, raw_layer in enumerate(payload_json.get("layers") or []):

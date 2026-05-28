@@ -406,7 +406,7 @@ class MaterializationStore:
             val,reason,encoded = can_serialize_value(value)
             format_version = encoded.format_version if encoded is not None else ""
             vox_type = encoded.vox_type if encoded is not None else ""     
-            if vox_type == "bytes" or vox_type == "overlay" or vox_type == "ndarray":
+            if vox_type == "bytes" or vox_type == "overlay" or vox_type == "ndarray" or vox_type == "image":
                 stored_value = node_id
                 # self._backend.put_success(node_id, value, metadata=record_metadata) if self._backend is not None else None
             else:
