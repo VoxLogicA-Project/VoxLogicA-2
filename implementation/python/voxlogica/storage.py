@@ -378,7 +378,7 @@ class MaterializationStore:
     def has(self, node_id: str) -> bool:
         with self._lock:
             record = self._records.get(node_id)
-            if record is not None and record.status == MATERIALIZED_STATUS:
+            if record is not None and record.status == MATERIALIZED_STATUS and record.metadata["persisted"] == True:
                 return True
             loaded = self._materialize_from_backend(node_id)
             return loaded is not None and loaded.status == MATERIALIZED_STATUS
@@ -399,7 +399,7 @@ class MaterializationStore:
     def put(self, node_id: str, expression: Any, dependencies: list[str], value: Any, metadata: dict[str, Any] | None = None) -> None:
         with self._lock:
             record_metadata = dict(metadata or {})
-            encoded = encode_for_storage(value) if can_serialize_value(value)[0] else None
+            val,reason,encoded = can_serialize_value(value)
             format_version = encoded.format_version if encoded is not None else ""
             vox_type = encoded.vox_type if encoded is not None else ""     
             if vox_type == "bytes" or vox_type == "ndarray":
@@ -412,8 +412,7 @@ class MaterializationStore:
             #    return
             if self._backend is None or not self._write_through:
                 return
-            supported, reason = can_serialize_value(value)
-            if not supported:
+            if not val:
                 self._records[node_id].metadata["persisted"] = False
                 self._records[node_id].metadata["persist_error"] = reason
                 return

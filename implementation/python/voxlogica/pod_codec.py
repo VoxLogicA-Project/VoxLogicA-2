@@ -102,12 +102,12 @@ def _decode_embedded_record(payload: dict[str, Any]) -> Any:
     return decode_runtime_value(str(payload["vox_type"]), dict(payload["payload_json"]), payload_bin)
 
 
-def can_serialize_value(value: Any) -> tuple[bool, str | None]:
+def can_serialize_value(value: Any) -> tuple[bool, str | None, EncodedRecord | None]:
     try:
-        encode_for_storage(value)
+        record = encode_for_storage(value)
     except Exception as exc:  # noqa: BLE001
-        return False, str(exc)
-    return True, None
+        return False, str(exc), None
+    return True, None, record
 
 
 def encode_for_storage(value: Any, *, page_size: int = 128) -> EncodedRecord:
