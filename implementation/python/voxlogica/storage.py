@@ -25,7 +25,25 @@ from voxlogica.value_model import VOX_FORMAT_VERSION
 
 MATERIALIZED_STATUS = "materialized"
 PLANNED_STATUS = "planned"
-STORE_SCHEMA_VERSION = 1
+STORE_SCHEMA_VERSION = 2
+_RESULTS_TABLE_COLUMNS = frozenset(
+    {
+        "node_id",
+        "status",
+        "format_version",
+        "vox_type",
+        "descriptor_json",
+        "payload_json",
+        "payload_file",
+        "error",
+        "metadata_json",
+        "expression_json",
+        "dependencies_json",
+        "runtime_version",
+        "created_at",
+        "updated_at",
+    }
+)
 logger = logging.getLogger(__name__)
 
 
@@ -70,10 +88,16 @@ class SQLiteResultsDatabase:
         self._connection.execute("PRAGMA synchronous=NORMAL")
         self._initialize_schema()
 
+    def _results_table_matches_schema(self) -> bool:
+        rows = self._connection.execute("PRAGMA table_info(results)").fetchall()
+        if not rows:
+            return False
+        return {str(row[1]) for row in rows} == _RESULTS_TABLE_COLUMNS
+
     def _initialize_schema(self) -> None:
         with self._lock:
             version = int((self._connection.execute("PRAGMA user_version").fetchone() or [0])[0])
-            if version != STORE_SCHEMA_VERSION:
+            if version != STORE_SCHEMA_VERSION or not self._results_table_matches_schema():
                 self._connection.execute("DROP TABLE IF EXISTS results")
                 self._connection.execute(
                     """
