@@ -10,16 +10,16 @@ distleq(x,y) = x >= pdt(y)
 
 // More advanced functions
 smoothen(a,x) = distleq(x,distgeq(x,not(a)))
-dataset_root = "../../VoxLogicA/datasets/BraTS_2019_HGG"
+dataset_root = "/home/VoxLogicA/datasets/BraTS_2019_HGG"
 
 // Run the fixed-threshold segmentation on a small slice of the dataset.
 dataset_slice_start = 0
-dataset_slice_stop = 15
+dataset_slice_stop = 1
 hi_thr = 0.93
 vi_thr = 0.88
 
 all_flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
-// flair_paths = subsequence(all_flair_paths, dataset_slice_start, dataset_slice_stop)
+flair_paths = subsequence(all_flair_paths, dataset_slice_start, dataset_slice_stop)
 
 read_image(path) = ReadImage(path)
 to_intensity(img) = intensity(img)
@@ -39,7 +39,7 @@ process_path(path) =
   segment_case(pflair)
 
 // Using for construct to iterate over dataset paths and compute volumes
-result = for path in all_flair_paths do
+result = for path in flair_paths do
   let seg = process_path(path) in
   volume(seg)
 

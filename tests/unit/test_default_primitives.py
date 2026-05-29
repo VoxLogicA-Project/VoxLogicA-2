@@ -8,9 +8,12 @@ import pytest
 from voxlogica.execution_strategy.results import SequenceValue
 from voxlogica.primitives.default import (
     addition,
+    argmax as argmax_primitive,
     dir as dir_primitive,
     dask_map,
     division,
+    filter as filter_primitive,
+    fold as fold_primitive,
     for_loop,
     index,
     load,
@@ -166,6 +169,33 @@ def test_map_and_for_loop_primitives():
         map_primitive.execute(**{"0": [1, 2]})
     with pytest.raises(ValueError):
         for_loop.execute(**{"0": [1, 2]})
+
+
+@pytest.mark.unit
+def test_filter_and_fold_primitives():
+    assert filter_primitive.execute(**{"0": [1, 2, 3, 4], "closure": lambda x: x > 2}) == [3, 4]
+    assert filter_primitive.execute(**{"0": range(4), "1": lambda x: x % 2 == 0}) == [0, 2]
+
+    assert fold_primitive.execute(**{"operator": "+", "0": 0, "1": [1, 2, 3]}) == 6
+    assert fold_primitive.execute(**{"operator": "*", "0": 1, "1": [2, 3, 4]}) == 24
+    assert fold_primitive.execute(**{"operator": "max", "0": [0, 1, 2, 7, 3]}) == 7
+    assert fold_primitive.execute(**{"operator": "+", "0": range(5)}) == 10
+    assert fold_primitive.execute(**{"operator": "&&", "0": [True, True, False, True]}) is False
+
+    with pytest.raises(ValueError):
+        fold_primitive.execute(**{"operator": "max", "0": []})
+    with pytest.raises(ValueError):
+        fold_primitive.execute(**{"operator": "zip", "0": [1, 2]})
+
+
+@pytest.mark.unit
+def test_argmax_primitive():
+    assert argmax_primitive.execute(**{"0": [3, 9, 4, 9, 1]}) == 1
+    assert argmax_primitive.execute(**{"0": [1.0, 2.5, 2.5]}) == 1
+    assert argmax_primitive.execute(**{"0": range(3, 8)}) == 4
+
+    with pytest.raises(ValueError):
+        argmax_primitive.execute(**{"0": []})
 
 
 @pytest.mark.unit

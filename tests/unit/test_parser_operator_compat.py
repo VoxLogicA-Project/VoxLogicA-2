@@ -304,3 +304,45 @@ def test_map_accepts_uppercase_function_identifier():
     value = prepared.values.get(res_goal.id)
     values = value.iter_values() if hasattr(value, "iter_values") else value
     assert [float(item) for item in values] == [1.0, 2.0, 3.0]
+
+
+@pytest.mark.unit
+def test_filter_expression_executes():
+    program = parse_program_content(
+        """
+        let xs = filter x in range(0, 10) do num_gt(x, 5)
+        print "res" xs
+        """
+    )
+    work_plan = reduce_program(program)
+    strategy = StrictExecutionStrategy(registry=work_plan.registry)
+    prepared = strategy.compile(work_plan.to_symbolic_plan())
+    result = strategy.run(prepared)
+    assert result.success
+    res_goal = next(goal for goal in prepared.plan.goals if goal.name == "res")
+    value = prepared.values.get(res_goal.id)
+    values = value.iter_values() if hasattr(value, "iter_values") else value
+    assert [float(item) for item in values] == [6.0, 7.0, 8.0, 9.0]
+
+
+@pytest.mark.unit
+def test_fold_expression_executes():
+    program = parse_program_content(
+        """
+        print "sum" fold + 0 range(0, 5)
+        print "prod" fold * 1 range(1, 5)
+        print "maxv" fold max range(0, 8)
+        """
+    )
+    work_plan = reduce_program(program)
+    strategy = StrictExecutionStrategy(registry=work_plan.registry)
+    prepared = strategy.compile(work_plan.to_symbolic_plan())
+    result = strategy.run(prepared)
+    assert result.success
+    goal_values = {
+        goal.name: prepared.values.get(goal.id)
+        for goal in prepared.plan.goals
+    }
+    assert goal_values["sum"] == 10.0
+    assert goal_values["prod"] == 24.0
+    assert goal_values["maxv"] == 7.0

@@ -162,6 +162,7 @@ For command-specific flags:
 - Module docs: `doc/dev/modules/`
 - Python package docs: `implementation/python/README.md`
 - API usage notes: `doc/user/api-usage.md`
-- Language guide + example gallery: `doc/user/language-gallery.md`
+- Example gallery (programs + manifest): `doc/gallery/`
+- Language guide (narrative index): `doc/user/language-gallery.md`
 - Serve studio dashboards: `doc/user/serve-studio.md`
 - VS Code MCP setup for the UI inspector: `doc/user/vscode-mcp-ui-inspector.md`

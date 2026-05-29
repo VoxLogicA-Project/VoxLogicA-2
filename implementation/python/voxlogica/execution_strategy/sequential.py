@@ -17,7 +17,7 @@ import time
 from voxlogica.execution_strategy.base import ExecutionStrategy
 from voxlogica.execution_strategy.results import ExecutionResult, PageResult, PreparedPlan, SequenceValue
 from voxlogica.lazy.ir import NodeId, NodeSpec, SymbolicPlan
-from voxlogica.parser import EArray, EBool, ECall, EFor, ELet, ENumber, ESlice, EString, Expression, parse_expression_content
+from voxlogica.parser import EArray, EBool, ECall, EFilter, EFold, EFor, ELet, ENumber, ESlice, EString, Expression, parse_expression_content
 from voxlogica.primitives.registry import PrimitiveRegistry
 from voxlogica.storage import MaterializationStore, ResultsDatabase
 from voxlogica.value_model import VOX_FORMAT_VERSION
@@ -189,7 +189,7 @@ class SequentialExecutionStrategy(ExecutionStrategy):
             kernel = self.registry.load_kernel(node.operator)
             args = [prepared.values[arg_id] for arg_id in node.args]
             kwargs = {key: prepared.values[value_id] for key, value_id in node.kwargs}
-            return self._invoke_kernel(kernel, args, kwargs)
+            return self._invoke_kernel(kernel, args, kwargs, node.attrs)
 
         raise ValueError(f"Unsupported node kind: {node.kind}")
 
@@ -230,7 +230,7 @@ class SequentialExecutionStrategy(ExecutionStrategy):
         kernel = self.registry.load_kernel(node.operator)
         args = [prepared.values[arg_id] for arg_id in node.args]
         kwargs = {key: prepared.values[value_id] for key, value_id in node.kwargs}
-        return self._invoke_kernel(kernel, args, kwargs)
+        return self._invoke_kernel(kernel, args, kwargs, node.attrs)
 
     def _ensure_node_value(self, prepared: PreparedPlan, node_id: NodeId) -> Any:
         if node_id in prepared.values:
@@ -289,6 +289,29 @@ class SequentialExecutionStrategy(ExecutionStrategy):
                 evaluator=self,
             )
             return [closure.apply(item) for item in sequence.iter_values()]
+        if isinstance(expression, EFilter):
+            sequence = self._coerce_sequence(self._evaluate_runtime_expression(expression.iterable, env))
+            closure = RuntimeClosure(
+                parameter=expression.variable,
+                body_expression=expression.predicate,
+                captures=env,
+                evaluator=self,
+            )
+            return [
+                item
+                for item in sequence.iter_values()
+                if bool(closure.apply(item))
+            ]
+        if isinstance(expression, EFold):
+            from voxlogica.primitives.default.fold import fold_sequence
+
+            sequence = self._evaluate_runtime_expression(expression.sequence, env)
+            init = (
+                None
+                if expression.init is None
+                else self._evaluate_runtime_expression(expression.init, env)
+            )
+            return fold_sequence(expression.operator, init, sequence)
         raise ValueError(f"Unsupported runtime expression: {type(expression).__name__}")
 
     def _coerce_sequence(self, value: Any) -> SequenceValue:
@@ -300,7 +323,13 @@ class SequentialExecutionStrategy(ExecutionStrategy):
             return SequenceValue.from_iterable(value)
         raise ValueError(f"Value is not a sequence: {type(value).__name__}")
 
-    def _invoke_kernel(self, kernel, args: list[Any], kwargs: dict[str, Any]) -> Any:
+    def _invoke_kernel(
+        self,
+        kernel,
+        args: list[Any],
+        kwargs: dict[str, Any],
+        attrs: dict[str, Any] | None = None,
+    ) -> Any:
         """Adapt engine arguments to the kernel's declared Python signature."""
         signature = inspect.signature(kernel)
         params = list(signature.parameters.values())
@@ -310,6 +339,8 @@ class SequentialExecutionStrategy(ExecutionStrategy):
         if has_varkw:
             payload = {str(index): value for index, value in enumerate(args)}
             payload.update(kwargs)
+            if attrs:
+                payload.update(attrs)
             return kernel(**payload)
         if has_varargs:
             return kernel(*args, **kwargs)

@@ -154,6 +154,47 @@ class EFor(Expression):
 
 
 @dataclass
+class EFilter(Expression):
+    """Filter expression that keeps items matching a predicate."""
+
+    position: Position
+    variable: str
+    iterable: Expression
+    predicate: Expression
+
+    def __str__(self) -> str:
+        return f"filter {self.variable} in {self.iterable} do {self.predicate}"
+
+    def to_syntax(self) -> str:
+        return (
+            f"filter {self.variable} in {self.iterable.to_syntax()} "
+            f"do {self.predicate.to_syntax()}"
+        )
+
+
+@dataclass
+class EFold(Expression):
+    """Fold expression that reduces a sequence with a built-in combiner."""
+
+    position: Position
+    operator: str
+    init: Expression | None
+    sequence: Expression
+
+    def __str__(self) -> str:
+        if self.init is None:
+            return f"fold {self.operator} {self.sequence}"
+        return f"fold {self.operator} {self.init} {self.sequence}"
+
+    def to_syntax(self) -> str:
+        if self.init is None:
+            return f"fold {self.operator} {self.sequence.to_syntax()}"
+        return (
+            f"fold {self.operator} {self.init.to_syntax()} {self.sequence.to_syntax()}"
+        )
+
+
+@dataclass
 class ELet(Expression):
     """Let expression for local variable binding"""
 
@@ -255,7 +296,7 @@ grammar = r"""
     formal_args: "(" identifier ("," identifier)* ")"
     actual_args: "(" expression ("," expression)* ")"
     
-        ?expression: let_expr | for_expr | op_expr
+        ?expression: let_expr | for_expr | filter_expr | fold_expr | op_expr
     
         ?op_expr: prefix_expr
             | op_expr infix_operator prefix_expr   -> op_expr
@@ -275,6 +316,13 @@ grammar = r"""
     paren_expr: "(" expression ")"
         array_expr: "[" [expression ("," expression)*] "]"
     for_expr: "for" identifier "in" expression "do" expression
+    filter_expr: "filter" identifier "in" expression "do" expression
+    fold_expr: "fold" fold_op expression expression -> fold_with_init
+             | "fold" fold_op expression -> fold_default_init
+    ?fold_op: OPERATOR | FOLD_MAX | FOLD_MIN
+
+    FOLD_MAX: "max"
+    FOLD_MIN: "min"
     let_expr: "let" identifier "=" expression "in" expression
     
     variable_name: identifier | OPERATOR
@@ -423,6 +471,18 @@ class VoxLogicATransformer(Transformer):
     @v_args(inline=True)
     def for_expr(self, variable, iterable, body):
         return EFor("pos", str(variable), iterable, body)
+
+    @v_args(inline=True)
+    def filter_expr(self, variable, iterable, predicate):
+        return EFilter("pos", str(variable), iterable, predicate)
+
+    @v_args(inline=True)
+    def fold_with_init(self, operator, init, sequence):
+        return EFold("pos", str(operator), init, sequence)
+
+    @v_args(inline=True)
+    def fold_default_init(self, operator, sequence):
+        return EFold("pos", str(operator), None, sequence)
 
     @v_args(inline=True)
     def let_expr(self, variable, value, body):

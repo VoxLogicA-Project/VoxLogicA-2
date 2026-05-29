@@ -21,6 +21,8 @@ from voxlogica.parser import (
     EArray,
     EBool,
     ECall,
+    EFilter,
+    EFold,
     EFor,
     ELet,
     ENumber,
@@ -268,6 +270,19 @@ def _collect_referenced_variables(expr: Expression) -> set[str]:
         body_refs = _collect_referenced_variables(expr.body)
         body_refs.discard(expr.variable)
         refs.update(body_refs)
+        return refs
+
+    if isinstance(expr, EFilter):
+        refs = _collect_referenced_variables(expr.iterable)
+        predicate_refs = _collect_referenced_variables(expr.predicate)
+        predicate_refs.discard(expr.variable)
+        refs.update(predicate_refs)
+        return refs
+
+    if isinstance(expr, EFold):
+        refs = _collect_referenced_variables(expr.sequence)
+        if expr.init is not None:
+            refs.update(_collect_referenced_variables(expr.init))
         return refs
 
     if isinstance(expr, ELet):
@@ -606,6 +621,8 @@ def reduce_expression(
                 in {
                     "for_loop",
                     "default.for_loop",
+                    "filter",
+                    "default.filter",
                     "map",
                     "default.map",
                     "range",
@@ -652,6 +669,55 @@ def reduce_expression(
             identifier="for_loop",
             args=(iterable_id, closure_id),
             output_kind="sequence",
+            position=expr.position,
+        )
+
+    if isinstance(expr, EFilter):
+        iterable_id = reduce_expression(env, work_plan, expr.iterable, current_stack)
+        closure_id = _create_closure_node(
+            variable=expr.variable,
+            expression=expr.predicate,
+            environment=env,
+            work_plan=work_plan,
+        )
+        return _plan_primitive_call(
+            work_plan,
+            identifier="filter",
+            args=(iterable_id, closure_id),
+            output_kind="sequence",
+            position=expr.position,
+        )
+
+    if isinstance(expr, EFold):
+        sequence_id = reduce_expression(env, work_plan, expr.sequence, current_stack)
+        operator = str(expr.operator)
+        if operator not in {"+", "-", "*", "/", "&&", "||", "min", "max"}:
+            raise StaticAnalysisError(
+                [
+                    StaticDiagnostic(
+                        code="E_UNSUPPORTED_FOLD",
+                        message=(
+                            f"Unsupported fold operator {operator!r}; "
+                            "expected one of +, -, *, /, &&, ||, min, max"
+                        ),
+                        location=expr.position,
+                        symbol=operator,
+                    )
+                ]
+            )
+
+        if expr.init is None:
+            args = (sequence_id,)
+        else:
+            init_id = reduce_expression(env, work_plan, expr.init, current_stack)
+            args = (init_id, sequence_id)
+
+        return _plan_primitive_call(
+            work_plan,
+            identifier="fold",
+            args=args,
+            attrs={"operator": operator},
+            output_kind="scalar",
             position=expr.position,
         )
 

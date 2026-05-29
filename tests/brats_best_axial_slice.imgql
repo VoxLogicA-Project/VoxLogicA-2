@@ -1,0 +1,65 @@
+import "simpleitk"
+import "vox1"
+import "strings"
+
+// BraTS 2019 HGG: TACAS fixed-threshold segmentation, then export the axial
+// slice where the tumour mask has maximum volume (16-bit PNG per case).
+
+dataset_root = "tests/data/datasets/BraTS_2019_HGG"
+output_dir = "tests/output/brats-tmp-slices"
+dataset_slice_start = 0
+dataset_slice_stop = 3
+case_count = dataset_slice_stop - dataset_slice_start
+
+hi_thr = 0.93
+vi_thr = 0.88
+z_planes = 192
+
+flair_paths =
+  subsequence(
+    dir(dataset_root, "*_flair.nii.gz", true, true),
+    dataset_slice_start,
+    dataset_slice_stop
+  )
+
+preprocess_flair(flair) =
+  let background = touch(leq_sv(0.1, flair), border) in
+  percentiles(flair, not(background), 0)
+
+segment_case(pflair) =
+  let hyper = smoothen(geq_sv(hi_thr, pflair), 5.0) in
+  let very = smoothen(geq_sv(vi_thr, pflair), 2.0) in
+  grow(hyper, very)
+
+axial_mask_volume(seg, zi) = volume(and(seg, eq_sv(zi, z)))
+
+best_axial_z(seg) =
+  argmax(for zi in range(0, z_planes) do axial_mask_volume(seg, zi))
+
+overlay_at_z(pflair, seg, zi) =
+  let plane = and(seg, eq_sv(zi, z)) in
+  mask(constant(255.0), plane) + mask(pflair, not(plane))
+
+extract_axial(img, zi) =
+  Extract(
+    img,
+    vector_uint32([max(x) + 1, max(y) + 1, 1]),
+    vector_uint32([0, 0, zi])
+  )
+
+to_png_u16(img) =
+  Cast(
+    RescaleIntensity(img, 0, 65535),
+    GetPixelIDValueFromString("sitkUInt16")
+  )
+
+save_best_slice(flair_path, case_idx) =
+  let pflair = preprocess_flair(intensity(ReadImage(flair_path))) in
+  let seg = segment_case(pflair) in
+  let zi = best_axial_z(seg) in
+  let out = concat(output_dir, "/case_", format_string("{:.0f}", case_idx), "_best_slice.png") in
+  WriteImage(to_png_u16(extract_axial(overlay_at_z(pflair, seg, zi), zi)), out)
+
+saved =
+  for idx in range(0, case_count) do
+    save_best_slice(index(flair_paths, idx), idx)

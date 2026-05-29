@@ -11,7 +11,52 @@ Core language expressions may evaluate to:
 - scalar values such as numbers, booleans, and strings
 - sequence values backed by native lists, tuples, ranges, lazy runtime sequences, or compatible runtime adapters
 - images and overlays through imported primitives
-- closures in deferred contexts such as `map` and `for`
+- closures in deferred contexts such as `map`, `for`, and `filter`
+
+## Filter Semantics
+
+`filter item in seq do predicate` evaluates `predicate` for each element of `seq` with `item` bound to the current element.
+
+Current implementation behavior:
+
+- when `predicate` is truthy, the original item is kept
+- when `predicate` is falsy, the item is dropped
+- evaluation order follows the source sequence order
+- the result is a new sequence containing only kept items
+
+This mirrors `for` syntactically but behaves like a list comprehension with a guard.
+
+## Fold Semantics
+
+`fold op init seq` reduces `seq` left-to-right using a built-in combiner `op`.
+
+Supported combiners:
+
+- `+`, `-`, `*`, `/`
+- `&&`, `||`
+- `min`, `max`
+
+When the init expression is omitted, defaults apply:
+
+- `+` uses `0`
+- `*` uses `1`
+- `&&` uses `true`
+- `||` uses `false`
+- `min` and `max` use the first element as the initial accumulator
+
+Fold is intentionally restricted to built-in combiners rather than arbitrary closures.
+
+## Argmax Semantics
+
+`argmax(seq)` scans a sequence and returns the zero-based index of its largest element.
+
+Current implementation behavior:
+
+- empty sequences are rejected
+- ties keep the earliest maximum index
+- the result is a scalar index, not the maximum value itself
+
+This pairs naturally with `for` when each element is a scalar score or metric.
 
 ## Array Literal Semantics
 
@@ -90,7 +135,7 @@ This keeps plain `!` usable while preserving compatibility with older image-orie
 
 ## Deferred Runtime Semantics
 
-Expressions inside deferred closures, such as function bodies invoked through `map` or `for`, are reparsed and evaluated at runtime.
+Expressions inside deferred closures, such as function bodies invoked through `map`, `for`, or `filter`, are reparsed and evaluated at runtime.
 
 For that reason, any new core syntax form must be supported consistently in:
 

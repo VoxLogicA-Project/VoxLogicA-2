@@ -30,6 +30,8 @@ Supported expression forms:
 - parenthesized expressions: `(expr)`
 - let-expression: `let x = value in body`
 - for-expression: `for item in seq do body`
+- filter-expression: `filter item in seq do predicate`
+- fold-expression: `fold op init seq` or `fold op seq`
 - array literals: `[expr1, expr2, expr3]`
 - index access: `xs[i]`
 - slice access: `xs[start:stop]`, `xs[:stop]`, `xs[start:]`, `xs[:]`
@@ -75,6 +77,35 @@ Accepted slice forms:
 - both omitted: `[:]`
 
 Negative bounds are currently not specified as source-level behavior and should not be relied upon.
+
+### Filter Expressions
+
+Filter expressions use the same binding shape as `for`, but keep items whose predicate is truthy:
+
+```imgql
+big = filter x in xs do num_gt(x, threshold)
+positives = filter x in range(0, 10) do num_gt(x, 0)
+```
+
+### Fold Expressions
+
+Fold reduces a sequence with a built-in combiner. An explicit init is optional for common operators:
+
+```imgql
+total = fold + 0 range(0, 5)
+product = fold * 1 values
+peak = fold max scores
+```
+
+Supported combiners: `+`, `-`, `*`, `/`, `&&`, `||`, `min`, `max`.
+
+### Argmax
+
+`argmax(seq)` returns the index of the largest element in a sequence. Ties keep the first occurrence:
+
+```imgql
+peak_index = argmax(for zi in range(0, depth) do slice_volume(seg, zi))
+```
 
 ## Operator Surface
 
