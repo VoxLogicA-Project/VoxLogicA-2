@@ -1,0 +1,5 @@
+import "strings"
+patient = "P-1024"
+score = 0.8732
+label = concat("patient=", patient)
+pretty_score = format_string("{:.2%}", score)

@@ -1,0 +1,204 @@
+{
+  "version": 1,
+  "examples": [
+    {
+      "id": "intro-hello",
+      "title": "Minimal expression",
+      "module": "default",
+      "level": "intro",
+      "strategy": "strict",
+      "description": "Evaluate a single scalar expression and bind the result.",
+      "program": "programs/default/intro-hello.imgql"
+    },
+    {
+      "id": "intro-arithmetic",
+      "title": "Scalar arithmetic declarations",
+      "module": "default",
+      "level": "intro",
+      "strategy": "strict",
+      "description": "Basic scalar evaluation and named outputs.",
+      "program": "programs/default/intro-arithmetic.imgql"
+    },
+    {
+      "id": "intro-let-in",
+      "title": "Local let-in binding",
+      "module": "default",
+      "level": "intro",
+      "strategy": "strict",
+      "description": "Local substitutions with deterministic expression nesting.",
+      "program": "programs/default/intro-let-in.imgql"
+    },
+    {
+      "id": "intro-symbolic-infix",
+      "title": "Symbolic/uppercase infix function names",
+      "module": "default",
+      "level": "intermediate",
+      "strategy": "strict",
+      "description": "Demonstrates custom infix operators and uppercase identifiers.",
+      "program": "programs/default/intro-symbolic-infix.imgql"
+    },
+    {
+      "id": "intro-prefix-unary",
+      "title": "Prefix unary call",
+      "module": "default",
+      "level": "intermediate",
+      "strategy": "strict",
+      "description": "One-argument prefix call form.",
+      "program": "programs/default/intro-prefix-unary.imgql"
+    },
+    {
+      "id": "default-range-map",
+      "title": "Lazy threshold sequence",
+      "module": "default",
+      "level": "intermediate",
+      "strategy": "dask",
+      "description": "Range and map produce lazy symbolic sequence plans.",
+      "program": "programs/default/default-range-map.imgql"
+    },
+    {
+      "id": "default-index",
+      "title": "Index primitive on tuple-like output",
+      "module": "default",
+      "level": "intermediate",
+      "strategy": "strict",
+      "description": "Extracting values from fixed-order structures.",
+      "program": "programs/default/default-index.imgql"
+    },
+    {
+      "id": "sitk-threshold",
+      "title": "Binary threshold + statistics",
+      "module": "simpleitk",
+      "level": "core",
+      "strategy": "strict",
+      "description": "Read image, threshold, and inspect summary statistics.",
+      "program": "programs/simpleitk/sitk-threshold.imgql"
+    },
+    {
+      "id": "sitk-smooth",
+      "title": "CurvatureFlow smoothing output",
+      "module": "simpleitk",
+      "level": "core",
+      "strategy": "strict",
+      "description": "Computes a smoothed volume and a deterministic output path.",
+      "program": "programs/simpleitk/sitk-smooth.imgql"
+    },
+    {
+      "id": "sitk-threshold-sweep-overlay",
+      "title": "BraTS threshold sweep overlays",
+      "module": "simpleitk",
+      "level": "advanced",
+      "strategy": "dask",
+      "description": "Explore one overlay per selected threshold, using preprocessed FLAIR as the base layer and the threshold mask as the overlay.",
+      "program": "programs/simpleitk/sitk-threshold-sweep-overlay.imgql"
+    },
+    {
+      "id": "sitk-brats-fixed-segmentation",
+      "title": "BraTS brain tumour segmentation",
+      "module": "simpleitk",
+      "level": "advanced",
+      "strategy": "dask",
+      "description": "Run the BraTS preprocessing pipeline on a small dataset slice and return segmentation masks only with fixed hiThr and viThr values.",
+      "program": "programs/simpleitk/sitk-brats-fixed-segmentation.imgql"
+    },
+    {
+      "id": "vox1-dot-ops",
+      "title": "Vox1 dotted operators and overloads",
+      "module": "vox1",
+      "level": "advanced",
+      "strategy": "strict",
+      "description": "Uses vox1 .+/.*/./ variants and overloaded +/* forms.",
+      "program": "programs/vox1/vox1-dot-ops.imgql"
+    },
+    {
+      "id": "vox1-cross-corr",
+      "title": "Vox1 crossCorrelation chain",
+      "module": "vox1",
+      "level": "advanced",
+      "strategy": "strict",
+      "description": "Legacy-equivalent crossCorrelation and percentiles usage.",
+      "program": "programs/vox1/vox1-cross-corr.imgql"
+    },
+    {
+      "id": "strings-format",
+      "title": "Dynamic labels and paths",
+      "module": "strings",
+      "level": "core",
+      "strategy": "strict",
+      "description": "Use strings primitives to build labels or output paths.",
+      "program": "programs/strings/strings-format.imgql"
+    },
+    {
+      "id": "arrays-metrics",
+      "title": "Array comparison metrics",
+      "module": "arrays",
+      "level": "advanced",
+      "strategy": "strict",
+      "description": "Pixel accuracy and overlap metrics using arrays namespace.",
+      "program": "programs/arrays/arrays-metrics.imgql"
+    },
+    {
+      "id": "nnunet-env",
+      "title": "nnUNet runtime check",
+      "module": "nnunet",
+      "level": "expert",
+      "strategy": "strict",
+      "description": "Sanity check that nnUNet and torch runtime are available.",
+      "program": "programs/nnunet/nnunet-env.imgql"
+    },
+    {
+      "id": "nnunet-train-directory",
+      "title": "nnUNet train_directory template",
+      "module": "nnunet",
+      "level": "expert",
+      "strategy": "strict",
+      "description": "Skeleton for nnUNet training from directory datasets.",
+      "program": "programs/nnunet/nnunet-train-directory.imgql"
+    },
+    {
+      "id": "nnunet-train-and-predict",
+      "title": "nnUNet train and predict workflow",
+      "module": "nnunet",
+      "level": "expert",
+      "strategy": "strict",
+      "description": "Complete workflow combining training and prediction on a dataset.",
+      "program": "programs/nnunet/nnunet-train-and-predict.imgql"
+    },
+    {
+      "id": "test-demo-data",
+      "title": "Structured result payload",
+      "module": "test",
+      "level": "core",
+      "strategy": "strict",
+      "description": "Test namespace primitive returning nested structured data.",
+      "program": "programs/test/test-demo-data.imgql"
+    },
+    {
+      "id": "test-enqueue",
+      "title": "Workflow enqueue diagnostics",
+      "module": "test",
+      "level": "advanced",
+      "strategy": "strict",
+      "description": "Generate enqueue instructions used by workflow tests.",
+      "program": "programs/test/test-enqueue.imgql"
+    },
+    {
+      "id": "progressive-end-to-end",
+      "title": "End-to-end imaging mini-workflow",
+      "module": "mixed",
+      "level": "advanced",
+      "strategy": "strict",
+      "description": "Imports multiple modules and combines image ops, formatting, and vox1 helpers.",
+      "program": "programs/mixed/progressive-end-to-end.imgql"
+    }
+  ],
+  "modules": [
+    "arrays",
+    "default",
+    "mixed",
+    "nnunet",
+    "simpleitk",
+    "strings",
+    "test",
+    "vox1"
+  ]
+}

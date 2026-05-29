@@ -1,0 +1,9 @@
+import "simpleitk"
+import "strings"
+import "vox1"
+img = ReadImage("tests/data/chris_t1.nii.gz")
+i = intensity(img)
+mask = 60 .<= i
+corr = crossCorrelation(2,i,i,tt,min(i),max(i),16)
+avgCorr = avg(corr,mask)
+summary = concat("avgCorr=", format_string("{:.4f}", avgCorr))

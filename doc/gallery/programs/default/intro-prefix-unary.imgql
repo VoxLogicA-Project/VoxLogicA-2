@@ -1,0 +1,2 @@
+NEG(x) = 0 - x
+negated = NEG 11

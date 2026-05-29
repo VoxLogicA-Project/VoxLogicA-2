@@ -1,0 +1,2 @@
+import "nnunet"
+nnunet_env = nnunet.env_check()

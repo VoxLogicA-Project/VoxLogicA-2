@@ -1,0 +1,4 @@
+SUM(a,b) = a + b
++?(a,b) = a * b + 1
+sum_case = 4 SUM 9
+symbol_case = 5 +? 8

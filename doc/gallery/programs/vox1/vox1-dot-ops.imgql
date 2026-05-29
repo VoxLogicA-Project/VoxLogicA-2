@@ -1,0 +1,10 @@
+import "simpleitk"
+import "vox1"
+m = ReadImage("tests/data/chris_t1.nii.gz")
+i = intensity(m)
+a = i +. 4
+b = 4 .+ i
+c = (a *. 2) /. 3
+vox1_overload_a = avg(a,tt)
+vox1_overload_b = avg(b,tt)
+vox1_overload_c = avg(c,tt)

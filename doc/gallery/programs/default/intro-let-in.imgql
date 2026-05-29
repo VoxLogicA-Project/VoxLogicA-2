@@ -1,0 +1,2 @@
+normalized(x,minv,maxv) = let span = maxv - minv in (x - minv) / span
+scaled = normalized(42,10,50)

@@ -1,0 +1,9 @@
+import "simpleitk"
+import "vox1"
+m1 = ReadImage("tests/data/chris_t1.nii.gz")
+m2 = ReadImage("tests/data/chris_t1.nii.gz")
+a = intensity(m1)
+b = intensity(m2)
+c = crossCorrelation(2,a,b,tt,min(b),max(b),16)
+p = percentiles(c,40 .<= a,0.5)
+vox1_corr_avg = avg(p,tt)

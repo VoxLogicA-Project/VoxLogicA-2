@@ -1,0 +1,8 @@
+import "simpleitk"
+import "arrays"
+img = ReadImage("tests/data/chris_t1.nii.gz")
+pred = BinaryThreshold(img,40,180,1,0)
+truth = BinaryThreshold(img,55,170,1,0)
+pixel_accuracy = arrays.pixel_accuracy(pred,truth)
+dice = arrays.dice_score(pred,truth,1)
+jaccard = arrays.jaccard_index(pred,truth,1)

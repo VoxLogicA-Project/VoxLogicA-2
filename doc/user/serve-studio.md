@@ -53,9 +53,10 @@
   - inspection is limited to persisted results in the store
 
 3. **Example Gallery**
-- Source markdown: `doc/user/language-gallery.md`
-- API: `GET /api/v1/docs/gallery`
-- Examples are extracted from comment directives and executable `imgql` code fences
+- Source data: `doc/gallery/manifest.json` and `doc/gallery/programs/<module>/<id>.imgql`
+- Loader: `voxlogica.gallery.load_gallery()`
+- API: `GET /api/v1/docs/gallery` (returns inlined `code` per example for the UI)
+- Narrative index: `doc/user/language-gallery.md`
 
 4. **Test Intelligence**
 - API: `GET /api/v1/testing/report`
@@ -75,32 +76,9 @@
 - API: `GET /api/v1/storage/stats`
 - Includes cached record counts, payload sizes, runtime-version distribution, and DB footprint
 
-## Markdown Playground Directive
+## Gallery manifest
 
-Use this exact pattern in markdown docs:
-
-```markdown
-<!-- vox:playground
-id: unique-id
-title: Human title
-module: default
-level: intro
-strategy: dask
-description: Short card description.
--->
-```imgql
-answer = 2 + 2
-```
-```
-
-Supported keys:
-
-- `id`: stable identifier
-- `title`: gallery card title
-- `module`: namespace tag (used for filtering)
-- `level`: progression tag
-- `strategy`: parsed for compatibility; serve playground executes with `dask`
-- `description`: card description
+Add or edit examples under `doc/gallery/` (see `doc/gallery/README.md`). Each card needs a manifest entry and a matching `.imgql` program file.
 
 ## Report Artifacts
 

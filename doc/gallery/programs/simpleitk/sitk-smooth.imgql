@@ -1,0 +1,4 @@
+import "simpleitk"
+img = ReadImage("tests/data/chris_t1.nii.gz")
+smooth = CurvatureFlow(img, 0.15, 4)
+output_path = "tests/output/smoothed_chris_t1.nii.gz"

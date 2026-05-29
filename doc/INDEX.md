@@ -76,8 +76,10 @@ This documentation is intended as a living knowledge base for:
 - **[User Guide: Command Line Options & Usage](./user/cli-options.md)**
   - Comprehensive guide to the command line interfaces (CLI) f
   - Includes usage examples, option descriptions, and troubleshooting tips for end users.
+- **[Example Gallery](./gallery/README.md)**
+  - Canonical manifest and runnable `imgql` programs for Serve Studio cards.
 - **[Language Guide and Progressive Gallery](./user/language-gallery.md)**
-  - Rich language walkthrough with executable playground-backed examples.
+  - Narrative index linking to gallery programs.
 - **[Serve Studio Guide](./user/serve-studio.md)**
   - API and UI guide for playground jobs, quality dashboard, and storage telemetry.
 

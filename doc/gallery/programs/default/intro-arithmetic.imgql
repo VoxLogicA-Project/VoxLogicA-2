@@ -1,0 +1,5 @@
+a = 7
+b = 5
+c = a * b - 3
+a_times_b_minus_3 = c
+is_gt_20 = c > 20

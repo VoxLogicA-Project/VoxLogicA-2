@@ -1,0 +1,4 @@
+values = range(0,20)
+square(x) = x * x
+squares = map(square, values)
+count = 20

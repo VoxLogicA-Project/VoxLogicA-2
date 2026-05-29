@@ -1,0 +1,5 @@
+import "simpleitk"
+img = ReadImage("tests/data/chris_t1.nii.gz")
+mm = MinimumMaximum(img)
+min_value = index(mm,0)
+max_value = index(mm,1)
