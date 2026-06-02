@@ -1,54 +1,27 @@
 from __future__ import annotations
 
 import dask.bag as db
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-from voxlogica.execution_strategy.base import ExecutionStrategy
-from voxlogica.execution_strategy.results import ExecutionResult, PageResult, PreparedPlan, SequenceValue
-from voxlogica.lazy.ir import NodeId, NodeSpec, SymbolicPlan
-from voxlogica.parser import EArray, EBool, ECall, EFilter, EFold, EFor, ELet, ENumber, ESlice, EString, Expression, parse_expression_content
+from voxlogica.execution_strategy.sequential import RuntimeClosure, RuntimeFunction, SequentialExecutionStrategy
+from voxlogica.parser import (
+    EArray,
+    EBool,
+    ECall,
+    EFilter,
+    EFold,
+    EFor,
+    ELet,
+    ENumber,
+    ESlice,
+    EString,
+    Expression,
+    parse_expression_content,
+)
 from voxlogica.primitives.registry import PrimitiveRegistry
-from voxlogica.storage import MaterializationStore, ResultsDatabase
-from voxlogica.value_model import VOX_FORMAT_VERSION
-from voxlogica.execution_strategy.sequential import SequentialExecutionStrategy
-
-@dataclass
-class RuntimeFunction:
-    """Reducer-level function value reified for runtime invocation."""
-
-    parameters: list[str]
-    expression: Expression
-    captures: dict[str, Any]
-    evaluator: "ParallelExecutionStrategy"
-
-    def invoke(self, args: list[Any]) -> Any:
-        if len(args) != len(self.parameters):
-            raise ValueError(f"Function expects {len(self.parameters)} args, got {len(args)}")
-        env = dict(self.captures)
-        for parameter, value in zip(self.parameters, args, strict=False):
-            env[parameter] = value
-        return self.evaluator._evaluate_runtime_expression(self.expression, env)
+from voxlogica.storage import ResultsDatabase
 
 
-@dataclass
-class RuntimeClosure:
-    """One-argument runtime closure used by ``map`` and ``for_loop``."""
-
-    parameter: str
-    body_expression: Expression
-    captures: dict[str, Any]
-    evaluator: "ParallelExecutionStrategy"
-
-    def apply(self, value: Any) -> Any:
-        env = dict(self.captures)
-        env[self.parameter] = value
-        return self.evaluator._evaluate_runtime_expression(self.body_expression, env)
-
-    def __call__(self, value: Any) -> Any:
-        return self.apply(value)
-    
 class PickleableRuntimeClosure(RuntimeClosure):
     """Pickleable version of RuntimeClosure for Dask serialization."""
 
@@ -63,10 +36,13 @@ class PickleableRuntimeClosure(RuntimeClosure):
         self.parameter = state["parameter"]
         self.body_expression = state["body_expression"]
         self.captures = state["captures"]
-        self.evaluator = None  # Will be set by ParallelExecutionStrategy after deserialization
+        self.evaluator = None
 
-    def apply(self, value: Any, registry: PrimitiveRegistry) -> Any:
-        self.evaluator = ParallelExecutionStrategy(registry)
+    def apply(self, value: Any, registry: PrimitiveRegistry | None = None) -> Any:
+        if registry is not None:
+            self.evaluator = ParallelExecutionStrategy(registry)
+        if self.evaluator is None:
+            raise ValueError("Parallel closure requires a primitive registry after deserialization")
         env = dict(self.captures)
         env[self.parameter] = value
         return self.evaluator._evaluate_runtime_expression(self.body_expression, env)
@@ -76,12 +52,33 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
     """Execution strategy that uses Dask to execute plans in parallel across multiple processes."""
 
     name = "parallel"
-    
-    def __init__(self, registry: PrimitiveRegistry | None = None):
-        self.registry = registry
-        self.results_database = None
-        self._cache_summary: dict[str, Any] = {}
-        self._node_events: list[dict[str, Any]] = []
+
+    def __init__(
+        self,
+        registry: PrimitiveRegistry | None = None,
+        results_database: ResultsDatabase | None = None,
+    ):
+        super().__init__(registry=registry, results_database=results_database)
+
+    def _build_runtime_closure_from_values(self, prepared, node) -> PickleableRuntimeClosure:
+        body = parse_expression_content(str(node.attrs.get("body", "")))
+        parameter = str(node.attrs.get("parameter", "arg"))
+        capture_names = list(node.attrs.get("capture_names", []))
+
+        captures = {
+            name: prepared.values[node_id]
+            for name, node_id in zip(capture_names, node.args, strict=True)
+        }
+
+        for name, spec in dict(node.attrs.get("function_captures", {})).items():
+            captures[name] = self._build_runtime_function_from_values(prepared, spec)
+
+        return PickleableRuntimeClosure(
+            parameter=parameter,
+            body_expression=body,
+            captures=captures,
+            evaluator=self,
+        )
 
     def _evaluate_runtime_expression(self, expression: Expression, env: dict[str, Any]) -> Any:
         """Evaluate deferred closure bodies using the same primitive runtime."""
@@ -120,23 +117,25 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
             return self._evaluate_runtime_expression(expression.body, next_env)
         if isinstance(expression, EFor):
             registry = self.registry
-            # sequence = self._coerce_sequence(self._evaluate_runtime_expression(expression.iterable, env)).iter_values()
-            sequence = db.from_sequence(self._coerce_sequence(self._evaluate_runtime_expression(expression.iterable, env)).iter_values())
-            closure = PickleableRuntimeClosure(
-                { 'parameter': expression.variable,
-                'body_expression': expression.body,
-                'captures': env }
+            sequence = db.from_sequence(
+                self._coerce_sequence(
+                    self._evaluate_runtime_expression(expression.iterable, env)
+                ).iter_values()
             )
-            #if hasattr(closure, "apply") and callable(closure.apply):
+            closure = PickleableRuntimeClosure(
+                parameter=expression.variable,
+                body_expression=expression.body,
+                captures=env,
+                evaluator=self,
+            )
             return sequence.map(closure.apply, registry=registry)
-            return super()._evaluate_runtime_expression(expression, env)
         if isinstance(expression, EFilter):
-            sequence = self._coerce_sequence(self._evaluate_runtime_expression(expression.iterable, env)).iter_values()
+            sequence = self._coerce_sequence(self._evaluate_runtime_expression(expression.iterable, env))
             closure = RuntimeClosure(
                 parameter=expression.variable,
                 body_expression=expression.predicate,
                 captures=env,
-                evaluator=self
+                evaluator=self,
             )
             return [
                 item
