@@ -13,6 +13,7 @@ import inspect
 import json
 import pickle
 import time
+import traceback
 
 from voxlogica.execution_strategy.base import ExecutionStrategy
 from voxlogica.execution_strategy.results import ExecutionResult, PageResult, PreparedPlan, SequenceValue
@@ -121,8 +122,9 @@ class SequentialExecutionStrategy(ExecutionStrategy):
                 self._cache_summary["computed"] = int(self._cache_summary.get("computed", 0)) + 1
                 self._node_events.append({"node_id": node_id, "status": "computed", "cache_source": "runtime"})
             except Exception as exc:  # noqa: BLE001
-                prepared.failures[node_id] = str(exc)
-                failures[node_id] = str(exc)
+                error_trace = traceback.format_exc()
+                prepared.failures[node_id] = error_trace
+                failures[node_id] = error_trace
                 # if prepared.materialization_store is not None:
                 #     prepared.materialization_store.fail(node_id, str(exc))
                 self._cache_summary["failed"] = int(self._cache_summary.get("failed", 0)) + 1
@@ -132,11 +134,23 @@ class SequentialExecutionStrategy(ExecutionStrategy):
             for goal in prepared.plan.goals:
                 if goal.id not in target_goal_set:
                     continue
+                if goal.id not in prepared.values:
+                    # Goal was not computed - check if it failed
+                    if goal.id in failures:
+                        # Already recorded as failed, skip side effect
+                        continue
+                    # This shouldn't happen - goal should be in values or failures
+                    import sys
+                    print(f"WARNING: Goal {goal.id} not in prepared.values or failures", file=sys.stderr)
+                    print(f"Available values: {list(prepared.values.keys())}", file=sys.stderr)
+                    print(f"Failed operations: {list(failures.keys())}", file=sys.stderr)
+                    continue
                 try:
                     value = prepared.values[goal.id]
                     self._run_goal_side_effect(goal.operation, goal.name, value)
                 except Exception as exc:  # noqa: BLE001
-                    failures[goal.id] = str(exc)
+                    error_trace = traceback.format_exc()
+                    failures[goal.id] = error_trace
 
         if prepared.materialization_store is not None:
             prepared.materialization_store.flush(timeout_s=10.0)

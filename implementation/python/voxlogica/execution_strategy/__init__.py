@@ -7,6 +7,7 @@ package boundary keeps the planning and runtime concerns decoupled.
 from voxlogica.execution_strategy.base import ExecutionStrategy
 from voxlogica.execution_strategy.results import ExecutionResult, PageResult, PreparedPlan, SequenceValue
 from voxlogica.execution_strategy.sequential import SequentialExecutionStrategy
+from voxlogica.execution_strategy.parallel import ParallelExecutionStrategy
 
 __all__ = [
     "ExecutionResult",
@@ -14,5 +15,6 @@ __all__ = [
     "PageResult",
     "PreparedPlan",
     "SequentialExecutionStrategy",
+    "ParallelExecutionStrategy",
     "SequenceValue",
 ]

@@ -85,7 +85,9 @@ def run_command(args: argparse.Namespace) -> int:
         print(json.dumps(_summary_payload(workplan, execution_result), indent=2))
         print(f"Execution time: {execution_result.execution_time:.2f} seconds")
         if not execution_result.success:
-            logger.error("DAG execution failed", exc_info=True)
+            logger.error("DAG execution failed")
+            for node_id, error_msg in execution_result.failed_operations.items():
+                logger.error(f"Node {node_id} failed:\n{error_msg}")
             return 1
 
     return 0

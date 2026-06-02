@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 import threading
 
-from voxlogica.execution_strategy import ExecutionResult, PageResult, PreparedPlan, SequentialExecutionStrategy
+from voxlogica.execution_strategy import ExecutionResult, PageResult, PreparedPlan, SequentialExecutionStrategy, ParallelExecutionStrategy
 from voxlogica.lazy.ir import NodeId, SymbolicPlan
 from voxlogica.primitives.registry import PrimitiveRegistry
 from voxlogica.storage import NoCacheStorageBackend, ResultsDatabase, get_storage
@@ -94,7 +94,7 @@ class ExecutionEngine:
         self.primitives = primitives_loader or PrimitivesLoader()
         self.registry = self.primitives.registry
         self.storage = NoCacheStorageBackend() if no_cache else (storage_backend or get_storage())
-        self._strategy = SequentialExecutionStrategy(self.registry, results_database=self.storage)
+        self._strategy = ParallelExecutionStrategy(self.registry)
         self.default_strategy = self._strategy.name
         self._last_prepared: PreparedPlan | None = None
 
