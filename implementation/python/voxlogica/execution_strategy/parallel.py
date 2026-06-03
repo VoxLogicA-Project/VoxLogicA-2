@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import dask.bag as db
+import time
 from typing import Any
+import dask.delayed
+import dask.distributed
 
-from voxlogica.execution_strategy.sequential import RuntimeClosure, RuntimeFunction, SequentialExecutionStrategy, SequenceValue
+from voxlogica.execution_strategy.sequential import RuntimeClosure, RuntimeFunction, SequentialExecutionStrategy
+from voxlogica.execution_strategy.results import ExecutionResult, PageResult, PreparedPlan, SequenceValue
 from voxlogica.parser import (
     EArray,
     EBool,
@@ -20,6 +24,8 @@ from voxlogica.parser import (
 )
 from voxlogica.primitives.registry import PrimitiveRegistry
 from voxlogica.storage import ResultsDatabase
+from voxlogica.lazy.ir import NodeId
+import traceback
 
 
 class PickleableRuntimeClosure(RuntimeClosure):
@@ -59,6 +65,36 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
         results_database: ResultsDatabase | None = None,
     ):
         super().__init__(registry=registry, results_database=results_database)
+
+    def run(self, prepared: PreparedPlan, goals: list[NodeId]) -> ExecutionResult:
+        start = time.time()
+        delayed_results = {self.build(prepared,goal.id, is_goal=True) for goal in prepared.plan.goals}
+        computed_results = dask.compute(*delayed_results)
+        for goal in prepared.plan.goals:
+            try:
+                value = computed_results[0]
+                self._run_goal_side_effect(goal.operation, goal.name, value)
+                success = True
+                failed_operations = {}
+            except Exception as exc:  # noqa: BLE001
+                error_trace = traceback.format_exc()
+                success = False
+                failed_operations = {goal.id: error_trace for goal in prepared.plan.goals}
+        end = time.time()
+        execution_time = end - start
+        cache_summary = self._cache_summary
+        return ExecutionResult(
+            success=success,
+            completed_operations="dummy",
+            failed_operations=failed_operations,
+            execution_time=execution_time,
+            total_operations=len(prepared.plan.goals),
+            cache_summary=cache_summary,
+        )
+
+    def build(self, prepared, node, is_goal: bool = False):
+        [self.build(prepared, dep) for dep in prepared.plan.nodes[node].args]
+        return dask.delayed(self._evaluate_node_sequential)(prepared, prepared.plan.nodes[node]), node
 
     def _evaluate_node_sequential(self, prepared, node: NodeSpec) -> Any:
         if node.kind == "primitive" and node.operator in {"default.map", "map", "default.for_loop","for_loop"}:

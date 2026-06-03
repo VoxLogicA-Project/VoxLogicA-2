@@ -69,7 +69,7 @@ class PreparedPlan:
     completed_nodes: set[NodeId] = field(default_factory=set)
     # definition_store: Any | None = None
     materialization_store: Any | None = None
-    strategy_name: str = "sequential"
+    strategy_name: str = "parallel"
     compiled_at: float = field(default_factory=time.time)
 
 
