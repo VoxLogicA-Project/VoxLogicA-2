@@ -63,7 +63,7 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
         super().__init__(registry=registry, results_database=results_database)
 
     def _evaluate_node_sequential(self, prepared, node: NodeSpec) -> Any:
-        if node.kind == "primitive" and node.operator in {"default.map", "map"}:
+        if node.kind == "primitive" and node.operator in {"default.map", "map", "default.for_loop","for_loop"}:
             return self._execute_parallel_map(prepared, node)
         return super()._evaluate_node_sequential(prepared, node)
 
