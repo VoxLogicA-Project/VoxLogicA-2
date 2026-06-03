@@ -666,7 +666,7 @@ def reduce_expression(
         )
         return _plan_primitive_call(
             work_plan,
-            identifier="for_loop",
+            identifier="dask_map",
             args=(iterable_id, closure_id),
             output_kind="sequence",
             position=expr.position,
