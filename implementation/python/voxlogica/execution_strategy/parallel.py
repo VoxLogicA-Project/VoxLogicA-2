@@ -50,6 +50,23 @@ class PickleableRuntimeClosure(RuntimeClosure):
         return self.evaluator._evaluate_runtime_expression(self.body_expression, env)
 
 
+class ParallelSequenceValue(SequenceValue):
+    def __init__(self, bag):
+        self.bag = bag
+        super().__init__(lambda: iter(self.bag.compute()))
+
+    def iter_values(self):
+        return iter(self.bag.compute())
+
+    def page(self, offset, limit):
+        return list(self.bag.take(offset + limit))[offset:]
+
+    def map(self, closure, registry):
+        return ParallelSequenceValue(
+            self.bag.map(closure.apply, registry=registry)
+        )
+
+
 class ParallelExecutionStrategy(SequentialExecutionStrategy):
     """Execution strategy that uses Dask to execute plans in parallel across multiple processes."""
 
@@ -94,7 +111,7 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
         sequence = prepared.values[node.args[0]]
         closure = prepared.values[node.args[1]]
         bag = self._to_bag(sequence)
-        return bag.map(closure.apply, registry=self.registry).compute()
+        return ParallelSequenceValue(bag.map(closure.apply, registry=self.registry))
 
     def _to_bag(self, value: Any) -> db.Bag:
         if isinstance(value, db.Bag):
@@ -175,3 +192,12 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
             )
             return fold_sequence(expression.operator, init, sequence)
         raise ValueError(f"Unsupported runtime expression: {type(expression).__name__}")
+    
+    def _coerce_sequence(self, value: Any) -> SequenceValue:
+        if isinstance(value, SequenceValue):
+            return value
+        if isinstance(value, (list, tuple, range)):
+            return ParallelSequenceValue.to_bag(value)
+        if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, bytearray, dict)):
+            return ParallelSequenceValue.to_bag(value)
+        raise ValueError(f"Value is not a sequence: {type(value).__name__}")

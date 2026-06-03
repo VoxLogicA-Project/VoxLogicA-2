@@ -39,7 +39,9 @@ process_path(path) =
   segment_case(pflair)
 
 // Using for construct to iterate over dataset paths and compute volumes
-result = for path in all_flair_paths do
+result = 
+//  map(process_path,flair_paths)
+  for path in flair_paths do
   let seg = process_path(path) in
   volume(seg)
 
