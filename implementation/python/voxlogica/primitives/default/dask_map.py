@@ -23,18 +23,21 @@ def execute(**kwargs) -> db.Bag:
         **kwargs: Arguments passed as keyword arguments with numeric string keys
                  Expected:
                  - '0': The input Dask bag
-                 - 'closure': The closure to apply to each element
+                 - '1' or 'closure': The closure to apply to each element
     
     Returns:
         A new Dask bag with the mapped results
     """
     input_bag = kwargs["0"]
-    closure = kwargs["closure"]
+    closure = kwargs.get("1", kwargs.get("closure"))
+    if closure is None:
+        raise ValueError("dask_map requires closure argument at key '1' or 'closure'")
     
     if not isinstance(input_bag, db.Bag):
         raise ValueError(f"Expected Dask bag, got {type(input_bag)}")
     
-    logger.info(f"Applying dask_map with closure for variable '{closure.variable}'")
+    parameter = getattr(closure, "parameter", "<callable>")
+    logger.info(f"Applying dask_map with closure for variable '{parameter}'")
     
     # Simply map the closure over the bag - no optimization tricks
     # The closure will handle all caching and deduplication internally
@@ -52,6 +55,7 @@ PRIMITIVE_METADATA = {
     "return_type": "dask_bag",
     "arguments": {
         "0": "dask_bag",
+        "1": "closure",
         "closure": "closure"
     }
 }
