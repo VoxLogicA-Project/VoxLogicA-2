@@ -51,20 +51,25 @@ class PickleableRuntimeClosure(RuntimeClosure):
 
 
 class ParallelSequenceValue(SequenceValue):
-    def __init__(self, bag):
+    def __init__(self, bag: db.Bag):
         self.bag = bag
-        super().__init__(lambda: iter(self.bag.compute()))
+        super().__init__(self._iter_computed)
 
-    def iter_values(self):
+    def _iter_computed(self):
         return iter(self.bag.compute())
 
-    def page(self, offset, limit):
+    def iter_values(self):
+        return self._iter_computed()
+
+    def page(self, offset: int, limit: int) -> list[Any]:
+        if offset < 0 or limit < 0:
+            raise ValueError("offset and limit must be non-negative")
+        if limit == 0:
+            return []
         return list(self.bag.take(offset + limit))[offset:]
 
-    def map(self, closure, registry):
-        return ParallelSequenceValue(
-            self.bag.map(closure.apply, registry=registry)
-        )
+    def map(self, closure, registry: PrimitiveRegistry) -> "ParallelSequenceValue":
+        return ParallelSequenceValue(self.bag.map(closure.apply, registry=registry))
 
 
 class ParallelExecutionStrategy(SequentialExecutionStrategy):
@@ -80,7 +85,12 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
         super().__init__(registry=registry, results_database=results_database)
 
     def _evaluate_node_sequential(self, prepared, node: NodeSpec) -> Any:
-        if node.kind == "primitive" and node.operator in {"default.map", "map", "default.for_loop","for_loop"}:
+        if node.kind == "primitive" and node.operator in {
+            "default.map",
+            "map",
+            "default.for_loop",
+            "for_loop",
+        }:
             return self._execute_parallel_map(prepared, node)
         return super()._evaluate_node_sequential(prepared, node)
 
@@ -104,16 +114,18 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
             evaluator=self,
         )
 
-    def _execute_parallel_map(self, prepared, node: NodeSpec) -> list[Any]:
+    def _execute_parallel_map(self, prepared, node: NodeSpec) -> ParallelSequenceValue:
         if len(node.args) < 2:
             raise ValueError("map requires sequence and closure arguments")
 
         sequence = prepared.values[node.args[0]]
         closure = prepared.values[node.args[1]]
         bag = self._to_bag(sequence)
-        return ParallelSequenceValue(bag.map(closure.apply, registry=self.registry))
+        return ParallelSequenceValue(bag).map(closure, registry=self.registry)
 
     def _to_bag(self, value: Any) -> db.Bag:
+        if isinstance(value, ParallelSequenceValue):
+            return value.bag
         if isinstance(value, db.Bag):
             return value
         if isinstance(value, SequenceValue):
@@ -160,14 +172,14 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
             next_env[expression.variable] = value
             return self._evaluate_runtime_expression(expression.body, next_env)
         if isinstance(expression, EFor):
-            sequence = self._coerce_sequence(self._evaluate_runtime_expression(expression.iterable, env))
-            closure = RuntimeClosure(
+            sequence = self._evaluate_runtime_expression(expression.iterable, env)
+            closure = PickleableRuntimeClosure(
                 parameter=expression.variable,
                 body_expression=expression.body,
                 captures=env,
                 evaluator=self,
             )
-            return [closure.apply(item) for item in sequence.iter_values()]
+            return ParallelSequenceValue(self._to_bag(sequence)).map(closure, registry=self.registry)
         if isinstance(expression, EFilter):
             sequence = self._coerce_sequence(self._evaluate_runtime_expression(expression.iterable, env))
             closure = RuntimeClosure(
@@ -192,12 +204,7 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
             )
             return fold_sequence(expression.operator, init, sequence)
         raise ValueError(f"Unsupported runtime expression: {type(expression).__name__}")
-    
     def _coerce_sequence(self, value: Any) -> SequenceValue:
         if isinstance(value, SequenceValue):
             return value
-        if isinstance(value, (list, tuple, range)):
-            return ParallelSequenceValue.to_bag(value)
-        if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, bytearray, dict)):
-            return ParallelSequenceValue.to_bag(value)
-        raise ValueError(f"Value is not a sequence: {type(value).__name__}")
+        return super()._coerce_sequence(value)
