@@ -3,7 +3,7 @@ from __future__ import annotations
 import dask.bag as db
 from typing import Any
 
-from voxlogica.execution_strategy.sequential import RuntimeClosure, RuntimeFunction, SequentialExecutionStrategy
+from voxlogica.execution_strategy.sequential import RuntimeClosure, RuntimeFunction, SequentialExecutionStrategy, SequenceValue
 from voxlogica.parser import (
     EArray,
     EBool,
@@ -60,6 +60,11 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
     ):
         super().__init__(registry=registry, results_database=results_database)
 
+    def _evaluate_node_sequential(self, prepared, node: NodeSpec) -> Any:
+        if node.kind == "primitive" and node.operator in {"default.map", "map", "default.for_loop","for_loop"}:
+            return self._execute_parallel_map(prepared, node)
+        return super()._evaluate_node_sequential(prepared, node)
+
     def _build_runtime_closure_from_values(self, prepared, node) -> PickleableRuntimeClosure:
         body = parse_expression_content(str(node.attrs.get("body", "")))
         parameter = str(node.attrs.get("parameter", "arg"))
@@ -79,6 +84,26 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
             captures=captures,
             evaluator=self,
         )
+
+    def _execute_parallel_map(self, prepared, node: NodeSpec) -> list[Any]:
+        if len(node.args) < 2:
+            raise ValueError("map requires sequence and closure arguments")
+
+        sequence = prepared.values[node.args[0]]
+        closure = prepared.values[node.args[1]]
+        bag = self._to_bag(sequence)
+        return bag.map(closure.apply, registry=self.registry).compute()
+
+    def _to_bag(self, value: Any) -> db.Bag:
+        if isinstance(value, db.Bag):
+            return value
+        if isinstance(value, SequenceValue):
+            return db.from_sequence(value.iter_values())
+        if isinstance(value, (list, tuple, range)):
+            return db.from_sequence(value)
+        if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, bytearray, dict)):
+            return db.from_sequence(value)
+        raise ValueError(f"Value is not a sequence: {type(value).__name__}")
 
     def _evaluate_runtime_expression(self, expression: Expression, env: dict[str, Any]) -> Any:
         """Evaluate deferred closure bodies using the same primitive runtime."""
@@ -116,19 +141,14 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
             next_env[expression.variable] = value
             return self._evaluate_runtime_expression(expression.body, next_env)
         if isinstance(expression, EFor):
-            registry = self.registry
-            sequence = db.from_sequence(
-                self._coerce_sequence(
-                    self._evaluate_runtime_expression(expression.iterable, env)
-                ).iter_values()
-            )
-            closure = PickleableRuntimeClosure(
+            sequence = self._coerce_sequence(self._evaluate_runtime_expression(expression.iterable, env))
+            closure = RuntimeClosure(
                 parameter=expression.variable,
                 body_expression=expression.body,
                 captures=env,
                 evaluator=self,
             )
-            return sequence.map(closure.apply, registry=registry)
+            return [closure.apply(item) for item in sequence.iter_values()]
         if isinstance(expression, EFilter):
             sequence = self._coerce_sequence(self._evaluate_runtime_expression(expression.iterable, env))
             closure = RuntimeClosure(
