@@ -20,7 +20,7 @@ from voxlogica.execution_strategy.results import ExecutionResult, PageResult, Pr
 from voxlogica.lazy.ir import NodeId, NodeSpec, SymbolicPlan
 from voxlogica.parser import EArray, EBool, ECall, EFilter, EFold, EFor, ELet, ENumber, ESlice, EString, Expression, parse_expression_content
 from voxlogica.primitives.registry import PrimitiveRegistry
-from voxlogica.storage import MaterializationStore, ResultsDatabase
+from voxlogica.storage import MaterializationStore, StorageBackend
 from voxlogica.value_model import VOX_FORMAT_VERSION
 from voxlogica.pod_codec import encode_for_storage
 

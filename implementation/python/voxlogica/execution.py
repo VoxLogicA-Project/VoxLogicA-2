@@ -14,7 +14,7 @@ import threading
 from voxlogica.execution_strategy import ExecutionResult, PageResult, PreparedPlan, SequentialExecutionStrategy, ParallelExecutionStrategy
 from voxlogica.lazy.ir import NodeId, SymbolicPlan
 from voxlogica.primitives.registry import PrimitiveRegistry
-from voxlogica.storage import NoCacheStorageBackend, ResultsDatabase, get_storage
+from voxlogica.storage import NoCacheStorageBackend, StorageBackend, get_storage
 
 
 @dataclass
@@ -87,14 +87,14 @@ class ExecutionEngine:
     def __init__(
         self,
         primitives_loader: PrimitivesLoader | None = None,
-        storage_backend: ResultsDatabase | None = None,
+        storage_backend: StorageBackend | None = None,
         no_cache: bool = False,
     ):
         """Create an engine bound to one primitive registry and one strategy."""
         self.primitives = primitives_loader or PrimitivesLoader()
         self.registry = self.primitives.registry
-        self.storage = NoCacheStorageBackend() if no_cache else (storage_backend or get_storage())
-        self._strategy = ParallelExecutionStrategy(self.registry)
+        self.storage = (storage_backend or get_storage())
+        self._strategy = SequentialExecutionStrategy(self.registry)
         self.default_strategy = self._strategy.name
         self._last_prepared: PreparedPlan | None = None
 

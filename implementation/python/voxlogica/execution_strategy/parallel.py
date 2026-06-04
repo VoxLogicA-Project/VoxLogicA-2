@@ -23,7 +23,7 @@ from voxlogica.parser import (
     parse_expression_content,
 )
 from voxlogica.primitives.registry import PrimitiveRegistry
-from voxlogica.storage import ResultsDatabase
+from voxlogica.storage import StorageBackend
 from voxlogica.lazy.ir import NodeId
 import traceback
 

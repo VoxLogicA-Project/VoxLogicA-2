@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Union
+from abc import ABC, abstractmethod
 import logging
 import queue
 import sqlite3
@@ -72,6 +73,41 @@ class ResultRecord:
     updated_at: float = 0.0
     runtime_version: str = "unknown"
 
+
+class StorageBackend(ABC):
+    """Storage backend that records nothing and never returns hits."""
+
+    @abstractmethod
+    def has(self, node_id: str) -> bool:
+        pass
+
+    @abstractmethod
+    def get_record(self, node_id: str) -> ResultRecord | None:
+        pass
+
+    @abstractmethod
+    def put_definition(self, node_id: str, node: NodeSpec) -> None:
+        pass
+
+    @abstractmethod
+    def put_plan_definitions(self, plan: SymbolicPlan) -> None:
+        pass
+
+    @abstractmethod
+    def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None) -> None:
+        pass
+
+    @abstractmethod
+    def delete(self, node_id: str) -> None:
+        pass
+
+    @abstractmethod
+    def clear(self) -> None:
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
+        pass
 
 class SQLiteResultsDatabase:
     """SQLite plus payload-file storage keyed by stable node hashes."""
@@ -318,19 +354,15 @@ class NoCacheStorageBackend:
         return None
 
 
-StorageBackend = SQLiteResultsDatabase
-ResultsDatabase = Union[SQLiteResultsDatabase, NoCacheStorageBackend]
-_storage_instance: SQLiteResultsDatabase | None = None
+_storage_instance: StorageBackend | None = None
 
 
-def get_storage(db_path: str | Path | None = None) -> SQLiteResultsDatabase:
+def get_storage() -> StorageBackend:
     global _storage_instance
-    if _storage_instance is None:
-        _storage_instance = SQLiteResultsDatabase(db_path=db_path)
     return _storage_instance
 
 
-def set_storage(storage: SQLiteResultsDatabase | None) -> None:
+def set_storage(storage: StorageBackend | None) -> None:
     global _storage_instance
     _storage_instance = storage
 
@@ -368,7 +400,7 @@ class MaterializationRecord:
 class MaterializationStore:
     """Runtime store with optional read/write-through persistence."""
 
-    def __init__(self, backend: ResultsDatabase | None = None, *, read_through: bool = True, write_through: bool = True):
+    def __init__(self, backend: StorageBackend | None = None, *, read_through: bool = True, write_through: bool = True):
         self._records: dict[str, MaterializationRecord] = {}
         self._backend = backend
         self._read_through = read_through
