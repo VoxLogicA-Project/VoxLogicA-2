@@ -14,7 +14,7 @@ dataset_root = "/home/VoxLogicA/datasets/BraTS_2019_HGG"
 
 // Run the fixed-threshold segmentation on a small slice of the dataset.
 dataset_slice_start = 0
-dataset_slice_stop = 1
+dataset_slice_stop = 10
 hi_thr = 0.93
 vi_thr = 0.88
 

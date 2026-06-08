@@ -66,7 +66,7 @@ class SequentialExecutionStrategy(ExecutionStrategy):
 
     name = "sequential"
 
-    def __init__(self, registry: PrimitiveRegistry | None = None, results_database: ResultsDatabase | None = None):
+    def __init__(self, registry: PrimitiveRegistry | None = None, results_database: StorageBackend | None = None):
         self.registry = registry or PrimitiveRegistry()
         self.results_database = results_database
         self._cache_summary: dict[str, Any] = {}
@@ -112,7 +112,12 @@ class SequentialExecutionStrategy(ExecutionStrategy):
                         self._cache_summary["cached_local"] = int(self._cache_summary.get("cached_local", 0)) + 1
                     self._node_events.append({"node_id": node_id, "status": "cached", "cache_source": source})
                     continue
-                value = self._evaluate_node_sequential(prepared, node)
+                if self.results_database is not None and self.results_database.has(node_id):
+                    value = self.results_database.get_record(node_id)
+                else:
+                    value = self._evaluate_node_sequential(prepared, node)
+                    if node.kind == "primitive" and self.results_database is not None:
+                        self.results_database.put_success(node_id, value, metadata={"source": "runtime", "operator": node.operator})
                 expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
                 dependencies = list(node.args) + [value_id for _, value_id in node.kwargs]
                 prepared.values[node_id] = value
@@ -200,10 +205,13 @@ class SequentialExecutionStrategy(ExecutionStrategy):
             return self._build_runtime_closure_from_values(prepared, node)
 
         if node.kind == "primitive":
+            #print("computing primitive")
+            #print(self.results_database)
             kernel = self.registry.load_kernel(node.operator)
             args = [prepared.values[arg_id] for arg_id in node.args]
             kwargs = {key: prepared.values[value_id] for key, value_id in node.kwargs}
-            return self._invoke_kernel(kernel, args, kwargs, node.attrs)
+            value = self._invoke_kernel(kernel, args, kwargs, node.attrs)
+            return value
 
         raise ValueError(f"Unsupported node kind: {node.kind}")
 

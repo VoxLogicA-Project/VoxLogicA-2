@@ -69,7 +69,7 @@ class ParallelExecutionStrategy(SequentialExecutionStrategy):
     def run(self, prepared: PreparedPlan, goals: list[NodeId]) -> ExecutionResult:
         start = time.time()
         delayed_results = {self.build(prepared,goal.id, is_goal=True) for goal in prepared.plan.goals}
-        computed_results = dask.compute(*delayed_results)
+        computed_results = dask.compute(*delayed_results) # add process state to materialization store
         for goal in prepared.plan.goals:
             try:
                 value = computed_results[0]

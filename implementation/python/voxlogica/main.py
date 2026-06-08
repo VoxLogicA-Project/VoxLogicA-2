@@ -18,6 +18,7 @@ from voxlogica.execution import ExecutionEngine
 from voxlogica.parser import parse_program_content
 from voxlogica.reducer import reduce_program
 from voxlogica.storage import NoCacheStorageBackend, SQLiteResultsDatabase
+from voxlogica.repl import start_repl
 
 logger = logging.getLogger("voxlogica.main")
 
@@ -81,6 +82,7 @@ def run_command(args: argparse.Namespace) -> int:
     execution_result = None
     if args.execute:
         storage = NoCacheStorageBackend() if args.no_cache else SQLiteResultsDatabase(db_path=args.store_db)
+        # print(storage)
         execution_result = ExecutionEngine(storage_backend=storage, no_cache=args.no_cache).execute_workplan(workplan)
         print(json.dumps(_summary_payload(workplan, execution_result), indent=2))
         print(f"Execution time: {execution_result.execution_time:.2f} seconds")
@@ -103,6 +105,10 @@ def list_primitives_command(_args: argparse.Namespace) -> int:
     print(json.dumps(payload, indent=2))
     return 0
 
+def shell_command(args: argparse.Namespace) -> int:
+    """Implement the ``repl`` subcommand."""
+    start_repl()
+    return 0
 
 def build_parser() -> argparse.ArgumentParser:
     """Create the CLI parser and register all supported subcommands."""
@@ -123,6 +129,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_parser = subparsers.add_parser("list-primitives", help="List primitive kernels.")
     list_parser.set_defaults(handler=list_primitives_command)
+
+    shell_parser = subparsers.add_parser("repl", help="Start an interactive REPL session")
+    shell_parser.set_defaults(handler=shell_command)
     return parser
 
 

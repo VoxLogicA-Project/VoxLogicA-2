@@ -588,7 +588,9 @@ def reduce_expression(
             )
 
         if not expr.arguments:
+            # print("try find id")
             val = env.try_find(expr.identifier)
+            # print(val)
             if val is None:
                 return _plan_primitive_call(
                     work_plan,
@@ -784,12 +786,13 @@ def reduce_command(
 
 def _reduce_program_internal(
     program: Program,
+    environment: Environment | None = None,
     *,
     collect_bindings: bool = False,
 ) -> tuple[WorkPlan, dict[str, NodeId]]:
     """Reduce a whole program, optionally tracking final declaration bindings."""
     work_plan = WorkPlan()
-    env = Environment()
+    env = Environment() if environment is None else environment
     parsed_imports: set[str] = set()
     declaration_bindings: dict[str, NodeId] = {}
 
@@ -802,7 +805,7 @@ def _reduce_program_internal(
             return
         binding = updated_env.try_find(command.identifier)
         if isinstance(binding, OperationVal):
-            declaration_bindings[command.identifier] = binding.operation_id
+            declaration_bindings[command.identifier] = binding
 
     stdlib_path = Path(__file__).parent / "stdlib" / "stdlib.imgql"
     if stdlib_path.exists():
@@ -820,6 +823,7 @@ def _reduce_program_internal(
     # Imported commands are pushed to the front of the queue so the reducer sees
     # them in a deterministic, source-like order.
     commands = list(program.commands)
+    # print(commands)
     while commands:
         command = commands.pop(0)
         env, imports = reduce_command(env, work_plan, parsed_imports, command)

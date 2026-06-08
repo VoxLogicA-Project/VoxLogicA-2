@@ -551,8 +551,12 @@ def parse_program(filename: Union[str, Path]) -> Program:
     Returns:
         A Program object representing the parsed program
     """
-    with open(filename, "r") as f:
-        program_text = f.read()
+    if isinstance(filename, Path):
+        filename = str(filename)
+        with open(filename, "r") as f:
+            program_text = f.read()
+    else:
+        program_text = filename
 
     # First parse without transformation to get the tree
     parser_no_transform = Lark(

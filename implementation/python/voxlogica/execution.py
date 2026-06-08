@@ -94,7 +94,7 @@ class ExecutionEngine:
         self.primitives = primitives_loader or PrimitivesLoader()
         self.registry = self.primitives.registry
         self.storage = (storage_backend or get_storage())
-        self._strategy = SequentialExecutionStrategy(self.registry)
+        self._strategy = SequentialExecutionStrategy(self.registry, self.storage)
         self.default_strategy = self._strategy.name
         self._last_prepared: PreparedPlan | None = None
 
@@ -127,8 +127,10 @@ class ExecutionEngine:
         strategy: str | None = None,
     ) -> ExecutionResult:
         """Execute an already-prepared plan, optionally restricting the goals."""
+        # print(self.storage)
         del strategy
         self._last_prepared = prepared
+        # print(prepared)
         return self._strategy.run(prepared, goals=goals)
 
     def stream(
