@@ -11,6 +11,7 @@ from typing import Dict, Callable
 import logging
 
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+from voxlogica.value_model import adapt_runtime_value
 
 logger = logging.getLogger(__name__)
 VERBOSE_LEVEL = 15
@@ -65,6 +66,7 @@ def _wrap_sitk_function(func: Callable, func_name: str) -> Callable:
                             raise ValueError(f"{func_name}: missing required argument {i} ({param_name})")
             # Call the original function
             result = func(*args)
+            # print(result)
             return result
             
         except Exception as e:

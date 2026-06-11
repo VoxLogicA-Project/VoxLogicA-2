@@ -1,4 +1,4 @@
-"""Sequential in-process interpreter for symbolic plans.
+"""Lazy in-process interpreter for symbolic plans.
 
 This strategy evaluates the DAG directly in Python, memoizing node results in
 the prepared plan and reconstructing reducer-generated closures on demand.
@@ -33,7 +33,7 @@ class RuntimeFunction:
     parameters: list[str]
     expression: Expression
     captures: dict[str, Any]
-    evaluator: "SequentialExecutionStrategy"
+    evaluator: "LazyExecutionStrategy"
 
     def invoke(self, args: list[Any]) -> Any:
         if len(args) != len(self.parameters):
@@ -51,7 +51,7 @@ class RuntimeClosure:
     parameter: str
     body_expression: Expression
     captures: dict[str, Any]
-    evaluator: "SequentialExecutionStrategy"
+    evaluator: "LazyExecutionStrategy"
 
     def apply(self, value: Any) -> Any:
         env = dict(self.captures)
@@ -62,10 +62,10 @@ class RuntimeClosure:
         return self.apply(value)
 
 
-class SequentialExecutionStrategy(ExecutionStrategy):
+class LazyExecutionStrategy(ExecutionStrategy):
     """Strategy that evaluates the symbolic graph locally."""
 
-    name = "sequential"
+    name = "lazy"
 
     def __init__(self, registry: PrimitiveRegistry | None = None, results_database: StorageBackend | None = None):
         self.registry = registry or PrimitiveRegistry()
@@ -98,46 +98,9 @@ class SequentialExecutionStrategy(ExecutionStrategy):
         target_goals = [goal.id for goal in prepared.plan.goals] if goals is None else list(goals)
         target_goal_set = set(target_goals)
 
-        for node_id, node in prepared.plan.nodes.items():
-            try: 
-                if node_id in prepared.values:
-                    continue
-                if prepared.materialization_store is not None and prepared.materialization_store.has(node_id):
-                    value = prepared.materialization_store.get(node_id)
-                    prepared.values[node_id] = value
-                    prepared.completed_nodes.add(node_id)
-                    source = str(prepared.materialization_store.metadata(node_id).get("source", "runtime-local"))
-                    if source == "results-db":
-                        self._cache_summary["cached_store"] = int(self._cache_summary.get("cached_store", 0)) + 1
-                    else:
-                        self._cache_summary["cached_local"] = int(self._cache_summary.get("cached_local", 0)) + 1
-                    self._node_events.append({"node_id": node_id, "status": "cached", "cache_source": source})
-                    continue
-                if self.results_database is not None and self.results_database.has(node_id):
-                    value = self.results_database.get_record(node_id)
-                else:
-                    #print(node.operator)
-                    value = self._evaluate_node_sequential(prepared, node)
-                    #print(value)
-                    if node.kind == "primitive" and self.results_database is not None:
-                        #print(node.kind)
-                        self.results_database.put_success(node_id, value, metadata={"source": "runtime", "operator": node.operator})
-                expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
-                dependencies = list(node.args) + [value_id for _, value_id in node.kwargs]
-                prepared.values[node_id] = value
-                prepared.completed_nodes.add(node_id)
-                if prepared.materialization_store is not None:
-                    prepared.materialization_store.put(node_id, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
-                self._cache_summary["computed"] = int(self._cache_summary.get("computed", 0)) + 1
-                self._node_events.append({"node_id": node_id, "status": "computed", "cache_source": "runtime"})
-            except Exception as exc:  # noqa: BLE001
-                error_trace = traceback.format_exc()
-                prepared.failures[node_id] = error_trace
-                failures[node_id] = error_trace
-                # if prepared.materialization_store is not None:
-                #     prepared.materialization_store.fail(node_id, str(exc))
-                self._cache_summary["failed"] = int(self._cache_summary.get("failed", 0)) + 1
-                self._node_events.append({"node_id": node_id, "status": "failed", "error": str(exc)})
+        for goal in target_goal_set:
+            value = self._evaluate_node_lazy(prepared,goal)
+            prepared.values[goal] = value
 
         if goals is None:
             for goal in prepared.plan.goals:
@@ -201,8 +164,10 @@ class SequentialExecutionStrategy(ExecutionStrategy):
             next_offset = None
         return PageResult(items=items, offset=offset, limit=limit, next_offset=next_offset)
 
-    def _evaluate_node_sequential(self, prepared: PreparedPlan, node: NodeSpec) -> Any:
-        # print(node)        
+    def _evaluate_node_lazy(self, prepared: PreparedPlan, nodeid: NodeId, start=None, stop=None) -> Any:
+        node = prepared.plan.nodes[nodeid]
+        expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
+        dependencies = list(node.args) + [value_id for _, value_id in node.kwargs]
         if node.kind == "constant":
             return node.attrs.get("value")
 
@@ -211,13 +176,44 @@ class SequentialExecutionStrategy(ExecutionStrategy):
             return self._build_runtime_closure_from_values(prepared, node)
 
         if node.kind == "primitive":
-            #print("computing primitive")
-            #print(self.results_database)
-            #print("evaluating",node.operator)
+            if node.operator == "default.subsequence":
+                start = self._evaluate_node_lazy(prepared,node.args[1])
+                stop = self._evaluate_node_lazy(prepared,node.args[2])
+                value = self._evaluate_node_lazy(prepared,node.args[0],start,stop)
+                if self.results_database is not None:
+                    #print(node.kind)
+                    self.results_database.put_success(nodeid, value, metadata={"source": "runtime", "operator": node.operator})
+                prepared.completed_nodes.add(nodeid)
+                if prepared.materialization_store is not None:
+                    prepared.materialization_store.put(nodeid, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
+                #print(value)
+                return value
+            
+            if node.operator == "default.map" and start != None and stop != None:
+                print("entering map")
+                kernel = self.registry.load_kernel(node.operator)
+                args = [start,stop] + [self._evaluate_node_lazy(prepared,arg_id) for arg_id in node.args]
+                kwargs = {key: self._evaluate_node_lazy(prepared,arg_id) for key, arg_id in node.kwargs}
+                value = self._invoke_kernel(kernel, args, kwargs, node.attrs)
+                if self.results_database is not None:
+                    #print(node.kind)
+                    self.results_database.put_success(nodeid, value, metadata={"source": "runtime", "operator": node.operator})
+                prepared.completed_nodes.add(nodeid)
+                if prepared.materialization_store is not None:
+                    prepared.materialization_store.put(nodeid, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
+                #print(value[int(start):int(stop)])
+                print(value)
+                return value
             kernel = self.registry.load_kernel(node.operator)
-            args = [prepared.values[arg_id] for arg_id in node.args]
-            kwargs = {key: prepared.values[value_id] for key, value_id in node.kwargs}
+            args = [self._evaluate_node_lazy(prepared,arg_id) for arg_id in node.args]
+            kwargs = {key: self._evaluate_node_lazy(prepared,arg_id) for key, arg_id in node.kwargs}
             value = self._invoke_kernel(kernel, args, kwargs, node.attrs)
+            if self.results_database is not None:
+                #print(node.kind)
+                self.results_database.put_success(nodeid, value, metadata={"source": "runtime", "operator": node.operator})
+                prepared.completed_nodes.add(nodeid)
+                if prepared.materialization_store is not None:
+                    prepared.materialization_store.put(nodeid, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
             return value
 
         raise ValueError(f"Unsupported node kind: {node.kind}")
@@ -244,7 +240,7 @@ class SequentialExecutionStrategy(ExecutionStrategy):
     def _build_runtime_function_from_values(self, prepared: PreparedPlan, spec: dict[str, Any]) -> RuntimeFunction:
         expression = parse_expression_content(str(spec["body"]))
         captures = {
-            name: prepared.values[node_id]
+            name: self._evaluate_node_lazy(prepared,node_id)
             for name, node_id in dict(spec.get("captures", {})).items()
         }
         for name, nested_spec in dict(spec.get("functions", {})).items():

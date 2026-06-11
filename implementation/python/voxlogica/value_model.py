@@ -251,6 +251,8 @@ class VoxImageValue(VoxValue):
         }
         return payload
 
+    def to_json_native(self) -> Any:
+        return self.describe()
 
 def restore_runtime_image(payload_json: dict[str, Any], array: Any) -> Any:
     metadata = dict(payload_json.get("metadata") or {})
@@ -299,5 +301,7 @@ def adapt_runtime_value(value: Any) -> VoxValue:
     if _is_sequence_value(value) or isinstance(value, (list, tuple, range)):
         return VoxSequenceValue(value)
     if sitk is not None and isinstance(value, sitk.Image):
+        #print(value)
         return VoxImageValue(value)
+    # print(value)
     raise UnsupportedVoxValueError(value)

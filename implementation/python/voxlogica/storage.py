@@ -60,6 +60,7 @@ class ResultRecord:
 
     node_id: str
     status: str
+    payload_bin: bytes
     format_version: str = VOX_FORMAT_VERSION
     vox_type: str | None = None
     descriptor: dict[str, Any] = field(default_factory=dict)
@@ -226,8 +227,10 @@ class SQLiteResultsDatabase:
             return None
         payload_bin = None
         payload_file = row[6]
+        #print(payload_file)
         if payload_file:
             path = self.payload_dir / str(payload_file)
+            #print("retrieving image")
             if path.exists():
                 payload_bin = path.read_bytes()
         payload_json = loads_json(row[5])
@@ -238,6 +241,7 @@ class SQLiteResultsDatabase:
         dependencies_payload = loads_json(row[10])
         return ResultRecord(
             node_id=str(row[0]),
+            payload_bin=payload_bin,
             status=str(row[1]),
             format_version=str(row[2] or VOX_FORMAT_VERSION),
             vox_type=vox_type or None,
@@ -254,11 +258,13 @@ class SQLiteResultsDatabase:
         )
 
     def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None) -> None:
+        #print("memoizing")
         encoded = encode_for_storage(value)
         now = time.time()
         payload_file = None
         if encoded.payload_bin is not None:
             payload_file = f"{node_id}.bin"
+            #print(payload_file)
             (self.payload_dir / payload_file).write_bytes(encoded.payload_bin)
         metadata_json = dumps_json(dict(metadata or {}))
         with self._lock:

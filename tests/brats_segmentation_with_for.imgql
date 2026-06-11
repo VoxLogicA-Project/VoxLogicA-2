@@ -15,6 +15,7 @@ dataset_root = "/home/VoxLogicA/datasets/BraTS_2019_HGG"
 // Run the fixed-threshold segmentation on a small slice of the dataset.
 dataset_slice_start = 0
 dataset_slice_stop = 10
+dataset_small_slice_stop = 5
 hi_thr = 0.93
 vi_thr = 0.88
 
@@ -39,10 +40,9 @@ process_path(path) =
   segment_case(pflair)
 
 // Using for construct to iterate over dataset paths and compute volumes
-result = 
-//  map(process_path,flair_paths)
-  for path in flair_paths do
-  let seg = process_path(path) in
-  volume(seg)
+result = map(process_path,flair_paths)
+  //for path in flair_paths do
+  //let seg = process_path(path) in
+  //volume(seg)
 
-print "result" result
+print "result" map(volume,subsequence(result,dataset_slice_start,dataset_small_slice_stop))
