@@ -60,6 +60,30 @@ class RuntimeClosure:
 
     def __call__(self, value: Any) -> Any:
         return self.apply(value)
+    
+@dataclass
+class Demand:
+    pass
+
+@dataclass
+class FullDemand(Demand):
+    pass
+
+@dataclass
+class SliceDemand(Demand):
+    start = 0
+    stop = 0
+
+    def __init__(self,start,stop):
+        self.start = start
+        self.stop = stop
+
+@dataclass
+class IndexDemand(Demand):
+    index = -1
+    
+    def __init__(self,index):
+        self.index = index
 
 
 class LazyExecutionStrategy(ExecutionStrategy):
@@ -99,7 +123,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
         target_goal_set = set(target_goals)
 
         for goal in target_goal_set:
-            value = self._evaluate_node_lazy(prepared,goal)
+            value = self._evaluate_node_lazy(prepared,goal,FullDemand())
             prepared.values[goal] = value
 
         if goals is None:
@@ -163,11 +187,21 @@ class LazyExecutionStrategy(ExecutionStrategy):
             items = [] if offset > 0 or limit <= 0 else [value]
             next_offset = None
         return PageResult(items=items, offset=offset, limit=limit, next_offset=next_offset)
-
-    def _evaluate_node_lazy(self, prepared: PreparedPlan, nodeid: NodeId, start=None, stop=None) -> Any:
-        node = prepared.plan.nodes[nodeid]
+    
+    def cache(self, prepared: PreparedPlan, nodeId: NodeId, value: Any):
+        node = prepared.plan.nodes[nodeId]
         expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
         dependencies = list(node.args) + [value_id for _, value_id in node.kwargs]
+        if self.results_database is not None:
+            #print(node.kind)
+            self.results_database.put_success(nodeId, value, metadata={"source": "runtime", "operator": node.operator})
+            prepared.completed_nodes.add(nodeId)
+        if prepared.materialization_store is not None:
+            prepared.materialization_store.put(nodeId, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
+
+    def _evaluate_node_lazy(self, prepared: PreparedPlan, nodeid: NodeId, demand: Demand) -> Any:
+        node = prepared.plan.nodes[nodeid]
+        
         if node.kind == "constant":
             return node.attrs.get("value")
 
@@ -177,43 +211,20 @@ class LazyExecutionStrategy(ExecutionStrategy):
 
         if node.kind == "primitive":
             if node.operator == "default.subsequence":
-                start = self._evaluate_node_lazy(prepared,node.args[1])
-                stop = self._evaluate_node_lazy(prepared,node.args[2])
-                value = self._evaluate_node_lazy(prepared,node.args[0],start,stop)
-                if self.results_database is not None:
-                    #print(node.kind)
-                    self.results_database.put_success(nodeid, value, metadata={"source": "runtime", "operator": node.operator})
-                prepared.completed_nodes.add(nodeid)
-                if prepared.materialization_store is not None:
-                    prepared.materialization_store.put(nodeid, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
-                #print(value)
+                start = self._evaluate_node_lazy(prepared,node.args[1],demand)
+                stop = self._evaluate_node_lazy(prepared,node.args[2],demand)
+                value = self._evaluate_node_lazy(prepared,node.args[0],SliceDemand(start,stop))
+                self.cache(prepared, nodeid, value)
                 return value
             
-            if node.operator == "default.map" and start != None and stop != None:
-                print("entering map")
-                kernel = self.registry.load_kernel(node.operator)
-                args = [start,stop] + [self._evaluate_node_lazy(prepared,arg_id) for arg_id in node.args]
-                kwargs = {key: self._evaluate_node_lazy(prepared,arg_id) for key, arg_id in node.kwargs}
-                value = self._invoke_kernel(kernel, args, kwargs, node.attrs)
-                if self.results_database is not None:
-                    #print(node.kind)
-                    self.results_database.put_success(nodeid, value, metadata={"source": "runtime", "operator": node.operator})
-                prepared.completed_nodes.add(nodeid)
-                if prepared.materialization_store is not None:
-                    prepared.materialization_store.put(nodeid, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
-                #print(value[int(start):int(stop)])
-                print(value)
-                return value
             kernel = self.registry.load_kernel(node.operator)
-            args = [self._evaluate_node_lazy(prepared,arg_id) for arg_id in node.args]
-            kwargs = {key: self._evaluate_node_lazy(prepared,arg_id) for key, arg_id in node.kwargs}
+            if isinstance(demand,SliceDemand):
+                args = [self._evaluate_node_lazy(prepared,arg_id,demand) for arg_id in node.args] + [demand.start,demand.stop]
+            else:
+                args = [self._evaluate_node_lazy(prepared,arg_id,demand) for arg_id in node.args]
+            kwargs = {key: self._evaluate_node_lazy(prepared,arg_id,demand) for key, arg_id in node.kwargs}
             value = self._invoke_kernel(kernel, args, kwargs, node.attrs)
-            if self.results_database is not None:
-                #print(node.kind)
-                self.results_database.put_success(nodeid, value, metadata={"source": "runtime", "operator": node.operator})
-                prepared.completed_nodes.add(nodeid)
-                if prepared.materialization_store is not None:
-                    prepared.materialization_store.put(nodeid, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
+            self.cache(prepared, nodeid, value)
             return value
 
         raise ValueError(f"Unsupported node kind: {node.kind}")
@@ -240,7 +251,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
     def _build_runtime_function_from_values(self, prepared: PreparedPlan, spec: dict[str, Any]) -> RuntimeFunction:
         expression = parse_expression_content(str(spec["body"]))
         captures = {
-            name: self._evaluate_node_lazy(prepared,node_id)
+            name: self._evaluate_node_lazy(prepared,node_id,FullDemand())
             for name, node_id in dict(spec.get("captures", {})).items()
         }
         for name, nested_spec in dict(spec.get("functions", {})).items():
