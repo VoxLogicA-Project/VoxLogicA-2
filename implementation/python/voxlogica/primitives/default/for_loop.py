@@ -26,8 +26,15 @@ def execute(**kwargs) -> list[Any]:
     if "0" not in kwargs:
         raise ValueError("for_loop requires iterable argument at key '0'")
 
-    iterable = kwargs["0"]
-    closure = kwargs.get("closure", kwargs.get("1"))
+    if "2" in kwargs:
+        start = kwargs["2"]
+        stop = kwargs["3"]
+        iterable = kwargs["0"][start:stop]
+        print(iterable)
+        closure = kwargs.get("closure", kwargs.get("1"))
+    else:
+        iterable = kwargs["0"]
+        closure = kwargs.get("closure", kwargs.get("1"))
     if closure is None:
         raise ValueError("for_loop requires closure argument at key 'closure' or '1'")
 

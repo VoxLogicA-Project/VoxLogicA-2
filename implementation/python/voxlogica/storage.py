@@ -232,7 +232,11 @@ class SQLiteResultsDatabase:
             path = self.payload_dir / str(payload_file)
             #print("retrieving image")
             if path.exists():
+                #print("loading bytes")
                 payload_bin = path.read_bytes()
+                #print(path)
+                #print(path.exists())
+                #print(path.stat().st_size)
         payload_json = loads_json(row[5])
         vox_type = str(row[3] or "")
         value = None

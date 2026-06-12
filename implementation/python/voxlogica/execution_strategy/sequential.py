@@ -116,9 +116,7 @@ class SequentialExecutionStrategy(ExecutionStrategy):
                 if self.results_database is not None and self.results_database.has(node_id):
                     value = self.results_database.get_record(node_id)
                 else:
-                    #print(node.operator)
                     value = self._evaluate_node_sequential(prepared, node)
-                    #print(value)
                     if node.kind == "primitive" and self.results_database is not None:
                         #print(node.kind)
                         self.results_database.put_success(node_id, value, metadata={"source": "runtime", "operator": node.operator})
@@ -138,6 +136,13 @@ class SequentialExecutionStrategy(ExecutionStrategy):
                 #     prepared.materialization_store.fail(node_id, str(exc))
                 self._cache_summary["failed"] = int(self._cache_summary.get("failed", 0)) + 1
                 self._node_events.append({"node_id": node_id, "status": "failed", "error": str(exc)})
+                if node_id in prepared.failures:
+                    print(prepared.plan.nodes[node_id])
+                    print(prepared.plan.nodes[prepared.plan.nodes[node_id].args[0]])
+                    raise RuntimeError(
+                        f"Dependency {node_id} previously failed:\n"
+                        f"{prepared.failures[node_id]}"
+    )
 
         if goals is None:
             for goal in prepared.plan.goals:

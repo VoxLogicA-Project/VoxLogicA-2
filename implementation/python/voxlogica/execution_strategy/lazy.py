@@ -25,6 +25,16 @@ from voxlogica.value_model import adapt_runtime_value
 from voxlogica.pod_codec import encode_for_storage
 from voxlogica.lazy.hash import hash_node
 
+_LAZY_SEQUENCE_OPERATORS = {
+    "default.map", 
+    "map",
+    "default.filter",
+    "filter",
+    "default.fold",
+    "fold",
+    "default.for_loop",
+    "for_loop"
+}
 
 @dataclass
 class RuntimeFunction:
@@ -211,14 +221,14 @@ class LazyExecutionStrategy(ExecutionStrategy):
 
         if node.kind == "primitive":
             if node.operator == "default.subsequence":
-                start = self._evaluate_node_lazy(prepared,node.args[1],demand)
-                stop = self._evaluate_node_lazy(prepared,node.args[2],demand)
+                start = int(self._evaluate_node_lazy(prepared,node.args[1],demand))
+                stop = int(self._evaluate_node_lazy(prepared,node.args[2],demand))
                 value = self._evaluate_node_lazy(prepared,node.args[0],SliceDemand(start,stop))
                 self.cache(prepared, nodeid, value)
                 return value
             
             kernel = self.registry.load_kernel(node.operator)
-            if isinstance(demand,SliceDemand):
+            if isinstance(demand,SliceDemand) and node.operator in _LAZY_SEQUENCE_OPERATORS:
                 args = [self._evaluate_node_lazy(prepared,arg_id,demand) for arg_id in node.args] + [demand.start,demand.stop]
             else:
                 args = [self._evaluate_node_lazy(prepared,arg_id,demand) for arg_id in node.args]
@@ -237,7 +247,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
         capture_names = list(node.attrs.get("capture_names", []))
 
         captures = {
-            name: prepared.values[node_id]
+            name: self._evaluate_node_lazy(prepared,node_id,FullDemand())
             for name, node_id in zip(capture_names, node.args, strict=True)
         }
 

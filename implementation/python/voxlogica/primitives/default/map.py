@@ -26,11 +26,11 @@ def execute(**kwargs) -> list[Any]:
     if "0" not in kwargs:
         raise ValueError("map requires sequence argument at key '0'")
 
-    if len(kwargs)>2:
-        start = kwargs["0"]
-        stop = kwargs["1"]
-        sequence = kwargs["2"][int(start):int(stop)]
-        closure = kwargs.get("3", kwargs.get("closure"))
+    if "2" in kwargs:
+        start = kwargs["2"]
+        stop = kwargs["3"]
+        sequence = kwargs["0"][int(start):int(stop)]
+        closure = kwargs.get("1", kwargs.get("closure"))
     else:
         sequence = kwargs["0"]
         closure = kwargs.get("1", kwargs.get("closure"))
