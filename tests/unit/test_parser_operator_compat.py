@@ -3,9 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from lark.exceptions import UnexpectedInput
 
-from voxlogica.parser import Declaration, EArray, ECall, ESlice, parse_program_content
+from voxlogica.parser import (
+    Declaration,
+    EArray,
+    ECall,
+    ESlice,
+    ProgramParseError,
+    parse_program_content,
+)
 from voxlogica.reducer import reduce_program
 from voxlogica.execution_strategy.strict import StrictExecutionStrategy
 
@@ -266,7 +272,7 @@ def test_symbol_identifier_can_be_used_infix():
 
 @pytest.mark.unit
 def test_uppercase_identifier_is_not_treated_as_prefix_operator():
-    with pytest.raises(UnexpectedInput):
+    with pytest.raises(ProgramParseError):
         parse_program_content(
             """
             let NEG(x) = 0 - x
@@ -277,7 +283,7 @@ def test_uppercase_identifier_is_not_treated_as_prefix_operator():
 
 @pytest.mark.unit
 def test_uppercase_identifier_is_not_treated_as_infix_operator():
-    with pytest.raises(UnexpectedInput):
+    with pytest.raises(ProgramParseError):
         parse_program_content(
             """
             let SUM(a,b) = a + b
@@ -346,3 +352,19 @@ def test_fold_expression_executes():
     assert goal_values["sum"] == 10.0
     assert goal_values["prod"] == 24.0
     assert goal_values["maxv"] == 7.0
+
+
+@pytest.mark.unit
+def test_program_parse_error_has_clickable_vscode_format():
+    with pytest.raises(ProgramParseError) as exc_info:
+        parse_program_content(
+            """
+            x = 1
+            y = let z = 2 in
+            """,
+            source_name="tests/example.imgql",
+        )
+    text = exc_info.value.format_block()
+    assert text.startswith("tests/example.imgql:")
+    assert ": error: unexpected token" in text
+    assert "^" in text

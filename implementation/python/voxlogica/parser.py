@@ -10,8 +10,41 @@ from dataclasses import dataclass
 from typing import List, Union
 from pathlib import Path
 from lark import Lark, Transformer, v_args, Tree
+from lark.exceptions import UnexpectedInput
 
 Position = str
+
+
+@dataclass
+class ProgramParseError(ValueError):
+    """Structured parse error with source location details."""
+
+    source_name: str
+    line: int
+    column: int
+    expected: list[str]
+    found: str | None = None
+    line_text: str | None = None
+
+    def to_clickable_line(self) -> str:
+        return f"{self.source_name}:{self.line}:{self.column}: error: {self._message()}"
+
+    def _message(self) -> str:
+        found = "end of input" if self.found in (None, "", "''") else self.found
+        if self.expected:
+            expected = ", ".join(sorted(self.expected))
+            return f"unexpected token {found}; expected one of: {expected}"
+        return f"unexpected token {found}"
+
+    def format_block(self) -> str:
+        header = self.to_clickable_line()
+        if not self.line_text:
+            return header
+        caret_padding = " " * max(self.column - 1, 0)
+        return "\n".join([header, self.line_text, f"{caret_padding}^"])
+
+    def __str__(self) -> str:
+        return self.format_block()
 
 
 @dataclass
@@ -589,7 +622,7 @@ def parse_import(filename: Union[str, Path]) -> List[Command]:
     return program.commands
 
 
-def parse_program_content(content: str) -> Program:
+def parse_program_content(content: str, source_name: str = "<input>") -> Program:
     """
     Parse a VoxLogicA program from content string
 
@@ -600,7 +633,32 @@ def parse_program_content(content: str) -> Program:
         A Program object representing the parsed program
     """
     # Use the global parser which already has the transformer
-    result = parser.parse(content)
+    try:
+        result = parser.parse(content)
+    except UnexpectedInput as exc:
+        found = getattr(exc, "token", None)
+        found_type = getattr(found, "type", None)
+        found_value = getattr(found, "value", None)
+        if found_type == "$END":
+            found_str = "end of input"
+        elif found_value not in (None, ""):
+            found_str = repr(found_value)
+        else:
+            found_str = None if found is None else str(found)
+        expected = list(getattr(exc, "expected", []) or [])
+        line_text = None
+        if exc.line is not None:
+            source_lines = content.splitlines()
+            if 1 <= exc.line <= len(source_lines):
+                line_text = source_lines[exc.line - 1]
+        raise ProgramParseError(
+            source_name=source_name,
+            line=int(exc.line),
+            column=int(exc.column),
+            expected=expected,
+            found=found_str,
+            line_text=line_text,
+        ) from None
 
     # Ensure we got a Program object
     if not isinstance(result, Program):
