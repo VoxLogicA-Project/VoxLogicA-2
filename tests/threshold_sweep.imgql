@@ -4,7 +4,7 @@ dataset_root = "/home/VoxLogicA/datasets/BraTS_2019_HGG"
 
 // Run the fixed-threshold segmentation on a small slice of the dataset.
 dataset_slice_start = 0
-dataset_slice_stop = 10
+dataset_slice_stop = 20
 dataset_small_slice_stop = 1
 //mm = MinimumMaximum(img)
 //lo = index(mm,0)
@@ -33,6 +33,21 @@ result = for path in paths do
                     for th in thresholds do
                         let imgTh = BinaryThreshold(img, th, hi, 255, 0) in
                         volume(imgTh)
+                    let x1 = for th in thresholds do
+                        th
+                    in let x2 = for th in x1 do
+                        th
+                    in let x3 = for th in x2 do
+                        th
+                    in let x4 = for th in x3 do
+                        th
+                    in let x5 = for th in x4 do
+                        th
+                    in let x6 = for th in x5 do
+                        th
+                    in let x7 = for th in x6 do
+                        th
+                    in x7
 
 
 print "result" subsequence(result,dataset_slice_start,dataset_small_slice_stop)

@@ -218,7 +218,6 @@ class SequentialExecutionStrategy(ExecutionStrategy):
         if node.kind == "primitive":
             #print("computing primitive")
             #print(self.results_database)
-            #print("evaluating",node.operator)
             kernel = self.registry.load_kernel(node.operator)
             args = [prepared.values[arg_id] for arg_id in node.args]
             kwargs = {key: prepared.values[value_id] for key, value_id in node.kwargs}

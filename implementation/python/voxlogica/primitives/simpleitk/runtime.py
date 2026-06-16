@@ -172,6 +172,8 @@ def get_primitives() -> Dict[str, Callable]:
             f"Registered {len(sitk_functions)} SimpleITK primitives dynamically",
         )
         _dynamic_primitives_cache = sitk_functions
+        #f = sitk.ReadImage
+        #sitk_functions["ReadImage"] = lambda *args, **kwargs: (print("Calling f..."), f(*args, **kwargs))[1]
         return sitk_functions
 
     except Exception as e:

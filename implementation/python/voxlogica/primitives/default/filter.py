@@ -36,7 +36,12 @@ def execute(**kwargs) -> list[Any]:
         raise ValueError("filter requires closure argument at key 'closure' or '1'")
 
     if hasattr(iterable, "compute") and callable(iterable.compute):
-        iterable = iterable.compute()
+        if "2" in kwargs:
+            start = kwargs["2"]
+            stop = kwargs["3"]
+            iterable = iterable.compute()[start:stop]
+        else:
+            iterable = iterable.compute()
 
     kept: list[Any] = []
     for item in iterable:
