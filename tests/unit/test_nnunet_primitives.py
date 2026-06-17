@@ -9,7 +9,7 @@ from voxlogica.primitives.nnunet import kernels
 
 @pytest.mark.unit
 def test_train_rejects_non_bag_inputs(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="compute\\(\\)"):
+    with pytest.raises(ValueError, match="training_cases sequence or Dask bags"):
         kernels.train(
             **{
                 "0": "images",
