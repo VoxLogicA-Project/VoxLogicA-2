@@ -23,7 +23,7 @@ from voxlogica.primitives.registry import PrimitiveRegistry
 from voxlogica.storage import MaterializationStore, StorageBackend
 from voxlogica.value_model import adapt_runtime_value
 from voxlogica.pod_codec import encode_for_storage
-from voxlogica.lazy.hash import hash_node
+from voxlogica.lazy.hash import hash_sequence_item
 
 _LAZY_SEQUENCE_OPERATORS = {
     "default.map", 
@@ -209,9 +209,20 @@ class LazyExecutionStrategy(ExecutionStrategy):
         if prepared.materialization_store is not None:
             prepared.materialization_store.put(nodeId, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
 
+    def cache_sequence_item(self, prepared: PreparedPlan, nodeId: NodeId, index:int, value:Any):
+        node = prepared.plan.nodes[nodeId]
+        id = hash_sequence_item(nodeId,index)
+        expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
+        dependencies = list(node.args) + [value_id for _, value_id in node.kwargs]
+        if self.results_database is not None:
+            self.results_database.put_success(id, value, metadata={"source": "runtime", "operator": node.operator, "index": id})
+            prepared.completed_nodes.add(nodeId)
+        if prepared.materialization_store is not None:
+            prepared.materialization_store.put(id, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
+
     def _evaluate_node_lazy(self, prepared: PreparedPlan, nodeid: NodeId, demand: Demand) -> Any:
         node = prepared.plan.nodes[nodeid]
-        
+        print(node.operator)
         if node.kind == "constant":
             return node.attrs.get("value")
 
@@ -234,7 +245,11 @@ class LazyExecutionStrategy(ExecutionStrategy):
                 args = [self._evaluate_node_lazy(prepared,arg_id,demand) for arg_id in node.args]
             kwargs = {key: self._evaluate_node_lazy(prepared,arg_id,demand) for key, arg_id in node.kwargs}
             value = self._invoke_kernel(kernel, args, kwargs, node.attrs)
-            self.cache(prepared, nodeid, value)
+            if node.operator in _LAZY_SEQUENCE_OPERATORS:
+                for i in range(0,len(value)):
+                    self.cache_sequence_item(prepared,nodeid,i,value[i])
+            else:
+                self.cache(prepared, nodeid, value)
             return value
 
         raise ValueError(f"Unsupported node kind: {node.kind}")

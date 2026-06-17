@@ -42,6 +42,7 @@ def execute(**kwargs):
 
     if isinstance(tuple_value, SequenceValue):
         for current_index, item in enumerate(tuple_value.iter_values()):
+            print("iterating")
             if current_index == idx:
                 return item
         raise IndexError(f"Sequence index out of range: {idx}")
@@ -50,6 +51,7 @@ def execute(**kwargs):
     # requested position is reached.
     if isinstance(tuple_value, Iterable) and not isinstance(tuple_value, (list, tuple, range, str, bytes, bytearray)):
         for current_index, item in enumerate(tuple_value):
+            print("Iterating")
             if current_index == idx:
                 return item
         raise IndexError(f"Sequence index out of range: {idx}")
