@@ -232,9 +232,17 @@ class LazyExecutionStrategy(ExecutionStrategy):
 
         if node.kind == "primitive":
             if node.operator == "default.subsequence":
-                start = int(self._evaluate_node_lazy(prepared,node.args[1],demand))
-                stop = int(self._evaluate_node_lazy(prepared,node.args[2],demand))
-                value = self._evaluate_node_lazy(prepared,node.args[0],SliceDemand(start,stop))
+                start = int(self._evaluate_node_lazy(prepared, node.args[1], demand))
+                stop = int(self._evaluate_node_lazy(prepared, node.args[2], demand))
+                child_operator = prepared.plan.nodes[node.args[0]].operator
+                if child_operator in _LAZY_SEQUENCE_OPERATORS:
+                    value = self._evaluate_node_lazy(
+                        prepared, node.args[0], SliceDemand(start, stop)
+                    )
+                else:
+                    sequence = self._evaluate_node_lazy(prepared, node.args[0], demand)
+                    kernel = self.registry.load_kernel("default.subsequence")
+                    value = self._invoke_kernel(kernel, [sequence, start, stop], {})
                 self.cache(prepared, nodeid, value)
                 return value
             

@@ -30,7 +30,6 @@ def execute(**kwargs) -> list[Any]:
         start = kwargs["2"]
         stop = kwargs["3"]
         iterable = kwargs["0"][start:stop]
-        print(iterable)
         closure = kwargs.get("closure", kwargs.get("1"))
     else:
         iterable = kwargs["0"]
