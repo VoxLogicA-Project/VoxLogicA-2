@@ -15,7 +15,7 @@ from typing import Any
 from voxlogica.converters.dot_converter import to_dot
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder, to_json
 from voxlogica.execution import ExecutionEngine
-from voxlogica.parser import parse_program_content
+from voxlogica.parser import ProgramParseError, parse_program_content
 from voxlogica.reducer import reduce_program
 from voxlogica.storage import NoCacheStorageBackend, SQLiteResultsDatabase
 from voxlogica.repl import start_repl
@@ -30,9 +30,9 @@ def _configure_logging(debug: bool) -> None:
     )
 
 
-def build_workplan(program_text: str):
+def build_workplan(program_text: str, source_name: str = "<input>"):
     """Parse source text and reduce it into a symbolic work plan."""
-    syntax = parse_program_content(program_text)
+    syntax = parse_program_content(program_text, source_name=source_name)
     return syntax, reduce_program(syntax)
 
 
@@ -67,7 +67,11 @@ def run_command(args: argparse.Namespace) -> int:
     """Implement the ``run`` subcommand."""
     _configure_logging(args.debug)
     program_text = Path(args.filename).read_text(encoding="utf-8")
-    syntax, workplan = build_workplan(program_text)
+    try:
+        syntax, workplan = build_workplan(program_text, source_name=args.filename)
+    except ProgramParseError as exc:
+        print(exc.format_block())
+        return 2
 
     _write_text(args.save_syntax, syntax.to_syntax())
     _write_text(args.save_task_graph, str(workplan))
