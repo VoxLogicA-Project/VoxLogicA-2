@@ -205,9 +205,9 @@ class LazyExecutionStrategy(ExecutionStrategy):
         if self.results_database is not None:
             #print(node.kind)
             self.results_database.put_success(nodeId, value, metadata={"source": "runtime", "operator": node.operator})
-            prepared.completed_nodes.add(nodeId)
         if prepared.materialization_store is not None:
             prepared.materialization_store.put(nodeId, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
+        prepared.completed_nodes.add(nodeId)
 
     def cache_sequence_item(self, prepared: PreparedPlan, nodeId: NodeId, index:int, value:Any):
         node = prepared.plan.nodes[nodeId]
@@ -216,9 +216,25 @@ class LazyExecutionStrategy(ExecutionStrategy):
         dependencies = list(node.args) + [value_id for _, value_id in node.kwargs]
         if self.results_database is not None:
             self.results_database.put_success(id, value, metadata={"source": "runtime", "operator": node.operator, "index": id})
-            prepared.completed_nodes.add(nodeId)
+        prepared.completed_nodes.add(nodeId)
         if prepared.materialization_store is not None:
             prepared.materialization_store.put(id, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
+
+    def cache_lookup(self, prepared: PreparedPlan, nodeId: NodeId):
+        value = None
+        if prepared.materialization_store is not None:
+            value = prepared.materialization_store.get(nodeId)
+        elif self.results_database is not None:
+            value = self.results_database.get_record(nodeId)
+        return value
+
+    def cache_sequence_item_lookup(self, prepared: PreparedPlan, nodeId: NodeId, index: int, value: Any):
+        value = None
+        if prepared.materialization_store is not None:
+            value = prepared.materialization_store.get(hash_sequence_item(nodeId, index))
+        elif self.results_database is not None:
+            value = self.results_database.get_record(hash_sequence_item(nodeId, index))
+        return value
 
     def _evaluate_node_lazy(self, prepared: PreparedPlan, nodeid: NodeId, demand: Demand) -> Any:
         node = prepared.plan.nodes[nodeid]
@@ -231,6 +247,11 @@ class LazyExecutionStrategy(ExecutionStrategy):
             return self._build_runtime_closure_from_values(prepared, node)
 
         if node.kind == "primitive":
+            if node.operator not in _LAZY_SEQUENCE_OPERATORS:
+                value = self.cache_lookup(prepared,nodeid)
+                if value is not None:
+                    return value
+
             if node.operator == "default.subsequence":
                 start = int(self._evaluate_node_lazy(prepared, node.args[1], demand))
                 stop = int(self._evaluate_node_lazy(prepared, node.args[2], demand))
