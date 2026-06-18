@@ -210,6 +210,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
         prepared.completed_nodes.add(nodeId)
 
     def cache_sequence_item(self, prepared: PreparedPlan, nodeId: NodeId, index:int, value:Any):
+        print(hash_sequence_item(nodeId,index))
         node = prepared.plan.nodes[nodeId]
         id = hash_sequence_item(nodeId,index)
         expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
@@ -224,16 +225,20 @@ class LazyExecutionStrategy(ExecutionStrategy):
         value = None
         if prepared.materialization_store is not None:
             value = prepared.materialization_store.get(nodeId)
-        elif self.results_database is not None:
+            if value is not None:
+                return value
+        if self.results_database is not None:
             value = self.results_database.get_record(nodeId)
         return value
 
     def cache_sequence_item_lookup(self, prepared: PreparedPlan, nodeId: NodeId, index: int):
         value = None
-        print("looking up")
+        print(hash_sequence_item(nodeId,index))
         if prepared.materialization_store is not None:
             value = prepared.materialization_store.get(hash_sequence_item(nodeId, index))
-        elif self.results_database is not None:
+            if value is not None:
+                return value
+        if self.results_database is not None:
             value = self.results_database.get_record(hash_sequence_item(nodeId, index))
         return value
 
@@ -289,8 +294,8 @@ class LazyExecutionStrategy(ExecutionStrategy):
                 else: args = tmpargs
             else:
                 args = tmpargs
-            # kwargs = {key: self._evaluate_node_lazy(prepared,arg_id,demand) for key, arg_id in node.kwargs}
-            value = self._invoke_kernel(kernel, args, kwargs, node.attrs)
+                # kwargs = {key: self._evaluate_node_lazy(prepared,arg_id,demand) for key, arg_id in node.kwargs}
+                value = self._invoke_kernel(kernel, args, kwargs, node.attrs)
             if node.operator in _LAZY_SEQUENCE_OPERATORS:
                 for i in range(0,len(value)):
                     print("caching items")
