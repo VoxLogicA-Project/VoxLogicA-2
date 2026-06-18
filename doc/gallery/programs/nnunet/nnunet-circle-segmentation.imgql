@@ -51,19 +51,6 @@ let test_square = [
 
 test_cases = [test_circle, test_square]
 
-save_test_input(case, name) =
-  let image = index(index(case, 1), 0) in
-  let path = concat(export_root, "/predictions/", name, "_input.png") in
-  WriteImage(to_png_u8(image), path)
-
-save_segmentation(case, name) =
-  let image = index(index(case, 1), 0) in
-  let seg = nnunet.predict(predictor, image) in
-  let path = concat(export_root, "/predictions/", name, "_segmentation.png") in
-  WriteImage(to_png_u8(seg), path)
-
-saved_training = map(save_training_case, training)
-
 model = nnunet.train(
   training,
   work_root,
@@ -76,6 +63,19 @@ model = nnunet.train(
 )
 
 predictor = nnunet.make_predictor(model)
+
+save_test_input(case, name) =
+  let image = index(index(case, 1), 0) in
+  let path = concat(export_root, "/predictions/", name, "_input.png") in
+  WriteImage(to_png_u8(image), path)
+
+save_segmentation(case, name) =
+  let image = index(index(case, 1), 0) in
+  let seg = nnunet.predict(predictor, image) in
+  let path = concat(export_root, "/predictions/", name, "_segmentation.png") in
+  WriteImage(to_png_u8(seg), path)
+
+saved_training = map(save_training_case, training)
 
 saved_inputs = [
   save_test_input(test_circle, "test_circle"),

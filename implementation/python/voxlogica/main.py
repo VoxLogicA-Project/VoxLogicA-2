@@ -16,7 +16,7 @@ from voxlogica.converters.dot_converter import to_dot
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder, to_json
 from voxlogica.execution import ExecutionEngine
 from voxlogica.parser import ProgramParseError, parse_program_content
-from voxlogica.reducer import reduce_program
+from voxlogica.reducer import StaticAnalysisError, reduce_program
 from voxlogica.storage import NoCacheStorageBackend, SQLiteResultsDatabase
 from voxlogica.repl import start_repl
 
@@ -70,6 +70,9 @@ def run_command(args: argparse.Namespace) -> int:
     try:
         syntax, workplan = build_workplan(program_text, source_name=args.filename)
     except ProgramParseError as exc:
+        print(exc.format_block())
+        return 2
+    except StaticAnalysisError as exc:
         print(exc.format_block())
         return 2
 

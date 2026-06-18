@@ -138,23 +138,21 @@ def _ensure_venv(
     python_spec: str,
     parsed_target: tuple[int, int] | tuple[int, int, int],
 ) -> tuple[Path, tuple[int, int, int]]:
-    _run_uv(uv_cmd, ["python", "install", python_spec])
-
     recreate = False
     venv_python = _venv_python()
     if venv_python.exists():
         current = _python_version(venv_python)
         if current is None:
             recreate = True
+        elif len(parsed_target) == 3:
+            recreate = current != parsed_target
         else:
-            if len(parsed_target) == 3:
-                recreate = current != parsed_target
-            else:
-                recreate = current[:2] != parsed_target
+            recreate = current[:2] != parsed_target
     else:
         recreate = True
 
     if recreate:
+        _run_uv(uv_cmd, ["python", "install", "--no-bin", python_spec])
         shutil.rmtree(VENV_DIR, ignore_errors=True)
         _run_uv(uv_cmd, ["venv", "--python", python_spec, str(VENV_DIR)])
 
@@ -200,7 +198,6 @@ def _sync_requirements(
     test_current = stamp.get("test_sha256") == test_hash if include_test else True
 
     if not force and runtime_current and test_current:
-        print("Environment already synchronized with pinned requirements.")
         return
 
     install_args = ["pip", "install", "--python", str(venv_python)]

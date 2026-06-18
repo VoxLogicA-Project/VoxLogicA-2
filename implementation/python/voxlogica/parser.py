@@ -15,6 +15,17 @@ from lark.exceptions import UnexpectedInput
 Position = str
 
 
+def format_position(source_name: str, meta: object | None) -> Position:
+    """Format a Lark meta object into a stable source location string."""
+    if meta is None:
+        return source_name
+    line = getattr(meta, "line", None)
+    column = getattr(meta, "column", None)
+    if line is None or column is None:
+        return source_name
+    return f"{source_name}:{line}:{column}"
+
+
 @dataclass
 class ProgramParseError(ValueError):
     """Structured parse error with source location details."""
@@ -385,7 +396,13 @@ grammar = r"""
 
 
 class VoxLogicATransformer(Transformer):
-    """Transform the parse tree into the AST"""
+    """Transform the parse tree into the AST."""
+
+    def __init__(self, source_name: str = "<input>") -> None:
+        self.source_name = source_name
+
+    def _pos(self, meta: object | None) -> Position:
+        return format_position(self.source_name, meta)
 
     @v_args(inline=True)
     def program(self, *commands):
@@ -420,13 +437,13 @@ class VoxLogicATransformer(Transformer):
     def variable_name(self, name):
         return str(name)
 
-    @v_args(inline=True)
-    def save_cmd(self, identifier, expression):
-        return Save("pos", identifier.value, expression)
+    @v_args(meta=True, inline=True)
+    def save_cmd(self, meta, identifier, expression):
+        return Save(self._pos(meta), identifier.value, expression)
 
-    @v_args(inline=True)
-    def print_cmd(self, identifier, expression):
-        return Print("pos", identifier.value, expression)
+    @v_args(meta=True, inline=True)
+    def print_cmd(self, meta, identifier, expression):
+        return Print(self._pos(meta), identifier.value, expression)
 
     @v_args(inline=True)
     def import_cmd(self, path):
@@ -440,23 +457,24 @@ class VoxLogicATransformer(Transformer):
     def actual_args(self, *args):
         return list(args)
 
-    @v_args(inline=True)
-    def call_id_expr(self, function_name, args=None):
+    @v_args(meta=True, inline=True)
+    def call_id_expr(self, meta, function_name, args=None):
         if args is None:
             args = []
-        return ECall("pos", function_name, args)
+        return ECall(self._pos(meta), function_name, args)
 
-    @v_args(inline=True)
-    def call_op_expr(self, function_name, args):
-        return ECall("pos", str(function_name), args)
+    @v_args(meta=True, inline=True)
+    def call_op_expr(self, meta, function_name, args):
+        return ECall(self._pos(meta), str(function_name), args)
 
-    @v_args(inline=True)
-    def postfix_expr(self, expr, *indices):
+    @v_args(meta=True, inline=True)
+    def postfix_expr(self, meta, expr, *indices):
         current = expr
+        position = self._pos(meta)
         for index in indices:
             kind = index[0]
             if kind == "index":
-                current = ECall("pos", "index", [current, index[1]])
+                current = ECall(position, "index", [current, index[1]])
                 continue
             current = ESlice(current, index[1], index[2])
         return current
@@ -477,13 +495,13 @@ class VoxLogicATransformer(Transformer):
     def postfix_slice_all(self, _items):
         return ("slice", None, None)
 
-    @v_args(inline=True)
-    def op_expr(self, left, op, right):
-        return ECall("pos", op, [left, right])
+    @v_args(meta=True, inline=True)
+    def op_expr(self, meta, left, op, right):
+        return ECall(self._pos(meta), op, [left, right])
 
-    @v_args(inline=True)
-    def prefix_expr(self, op, expr):
-        return ECall("pos", op, [expr])
+    @v_args(meta=True, inline=True)
+    def prefix_expr(self, meta, op, expr):
+        return ECall(self._pos(meta), op, [expr])
 
     @v_args(inline=True)
     def infix_operator(self, op):
@@ -501,25 +519,25 @@ class VoxLogicATransformer(Transformer):
     def array_expr(self, *items):
         return EArray(list(items))
 
-    @v_args(inline=True)
-    def for_expr(self, variable, iterable, body):
-        return EFor("pos", str(variable), iterable, body)
+    @v_args(meta=True, inline=True)
+    def for_expr(self, meta, variable, iterable, body):
+        return EFor(self._pos(meta), str(variable), iterable, body)
 
-    @v_args(inline=True)
-    def filter_expr(self, variable, iterable, predicate):
-        return EFilter("pos", str(variable), iterable, predicate)
+    @v_args(meta=True, inline=True)
+    def filter_expr(self, meta, variable, iterable, predicate):
+        return EFilter(self._pos(meta), str(variable), iterable, predicate)
 
-    @v_args(inline=True)
-    def fold_with_init(self, operator, init, sequence):
-        return EFold("pos", str(operator), init, sequence)
+    @v_args(meta=True, inline=True)
+    def fold_with_init(self, meta, operator, init, sequence):
+        return EFold(self._pos(meta), str(operator), init, sequence)
 
-    @v_args(inline=True)
-    def fold_default_init(self, operator, sequence):
-        return EFold("pos", str(operator), None, sequence)
+    @v_args(meta=True, inline=True)
+    def fold_default_init(self, meta, operator, sequence):
+        return EFold(self._pos(meta), str(operator), None, sequence)
 
-    @v_args(inline=True)
-    def let_expr(self, variable, value, body):
-        return ELet("pos", str(variable), value, body)
+    @v_args(meta=True, inline=True)
+    def let_expr(self, meta, variable, value, body):
+        return ELet(self._pos(meta), str(variable), value, body)
 
     @v_args(inline=True)
     def simple_expr(self, value):
@@ -563,12 +581,11 @@ class VoxLogicATransformer(Transformer):
         return EString(token[1:-1])
 
 
-# Create the parser
-parser = Lark(
+# Base parser without a transformer; attach one per parse for source locations.
+_base_parser = Lark(
     grammar,
     start="program",
     parser="lalr",
-    transformer=VoxLogicATransformer(),
     propagate_positions=True,
     maybe_placeholders=False,
 )
@@ -584,28 +601,9 @@ def parse_program(filename: Union[str, Path]) -> Program:
     Returns:
         A Program object representing the parsed program
     """
-    if isinstance(filename, Path):
-        filename = str(filename)
-        with open(filename, "r") as f:
-            program_text = f.read()
-    else:
-        program_text = filename
-
-    # First parse without transformation to get the tree
-    parser_no_transform = Lark(
-        grammar, start="program", parser="lalr", propagate_positions=True
-    )
-    parse_tree = parser_no_transform.parse(program_text)
-
-    # Then transform the tree
-    transformer = VoxLogicATransformer()
-    result = transformer.transform(parse_tree)
-
-    # Ensure we got a Program object
-    if not isinstance(result, Program):
-        raise ValueError(f"Expected Program object, got {type(result).__name__}")
-
-    return result
+    path = Path(filename) if not isinstance(filename, Path) else filename
+    program_text = path.read_text(encoding="utf-8")
+    return parse_program_content(program_text, source_name=str(path))
 
 
 def parse_import(filename: Union[str, Path]) -> List[Command]:
@@ -632,9 +630,10 @@ def parse_program_content(content: str, source_name: str = "<input>") -> Program
     Returns:
         A Program object representing the parsed program
     """
-    # Use the global parser which already has the transformer
+    # Attach a transformer with the requested source name for location strings.
     try:
-        result = parser.parse(content)
+        tree = _base_parser.parse(content)
+        result = VoxLogicATransformer(source_name=source_name).transform(tree)
     except UnexpectedInput as exc:
         found = getattr(exc, "token", None)
         found_type = getattr(found, "type", None)

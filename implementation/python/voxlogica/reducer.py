@@ -71,6 +71,16 @@ class StaticAnalysisError(RuntimeError):
         message = diagnostics[0].message if diagnostics else "Static analysis failed"
         super().__init__(message)
 
+    def format_block(self) -> str:
+        """Render diagnostics in a CLI-friendly multi-line block."""
+        lines: list[str] = []
+        for diagnostic in self.diagnostics:
+            prefix = diagnostic.code
+            if diagnostic.location:
+                prefix = f"{prefix} at {diagnostic.location}"
+            lines.append(f"{prefix}: {diagnostic.message}")
+        return "\n".join(lines)
+
 
 @dataclass(frozen=True)
 class ConstantValue:
@@ -313,6 +323,66 @@ def _normalize_primitive_identifier(identifier: str) -> str:
     return _PRIMITIVE_OPERATOR_ALIASES.get(normalized, normalized)
 
 
+def _format_call_stack(call_stack: Stack) -> str:
+    lines = [f"  {name} at {position}" for name, position in call_stack if name]
+    return "\n".join(lines)
+
+
+def _raise_unresolved_identifier(
+    identifier: str,
+    *,
+    position: str | None,
+    call_stack: Stack = (),
+) -> None:
+    """Raise when an identifier is neither bound in the environment nor a primitive."""
+    normalized = _normalize_primitive_identifier(identifier)
+    message = f"Unbound variable '{normalized}'"
+    stack_text = _format_call_stack(call_stack)
+    if stack_text:
+        message = f"{message}\nCall chain:\n{stack_text}"
+
+    raise StaticAnalysisError(
+        [
+            StaticDiagnostic(
+                code="E_UNBOUND_IDENTIFIER",
+                message=message,
+                location=position,
+                symbol=normalized,
+            )
+        ]
+    )
+
+
+def _plan_call_not_in_env(
+    work_plan: WorkPlan,
+    identifier: str,
+    *,
+    position: str | None,
+    call_stack: Stack,
+    args: tuple[NodeId, ...],
+    kwargs: tuple[tuple[str, NodeId], ...] = (),
+    output_kind: OutputKind = "scalar",
+) -> NodeId:
+    """Plan a primitive call when the callee has no lexical binding."""
+    normalized = _normalize_primitive_identifier(identifier)
+    try:
+        work_plan.registry.get_spec(normalized)
+    except KeyError:
+        _raise_unresolved_identifier(
+            identifier,
+            position=position,
+            call_stack=call_stack,
+        )
+    return _plan_primitive_call(
+        work_plan,
+        identifier=identifier,
+        args=args,
+        kwargs=kwargs,
+        output_kind=output_kind,
+        position=position,
+    )
+
+
 def _serialize_function_capture(
     name: str,
     function_value: FunctionVal,
@@ -410,17 +480,8 @@ def _plan_primitive_call(
 
     try:
         spec = work_plan.registry.get_spec(identifier)
-    except KeyError as exc:
-        raise StaticAnalysisError(
-            [
-                StaticDiagnostic(
-                    code="E_UNKNOWN_CALLABLE",
-                    message=f"Unknown callable: {identifier}",
-                    location=position,
-                    symbol=identifier,
-                )
-            ]
-        ) from exc
+    except KeyError:
+        _raise_unresolved_identifier(identifier, position=position)
 
     try:
         spec.arity.validate(len(args) + len(kwargs))
@@ -486,17 +547,12 @@ def _reduce_map_call(
     else:
         try:
             work_plan.registry.get_spec(function_expr.identifier)
-        except KeyError as exc:
-            raise StaticAnalysisError(
-                [
-                    StaticDiagnostic(
-                        code="E_UNKNOWN_CALLABLE",
-                        message=f"Unknown callable: {function_expr.identifier}",
-                        location=call_expr.position,
-                        symbol=function_expr.identifier,
-                    )
-                ]
-            ) from exc
+        except KeyError:
+            _raise_unresolved_identifier(
+                function_expr.identifier,
+                position=function_expr.position,
+                call_stack=stack,
+            )
 
         # Must start with a letter to avoid parser tokenizing it as OPERATOR
         # when closure bodies are reparsed at runtime/persistence time.
@@ -588,10 +644,17 @@ def reduce_expression(
             )
 
         if not expr.arguments:
-            # print("try find id")
             val = env.try_find(expr.identifier)
-            # print(val)
             if val is None:
+                normalized = _normalize_primitive_identifier(expr.identifier)
+                try:
+                    work_plan.registry.get_spec(normalized)
+                except KeyError:
+                    _raise_unresolved_identifier(
+                        expr.identifier,
+                        position=expr.position,
+                        call_stack=current_stack,
+                    )
                 return _plan_primitive_call(
                     work_plan,
                     identifier=expr.identifier,
@@ -636,12 +699,13 @@ def reduce_expression(
                 if expr.identifier in {"overlay", "default.overlay"}
                 else "scalar"
             )
-            return _plan_primitive_call(
+            return _plan_call_not_in_env(
                 work_plan,
-                identifier=expr.identifier,
+                expr.identifier,
+                position=expr.position,
+                call_stack=next_stack,
                 args=args_ids,
                 output_kind=inferred_kind,
-                position=expr.position,
             )
 
         if isinstance(val, OperationVal):

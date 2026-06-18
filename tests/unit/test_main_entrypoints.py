@@ -2539,7 +2539,7 @@ def test_playground_symbols_reports_static_diagnostics(monkeypatch: pytest.Monke
         assert unknown_resp.status_code == 200
         unknown_payload = unknown_resp.json()
         assert unknown_payload["available"] is False
-        assert any(item.get("code") == "E_UNKNOWN_CALLABLE" for item in unknown_payload.get("diagnostics", []))
+        assert any(item.get("code") == "E_UNBOUND_IDENTIFIER" for item in unknown_payload.get("diagnostics", []))
 
         effect_resp = client.post(
             "/api/v1/playground/symbols",
