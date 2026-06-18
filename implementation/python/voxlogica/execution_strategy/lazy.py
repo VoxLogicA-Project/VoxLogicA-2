@@ -222,7 +222,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
 
     def _evaluate_node_lazy(self, prepared: PreparedPlan, nodeid: NodeId, demand: Demand) -> Any:
         node = prepared.plan.nodes[nodeid]
-        print(node.operator)
+        # print(node.operator)
         if node.kind == "constant":
             return node.attrs.get("value")
 
