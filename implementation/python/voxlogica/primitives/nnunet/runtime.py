@@ -11,6 +11,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from voxlogica.primitives.nnunet.predictor_registry import load as load_predictor
+from voxlogica.primitives.nnunet.predictor_registry import reset_runtime_state as reset_predictor_registry
+from voxlogica.primitives.nnunet.predictor_registry import store as store_predictor
 from voxlogica.primitives.nnunet.cases import DEFAULT_TRAINER, PREDICTOR_KIND, build_model
 from voxlogica.primitives.nnunet.io import segmentation_to_sitk, volumes_to_nnunet_array
 from voxlogica.primitives.nnunet.materialize import _set_nnunet_env, load_state, save_state
@@ -213,10 +216,10 @@ def create_predictor(
     )
     return {
         "vox_kind": PREDICTOR_KIND,
+        "predictor_id": store_predictor(predictor),
         "model": model,
         "device": resolved_device,
         "folds": list(fold_list),
-        "_predictor": predictor,
     }
 
 
@@ -224,9 +227,10 @@ def predict_image(predictor_handle: dict[str, Any], volumes: Any) -> Any:
     """Run nnU-Net inference on one case and return a segmentation image."""
     from voxlogica.primitives.nnunet.cases import normalize_modality_volumes
 
-    predictor = predictor_handle.get("_predictor")
-    if predictor is None:
-        raise ValueError("predictor handle is missing a loaded nnU-Net engine")
+    predictor_id = str(predictor_handle.get("predictor_id", "")).strip()
+    if not predictor_id:
+        raise ValueError("predictor handle is missing predictor_id")
+    predictor = load_predictor(predictor_id)
 
     model = predictor_handle["model"]
     modality_volumes = normalize_modality_volumes(

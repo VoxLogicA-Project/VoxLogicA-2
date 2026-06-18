@@ -1,5 +1,6 @@
 """nnUNet primitive namespace."""
 
+from voxlogica.primitives.nnunet import predictor_registry
 from voxlogica.primitives.nnunet.kernels import (
     env_check,
     get_primitives,
@@ -11,6 +12,11 @@ from voxlogica.primitives.nnunet.kernels import (
     train,
 )
 
+
+def reset_runtime_state() -> None:
+    predictor_registry.reset_runtime_state()
+
+
 __all__ = [
     "env_check",
     "get_primitives",
@@ -19,5 +25,6 @@ __all__ = [
     "predict",
     "register_primitives",
     "register_specs",
+    "reset_runtime_state",
     "train",
 ]

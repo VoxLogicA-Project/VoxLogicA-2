@@ -90,6 +90,8 @@ def write_training_dataset(
     roots = _set_nnunet_env(work_root)
     folder = dataset_folder_name(dataset_id, dataset_name)
     dataset_dir = roots["nnunet_raw"] / folder
+    if dataset_dir.exists():
+        shutil.rmtree(dataset_dir)
     images_tr = dataset_dir / "imagesTr"
     labels_tr = dataset_dir / "labelsTr"
     images_tr.mkdir(parents=True, exist_ok=True)

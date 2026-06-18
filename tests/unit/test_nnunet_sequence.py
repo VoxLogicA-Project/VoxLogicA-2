@@ -67,3 +67,44 @@ def test_write_training_dataset_writes_nnunet_layout(tmp_path: Path) -> None:
     assert (images_tr / "patient_1_0000.nii.gz").is_file()
     assert (labels_tr / "patient_1.nii.gz").is_file()
     assert materialize.state_path(work_root).is_file()
+
+
+@pytest.mark.unit
+def test_write_training_dataset_replaces_stale_cases(tmp_path: Path) -> None:
+    pytest.importorskip("nibabel")
+    work_root = tmp_path / "work"
+    first = cases.parse_training_cases(
+        [["patient_1", [np.zeros((2, 2))], np.zeros((2, 2), dtype=np.uint8)]],
+        modalities=["T1"],
+    )
+    second = cases.parse_training_cases(
+        [["patient_2", [np.ones((2, 2))], np.ones((2, 2), dtype=np.uint8)]],
+        modalities=["T1"],
+    )
+    layout = materialize.write_training_dataset(
+        work_root=work_root,
+        dataset_id=901,
+        dataset_name="Synthetic",
+        modalities=["T1"],
+        cases=first,
+    )["layout"]
+    stale_image = layout["dataset_dir"] / "imagesTr" / "patient_1_0000.nii.gz"
+    stale_label = layout["dataset_dir"] / "labelsTr" / "patient_1.nii.gz"
+    assert stale_image.is_file()
+    assert stale_label.is_file()
+
+    materialize.write_training_dataset(
+        work_root=work_root,
+        dataset_id=901,
+        dataset_name="Synthetic",
+        modalities=["T1"],
+        cases=second,
+    )
+    images_tr = layout["dataset_dir"] / "imagesTr"
+    labels_tr = layout["dataset_dir"] / "labelsTr"
+    assert not stale_image.is_file()
+    assert not stale_label.is_file()
+    assert (images_tr / "patient_2_0000.nii.gz").is_file()
+    assert (labels_tr / "patient_2.nii.gz").is_file()
+    assert len(list(images_tr.glob("*.nii*"))) == 1
+    assert len(list(labels_tr.glob("*.nii*"))) == 1
