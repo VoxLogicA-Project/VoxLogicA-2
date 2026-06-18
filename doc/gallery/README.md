@@ -64,6 +64,10 @@ The UI (`GalleryTab`) reads `examples` and `modules`; each card needs `code` inl
 3. Add `<module>` to `modules` if it is new.
 4. Run `tests/unit/test_gallery_loader.py` (or full unit suite).
 
+## Program output paths
+
+Programs that write files should use the built-in variables `$stem`, `$dir`, `$cwd`, and `$file` (alias `$filename`) and store artifacts under `output/$stem/` at the repository root. See `output/README.md`.
+
 ## Related docs
 
 - Narrative language guide (prose): `doc/user/language-gallery.md`

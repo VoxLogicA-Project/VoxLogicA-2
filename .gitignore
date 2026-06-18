@@ -44,9 +44,10 @@ output.png
 coverage.xml
 .pytest_cache/
 .ruff_cache/
-doc/gallery/output/nnunet-circle-shapes/**
-!doc/gallery/output/nnunet-circle-shapes/README.md
-!doc/gallery/output/nnunet-circle-shapes/**/.gitkeep
+output/**
+!output/README.md
+!output/**/.gitkeep
+doc/gallery/output/**
 /.cache/vox1/
 
 # Frontend workspace artifacts

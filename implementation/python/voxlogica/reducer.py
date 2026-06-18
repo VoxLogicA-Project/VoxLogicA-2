@@ -38,6 +38,7 @@ from voxlogica.parser import (
 )
 from voxlogica.primitives.api import PrimitiveCall
 from voxlogica.primitives.registry import PrimitiveRegistry
+from voxlogica.program_context import PROGRAM_SYSVAR_NAMES, ProgramContext
 logger = logging.getLogger(__name__)
 
 identifier = str
@@ -303,6 +304,36 @@ def _collect_referenced_variables(expr: Expression) -> set[str]:
         return refs
 
     return set()
+
+
+def _raise_reserved_program_identifier(identifier: str) -> None:
+    """Reject user declarations that shadow built-in program variables."""
+    if identifier not in PROGRAM_SYSVAR_NAMES:
+        return
+    raise StaticAnalysisError(
+        [
+            StaticDiagnostic(
+                code="E_RESERVED_PROGRAM_VARIABLE",
+                message=f"Identifier {identifier!r} is reserved for built-in program metadata",
+                symbol=identifier,
+            )
+        ]
+    )
+
+
+def _seed_program_variables(
+    env: Environment,
+    work_plan: WorkPlan,
+    source_name: str,
+) -> Environment:
+    """Inject $cwd, $stem, and related bindings before user declarations run."""
+    context = ProgramContext.from_source_name(source_name)
+    for name, value in context.bindings().items():
+        if env.try_find(name) is not None:
+            continue
+        node_id = _create_constant_node(work_plan, value)
+        env = env.bind(name, OperationVal(node_id))
+    return env
 
 
 def _create_constant_node(work_plan: WorkPlan, value: Any) -> NodeId:
@@ -788,6 +819,7 @@ def reduce_expression(
         )
 
     if isinstance(expr, ELet):
+        _raise_reserved_program_identifier(expr.variable)
         value_id = reduce_expression(env, work_plan, expr.value, current_stack)
         new_env = env.bind(expr.variable, OperationVal(value_id))
         return reduce_expression(new_env, work_plan, expr.body, current_stack)
@@ -803,6 +835,7 @@ def reduce_command(
 ) -> tuple[Environment, list[Command]]:
     """Reduce one top-level command and return any imported commands to queue."""
     if isinstance(command, Declaration):
+        _raise_reserved_program_identifier(command.identifier)
         if not command.arguments:
             op_id = reduce_expression(env, work_plan, command.expression)
             return env.bind(command.identifier, OperationVal(op_id)), []
@@ -852,11 +885,13 @@ def _reduce_program_internal(
     program: Program,
     environment: Environment | None = None,
     *,
+    source_name: str = "<input>",
     collect_bindings: bool = False,
 ) -> tuple[WorkPlan, dict[str, NodeId]]:
     """Reduce a whole program, optionally tracking final declaration bindings."""
     work_plan = WorkPlan()
     env = Environment() if environment is None else environment
+    env = _seed_program_variables(env, work_plan, source_name)
     parsed_imports: set[str] = set()
     declaration_bindings: dict[str, NodeId] = {}
 
@@ -897,12 +932,24 @@ def _reduce_program_internal(
     return work_plan, declaration_bindings
 
 
-def reduce_program(program: Program) -> WorkPlan:
+def reduce_program(program: Program, *, source_name: str = "<input>") -> WorkPlan:
     """Reduce a parsed program into a work plan without exposing bindings."""
-    work_plan, _bindings = _reduce_program_internal(program, collect_bindings=False)
+    work_plan, _bindings = _reduce_program_internal(
+        program,
+        collect_bindings=False,
+        source_name=source_name,
+    )
     return work_plan
 
 
-def reduce_program_with_bindings(program: Program) -> tuple[WorkPlan, dict[str, NodeId]]:
+def reduce_program_with_bindings(
+    program: Program,
+    *,
+    source_name: str = "<input>",
+) -> tuple[WorkPlan, dict[str, NodeId]]:
     """Reduce a program and also return final declaration-to-node bindings."""
-    return _reduce_program_internal(program, collect_bindings=True)
+    return _reduce_program_internal(
+        program,
+        collect_bindings=True,
+        source_name=source_name,
+    )

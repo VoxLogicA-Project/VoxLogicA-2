@@ -117,6 +117,20 @@ Plain scalar operators currently supported in surface syntax include:
 
 Operator precedence currently follows the parser’s generic infix/prefix structure rather than a fully stratified precedence table. Programs should use parentheses where precedence matters.
 
+## Program Variables
+
+When a program is loaded from a file, the reducer injects read-only path metadata as `$`-prefixed identifiers:
+
+| Name | Meaning |
+|------|---------|
+| `$stem` | Source file base name without extension |
+| `$file` | Full source file name |
+| `$filename` | Alias of `$file` |
+| `$dir` | Directory containing the source file |
+| `$cwd` | Process working directory at run time |
+
+These names are reserved and cannot be redeclared. Use `$stem` for per-program output directories, for example `concat("output/", $stem)`.
+
 ## Lowering Notes
 
 The current parser lowers some surface forms into common internal expression shapes:

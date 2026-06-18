@@ -4,26 +4,31 @@ import "nnunet"
 
 work_root = "__WORK_ROOT__"
 
-let circle_case(i) = [
-  concat("circle_", format_string("{:.0f}", i)),
-  [geom.circle(geom.blank(64, 64, 0), 10 + (i * 4), 32, 10, 200)],
-  geom.circle(geom.blank(64, 64, 0), 10 + (i * 4), 32, 10, 1)
+mixed_image(c_x, c_y, c_r, s_x, s_y, s_r) =
+  geom.circle(
+    geom.regular_polygon(geom.blank(64, 64, 0), s_x, s_y, s_r, 4, 80),
+    c_x,
+    c_y,
+    c_r,
+    200
+  )
+
+circle_label(c_x, c_y, c_r) =
+  geom.circle(geom.blank(64, 64, 0), c_x, c_y, c_r, 1)
+
+let mixed_case(id, c_x, c_y, c_r, s_x, s_y, s_r) = [
+  id,
+  [mixed_image(c_x, c_y, c_r, s_x, s_y, s_r)],
+  circle_label(c_x, c_y, c_r)
 ]
 
-let square_case(i) = [
-  concat("square_", format_string("{:.0f}", i)),
-  [geom.regular_polygon(geom.blank(64, 64, 0), 48 - (i * 4), 32, 12, 4, 80)],
-  geom.blank(64, 64, 0)
-]
+let case0 = mixed_case(concat("case_", format_string("{:.0f}", 0)), 16, 16, 8, 48, 48, 14)
+let case1 = mixed_case(concat("case_", format_string("{:.0f}", 1)), 20, 32, 10, 48, 16, 10)
+let case2 = mixed_case(concat("case_", format_string("{:.0f}", 2)), 32, 48, 12, 16, 16, 9)
+let case3 = mixed_case(concat("case_", format_string("{:.0f}", 3)), 52, 52, 7, 32, 28, 16)
+let case4 = mixed_case(concat("case_", format_string("{:.0f}", 4)), 32, 14, 11, 14, 50, 8)
 
-let c0 = circle_case(0)
-let c1 = circle_case(1)
-let c2 = circle_case(2)
-let s0 = square_case(0)
-let s1 = square_case(1)
-let s2 = square_case(2)
-
-training = [c0, c1, c2, s0, s1, s2]
+training = [case0, case1, case2, case3, case4]
 
 model = nnunet.train(
   training,
@@ -36,20 +41,13 @@ model = nnunet.train(
   "nnUNetTrainer_10epochs"
 )
 
-let test_circle = [
-  concat("test_circle"),
-  [geom.circle(geom.blank(64, 64, 0), 40, 32, 14, 200)]
-]
-
-let test_square = [
-  concat("test_square"),
-  [geom.regular_polygon(geom.blank(64, 64, 0), 24, 32, 14, 4, 80)]
-]
+let test_a = mixed_case(concat("test_a"), 40, 32, 14, 24, 32, 12)
+let test_b = mixed_case(concat("test_b"), 32, 44, 9, 32, 18, 11)
 
 predictor = nnunet.make_predictor(model)
 
-circle_seg = nnunet.predict(predictor, index(index(test_circle, 1), 0))
-square_seg = nnunet.predict(predictor, index(index(test_square, 1), 0))
+test_a_seg = nnunet.predict(predictor, index(index(test_a, 1), 0))
+test_b_seg = nnunet.predict(predictor, index(index(test_b, 1), 0))
 
-print "circle_seg" circle_seg
-print "square_seg" square_seg
+print "test_a_seg" test_a_seg
+print "test_b_seg" test_b_seg

@@ -7,6 +7,7 @@ No mapping, no aliases - just raw SimpleITK function names.
 
 import SimpleITK as sitk
 import inspect
+from pathlib import Path
 from typing import Dict, Callable
 import logging
 
@@ -64,6 +65,8 @@ def _wrap_sitk_function(func: Callable, func_name: str) -> Callable:
                             break  # Use default values for remaining parameters
                         else:
                             raise ValueError(f"{func_name}: missing required argument {i} ({param_name})")
+            if func_name == "WriteImage" and len(args) >= 2 and isinstance(args[1], str):
+                Path(args[1]).parent.mkdir(parents=True, exist_ok=True)
             # Call the original function
             result = func(*args)
             # print(result)

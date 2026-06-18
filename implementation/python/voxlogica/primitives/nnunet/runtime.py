@@ -54,10 +54,36 @@ def require_nnunet() -> None:
 
 
 def run_cli(command: list[str], *, cwd: Path, env: dict[str, str], step: str) -> None:
-    logger.info("Running (%s): %s", step, " ".join(command))
-    result = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True, env=env)
-    if result.returncode != 0:
-        raise ValueError(f"{step} failed: {(result.stderr or '').strip() or 'unknown error'}")
+    logger.info("Starting %s: %s", step, " ".join(command))
+    child_env = dict(env)
+    child_env.setdefault("PYTHONUNBUFFERED", "1")
+
+    if sys.stdout.isatty():
+        result = subprocess.run(command, cwd=str(cwd), env=child_env)
+        if result.returncode != 0:
+            raise ValueError(f"{step} failed with exit code {result.returncode}")
+        logger.info("Completed %s", step)
+        return
+
+    process = subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    captured: list[str] = []
+    assert process.stdout is not None
+    for line in process.stdout:
+        captured.append(line)
+        sys.stdout.write(line)
+        sys.stdout.flush()
+    returncode = process.wait()
+    if returncode != 0:
+        tail = "".join(captured[-80:]).strip()
+        raise ValueError(f"{step} failed with exit code {returncode}:\n{tail or 'unknown error'}")
+    logger.info("Completed %s", step)
 
 
 def trainer_dir(nnunet_results: Path, dataset_folder: str, configuration: str) -> Path:
@@ -128,6 +154,7 @@ def train_model(
 
     for fold in range(nfolds):
         if current_trainer is not None and fold_complete(current_trainer, fold):
+            logger.info("Skipping train fold %s (checkpoint already exists)", fold)
             trained_folds.append(fold)
             continue
         train_cmd = [

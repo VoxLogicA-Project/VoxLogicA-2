@@ -34,15 +34,17 @@ def test_nnunet_segments_circles_not_squares(tmp_path: Path) -> None:
         str(work_root),
     )
     syntax = parse_program_content(program_text, source_name=str(PROGRAM_PATH))
-    workplan, bindings = reduce_program_with_bindings(syntax)
+    workplan, bindings = reduce_program_with_bindings(syntax, source_name=str(PROGRAM_PATH))
 
     engine = ExecutionEngine(storage_backend=NoCacheStorageBackend(), no_cache=True)
     prepared = engine.compile_plan(workplan)
     result = engine.run_prepared(prepared)
     assert result.success, result.failed_operations
 
-    circle_seg = _segmentation_array(prepared.values[bindings["circle_seg"].operation_id])
-    square_seg = _segmentation_array(prepared.values[bindings["square_seg"].operation_id])
+    test_a_seg = _segmentation_array(prepared.values[bindings["test_a_seg"].operation_id])
+    test_b_seg = _segmentation_array(prepared.values[bindings["test_b_seg"].operation_id])
 
-    assert float(circle_seg[32, 40]) >= 0.5
-    assert (square_seg >= 0.5).sum() <= (circle_seg >= 0.5).sum()
+    assert float(test_a_seg[32, 40]) >= 0.5
+    assert float(test_a_seg[32, 24]) < 0.5
+    assert float(test_b_seg[44, 32]) >= 0.5
+    assert float(test_b_seg[18, 32]) < 0.5

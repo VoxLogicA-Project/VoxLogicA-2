@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from voxlogica.parser import parse_program
 from voxlogica.execution import ExecutionEngine
 from voxlogica.reducer import _reduce_program_internal, Environment
@@ -35,9 +37,13 @@ class Repl():
         global bindings
         try:
             ast = parse_program(arg)
-            # print(ast)
-            # print("parsed")
-            workplan, binds = _reduce_program_internal(ast, Environment(bindings), collect_bindings=True)
+            source_name = str(Path(arg).resolve()) if str(arg).endswith(".imgql") else "<repl>"
+            workplan, binds = _reduce_program_internal(
+                ast,
+                Environment(bindings),
+                collect_bindings=True,
+                source_name=source_name,
+            )
             # print("reduced")
             self.prepared = merge_dags(self.prepared, workplan)
             bindings = merge_bindings(bindings, binds)

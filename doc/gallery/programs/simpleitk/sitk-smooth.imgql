@@ -1,4 +1,7 @@
 import "simpleitk"
+import "strings"
+
 img = ReadImage("tests/data/chris_t1.nii.gz")
 smooth = CurvatureFlow(img, 0.15, 4)
-output_path = "tests/output/smoothed_chris_t1.nii.gz"
+output_path = concat("output/", $stem, "/smoothed_chris_t1.nii.gz")
+result = WriteImage(smooth, output_path)

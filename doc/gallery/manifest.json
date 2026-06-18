@@ -79,7 +79,7 @@
       "module": "simpleitk",
       "level": "core",
       "strategy": "strict",
-      "description": "Computes a smoothed volume and a deterministic output path.",
+      "description": "CurvatureFlow smoothing with output written under output/$stem/.",
       "program": "programs/simpleitk/sitk-smooth.imgql"
     },
     {
@@ -151,7 +151,7 @@
       "module": "nnunet",
       "level": "expert",
       "strategy": "strict",
-      "description": "Train on synthetic circles/squares, predict, and export PNG previews of training data and segmentations.",
+      "description": "Train on five synthetic images each containing a circle and a square; labels mark only the circle. Predict on held-out mixed-shape test images and export PNG previews.",
       "program": "programs/nnunet/nnunet-circle-segmentation.imgql"
     },
     {

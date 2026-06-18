@@ -372,10 +372,11 @@ grammar = r"""
     variable_name: identifier | OPERATOR
     infix_operator: OPERATOR
     prefix_operator: OPERATOR
-    identifier: IDENTIFIER | UPPER_IDENTIFIER
+    identifier: IDENTIFIER | UPPER_IDENTIFIER | DOLLAR_IDENTIFIER
 
     IDENTIFIER: /[a-z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?/
     UPPER_IDENTIFIER: /[A-Z][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?/
+    DOLLAR_IDENTIFIER.2: /\$[a-z][a-z0-9_]*/
     OPERATOR: /(?!\/{2})(?:[#;:_'\.|!$%&\/^=*\-+<>?@~\\]+|[A-Z][A-Z0-9]*[#;:_'\.|!$%&\/^=*\-+<>?@~\\][A-Z0-9#;:_'\.|!$%&\/^=*\-+<>?@~\\]*)/
     number: SIGNED_NUMBER -> float
     boolean: "true" -> true
@@ -557,6 +558,10 @@ class VoxLogicATransformer(Transformer):
 
     @v_args(inline=True)
     def UPPER_IDENTIFIER(self, token):
+        return str(token)
+
+    @v_args(inline=True)
+    def DOLLAR_IDENTIFIER(self, token):
         return str(token)
 
     @v_args(inline=True)

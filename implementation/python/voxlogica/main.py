@@ -33,7 +33,7 @@ def _configure_logging(debug: bool) -> None:
 def build_workplan(program_text: str, source_name: str = "<input>"):
     """Parse source text and reduce it into a symbolic work plan."""
     syntax = parse_program_content(program_text, source_name=source_name)
-    return syntax, reduce_program(syntax)
+    return syntax, reduce_program(syntax, source_name=source_name)
 
 
 def _write_text(path: str | None, content: str) -> None:
