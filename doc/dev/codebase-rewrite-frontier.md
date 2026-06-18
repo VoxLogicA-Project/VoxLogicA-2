@@ -31,7 +31,7 @@ Previously flagged rewrite targets were completed:
 2. `implementation/python/voxlogica/main.py` rewritten with clean CLI/API composition and REPL command.
 3. `implementation/python/voxlogica/primitives/simpleitk` split into namespace facade + runtime module.
 4. `implementation/python/voxlogica/primitives/arrays` split into namespace facade + kernels module.
-5. `implementation/python/voxlogica/primitives/nnunet` split into namespace facade + kernels module.
+5. `implementation/python/voxlogica/primitives/nnunet/` — sequence-based train/predict (`cases`, `io`, `materialize`, `runtime`, `kernels`).
 6. `implementation/python/voxlogica/converters` normalized with shared converter helpers.
 
 No mandatory rewrite blockers remain for the current runtime architecture.

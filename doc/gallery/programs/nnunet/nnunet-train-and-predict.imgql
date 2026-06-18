@@ -1,37 +1,34 @@
+// Sequence-based nnUNet train + predict (synthetic 2D circles demo).
+// Requires nnunetv2, torch, and geom. Training is slow even on CPU.
+import "geom"
+import "strings"
 import "nnunet"
 
-// Define directories (populate with medical images before running)
-train_images_dir = "/data/dataset/imagesTr"
-train_labels_dir = "/data/dataset/labelsTr"
-test_images_dir = "/data/dataset/imagesTs"
-work_dir = "/tmp/nnunet_work"
+work_root = "/tmp/nnunet_gallery_work"
 
-// Step 1: Train nnUNet model
-// Directory structure should be:
-//   imagesTr: case_001_0000.nii.gz, case_002_0000.nii.gz, ... (training images)
-//   labelsTr: case_001.nii.gz, case_002.nii.gz, ... (binary segmentation labels)
-//   imagesTs: case_test_0000.nii.gz, ... (test images, no labels needed)
-training_result = nnunet.train_directory(
-    train_images_dir,
-    train_labels_dir,
-    ["T1"],              // Modality names
-    work_dir,
-    100,                 // Dataset ID
-    "MyMedicalDataset",  // Dataset name
-    "3d_fullres",        // Configuration
-    5                    // Number of folds for cross-validation
-)
+let circle_case(i) = [
+  concat("circle_", format_string("{}", i)),
+  [geom.circle(geom.blank(64, 64, 0), 10 + (i * 4), 32, 10, 200)],
+  geom.circle(geom.blank(64, 64, 0), 10 + (i * 4), 32, 10, 1)
+]
 
-// Step 2: Use trained model for prediction
-prediction_result = nnunet.predict(
-    test_images_dir,
-    training_result["model_path"],
-    concat(work_dir, "/predictions"),
-    "3d_fullres"
-)
+let square_case(i) = [
+  concat("square_", format_string("{}", i)),
+  [geom.regular_polygon(geom.blank(64, 64, 0), 48 - (i * 4), 32, 12, 4, 80)],
+  geom.blank(64, 64, 0)
+]
 
-// Return results
-training_status = training_result["status"]
-model_location = training_result["model_path"]
-prediction_status = prediction_result["status"]
-predictions_location = prediction_result["output_path"]
+training = [circle_case(0), circle_case(1), circle_case(2), square_case(0), square_case(1), square_case(2)]
+
+model = nnunet.train(training, work_root, ["intensity"], "2d", 1, "GalleryShapes", "cpu")
+
+let test_case = [
+  concat("test_circle"),
+  [geom.circle(geom.blank(64, 64, 0), 40, 32, 14, 200)]
+]
+
+predictions = nnunet.predict(model, [test_case])
+
+training_status = model["status"]
+prediction_status = predictions["status"]
+prediction_paths = predictions["prediction_files"]

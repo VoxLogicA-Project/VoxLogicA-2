@@ -1,238 +1,147 @@
-"""Materialize VoxLogicA cases into nnUNet raw and inference folders."""
+"""Write VoxLogicA cases into nnUNet raw and inference folders."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
-from voxlogica.primitives.nnunet.manifest import (
-    build_manifest_payload,
-    case_manifest_entry,
-    dataset_folder_name,
-    manifest_path,
-    save_manifest,
+from voxlogica.primitives.nnunet.cases import (
+    DEFAULT_LABELS,
+    FILE_ENDING,
+    PredictionCase,
+    TrainingCase,
 )
-from voxlogica.primitives.nnunet.types import NNUNET_FILE_ENDING, PredictionCase, TrainingCase
+from voxlogica.primitives.nnunet.io import write_label, write_nifti
 
-NNUNET_MIN_DEPTH = 32
+STATE_FILE = "voxlogica_manifest.json"
+_DATASET_DIR_RE = re.compile(r"^Dataset(\d{1,3})_.+$")
 
 
-def prepare_runtime_roots(work_dir: Path) -> dict[str, Path]:
-    nnunet_raw = work_dir / "nnUNet_raw"
-    nnunet_preprocessed = work_dir / "nnUNet_preprocessed"
-    nnunet_results = work_dir / "nnUNet_results"
-    for directory in (nnunet_raw, nnunet_preprocessed, nnunet_results):
-        directory.mkdir(parents=True, exist_ok=True)
+def dataset_folder_name(dataset_id: int, dataset_name: str) -> str:
+    return f"Dataset{str(dataset_id).zfill(3)}_{dataset_name}"
 
-    os.environ["nnUNet_raw"] = str(nnunet_raw)
-    os.environ["nnUNet_preprocessed"] = str(nnunet_preprocessed)
-    os.environ["nnUNet_results"] = str(nnunet_results)
 
-    return {
-        "work_dir": work_dir,
-        "nnunet_raw": nnunet_raw,
-        "nnunet_preprocessed": nnunet_preprocessed,
-        "nnunet_results": nnunet_results,
+def state_path(work_root: Path) -> Path:
+    return work_root / STATE_FILE
+
+
+def load_state(work_root: Path) -> dict[str, Any] | None:
+    path = state_path(work_root)
+    if not path.is_file():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid state file at {path}")
+    return payload
+
+
+def save_state(work_root: Path, payload: dict[str, Any]) -> None:
+    work_root.mkdir(parents=True, exist_ok=True)
+    state_path(work_root).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def allocate_dataset_id(work_root: Path) -> int:
+    state = load_state(work_root)
+    if state is not None and "dataset_id" in state:
+        return int(state["dataset_id"])
+
+    used: set[int] = set()
+    raw_root = work_root / "nnUNet_raw"
+    if raw_root.is_dir():
+        for entry in raw_root.iterdir():
+            if entry.is_dir() and (match := _DATASET_DIR_RE.match(entry.name)):
+                used.add(int(match.group(1)))
+
+    dataset_id = 900
+    while dataset_id in used:
+        dataset_id += 1
+    return dataset_id
+
+
+def _set_nnunet_env(work_root: Path) -> dict[str, Path]:
+    roots = {
+        "work_dir": work_root,
+        "nnunet_raw": work_root / "nnUNet_raw",
+        "nnunet_preprocessed": work_root / "nnUNet_preprocessed",
+        "nnunet_results": work_root / "nnUNet_results",
     }
+    for path in roots.values():
+        path.mkdir(parents=True, exist_ok=True)
+    os.environ["nnUNet_raw"] = str(roots["nnunet_raw"])
+    os.environ["nnUNet_preprocessed"] = str(roots["nnunet_preprocessed"])
+    os.environ["nnUNet_results"] = str(roots["nnunet_results"])
+    return roots
 
 
-def dataset_layout(work_root: Path, dataset_id: int, dataset_name: str) -> dict[str, Path | str]:
-    runtime = prepare_runtime_roots(work_root)
-    padded_name = dataset_folder_name(dataset_id, dataset_name)
-    dataset_dir = runtime["nnunet_raw"] / padded_name
-    images_tr = dataset_dir / "imagesTr"
-    labels_tr = dataset_dir / "labelsTr"
-    images_ts = dataset_dir / "imagesTs"
-    for directory in (images_tr, labels_tr, images_ts):
-        directory.mkdir(parents=True, exist_ok=True)
-    return {
-        **runtime,
-        "dataset_id": dataset_id,
-        "dataset_name": dataset_name,
-        "padded_name": padded_name,
-        "dataset_dir": dataset_dir,
-        "imagesTr": images_tr,
-        "labelsTr": labels_tr,
-        "imagesTs": images_ts,
-    }
-
-
-def _load_array_io_modules() -> tuple[Any, Any]:
-    try:
-        import nibabel as nib  # type: ignore
-        import numpy as np  # type: ignore
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"nnUNet materialization requires nibabel and numpy: {exc}") from exc
-    return np, nib
-
-
-def _array_from_value(value: Any) -> tuple[Any, Any]:
-    np, _nib = _load_array_io_modules()
-    try:
-        import SimpleITK as sitk  # type: ignore
-
-        if isinstance(value, sitk.Image):
-            return sitk.GetArrayFromImage(value), value
-    except Exception:  # noqa: BLE001
-        pass
-    return np.asarray(value), None
-
-
-def _to_volume_array(value: Any) -> Any:
-    """Promote arrays to 3D when a volumetric nnUNet configuration needs it."""
-    np, _nib = _load_array_io_modules()
-    array, _reference = _array_from_value(value)
-    if array.ndim == 2:
-        return np.stack([array] * NNUNET_MIN_DEPTH, axis=0)
-    if array.ndim == 3:
-        if array.shape[0] < NNUNET_MIN_DEPTH:
-            repeats = int(np.ceil(NNUNET_MIN_DEPTH / array.shape[0]))
-            array = np.repeat(array, repeats, axis=0)[:NNUNET_MIN_DEPTH]
-        return array
-    raise ValueError(f"expected 2D or 3D image data, got shape {array.shape}")
-
-
-def write_nifti(array: Any, destination: Path, *, force_volume: bool = False) -> None:
-    np, nib = _load_array_io_modules()
-    import SimpleITK as sitk  # type: ignore
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    volume, reference = _array_from_value(array)
-    if not force_volume and volume.ndim == 2:
-        image = sitk.GetImageFromArray(volume.astype(np.float32))
-        if reference is not None:
-            image.CopyInformation(reference)
-        else:
-            image.SetSpacing((1.0, 1.0))
-            image.SetOrigin((0.0, 0.0))
-        sitk.WriteImage(image, str(destination))
-        return
-
-    stacked = _to_volume_array(array) if volume.ndim == 2 else volume
-    image = nib.Nifti1Image(stacked, np.eye(4))
-    nib.save(image, str(destination))
-
-
-def write_dataset_json(
-    dataset_dir: Path,
-    *,
-    modalities: list[str],
-    dataset_name: str,
-    num_training: int,
-    labels: dict[str, int],
-    file_ending: str = NNUNET_FILE_ENDING,
-) -> None:
-    dataset_json = {
-        "channel_names": {str(index): modality for index, modality in enumerate(modalities)},
-        "labels": labels,
-        "numTraining": num_training,
-        "file_ending": file_ending,
-        "dataset_name": dataset_name,
-    }
-    (dataset_dir / "dataset.json").write_text(json.dumps(dataset_json, indent=2), encoding="utf-8")
-
-
-def _sanitize_label_array(label_array: Any) -> tuple[Any, bool, list[int]]:
-    np, _nib = _load_array_io_modules()
-    label_arr, reference = _array_from_value(label_array)
-    unique_vals = sorted({int(x) for x in np.unique(label_arr).tolist()})
-    sanitized = False
-    if any(value not in (0, 1) for value in unique_vals):
-        label_arr = (label_arr > 0).astype("uint8")
-        sanitized = True
-    if reference is not None:
-        import SimpleITK as sitk  # type: ignore
-
-        label_image = sitk.GetImageFromArray(label_arr.astype(np.uint8))
-        label_image.CopyInformation(reference)
-        return label_image, sanitized, unique_vals
-    return label_arr, sanitized, unique_vals
-
-
-def materialize_training_cases(
+def write_training_dataset(
     *,
     work_root: Path,
     dataset_id: int,
     dataset_name: str,
     modalities: list[str],
-    labels: dict[str, int],
     cases: list[TrainingCase],
-    file_ending: str = NNUNET_FILE_ENDING,
+    labels: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    layout = dataset_layout(work_root, dataset_id, dataset_name)
-    case_manifest: dict[str, dict[str, Any]] = {}
+    roots = _set_nnunet_env(work_root)
+    folder = dataset_folder_name(dataset_id, dataset_name)
+    dataset_dir = roots["nnunet_raw"] / folder
+    images_tr = dataset_dir / "imagesTr"
+    labels_tr = dataset_dir / "labelsTr"
+    images_tr.mkdir(parents=True, exist_ok=True)
+    labels_tr.mkdir(parents=True, exist_ok=True)
+
+    label_defs = labels or DEFAULT_LABELS
     labels_sanitized = False
-    label_value_map: dict[str, list[int]] = {}
-
     for case in cases:
-        channel_filenames: list[str] = []
-        for mod_idx, array in enumerate(case.modality_arrays):
-            filename = f"{case.sanitized_id}_{mod_idx:04d}{file_ending}"
-            channel_filenames.append(filename)
-            write_nifti(array, layout["imagesTr"] / filename)
-
-        label_filename = f"{case.sanitized_id}{file_ending}"
-        label_arr, case_sanitized, unique_vals = _sanitize_label_array(case.label_array)
-        labels_sanitized = labels_sanitized or case_sanitized
-        label_value_map[label_filename] = unique_vals
-        write_nifti(label_arr, layout["labelsTr"] / label_filename)
-
-        case_manifest[case.logical_id] = case_manifest_entry(
-            logical_id=case.logical_id,
-            sanitized_id=case.sanitized_id,
-            channel_filenames=channel_filenames,
-            label_filename=label_filename,
+        for index, volume in enumerate(case.modalities):
+            write_nifti(volume, images_tr / f"{case.file_id}_{index:04d}{FILE_ENDING}")
+        labels_sanitized = (
+            write_label(case.label, labels_tr / f"{case.file_id}{FILE_ENDING}") or labels_sanitized
         )
 
-    write_dataset_json(
-        layout["dataset_dir"],
-        modalities=modalities,
-        dataset_name=dataset_name,
-        num_training=len(cases),
-        labels=labels,
-        file_ending=file_ending,
-    )
-
-    manifest_payload = build_manifest_payload(
-        dataset_id=dataset_id,
-        dataset_name=dataset_name,
-        modalities=modalities,
-        configuration="",
-        labels=labels,
-        cases=case_manifest,
-        trained_folds=[],
-        trainer_dir=None,
-        file_ending=file_ending,
-    )
-    save_manifest(work_root, manifest_payload)
-
-    return {
-        "layout": layout,
-        "labels_sanitized": labels_sanitized,
-        "label_value_map": label_value_map,
-        "case_manifest": case_manifest,
-        "manifest_path": str(manifest_path(work_root)),
+    dataset_json = {
+        "channel_names": {str(index): name for index, name in enumerate(modalities)},
+        "labels": label_defs,
+        "numTraining": len(cases),
+        "file_ending": FILE_ENDING,
+        "dataset_name": dataset_name,
     }
+    (dataset_dir / "dataset.json").write_text(json.dumps(dataset_json, indent=2), encoding="utf-8")
+
+    save_state(
+        work_root,
+        {
+            "dataset_id": dataset_id,
+            "dataset_folder": folder,
+            "dataset_name": dataset_name,
+            "modalities": modalities,
+            "labels": label_defs,
+        },
+    )
+
+    layout = {**roots, "dataset_id": dataset_id, "dataset_folder": folder, "dataset_dir": dataset_dir}
+    return {"layout": layout, "labels_sanitized": labels_sanitized}
 
 
-def materialize_prediction_cases(
+def write_prediction_inputs(
     *,
     work_root: Path,
-    model_handle: dict[str, Any],
     cases: list[PredictionCase],
-    run_id: str,
+    file_ending: str = FILE_ENDING,
+    run_id: str | None = None,
 ) -> Path:
-    file_ending = str(model_handle.get("file_ending", NNUNET_FILE_ENDING))
-    inference_root = work_root / "materialized" / "inference" / run_id
+    run = run_id or uuid.uuid4().hex[:12]
+    inference_root = work_root / "materialized" / "inference" / run
     if inference_root.exists():
         shutil.rmtree(inference_root)
     inference_root.mkdir(parents=True, exist_ok=True)
 
     for case in cases:
-        for mod_idx, array in enumerate(case.modality_arrays):
-            filename = f"{case.sanitized_id}_{mod_idx:04d}{file_ending}"
-            write_nifti(array, inference_root / filename)
+        for index, volume in enumerate(case.modalities):
+            write_nifti(volume, inference_root / f"{case.file_id}_{index:04d}{file_ending}")
     return inference_root

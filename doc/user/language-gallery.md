@@ -56,8 +56,7 @@ Top-level declarations can use either `let` or bare assignment. Gallery examples
 | Example | Focus |
 |---------|--------|
 | [nnunet-env](../gallery/programs/nnunet/nnunet-env.imgql) | Runtime availability check |
-| [nnunet-train-directory](../gallery/programs/nnunet/nnunet-train-directory.imgql) | `train_directory` skeleton |
-| [nnunet-train-and-predict](../gallery/programs/nnunet/nnunet-train-and-predict.imgql) | Train + predict workflow |
+| [nnunet-train-and-predict](../gallery/programs/nnunet/nnunet-train-and-predict.imgql) | Sequence-based train + predict |
 
 ## 8. Test Module
 

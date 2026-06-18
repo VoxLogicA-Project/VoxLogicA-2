@@ -146,21 +146,12 @@
       "program": "programs/nnunet/nnunet-env.imgql"
     },
     {
-      "id": "nnunet-train-directory",
-      "title": "nnUNet train_directory template",
-      "module": "nnunet",
-      "level": "expert",
-      "strategy": "strict",
-      "description": "Skeleton for nnUNet training from directory datasets.",
-      "program": "programs/nnunet/nnunet-train-directory.imgql"
-    },
-    {
       "id": "nnunet-train-and-predict",
       "title": "nnUNet train and predict workflow",
       "module": "nnunet",
       "level": "expert",
       "strategy": "strict",
-      "description": "Complete workflow combining training and prediction on a dataset.",
+      "description": "Train from in-memory case sequences and run handle-based prediction.",
       "program": "programs/nnunet/nnunet-train-and-predict.imgql"
     },
     {

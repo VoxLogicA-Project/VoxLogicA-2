@@ -55,12 +55,7 @@ Severity legend: `High`, `Medium`, `Low`.
  - Lines: duplicate log block around `143-151`; direct write to `engine.storage._memory_cache` at `105`.
  - Detail: repeated dedup logs increase noise; direct access to private storage internals increases fragility.
 
-4. `Low` - Disabled CPU-forcing branch left as hardcoded dead code
- - File: `implementation/python/voxlogica/primitives/nnunet/__init__.py`
- - Line: around `412`
- - Detail: `if False and device in ("cpu", "none")` indicates intentionally disabled behavior with TODO note.
-
-5. `Low` - Redundant local helper in JSON converter
+4. `Low` - Redundant local helper in JSON converter
  - File: `implementation/python/voxlogica/converters/json_converter.py`
  - Lines: local `unwrap()` defined around `40-50` but not used.
  - Detail: minor maintainability issue; behavior is still correct through `WorkPlanJSONEncoder()._unwrap(...)`.
@@ -74,5 +69,4 @@ Severity legend: `High`, `Medium`, `Low`.
 1. Patch the `dice_score` denominator guard.
 2. Either implement or remove `compute_memory_assignment` plumbing.
 3. Clean `for_loop` internals (remove duplicate logs; avoid direct private cache writes).
-4. Resolve or remove dead nnUNet CPU branch.
-5. Remove redundant helper code in JSON converter.
+4. Remove redundant helper code in JSON converter.

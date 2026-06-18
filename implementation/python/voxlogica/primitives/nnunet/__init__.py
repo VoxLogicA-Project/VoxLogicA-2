@@ -1,4 +1,4 @@
-"""nnUNet primitive namespace facade."""
+"""nnUNet primitive namespace."""
 
 from voxlogica.primitives.nnunet.kernels import (
     env_check,
@@ -8,7 +8,6 @@ from voxlogica.primitives.nnunet.kernels import (
     register_primitives,
     register_specs,
     train,
-    train_directory,
 )
 
 __all__ = [
@@ -19,5 +18,4 @@ __all__ = [
     "register_primitives",
     "register_specs",
     "train",
-    "train_directory",
 ]
