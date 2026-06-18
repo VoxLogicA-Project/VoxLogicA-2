@@ -35,4 +35,4 @@ result = for path in paths do
                         volume(imgTh)
 
 
-print "result" result[4]
+print "result" subsequence(result,dataset_slice_start,dataset_small_slice_stop)

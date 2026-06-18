@@ -228,8 +228,9 @@ class LazyExecutionStrategy(ExecutionStrategy):
             value = self.results_database.get_record(nodeId)
         return value
 
-    def cache_sequence_item_lookup(self, prepared: PreparedPlan, nodeId: NodeId, index: int, value: Any):
+    def cache_sequence_item_lookup(self, prepared: PreparedPlan, nodeId: NodeId, index: int):
         value = None
+        print("looking up")
         if prepared.materialization_store is not None:
             value = prepared.materialization_store.get(hash_sequence_item(nodeId, index))
         elif self.results_database is not None:
@@ -237,6 +238,10 @@ class LazyExecutionStrategy(ExecutionStrategy):
         return value
 
     def _evaluate_node_lazy(self, prepared: PreparedPlan, nodeid: NodeId, demand: Demand) -> Any:
+        value = self.cache_lookup(prepared, nodeid)
+        if value is not None:
+            #print(value)
+            return value
         node = prepared.plan.nodes[nodeid]
         # print(node.operator)
         if node.kind == "constant":
@@ -247,10 +252,9 @@ class LazyExecutionStrategy(ExecutionStrategy):
             return self._build_runtime_closure_from_values(prepared, node)
 
         if node.kind == "primitive":
-            if node.operator not in _LAZY_SEQUENCE_OPERATORS:
-                value = self.cache_lookup(prepared,nodeid)
-                if value is not None:
-                    return value
+            value = self.cache_lookup(prepared,nodeid)
+            if value is not None:
+                return value
 
             if node.operator == "default.subsequence":
                 start = int(self._evaluate_node_lazy(prepared, node.args[1], demand))
@@ -268,16 +272,31 @@ class LazyExecutionStrategy(ExecutionStrategy):
                 return value
             
             kernel = self.registry.load_kernel(node.operator)
-            if isinstance(demand,SliceDemand) and node.operator in _LAZY_SEQUENCE_OPERATORS:
-                args = [self._evaluate_node_lazy(prepared,arg_id,demand) for arg_id in node.args] + [demand.start,demand.stop]
-            else:
-                args = [self._evaluate_node_lazy(prepared,arg_id,demand) for arg_id in node.args]
+            tmpargs = [self._evaluate_node_lazy(prepared,arg_id,demand) for arg_id in node.args]
             kwargs = {key: self._evaluate_node_lazy(prepared,arg_id,demand) for key, arg_id in node.kwargs}
+            if node.operator in _LAZY_SEQUENCE_OPERATORS:
+                if isinstance(demand,SliceDemand):
+                    value = []
+                    for i in range(demand.start,demand.stop):
+                        tmp = self.cache_sequence_item_lookup(prepared, nodeid, i)
+                        if tmp is not None:
+                            value.extend(tmp)
+                            #print(value)
+                        else:
+                            args = tmpargs + [i,i+1]
+                            value.extend(self._invoke_kernel(kernel, args, kwargs, node.attrs))
+                            #print(value)
+                else: args = tmpargs
+            else:
+                args = tmpargs
+            # kwargs = {key: self._evaluate_node_lazy(prepared,arg_id,demand) for key, arg_id in node.kwargs}
             value = self._invoke_kernel(kernel, args, kwargs, node.attrs)
             if node.operator in _LAZY_SEQUENCE_OPERATORS:
                 for i in range(0,len(value)):
+                    print("caching items")
                     self.cache_sequence_item(prepared,nodeid,i,value[i])
             else:
+                print("caching")
                 self.cache(prepared, nodeid, value)
             return value
 
