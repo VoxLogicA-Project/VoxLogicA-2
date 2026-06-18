@@ -461,9 +461,11 @@ class MaterializationStore:
                     backend_record = self._backend.get_record(node_id)
                     if backend_record is not None and backend_record.status == MATERIALIZED_STATUS:
                         return backend_record.value
-                raise KeyError(f"No materialized record for node {node_id}")
+                # raise KeyError(f"No materialized record for node {node_id}")
+                return None
             if record is None or record.status != MATERIALIZED_STATUS:
-                raise KeyError(f"No materialized record for node {node_id}")
+                # raise KeyError(f"No materialized record for node {node_id}")
+                return None
             return record.value
 
     def put(self, node_id: str, expression: Any, dependencies: list[str], value: Any, metadata: dict[str, Any] | None = None) -> None:

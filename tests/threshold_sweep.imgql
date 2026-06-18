@@ -4,7 +4,7 @@ dataset_root = "/home/VoxLogicA/datasets/BraTS_2019_HGG"
 
 // Run the fixed-threshold segmentation on a small slice of the dataset.
 dataset_slice_start = 0
-dataset_slice_stop = 5
+dataset_slice_stop = 10
 dataset_small_slice_stop = 5
 //mm = MinimumMaximum(img)
 //lo = index(mm,0)
@@ -35,4 +35,4 @@ result = for path in paths do
                         volume(imgTh)
 
 
-print "result" result[4]
+print "result" subsequence(result,dataset_slice_start,dataset_small_slice_stop)
