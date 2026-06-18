@@ -1,9 +1,8 @@
-"""nnUNet primitives: sequence-based train and handle-based predict."""
+"""nnUNet primitives: sequence-based train and predictor-based inference."""
 
 from __future__ import annotations
 
 import logging
-import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -12,11 +11,12 @@ from voxlogica.primitives.nnunet import materialize as mat
 from voxlogica.primitives.nnunet import runtime
 from voxlogica.primitives.nnunet.cases import (
     DEFAULT_LABELS,
+    DEFAULT_TRAINER,
     as_list,
     infer_modalities,
     is_model,
+    is_predictor,
     normalize_modalities,
-    parse_prediction_cases,
     parse_training_cases,
 )
 
@@ -41,6 +41,12 @@ def _require_int(kwargs: dict[str, Any], key: str, name: str, default: int) -> i
         raise ValueError(f"{name} must be int-like: {_arg(kwargs, key, default)!r}") from exc
 
 
+def _optional_str(kwargs: dict[str, Any], key: str, default: str = "") -> str:
+    if key not in kwargs or _arg(kwargs, key) is None:
+        return default
+    return str(_arg(kwargs, key)).strip()
+
+
 def train(**kwargs: Any) -> dict[str, Any]:
     """Train nnUNet from [case_id, modalities, label] sequences."""
     try:
@@ -63,6 +69,7 @@ def train(**kwargs: Any) -> dict[str, Any]:
         nfolds = _require_int(kwargs, "4", "nfolds", 5)
         dataset_name = _require_str(kwargs, "5", "dataset_name") if "5" in kwargs else "VoxLogicA"
         device = str(_arg(kwargs, "6", "cpu")).lower()
+        trainer = _optional_str(kwargs, "7", DEFAULT_TRAINER) or DEFAULT_TRAINER
         labels = DEFAULT_LABELS
 
         if nfolds <= 0:
@@ -87,56 +94,48 @@ def train(**kwargs: Any) -> dict[str, Any]:
             nfolds=nfolds,
             device=device,
             labels=labels,
+            trainer=trainer,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("nnUNet training failed: %s", exc)
         raise ValueError(f"nnUNet training failed: {exc}") from exc
 
 
-def predict(**kwargs: Any) -> dict[str, Any]:
-    """Run nnUNet inference from a model handle and prediction case sequence."""
+def make_predictor(**kwargs: Any) -> dict[str, Any]:
+    """Load an nnU-Net predictor from a trained model handle."""
     try:
         model = _arg(kwargs, "0")
         if not is_model(model):
-            raise ValueError("predict requires a model handle from nnunet.train")
-        if "1" not in kwargs:
-            raise ValueError("predict requires prediction_cases as argument 1")
+            raise ValueError("make_predictor requires a model handle from nnunet.train")
 
-        cases = parse_prediction_cases(_arg(kwargs, "1"), modalities=list(model["modalities"]))
-        work_root = Path(model["work_root"])
-        run_id = uuid.uuid4().hex[:12]
-        input_dir = mat.write_prediction_inputs(work_root=work_root, cases=cases, run_id=run_id)
-        output_dir = work_root / "materialized" / "predictions" / run_id
-
-        folds = _arg(kwargs, "3")
+        device = _arg(kwargs, "1")
+        folds_value = _arg(kwargs, "2")
         fold_list = None
-        if folds is not None:
-            fold_list = [int(fold) for fold in as_list(folds, name="folds")]
+        if folds_value is not None:
+            fold_list = [int(fold) for fold in as_list(folds_value, name="folds")]
 
-        return runtime.predict_cases(
-            model=model,
-            input_dir=input_dir,
-            output_dir=output_dir,
+        return runtime.create_predictor(
+            model,
+            device=str(device).lower() if device is not None else None,
             folds=fold_list,
-            save_probabilities=bool(_arg(kwargs, "4", False)),
         )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("nnUNet make_predictor failed: %s", exc)
+        raise ValueError(f"nnUNet make_predictor failed: {exc}") from exc
+
+
+def predict(**kwargs: Any) -> Any:
+    """Segment one case from a loaded predictor and return a label image."""
+    try:
+        predictor = _arg(kwargs, "0")
+        if not is_predictor(predictor):
+            raise ValueError("predict requires a predictor handle from nnunet.make_predictor")
+        if "1" not in kwargs:
+            raise ValueError("predict requires an image or modality volume list as argument 1")
+        return runtime.predict_image(predictor, _arg(kwargs, "1"))
     except Exception as exc:  # noqa: BLE001
         logger.error("nnUNet prediction failed: %s", exc)
         raise ValueError(f"nnUNet prediction failed: {exc}") from exc
-
-
-def export_predictions(**kwargs: Any) -> list[str]:
-    """Export prediction segmentations from a predict result as PNG files."""
-    try:
-        if "0" not in kwargs or "1" not in kwargs:
-            raise ValueError("export_predictions requires (predictions, export_root)")
-        predictions = _arg(kwargs, "0")
-        if not isinstance(predictions, dict) or predictions.get("status") != "success":
-            raise ValueError("export_predictions requires a successful predict result")
-        return runtime.export_prediction_pngs(predictions, _require_str(kwargs, "1", "export_root"))
-    except Exception as exc:  # noqa: BLE001
-        logger.error("nnUNet export_predictions failed: %s", exc)
-        raise ValueError(f"nnUNet export_predictions failed: {exc}") from exc
 
 
 def env_check(**_kwargs: Any) -> dict[str, Any]:
@@ -146,8 +145,8 @@ def env_check(**_kwargs: Any) -> dict[str, Any]:
 def get_primitives() -> dict[str, Callable[..., Any]]:
     return {
         "train": train,
+        "make_predictor": make_predictor,
         "predict": predict,
-        "export_predictions": export_predictions,
         "env_check": env_check,
     }
 
@@ -158,15 +157,15 @@ def list_primitives() -> dict[str, str]:
 
 def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
     arities = {
-        "train": AritySpec(min_args=2, max_args=7),
-        "predict": AritySpec(min_args=2, max_args=5),
-        "export_predictions": AritySpec.fixed(2),
+        "train": AritySpec(min_args=2, max_args=8),
+        "make_predictor": AritySpec(min_args=1, max_args=3),
+        "predict": AritySpec.fixed(2),
         "env_check": AritySpec.variadic(0),
     }
     descriptions = {
         "train": "Train nnUNet from a case sequence",
-        "predict": "Run nnUNet inference from a model handle",
-        "export_predictions": "Write PNG previews of prediction segmentations",
+        "make_predictor": "Load an nnU-Net predictor from a trained model handle",
+        "predict": "Segment one image with a loaded nnU-Net predictor",
         "env_check": "Inspect nnUNet and torch runtime environment",
     }
     specs: dict[str, tuple[PrimitiveSpec, Callable[..., Any]]] = {}

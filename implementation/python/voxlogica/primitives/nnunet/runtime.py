@@ -11,7 +11,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from voxlogica.primitives.nnunet.cases import build_model
+from voxlogica.primitives.nnunet.cases import DEFAULT_TRAINER, PREDICTOR_KIND, build_model
+from voxlogica.primitives.nnunet.io import segmentation_to_sitk, volumes_to_nnunet_array
 from voxlogica.primitives.nnunet.materialize import _set_nnunet_env, load_state, save_state
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,7 @@ def train_model(
     nfolds: int,
     device: str,
     labels: dict[str, int],
+    trainer: str = DEFAULT_TRAINER,
 ) -> dict[str, Any]:
     require_nnunet()
     work_root = Path(layout["work_dir"])
@@ -118,7 +120,7 @@ def train_model(
         pass
 
     trained_folds: list[int] = []
-    custom_trainer = os.environ.get("VOXLOGICA_NNUNET_TRAINER", "").strip()
+    trainer_class = (trainer or DEFAULT_TRAINER).strip()
     train_device = "cpu" if device in {"cpu", "none"} else "cuda"
 
     for fold in range(nfolds):
@@ -133,8 +135,8 @@ def train_model(
             "-device",
             train_device,
         ]
-        if custom_trainer:
-            train_cmd.extend(["-tr", custom_trainer])
+        if trainer_class and trainer_class != DEFAULT_TRAINER:
+            train_cmd.extend(["-tr", trainer_class])
         run_cli(train_cmd, cwd=work_root, env=env, step=f"train fold {fold}")
         trained_folds.append(fold)
 
@@ -145,6 +147,8 @@ def train_model(
             "configuration": configuration,
             "trained_folds": trained_folds,
             "trainer_dir": str(resolved_trainer),
+            "trainer": trainer_class,
+            "device": device,
         }
     )
     save_state(work_root, state)
@@ -158,76 +162,81 @@ def train_model(
         trained_folds=trained_folds,
         trainer_dir=str(resolved_trainer),
         labels=labels,
+        device=device,
+        trainer=trainer_class,
     )
 
 
-def predict_cases(
-    *,
+def _torch_device(device: str) -> Any:
+    import torch  # type: ignore
+
+    normalized = str(device or "cpu").lower()
+    if normalized in {"cpu", "none", ""}:
+        return torch.device("cpu")
+    if normalized == "cuda":
+        return torch.device("cuda", 0)
+    return torch.device(device)
+
+
+def create_predictor(
     model: dict[str, Any],
-    input_dir: Path,
-    output_dir: Path,
+    *,
+    device: str | None = None,
     folds: list[int] | None = None,
-    save_probabilities: bool = False,
 ) -> dict[str, Any]:
+    """Load an nnU-Net predictor once for repeated image inference."""
     require_nnunet()
+    from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor  # type: ignore
+
     work_root = Path(model["work_root"])
     _set_nnunet_env(work_root)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
-    command = [
-        nnunet_command("nnUNetv2_predict"),
-        "-i",
-        str(input_dir),
-        "-o",
-        str(output_dir),
-        "-d",
-        str(int(model["dataset_id"])),
-        "-tr",
-        trainer_name(model["trainer_dir"]),
-        "-c",
-        str(model["configuration"]),
-    ]
-    fold_list = folds if folds is not None else model.get("trained_folds")
-    if fold_list:
-        command.extend(["-f"] + [str(fold) for fold in fold_list])
-    if save_probabilities:
-        command.append("--save_probabilities")
+    resolved_device = str(device or model.get("device", "cpu")).lower()
+    torch_device = _torch_device(resolved_device)
+    perform_on_device = torch_device.type == "cuda"
 
-    run_cli(command, cwd=output_dir, env=nnunet_env(), step="predict")
-    created = sorted(output_dir.glob("*.nii*"))
+    predictor = nnUNetPredictor(
+        tile_step_size=0.5,
+        use_gaussian=True,
+        use_mirroring=True,
+        perform_everything_on_device=perform_on_device,
+        device=torch_device,
+        verbose=False,
+        verbose_preprocessing=False,
+        allow_tqdm=False,
+    )
+    fold_list = tuple(folds if folds is not None else model.get("trained_folds", (0,)))
+    predictor.initialize_from_trained_model_folder(
+        str(model["trainer_dir"]),
+        use_folds=fold_list,
+        checkpoint_name="checkpoint_final.pth",
+    )
     return {
-        "status": "success",
+        "vox_kind": PREDICTOR_KIND,
         "model": model,
-        "output_path": str(output_dir),
-        "prediction_files": [str(path) for path in created],
-        "num_predictions": len(created),
-        "cases": [
-            {"case_id": path.name.split(".")[0], "segmentation_path": str(path)} for path in created
-        ],
+        "device": resolved_device,
+        "folds": list(fold_list),
+        "_predictor": predictor,
     }
 
 
-def export_prediction_pngs(predictions: dict[str, Any], export_root: str | Path) -> list[str]:
-    """Write PNG previews of nnUNet segmentations for gallery and inspection."""
-    try:
-        import SimpleITK as sitk  # type: ignore
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"export_predictions requires SimpleITK: {exc}") from exc
+def predict_image(predictor_handle: dict[str, Any], volumes: Any) -> Any:
+    """Run nnU-Net inference on one case and return a segmentation image."""
+    from voxlogica.primitives.nnunet.cases import normalize_modality_volumes
 
-    root = Path(export_root) / "predictions"
-    root.mkdir(parents=True, exist_ok=True)
-    written: list[str] = []
-    for case in predictions.get("cases", []):
-        case_id = str(case["case_id"])
-        nii_path = Path(str(case["segmentation_path"]))
-        image = sitk.ReadImage(str(nii_path))
-        array = sitk.GetArrayFromImage(image)
-        png_image = sitk.GetImageFromArray(array.astype("float32"))
-        png_image = sitk.Cast(sitk.RescaleIntensity(png_image, 0, 255), sitk.sitkUInt8)
-        out_path = root / f"{case_id}_segmentation.png"
-        sitk.WriteImage(png_image, str(out_path))
-        written.append(str(out_path))
-    return written
+    predictor = predictor_handle.get("_predictor")
+    if predictor is None:
+        raise ValueError("predictor handle is missing a loaded nnU-Net engine")
+
+    model = predictor_handle["model"]
+    modality_volumes = normalize_modality_volumes(
+        volumes,
+        expected=len(model["modalities"]),
+        name="image",
+    )
+    array, properties = volumes_to_nnunet_array(modality_volumes)
+    segmentation = predictor.predict_single_npy_array(array, properties, None, None, False)
+    return segmentation_to_sitk(segmentation, properties)
 
 
 def env_check() -> dict[str, Any]:

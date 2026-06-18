@@ -9,8 +9,10 @@ from typing import Any
 from voxlogica.execution_strategy.results import SequenceValue
 
 MODEL_KIND = "nnunet_model"
+PREDICTOR_KIND = "nnunet_predictor"
 FILE_ENDING = ".nii.gz"
 DEFAULT_LABELS = {"background": 0, "foreground": 1}
+DEFAULT_TRAINER = "nnUNetTrainer"
 
 
 def sanitize_case_id(case_id: Any) -> str:
@@ -30,6 +32,20 @@ def as_list(value: Any, *, name: str) -> list[Any]:
 
 def is_model(value: Any) -> bool:
     return isinstance(value, dict) and value.get("vox_kind") == MODEL_KIND
+
+
+def is_predictor(value: Any) -> bool:
+    return isinstance(value, dict) and value.get("vox_kind") == PREDICTOR_KIND
+
+
+def normalize_modality_volumes(value: Any, *, expected: int, name: str = "image") -> list[Any]:
+    """Normalize a single volume or modality list for prediction."""
+    if expected == 1 and not isinstance(value, (list, tuple, SequenceValue)):
+        return [value]
+    volumes = as_list(value, name=name)
+    if len(volumes) != expected:
+        raise ValueError(f"{name} must provide {expected} modality volume(s), got {len(volumes)}")
+    return volumes
 
 
 def normalize_modalities(value: Any) -> list[str]:
@@ -128,6 +144,8 @@ def build_model(
     trained_folds: list[int],
     trainer_dir: str,
     labels: dict[str, int] | None = None,
+    device: str = "cpu",
+    trainer: str = DEFAULT_TRAINER,
 ) -> dict[str, Any]:
     return {
         "vox_kind": MODEL_KIND,
@@ -140,5 +158,7 @@ def build_model(
         "file_ending": FILE_ENDING,
         "trained_folds": list(trained_folds),
         "trainer_dir": trainer_dir,
+        "trainer": trainer or DEFAULT_TRAINER,
+        "device": device,
         "labels": dict(labels or DEFAULT_LABELS),
     }

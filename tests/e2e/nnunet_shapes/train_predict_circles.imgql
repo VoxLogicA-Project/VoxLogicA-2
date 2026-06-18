@@ -5,13 +5,13 @@ import "nnunet"
 work_root = "__WORK_ROOT__"
 
 let circle_case(i) = [
-  concat("circle_", format_string("{}", i)),
+  concat("circle_", format_string("{:.0f}", i)),
   [geom.circle(geom.blank(64, 64, 0), 10 + (i * 4), 32, 10, 200)],
   geom.circle(geom.blank(64, 64, 0), 10 + (i * 4), 32, 10, 1)
 ]
 
 let square_case(i) = [
-  concat("square_", format_string("{}", i)),
+  concat("square_", format_string("{:.0f}", i)),
   [geom.regular_polygon(geom.blank(64, 64, 0), 48 - (i * 4), 32, 12, 4, 80)],
   geom.blank(64, 64, 0)
 ]
@@ -25,7 +25,16 @@ let s2 = square_case(2)
 
 training = [c0, c1, c2, s0, s1, s2]
 
-model = nnunet.train(training, work_root, ["intensity"], "2d", 1, "CircleSquares", "cpu")
+model = nnunet.train(
+  training,
+  work_root,
+  ["intensity"],
+  "2d",
+  1,
+  "CircleSquares",
+  "cpu",
+  "nnUNetTrainer_10epochs"
+)
 
 let test_circle = [
   concat("test_circle"),
@@ -37,8 +46,10 @@ let test_square = [
   [geom.regular_polygon(geom.blank(64, 64, 0), 24, 32, 14, 4, 80)]
 ]
 
-test_cases = [test_circle, test_square]
+predictor = nnunet.make_predictor(model)
 
-predictions = nnunet.predict(model, test_cases)
+circle_seg = nnunet.predict(predictor, index(index(test_circle, 1), 0))
+square_seg = nnunet.predict(predictor, index(index(test_square, 1), 0))
 
-print "predictions" predictions
+print "circle_seg" circle_seg
+print "square_seg" square_seg

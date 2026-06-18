@@ -15,20 +15,18 @@ from voxlogica.storage import NoCacheStorageBackend
 PROGRAM_PATH = Path(__file__).with_name("train_predict_circles.imgql")
 
 
-def _load_segmentation(path: str) -> np.ndarray:
-    import nibabel as nib
+def _segmentation_array(value) -> np.ndarray:
+    import SimpleITK as sitk
 
-    return np.asarray(nib.load(path).get_fdata())
+    return np.asarray(sitk.GetArrayFromImage(value))
 
 
 @pytest.mark.e2e
 @pytest.mark.slow
-def test_nnunet_segments_circles_not_squares(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_nnunet_segments_circles_not_squares(tmp_path: Path) -> None:
     env = nnunet_kernels.env_check()
     if not env.get("ready"):
         pytest.skip(f"nnUNet runtime not ready: {env.get('issues')}")
-
-    monkeypatch.setenv("VOXLOGICA_NNUNET_TRAINER", "nnUNetTrainer_10epochs")
 
     work_root = tmp_path / "work"
     program_text = PROGRAM_PATH.read_text(encoding="utf-8").replace(
@@ -43,12 +41,8 @@ def test_nnunet_segments_circles_not_squares(tmp_path: Path, monkeypatch: pytest
     result = engine.run_prepared(prepared)
     assert result.success, result.failed_operations
 
-    predictions = prepared.values[bindings["predictions"].operation_id]
-    assert predictions["status"] == "success"
-
-    by_case = {case["case_id"]: case["segmentation_path"] for case in predictions["cases"]}
-    circle_seg = _load_segmentation(by_case["test_circle"])
-    square_seg = _load_segmentation(by_case["test_square"])
+    circle_seg = _segmentation_array(prepared.values[bindings["circle_seg"].operation_id])
+    square_seg = _segmentation_array(prepared.values[bindings["square_seg"].operation_id])
 
     assert float(circle_seg[32, 40]) >= 0.5
     assert (square_seg >= 0.5).sum() <= (circle_seg >= 0.5).sum()

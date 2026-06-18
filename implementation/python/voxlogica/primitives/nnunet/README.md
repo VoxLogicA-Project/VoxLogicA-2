@@ -1,12 +1,13 @@
 # nnUNet namespace
 
-Sequence-based training and handle-based prediction for nnU-Net v2.
+Sequence-based training, predictor handles, and per-image inference for nnU-Net v2.
 
 ## API
 
 ```voxlogica
-model = nnunet.train(training_cases, work_root, modalities, configuration, nfolds, dataset_name, device)
-predictions = nnunet.predict(model, prediction_cases)
+model = nnunet.train(training_cases, work_root, modalities, configuration, nfolds, dataset_name, device, trainer)
+predictor = nnunet.make_predictor(model)
+segmentation = nnunet.predict(predictor, image)
 status = nnunet.env_check()
 ```
 
@@ -14,13 +15,15 @@ status = nnunet.env_check()
 
 `[case_id, [modality_volume, ...], label_volume]`
 
-### Prediction case
+### Model and predictor handles
 
-`[case_id, [modality_volume, ...]]`
+- `nnunet.train` returns `vox_kind = "nnunet_model"`.
+- `nnunet.make_predictor` returns `vox_kind = "nnunet_predictor"`.
+- `nnunet.predict` returns a label image (SimpleITK).
 
-### Model handle
+### Training parameters
 
-`nnunet.train` returns an opaque mapping with `vox_kind = "nnunet_model"`. Pass it directly to `nnunet.predict`.
+Pass `trainer` as the last `train` argument (default `nnUNetTrainer`). Use `nnUNetTrainer_10epochs` for short test runs.
 
 ## Layout
 
@@ -32,7 +35,6 @@ work_root/
   voxlogica_manifest.json
 ```
 
-## Environment
+## Requirements
 
-- `nnunetv2` and `torch` must be installed.
-- Optional `VOXLOGICA_NNUNET_TRAINER` selects a custom nnU-Net trainer class for faster test runs.
+`nnunetv2` and `torch` must be installed.
