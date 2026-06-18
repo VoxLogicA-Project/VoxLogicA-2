@@ -17,6 +17,8 @@ from voxlogica.primitives.nnunet.manifest import (
 )
 from voxlogica.primitives.nnunet.types import NNUNET_FILE_ENDING, PredictionCase, TrainingCase
 
+NNUNET_MIN_DEPTH = 32
+
 
 def prepare_runtime_roots(work_dir: Path) -> dict[str, Path]:
     nnunet_raw = work_dir / "nnUNet_raw"
@@ -67,10 +69,50 @@ def _load_array_io_modules() -> tuple[Any, Any]:
     return np, nib
 
 
-def write_nifti(array: Any, destination: Path) -> None:
+def _array_from_value(value: Any) -> tuple[Any, Any]:
+    np, _nib = _load_array_io_modules()
+    try:
+        import SimpleITK as sitk  # type: ignore
+
+        if isinstance(value, sitk.Image):
+            return sitk.GetArrayFromImage(value), value
+    except Exception:  # noqa: BLE001
+        pass
+    return np.asarray(value), None
+
+
+def _to_volume_array(value: Any) -> Any:
+    """Promote arrays to 3D when a volumetric nnUNet configuration needs it."""
+    np, _nib = _load_array_io_modules()
+    array, _reference = _array_from_value(value)
+    if array.ndim == 2:
+        return np.stack([array] * NNUNET_MIN_DEPTH, axis=0)
+    if array.ndim == 3:
+        if array.shape[0] < NNUNET_MIN_DEPTH:
+            repeats = int(np.ceil(NNUNET_MIN_DEPTH / array.shape[0]))
+            array = np.repeat(array, repeats, axis=0)[:NNUNET_MIN_DEPTH]
+        return array
+    raise ValueError(f"expected 2D or 3D image data, got shape {array.shape}")
+
+
+def write_nifti(array: Any, destination: Path, *, force_volume: bool = False) -> None:
     np, nib = _load_array_io_modules()
+    import SimpleITK as sitk  # type: ignore
+
     destination.parent.mkdir(parents=True, exist_ok=True)
-    image = nib.Nifti1Image(np.asarray(array), np.eye(4))
+    volume, reference = _array_from_value(array)
+    if not force_volume and volume.ndim == 2:
+        image = sitk.GetImageFromArray(volume.astype(np.float32))
+        if reference is not None:
+            image.CopyInformation(reference)
+        else:
+            image.SetSpacing((1.0, 1.0))
+            image.SetOrigin((0.0, 0.0))
+        sitk.WriteImage(image, str(destination))
+        return
+
+    stacked = _to_volume_array(array) if volume.ndim == 2 else volume
+    image = nib.Nifti1Image(stacked, np.eye(4))
     nib.save(image, str(destination))
 
 
@@ -95,12 +137,18 @@ def write_dataset_json(
 
 def _sanitize_label_array(label_array: Any) -> tuple[Any, bool, list[int]]:
     np, _nib = _load_array_io_modules()
-    label_arr = np.asarray(label_array)
+    label_arr, reference = _array_from_value(label_array)
     unique_vals = sorted({int(x) for x in np.unique(label_arr).tolist()})
     sanitized = False
     if any(value not in (0, 1) for value in unique_vals):
         label_arr = (label_arr > 0).astype("uint8")
         sanitized = True
+    if reference is not None:
+        import SimpleITK as sitk  # type: ignore
+
+        label_image = sitk.GetImageFromArray(label_arr.astype(np.uint8))
+        label_image.CopyInformation(reference)
+        return label_image, sanitized, unique_vals
     return label_arr, sanitized, unique_vals
 
 

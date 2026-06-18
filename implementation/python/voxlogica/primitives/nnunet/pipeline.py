@@ -73,23 +73,33 @@ def resolve_trainer_dir(nnunet_results: Path, dataset_folder: str, configuration
     dataset_results = nnunet_results / dataset_folder
     if not dataset_results.is_dir():
         raise ValueError(f"nnUNet results folder not found: {dataset_results}")
-    exact = dataset_results / f"nnUNetTrainer__nnUNetPlans__{configuration}"
-    if exact.is_dir():
-        return exact
-    matches = sorted(path for path in dataset_results.glob("nnUNetTrainer__*") if path.is_dir())
+
+    suffix = f"__nnUNetPlans__{configuration}"
+    matches = sorted(
+        path
+        for path in dataset_results.iterdir()
+        if path.is_dir() and path.name.endswith(suffix)
+    )
     if len(matches) == 1:
         return matches[0]
     if not matches:
         raise ValueError(f"no trainer directory under {dataset_results}")
-    for candidate in matches:
-        if configuration in candidate.name:
-            return candidate
-    raise ValueError(f"ambiguous trainer directories under {dataset_results}: {[p.name for p in matches]}")
+    raise ValueError(
+        f"ambiguous trainer directories under {dataset_results}: {[p.name for p in matches]}"
+    )
 
 
 def fold_is_complete(trainer_dir: Path, fold: int) -> bool:
     checkpoint = trainer_dir / f"fold_{fold}" / "checkpoint_final.pth"
     return checkpoint.is_file()
+
+
+def trainer_name_from_dir(trainer_dir: str | Path) -> str:
+    name = Path(trainer_dir).name
+    marker = "__nnUNetPlans__"
+    if marker in name:
+        return name.split(marker, 1)[0]
+    return "nnUNetTrainer"
 
 
 def run_training_pipeline(
@@ -146,7 +156,12 @@ def run_training_pipeline(
             str(dataset_id),
             configuration,
             str(fold),
+            "-device",
+            "cpu" if device in {"cpu", "none"} else "cuda",
         ]
+        trainer = os.environ.get("VOXLOGICA_NNUNET_TRAINER", "").strip()
+        if trainer:
+            train_cmd.extend(["-tr", trainer])
         result = run_subprocess(train_cmd, cwd=work_root, env=base_env, step_name=f"train fold {fold}")
         fold_results.append(
             {
@@ -211,6 +226,7 @@ def run_prediction_pipeline(
     env = get_nnunet_env()
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    trainer_name = trainer_name_from_dir(model_handle["trainer_dir"])
     command = [
         get_nnunet_command_path("nnUNetv2_predict"),
         "-i",
@@ -219,11 +235,14 @@ def run_prediction_pipeline(
         str(output_dir),
         "-d",
         str(int(model_handle["dataset_id"])),
+        "-tr",
+        trainer_name,
         "-c",
         str(model_handle["configuration"]),
     ]
-    if folds is not None:
-        command.extend(["-f"] + [str(fold) for fold in folds])
+    fold_list = folds if folds is not None else model_handle.get("trained_folds")
+    if fold_list:
+        command.extend(["-f"] + [str(fold) for fold in fold_list])
     if save_probabilities:
         command.append("--save_probabilities")
 
