@@ -125,12 +125,31 @@ def predict(**kwargs: Any) -> dict[str, Any]:
         raise ValueError(f"nnUNet prediction failed: {exc}") from exc
 
 
+def export_predictions(**kwargs: Any) -> list[str]:
+    """Export prediction segmentations from a predict result as PNG files."""
+    try:
+        if "0" not in kwargs or "1" not in kwargs:
+            raise ValueError("export_predictions requires (predictions, export_root)")
+        predictions = _arg(kwargs, "0")
+        if not isinstance(predictions, dict) or predictions.get("status") != "success":
+            raise ValueError("export_predictions requires a successful predict result")
+        return runtime.export_prediction_pngs(predictions, _require_str(kwargs, "1", "export_root"))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("nnUNet export_predictions failed: %s", exc)
+        raise ValueError(f"nnUNet export_predictions failed: {exc}") from exc
+
+
 def env_check(**_kwargs: Any) -> dict[str, Any]:
     return runtime.env_check()
 
 
 def get_primitives() -> dict[str, Callable[..., Any]]:
-    return {"train": train, "predict": predict, "env_check": env_check}
+    return {
+        "train": train,
+        "predict": predict,
+        "export_predictions": export_predictions,
+        "env_check": env_check,
+    }
 
 
 def list_primitives() -> dict[str, str]:
@@ -141,11 +160,13 @@ def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
     arities = {
         "train": AritySpec(min_args=2, max_args=7),
         "predict": AritySpec(min_args=2, max_args=5),
+        "export_predictions": AritySpec.fixed(2),
         "env_check": AritySpec.variadic(0),
     }
     descriptions = {
         "train": "Train nnUNet from a case sequence",
         "predict": "Run nnUNet inference from a model handle",
+        "export_predictions": "Write PNG previews of prediction segmentations",
         "env_check": "Inspect nnUNet and torch runtime environment",
     }
     specs: dict[str, tuple[PrimitiveSpec, Callable[..., Any]]] = {}

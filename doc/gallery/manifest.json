@@ -146,13 +146,13 @@
       "program": "programs/nnunet/nnunet-env.imgql"
     },
     {
-      "id": "nnunet-train-and-predict",
-      "title": "nnUNet train and predict workflow",
+      "id": "nnunet-circle-segmentation",
+      "title": "nnUNet circle segmentation demo",
       "module": "nnunet",
       "level": "expert",
       "strategy": "strict",
-      "description": "Train from in-memory case sequences and run handle-based prediction.",
-      "program": "programs/nnunet/nnunet-train-and-predict.imgql"
+      "description": "Train on synthetic circles/squares, predict, and export PNG previews of training data and segmentations.",
+      "program": "programs/nnunet/nnunet-circle-segmentation.imgql"
     },
     {
       "id": "test-demo-data",

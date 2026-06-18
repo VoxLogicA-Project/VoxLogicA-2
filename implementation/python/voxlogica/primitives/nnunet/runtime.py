@@ -207,6 +207,29 @@ def predict_cases(
     }
 
 
+def export_prediction_pngs(predictions: dict[str, Any], export_root: str | Path) -> list[str]:
+    """Write PNG previews of nnUNet segmentations for gallery and inspection."""
+    try:
+        import SimpleITK as sitk  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"export_predictions requires SimpleITK: {exc}") from exc
+
+    root = Path(export_root) / "predictions"
+    root.mkdir(parents=True, exist_ok=True)
+    written: list[str] = []
+    for case in predictions.get("cases", []):
+        case_id = str(case["case_id"])
+        nii_path = Path(str(case["segmentation_path"]))
+        image = sitk.ReadImage(str(nii_path))
+        array = sitk.GetArrayFromImage(image)
+        png_image = sitk.GetImageFromArray(array.astype("float32"))
+        png_image = sitk.Cast(sitk.RescaleIntensity(png_image, 0, 255), sitk.sitkUInt8)
+        out_path = root / f"{case_id}_segmentation.png"
+        sitk.WriteImage(png_image, str(out_path))
+        written.append(str(out_path))
+    return written
+
+
 def env_check() -> dict[str, Any]:
     out: dict[str, Any] = {
         "torch_available": False,

@@ -2,6 +2,7 @@
 
 from voxlogica.primitives.nnunet.kernels import (
     env_check,
+    export_predictions,
     get_primitives,
     list_primitives,
     predict,
@@ -12,6 +13,7 @@ from voxlogica.primitives.nnunet.kernels import (
 
 __all__ = [
     "env_check",
+    "export_predictions",
     "get_primitives",
     "list_primitives",
     "predict",

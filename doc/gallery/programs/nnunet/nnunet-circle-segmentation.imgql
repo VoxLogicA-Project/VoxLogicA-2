@@ -1,0 +1,74 @@
+import "geom"
+import "strings"
+import "simpleitk"
+import "nnunet"
+
+work_root = "/tmp/nnunet_circle_shapes_work"
+export_root = "doc/gallery/output/nnunet-circle-shapes"
+
+let circle_case(i) = [
+  concat("circle_", format_string("{:.0f}", i)),
+  [geom.circle(geom.blank(64, 64, 0), 10 + (i * 4), 32, 10, 200)],
+  geom.circle(geom.blank(64, 64, 0), 10 + (i * 4), 32, 10, 1)
+]
+
+let square_case(i) = [
+  concat("square_", format_string("{:.0f}", i)),
+  [geom.regular_polygon(geom.blank(64, 64, 0), 48 - (i * 4), 32, 12, 4, 80)],
+  geom.blank(64, 64, 0)
+]
+
+let c0 = circle_case(0)
+let c1 = circle_case(1)
+let c2 = circle_case(2)
+let s0 = square_case(0)
+let s1 = square_case(1)
+let s2 = square_case(2)
+
+training = [c0, c1, c2, s0, s1, s2]
+
+to_png_u8(img) =
+  Cast(RescaleIntensity(img, 0, 255), GetPixelIDValueFromString("sitkUInt8"))
+
+save_training_case(case) =
+  let id = index(case, 0) in
+  let image = index(index(case, 1), 0) in
+  let label = index(case, 2) in
+  let image_path = concat(export_root, "/training/", id, "_image.png") in
+  let label_path = concat(export_root, "/training/", id, "_label.png") in
+  let _ = WriteImage(to_png_u8(image), image_path) in
+  WriteImage(to_png_u8(label), label_path)
+
+let test_circle = [
+  concat("test_circle"),
+  [geom.circle(geom.blank(64, 64, 0), 40, 32, 14, 200)]
+]
+
+let test_square = [
+  concat("test_square"),
+  [geom.regular_polygon(geom.blank(64, 64, 0), 24, 32, 14, 4, 80)]
+]
+
+test_cases = [test_circle, test_square]
+
+save_test_input(case, name) =
+  let image = index(index(case, 1), 0) in
+  let path = concat(export_root, "/predictions/", name, "_input.png") in
+  WriteImage(to_png_u8(image), path)
+
+saved_training = map(save_training_case, training)
+
+model = nnunet.train(training, work_root, ["intensity"], "2d", 1, "CircleSquares", "cpu")
+
+predictions = nnunet.predict(model, test_cases)
+
+saved_inputs = [
+  save_test_input(test_circle, "test_circle"),
+  save_test_input(test_square, "test_square")
+]
+
+saved_segmentations = nnunet.export_predictions(predictions, export_root)
+
+exports = [saved_training, saved_inputs, saved_segmentations, export_root]
+
+print "exports" exports

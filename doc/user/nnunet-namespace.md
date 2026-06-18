@@ -100,7 +100,7 @@ nnunet.predict(model, prediction_cases, [output_subdir], [folds], [save_probabil
 
 ## Complete workflow
 
-See also the gallery example: `doc/gallery/programs/nnunet/nnunet-train-and-predict.imgql`.
+See also the gallery example: `doc/gallery/programs/nnunet/nnunet-circle-segmentation.imgql`.
 
 ```voxlogica
 import "geom"
