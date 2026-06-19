@@ -17,7 +17,7 @@ from voxlogica.converters.json_converter import WorkPlanJSONEncoder, to_json
 from voxlogica.execution import ExecutionEngine
 from voxlogica.parser import ProgramParseError, parse_program_content
 from voxlogica.reducer import StaticAnalysisError, reduce_program
-from voxlogica.storage import NoCacheStorageBackend, SQLiteResultsDatabase
+from voxlogica.storage import NoCacheStorageBackend, SQLiteResultsDatabase, delete_results_store, results_store_paths
 from voxlogica.repl import start_repl
 
 logger = logging.getLogger("voxlogica.main")
@@ -63,9 +63,37 @@ def _summary_payload(workplan, execution_result: Any | None) -> dict[str, Any]:
     return payload
 
 
+def _confirm_yes(prompt: str) -> bool:
+    """Return True when the user explicitly confirms with y/yes."""
+    try:
+        response = input(f"{prompt} [y/N] ").strip().lower()
+    except EOFError:
+        return False
+    return response in {"y", "yes"}
+
+
+def _delete_cache_if_requested(args: argparse.Namespace) -> int | None:
+    """Prompt to delete the persistent store; return an exit code when cancelled."""
+    if not args.delete_cache:
+        return None
+
+    db_path, payload_dir = results_store_paths(args.store_db)
+    if not _confirm_yes(f"Delete persistent cache at {db_path} and {payload_dir}?"):
+        print("Cache deletion cancelled.")
+        return 0
+
+    delete_results_store(args.store_db)
+    print(f"Deleted cache at {db_path} and {payload_dir}")
+    return None
+
+
 def run_command(args: argparse.Namespace) -> int:
     """Implement the ``run`` subcommand."""
     _configure_logging(args.debug)
+    cancelled = _delete_cache_if_requested(args)
+    if cancelled is not None:
+        return cancelled
+
     program_text = Path(args.filename).read_text(encoding="utf-8")
     try:
         syntax, workplan = build_workplan(program_text, source_name=args.filename)
@@ -129,6 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--save-syntax")
     run_parser.add_argument("--execute", action=argparse.BooleanOptionalAction, default=True)
     run_parser.add_argument("--no-cache", action="store_true", help="Force recomputation without reading or writing the store")
+    run_parser.add_argument(
+        "--delete-cache",
+        action="store_true",
+        help="Delete the persistent results database and payload files before running (prompts for confirmation)",
+    )
     run_parser.add_argument("--store-db", help="Path to the persistent results SQLite database")
     run_parser.add_argument("--debug", action="store_true")
     run_parser.set_defaults(handler=run_command)

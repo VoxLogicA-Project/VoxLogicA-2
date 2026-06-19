@@ -8,6 +8,7 @@ from typing import Any, Union
 from abc import ABC, abstractmethod
 import logging
 import queue
+import shutil
 import sqlite3
 import threading
 import time
@@ -52,6 +53,24 @@ def _default_db_path() -> Path:
     base = Path.home() / ".voxlogica"
     base.mkdir(parents=True, exist_ok=True)
     return base / "results.db"
+
+
+def results_store_paths(db_path: str | Path | None = None) -> tuple[Path, Path]:
+    """Return the SQLite database path and sibling payload directory."""
+    resolved = Path(db_path) if db_path is not None else _default_db_path()
+    payload_dir = resolved.with_suffix(resolved.suffix + ".files")
+    return resolved, payload_dir
+
+
+def delete_results_store(db_path: str | Path | None = None) -> tuple[Path, Path]:
+    """Delete the results database, WAL sidecars, and payload directory."""
+    db_file, payload_dir = results_store_paths(db_path)
+    for candidate in (db_file, Path(f"{db_file}-wal"), Path(f"{db_file}-shm")):
+        if candidate.exists():
+            candidate.unlink()
+    if payload_dir.exists():
+        shutil.rmtree(payload_dir)
+    return db_file, payload_dir
 
 
 @dataclass(frozen=True)
