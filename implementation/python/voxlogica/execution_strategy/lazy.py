@@ -111,8 +111,8 @@ class LazyExecutionStrategy(ExecutionStrategy):
         """Prepare a plan for execution and reset namespace runtime state."""
         self.registry.apply_imports(plan.imported_namespaces)
         self.registry.reset_runtime_state()
-        if self.results_database is not None:
-            self.results_database.put_plan_definitions(plan)
+        #if self.results_database is not None:
+        #    self.results_database.put_plan_definitions(plan)
         return PreparedPlan(
             plan=plan,
             # definition_store=DefinitionStore(plan.nodes),
@@ -203,14 +203,12 @@ class LazyExecutionStrategy(ExecutionStrategy):
         expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
         dependencies = list(node.args) + [value_id for _, value_id in node.kwargs]
         if self.results_database is not None:
-            #print(node.kind)
             self.results_database.put_success(nodeId, value, metadata={"source": "runtime", "operator": node.operator})
         if prepared.materialization_store is not None:
             prepared.materialization_store.put(nodeId, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
         prepared.completed_nodes.add(nodeId)
 
     def cache_sequence_item(self, prepared: PreparedPlan, nodeId: NodeId, index:int, value:Any):
-        print(hash_sequence_item(nodeId,index))
         node = prepared.plan.nodes[nodeId]
         id = hash_sequence_item(nodeId,index)
         expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
@@ -228,39 +226,41 @@ class LazyExecutionStrategy(ExecutionStrategy):
             if value is not None:
                 return value
         if self.results_database is not None:
-            value = self.results_database.get_record(nodeId)
+            tmp = self.results_database.get_record(nodeId)
+            if tmp is not None:
+                if tmp.vox_type == "image":
+                    value = tmp.payload_bin
+                else:
+                    value = tmp.payload_json["value"]
         return value
 
     def cache_sequence_item_lookup(self, prepared: PreparedPlan, nodeId: NodeId, index: int):
         value = None
-        print(hash_sequence_item(nodeId,index))
         if prepared.materialization_store is not None:
             value = prepared.materialization_store.get(hash_sequence_item(nodeId, index))
             if value is not None:
                 return value
         if self.results_database is not None:
-            value = self.results_database.get_record(hash_sequence_item(nodeId, index))
+            tmp = self.results_database.get_record(hash_sequence_item(nodeId, index))
+            if tmp is not None:
+                if tmp.vox_type == "image":
+                    value = tmp.payload_bin
+                else:
+                    value = tmp.payload_json["value"]
         return value
 
     def _evaluate_node_lazy(self, prepared: PreparedPlan, nodeid: NodeId, demand: Demand) -> Any:
         value = self.cache_lookup(prepared, nodeid)
         if value is not None:
-            #print(value)
             return value
         node = prepared.plan.nodes[nodeid]
-        # print(node.operator)
         if node.kind == "constant":
             return node.attrs.get("value")
 
         if node.kind == "closure":
-            # print("evaluating ", node.operator)
             return self._build_runtime_closure_from_values(prepared, node)
 
         if node.kind == "primitive":
-            value = self.cache_lookup(prepared,nodeid)
-            if value is not None:
-                return value
-
             if node.operator == "default.subsequence":
                 start = int(self._evaluate_node_lazy(prepared, node.args[1], demand))
                 stop = int(self._evaluate_node_lazy(prepared, node.args[2], demand))
@@ -286,22 +286,23 @@ class LazyExecutionStrategy(ExecutionStrategy):
                         tmp = self.cache_sequence_item_lookup(prepared, nodeid, i)
                         if tmp is not None:
                             value.extend(tmp)
-                            #print(value)
                         else:
                             args = tmpargs + [i,i+1]
-                            value.extend(self._invoke_kernel(kernel, args, kwargs, node.attrs))
-                            #print(value)
-                else: args = tmpargs
+                            tmp = self._invoke_kernel(kernel, args, kwargs, node.attrs)
+                            value.extend(tmp)
+                            self.cache_sequence_item(prepared,nodeid,i,tmp)
+                else: 
+                    args = tmpargs
+                    value = self._invoke_kernel(kernel, args, kwargs, node.attrs)
+                    self.cache(prepared,nodeid,value)
             else:
                 args = tmpargs
                 # kwargs = {key: self._evaluate_node_lazy(prepared,arg_id,demand) for key, arg_id in node.kwargs}
                 value = self._invoke_kernel(kernel, args, kwargs, node.attrs)
-            if node.operator in _LAZY_SEQUENCE_OPERATORS:
+            if node.operator in _LAZY_SEQUENCE_OPERATORS and isinstance(demand,FullDemand):
                 for i in range(0,len(value)):
-                    print("caching items")
                     self.cache_sequence_item(prepared,nodeid,i,value[i])
             else:
-                print("caching")
                 self.cache(prepared, nodeid, value)
             return value
 
@@ -309,7 +310,6 @@ class LazyExecutionStrategy(ExecutionStrategy):
 
 
     def _build_runtime_closure_from_values(self, prepared: PreparedPlan, node: NodeSpec) -> RuntimeClosure:
-        #print("building runtime closure for", node.operator)
         body = parse_expression_content(str(node.attrs.get("body", "")))
         parameter = str(node.attrs.get("parameter", "arg"))
         capture_names = list(node.attrs.get("capture_names", []))
@@ -321,7 +321,6 @@ class LazyExecutionStrategy(ExecutionStrategy):
 
         for name, spec in dict(node.attrs.get("function_captures", {})).items():
             captures[name] = self._build_runtime_function_from_values(prepared, spec)
-        #print("closure created")
 
         return RuntimeClosure(parameter=parameter, body_expression=body, captures=captures, evaluator=self)
 

@@ -89,7 +89,6 @@ def run_command(args: argparse.Namespace) -> int:
     execution_result = None
     if args.execute:
         storage = NoCacheStorageBackend() if args.no_cache else SQLiteResultsDatabase(db_path=args.store_db)
-        # print(storage)
         execution_result = ExecutionEngine(storage_backend=storage, no_cache=args.no_cache).execute_workplan(workplan)
         print(json.dumps(_summary_payload(workplan, execution_result), indent=2))
         print(f"Execution time: {execution_result.execution_time:.2f} seconds")

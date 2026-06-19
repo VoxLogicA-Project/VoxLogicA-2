@@ -167,50 +167,50 @@ class SQLiteResultsDatabase:
             ).fetchone()
             return row is not None
 
-    def put_definition(self, node_id: str, node: NodeSpec) -> None:
-        expression = node_payload(node)
-        dependencies = list(node.args) + [value for _key, value in node.kwargs]
-        now = time.time()
-        with self._lock:
-            row = self._connection.execute("SELECT status, created_at FROM results WHERE node_id = ?", (node_id,)).fetchone()
-            if row is not None and str(row[0]) == MATERIALIZED_STATUS:
-                return
-            created_at = float(row[1]) if row is not None else now
-            self._connection.execute(
-                """
-                INSERT INTO results (
-                    node_id, status, format_version, vox_type, descriptor_json,
-                    payload_json, payload_file, error, metadata_json, expression_json,
-                    dependencies_json, runtime_version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(node_id) DO UPDATE SET
-                    status = CASE WHEN results.status = ? THEN results.status ELSE excluded.status END,
-                    expression_json = excluded.expression_json,
-                    dependencies_json = excluded.dependencies_json,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    node_id,
-                    PLANNED_STATUS,
-                    VOX_FORMAT_VERSION,
-                    None,
-                    "{}",
-                    "{}",
-                    None,
-                    None,
-                    "{}",
-                    dumps_json(expression),
-                    dumps_json({"dependencies": dependencies}),
-                    self.runtime_version,
-                    created_at,
-                    now,
-                    MATERIALIZED_STATUS,
-                ),
-            )
+    #def put_definition(self, node_id: str, node: NodeSpec) -> None:
+    #    expression = node_payload(node)
+    #    dependencies = list(node.args) + [value for _key, value in node.kwargs]
+    #    now = time.time()
+    #    with self._lock:
+    #        row = self._connection.execute("SELECT status, created_at FROM results WHERE node_id = ?", (node_id,)).fetchone()
+    #        if row is not None and str(row[0]) == MATERIALIZED_STATUS:
+    #            return
+    #        created_at = float(row[1]) if row is not None else now
+    #        self._connection.execute(
+    #            """
+    #            INSERT INTO results (
+    #                node_id, status, format_version, vox_type, descriptor_json,
+    #                payload_json, payload_file, error, metadata_json, expression_json,
+    #                dependencies_json, runtime_version, created_at, updated_at
+    #            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    #            ON CONFLICT(node_id) DO UPDATE SET
+    #                status = CASE WHEN results.status = ? THEN results.status ELSE excluded.status END,
+    #                expression_json = excluded.expression_json,
+    #                dependencies_json = excluded.dependencies_json,
+    #                updated_at = excluded.updated_at
+    #            """,
+    #            (
+    #                node_id,
+    #                PLANNED_STATUS,
+    #                VOX_FORMAT_VERSION,
+    #                None,
+    #                "{}",
+    #                "{}",
+    #                None,
+    #                None,
+    #                "{}",
+    #                dumps_json(expression),
+    #                dumps_json({"dependencies": dependencies}),
+    #                self.runtime_version,
+    #                created_at,
+    #                now,
+    #                MATERIALIZED_STATUS,
+    #            ),
+    #        )
 
-    def put_plan_definitions(self, plan: SymbolicPlan) -> None:
-        for node_id, node in plan.nodes.items():
-            self.put_definition(node_id, node)
+    #def put_plan_definitions(self, plan: SymbolicPlan) -> None:
+    #    for node_id, node in plan.nodes.items():
+    #        self.put_definition(node_id, node)
 
     def get_record(self, node_id: str) -> ResultRecord | None:
         with self._lock:
@@ -227,16 +227,10 @@ class SQLiteResultsDatabase:
             return None
         payload_bin = None
         payload_file = row[6]
-        #print(payload_file)
         if payload_file:
             path = self.payload_dir / str(payload_file)
-            #print("retrieving image")
             if path.exists():
-                #print("loading bytes")
                 payload_bin = path.read_bytes()
-                #print(path)
-                #print(path.exists())
-                #print(path.stat().st_size)
         payload_json = loads_json(row[5])
         vox_type = str(row[3] or "")
         value = None
@@ -262,13 +256,11 @@ class SQLiteResultsDatabase:
         )
 
     def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None) -> None:
-        #print("memoizing")
         encoded = encode_for_storage(value)
         now = time.time()
         payload_file = None
         if encoded.payload_bin is not None:
             payload_file = f"{node_id}.bin"
-            #print(payload_file)
             (self.payload_dir / payload_file).write_bytes(encoded.payload_bin)
         metadata_json = dumps_json(dict(metadata or {}))
         with self._lock:
