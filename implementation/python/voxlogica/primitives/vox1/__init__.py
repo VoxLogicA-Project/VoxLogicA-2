@@ -75,6 +75,11 @@ _PRIMITIVES: dict[str, tuple[Callable[..., Any], AritySpec, str]] = {
     "alpha": (kernels.alpha, AritySpec.fixed(1), "Alpha channel"),
     "volume": (kernels.volume, AritySpec.fixed(1), "Number of true voxels"),
     "vol": (kernels.vol, AritySpec.fixed(1), "Alias of volume"),
+    "extract": (
+        kernels.extract,
+        AritySpec.fixed(3),
+        "Extract a subregion from a 3D image (SimpleITK Extract)",
+    ),
     "maxvol": (
         kernels.maxvol,
         AritySpec.fixed(1),

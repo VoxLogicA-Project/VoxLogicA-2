@@ -189,6 +189,23 @@ def test_filter_and_fold_primitives():
 
 
 @pytest.mark.unit
+def test_sequence_avg_via_fold_primitive():
+    total = fold_primitive.execute(operator="+", **{"0": [1, 2, 3, 4]})
+    count = fold_primitive.execute(operator="+", **{"0": [1, 1, 1, 1]})
+    assert division.execute(total, count) == 2.5
+    total = fold_primitive.execute(operator="+", **{"0": range(1, 5)})
+    count = fold_primitive.execute(operator="+", **{"0": [1, 1, 1, 1]})
+    assert division.execute(total, count) == 2.5
+    lazy = SequenceValue(lambda: iter([10, 20, 30]), total_size=3)
+    lazy_total = fold_primitive.execute(operator="+", **{"0": lazy})
+    lazy_count = fold_primitive.execute(
+        operator="+",
+        **{"0": SequenceValue(lambda: iter([1, 1, 1]), total_size=3)},
+    )
+    assert division.execute(lazy_total, lazy_count) == 20.0
+
+
+@pytest.mark.unit
 def test_argmax_primitive():
     assert argmax_primitive.execute(**{"0": [3, 9, 4, 9, 1]}) == 1
     assert argmax_primitive.execute(**{"0": [1.0, 2.5, 2.5]}) == 1

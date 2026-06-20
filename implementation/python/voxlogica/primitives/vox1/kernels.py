@@ -568,6 +568,28 @@ def vol(image: object) -> float:
     return volume(image)
 
 
+def _as_index_vector(value: object, name: str, dims: int = 3) -> list[int]:
+    if isinstance(value, (list, tuple)):
+        items = value
+    elif hasattr(value, "__iter__") and not isinstance(value, (str, bytes, bytearray)):
+        items = list(value)
+    else:
+        raise ValueError(f"{name} must be a {dims}-element index vector")
+    if len(items) != dims:
+        raise ValueError(f"{name} must have length {dims}, got {len(items)}")
+    return [int(float(item)) for item in items]
+
+
+def extract(image: object, size: object, index: object) -> sitk.Image:
+    img = _as_image(image, "image")
+    _remember_base(img)
+    return sitk.Extract(
+        img,
+        _as_index_vector(size, "size"),
+        _as_index_vector(index, "index"),
+    )
+
+
 def otsu(image: object, mask_image: object, nbins: float) -> sitk.Image:
     img = _as_image(image, "image")
     msk = _as_image(mask_image, "mask_image")
