@@ -325,6 +325,12 @@ def dt(image: object) -> sitk.Image:
     return flt.Execute(_as_bool_image(img))
 
 
+def gradient(image: object) -> sitk.Image:
+    img = _as_image(image, "image")
+    _remember_base(img)
+    return sitk.GradientMagnitude(_as_float_image(img))
+
+
 def constant(value: float) -> sitk.Image:
     base = _require_base()
     return _filled_image_like(base, sitk.sitkFloat32, float(value))
@@ -438,6 +444,19 @@ def avg(image: object, mask_image: object) -> float:
     selected = img_values[mask_values > 0]
     if selected.size == 0:
         raise ValueError("avg failed: mask selects no voxels")
+    return float(np.mean(selected, dtype=np.float64))
+
+
+def avg0(image: object, mask_image: object) -> float:
+    """Mean value inside a boolean mask, or 0.0 when the mask is empty."""
+    img = _as_image(image, "image")
+    msk = _as_image(mask_image, "mask_image")
+    _remember_base(img)
+    img_values = _flatten_image(_as_float_image(img), np.float32)
+    mask_values = _flatten_image(_as_bool_image(msk), np.uint8)
+    selected = img_values[mask_values > 0]
+    if selected.size == 0:
+        return 0.0
     return float(np.mean(selected, dtype=np.float64))
 
 
