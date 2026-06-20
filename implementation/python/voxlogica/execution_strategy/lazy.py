@@ -30,8 +30,6 @@ _LAZY_SEQUENCE_OPERATORS = {
     "map",
     "default.filter",
     "filter",
-    "default.fold",
-    "fold",
     "default.for_loop",
     "for_loop"
 }
@@ -299,9 +297,9 @@ class LazyExecutionStrategy(ExecutionStrategy):
                 args = tmpargs
                 # kwargs = {key: self._evaluate_node_lazy(prepared,arg_id,demand) for key, arg_id in node.kwargs}
                 value = self._invoke_kernel(kernel, args, kwargs, node.attrs)
-            if node.operator in _LAZY_SEQUENCE_OPERATORS and isinstance(demand,FullDemand):
-                for i in range(0,len(value)):
-                    self.cache_sequence_item(prepared,nodeid,i,value[i])
+            if node.operator in _LAZY_SEQUENCE_OPERATORS and isinstance(demand, FullDemand):
+                for i in range(0, len(value)):
+                    self.cache_sequence_item(prepared, nodeid, i, value[i])
             else:
                 self.cache(prepared, nodeid, value)
             return value
