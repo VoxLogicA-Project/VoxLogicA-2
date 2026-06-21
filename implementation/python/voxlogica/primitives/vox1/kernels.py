@@ -37,8 +37,9 @@ from voxlogica.primitives.default._sequence_math import apply_binary_op
 # modern default. Done once at import, before any filter runs.
 try:
     sitk.ProcessObject.SetGlobalDefaultThreader("Pool")
-except Exception:  # pragma: no cover - older SimpleITK without the setter
-    pass
+except Exception as e:  # pragma: no cover - older SimpleITK without the setter
+    import sys
+    print(f"WARNING: could not set ITK threader to Pool: {e}", file=sys.stderr)
 
 _BASE_IMAGE: sitk.Image | None = None
 _BASE_IMAGE_LOCK = RLock()
