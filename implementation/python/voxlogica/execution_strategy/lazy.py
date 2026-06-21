@@ -6,6 +6,9 @@ the prepared plan and reconstructing reducer-generated closures on demand.
 
 from __future__ import annotations
 
+import asyncio
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -26,6 +29,10 @@ from voxlogica.storage import MaterializationStore, StorageBackend
 from voxlogica.value_model import adapt_runtime_value
 from voxlogica.pod_codec import encode_for_storage
 from voxlogica.lazy.hash import hash_sequence_item
+
+# Module-level thread pool: workers call ITK kernels (GIL released → true parallelism).
+# max_workers=None → Python default: min(32, cpu_count + 4).
+_executor = ThreadPoolExecutor(max_workers=None)
 
 _LAZY_SEQUENCE_OPERATORS = {
     "default.map", 
@@ -136,9 +143,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
         self._progress = tqdm(total=len(prepared.plan.nodes), desc="nodes", unit="node",
                               dynamic_ncols=True, file=__import__("sys").stderr, leave=True)
         try:
-            for goal in target_goal_set:
-                value = self._evaluate_node_lazy(prepared,goal,FullDemand())
-                prepared.values[goal] = value
+            asyncio.run(self._async_run(prepared, list(target_goal_set)))
         finally:
             self._progress.close()
             self._progress = None
@@ -327,6 +332,175 @@ class LazyExecutionStrategy(ExecutionStrategy):
 
         raise ValueError(f"Unsupported node kind: {node.kind}")
 
+
+    # ── Async task-graph executor (issue #19) ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_function_spec_node_ids(spec: dict) -> list[NodeId]:
+        """Recursively collect all node IDs referenced inside a function_capture spec."""
+        ids = list(dict(spec.get("captures", {})).values())
+        for nested in dict(spec.get("functions", {})).values():
+            ids.extend(LazyExecutionStrategy._extract_function_spec_node_ids(nested))
+        return ids
+
+    def _get_all_deps(self, node: NodeSpec) -> set[NodeId]:
+        """All dependency node IDs for a node, including hidden function_capture references."""
+        deps: set[NodeId] = set(node.args) | {a for _, a in node.kwargs}
+        for spec in node.attrs.get("function_captures", {}).values():
+            deps.update(self._extract_function_spec_node_ids(spec))
+        return deps
+
+    def _compute_primitive(self, prepared: PreparedPlan, nid: NodeId) -> Any:
+        """Evaluate a single primitive node whose dependencies are already in prepared.values.
+
+        Called from a ThreadPoolExecutor thread — must only read from prepared.values
+        (never write to it) and must not call cache() or update tqdm.
+        """
+        node = prepared.plan.nodes[nid]
+        assert node.kind == "primitive", f"_compute_primitive called on non-primitive {nid}"
+
+        if node.operator == "default.subsequence":
+            start = int(prepared.values[node.args[1]])
+            stop  = int(prepared.values[node.args[2]])
+            sequence = prepared.values[node.args[0]]
+            kernel = self.registry.load_kernel("default.subsequence")
+            return self._invoke_kernel(kernel, [sequence, start, stop], {})
+
+        kernel = self.registry.load_kernel(node.operator)
+        args   = [prepared.values[arg_id] for arg_id in node.args]
+        kwargs = {key: prepared.values[arg_id] for key, arg_id in node.kwargs}
+        return self._invoke_kernel(kernel, args, kwargs, node.attrs)
+
+    def _build_runtime_closure_from_values_eager(self, prepared: PreparedPlan, node: NodeSpec) -> RuntimeClosure:
+        """Build a RuntimeClosure by reading captures from prepared.values (already evaluated)."""
+        body           = parse_expression_content(str(node.attrs.get("body", "")))
+        parameter      = str(node.attrs.get("parameter", "arg"))
+        capture_names  = list(node.attrs.get("capture_names", []))
+        captures = {
+            name: prepared.values[node_id]
+            for name, node_id in zip(capture_names, node.args, strict=True)
+        }
+        for name, spec in dict(node.attrs.get("function_captures", {})).items():
+            captures[name] = self._build_runtime_function_from_values_eager(prepared, spec)
+        return RuntimeClosure(parameter=parameter, body_expression=body, captures=captures, evaluator=self)
+
+    def _build_runtime_function_from_values_eager(self, prepared: PreparedPlan, spec: dict) -> RuntimeFunction:
+        """Build a RuntimeFunction by reading captures from prepared.values."""
+        expression = parse_expression_content(str(spec["body"]))
+        captures = {
+            name: prepared.values[node_id]
+            for name, node_id in dict(spec.get("captures", {})).items()
+        }
+        for name, nested_spec in dict(spec.get("functions", {})).items():
+            captures[name] = self._build_runtime_function_from_values_eager(prepared, nested_spec)
+        return RuntimeFunction(
+            parameters=list(spec.get("parameters", [])),
+            expression=expression,
+            captures=captures,
+            evaluator=self,
+        )
+
+    async def _async_run(self, prepared: PreparedPlan, goal_ids: list[NodeId]) -> None:
+        """Async task-graph executor: evaluate all nodes reachable from goal_ids in parallel.
+
+        Strategy:
+          1. BFS from goals to find all reachable nodes.
+          2. Pre-populate from cache; exclude already-known nodes.
+          3. Build a reverse-edge dependency graph over nodes still needing computation.
+          4. Seed with zero-in-degree nodes; when a node finishes, decrement its dependents
+             and launch any that become ready.  ITK kernels run in a ThreadPoolExecutor
+             (GIL released → true CPU parallelism).  All bookkeeping stays in the event loop.
+        """
+        # ── Step 1: find reachable nodes ──────────────────────────────────────
+        reachable: set[NodeId] = set()
+        queue = list(goal_ids)
+        while queue:
+            nid = queue.pop()
+            if nid in reachable:
+                continue
+            reachable.add(nid)
+            for dep in self._get_all_deps(prepared.plan.nodes[nid]):
+                if dep not in reachable:
+                    queue.append(dep)
+
+        # ── Step 2: pre-populate from cache ───────────────────────────────────
+        for nid in list(reachable):
+            if nid not in prepared.values:
+                value = self.cache_lookup(prepared, nid)
+                if value is not None:
+                    prepared.values[nid] = value
+
+        # ── Step 3: build dependency graph for uncached nodes ─────────────────
+        to_compute: set[NodeId] = {nid for nid in reachable if nid not in prepared.values}
+
+        # dependents[p] = list of children that are waiting on p
+        dependents: dict[NodeId, list[NodeId]] = defaultdict(list)
+        pending: dict[NodeId, int] = {}  # remaining unsatisfied deps within to_compute
+
+        for nid in to_compute:
+            deps_needed = [d for d in self._get_all_deps(prepared.plan.nodes[nid]) if d in to_compute]
+            pending[nid] = len(deps_needed)
+            for dep in deps_needed:
+                dependents[dep].append(nid)
+
+        ready = [nid for nid, count in pending.items() if count == 0]
+
+        if not to_compute:
+            return
+
+        # ── Step 4: async execution ───────────────────────────────────────────
+        active = len(ready)
+        done_event = asyncio.Event()
+        if active == 0:
+            done_event.set()
+            return
+
+        loop = asyncio.get_running_loop()
+
+        async def eval_node(nid: NodeId) -> None:
+            nonlocal active
+            node = prepared.plan.nodes[nid]
+
+            if node.kind == "constant":
+                value = node.attrs.get("value")
+            elif node.kind == "closure":
+                # Closures are cheap Python objects; build in the event loop.
+                value = self._build_runtime_closure_from_values_eager(prepared, node)
+            else:
+                # Primitive: run in thread pool so ITK can use all cores (GIL released).
+                value = await loop.run_in_executor(_executor, self._compute_primitive, prepared, nid)
+
+            # ── Back in event loop — no preemption ────────────────────────────
+            prepared.values[nid] = value
+
+            # Cache the result (writes tqdm + store; safe: event-loop thread only).
+            if node.kind == "primitive" and node.operator in _LAZY_SEQUENCE_OPERATORS:
+                self.cache(prepared, nid, value)
+                for i, item in enumerate(value):
+                    self.cache_sequence_item(prepared, nid, i, item)
+            else:
+                self.cache(prepared, nid, value)
+
+            # Launch newly-ready children.
+            new_ready: list[NodeId] = []
+            for child_id in dependents[nid]:
+                pending[child_id] -= 1
+                if pending[child_id] == 0:
+                    new_ready.append(child_id)
+
+            active += len(new_ready) - 1  # add children, subtract self (no preemption)
+            for child_id in new_ready:
+                asyncio.create_task(eval_node(child_id))
+
+            if active == 0:
+                done_event.set()
+
+        for nid in ready:
+            asyncio.create_task(eval_node(nid))
+
+        await done_event.wait()
+
+    # ── End async executor ───────────────────────────────────────────────────────────────────
 
     def _build_runtime_closure_from_values(self, prepared: PreparedPlan, node: NodeSpec) -> RuntimeClosure:
         body = parse_expression_content(str(node.attrs.get("body", "")))
