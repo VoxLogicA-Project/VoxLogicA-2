@@ -29,6 +29,18 @@ except Exception:  # pragma: no cover - optional acceleration
 
 from voxlogica.primitives.default._sequence_math import apply_binary_op
 
+# ITK's legacy "Platform" threader spawns and destroys native threads on every
+# filter Execute(); over a long run (thousands of distance-map/morphology calls)
+# that thread churn intermittently segfaults inside ITK under sustained load
+# (captured: SIGSEGV in SignedMaurerDistanceMapImageFilter.Execute via dt). Switch
+# to the persistent thread-pool threader, which reuses a fixed pool and is ITK's
+# modern default. Done once at import, before any filter runs.
+try:
+    sitk.ProcessObject.SetGlobalDefaultThreader("Pool")
+except Exception as e:  # pragma: no cover - older SimpleITK without the setter
+    import sys
+    print(f"WARNING: could not set ITK threader to Pool: {e}", file=sys.stderr)
+
 _BASE_IMAGE: sitk.Image | None = None
 _BASE_IMAGE_LOCK = RLock()
 _CROSSCORR_BACKEND_ENV = "VOXLOGICA_VOX1_CROSSCORR_BACKEND"
