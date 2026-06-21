@@ -905,9 +905,8 @@ def border(img: sitk.Image) -> sitk.Image:
     return image
 
 
-def _coord_image(coord: int) -> sitk.Image:
-    base = _require_base()
-    size = list(base.GetSize())
+def _coord_image(img: sitk.Image, coord: int) -> sitk.Image:
+    size = list(img.GetSize())
     ndim = len(size)
     shape = tuple(reversed(size))
     result = np.zeros(shape, dtype=np.float32)
@@ -915,23 +914,23 @@ def _coord_image(coord: int) -> sitk.Image:
         axis = ndim - 1 - coord
         result = np.indices(shape, dtype=np.float32)[axis]
     image = sitk.GetImageFromArray(result, isVector=False)
-    image.CopyInformation(base)
+    image.CopyInformation(img)
     return image
 
 
-def x() -> sitk.Image:
-    """x-coordinate image."""
-    return _coord_image(0)
+def x(img: sitk.Image) -> sitk.Image:
+    """x-coordinate image (geometry taken from img)."""
+    return _coord_image(img, 0)
 
 
-def y() -> sitk.Image:
-    """y-coordinate image."""
-    return _coord_image(1)
+def y(img: sitk.Image) -> sitk.Image:
+    """y-coordinate image (geometry taken from img)."""
+    return _coord_image(img, 1)
 
 
-def z() -> sitk.Image:
-    """z-coordinate image."""
-    return _coord_image(2)
+def z(img: sitk.Image) -> sitk.Image:
+    """z-coordinate image (geometry taken from img)."""
+    return _coord_image(img, 2)
 
 
 def _hyperrectangle(size: list[int], hyper_radius: list[int]) -> tuple[np.ndarray, list[list[list[int]]]]:

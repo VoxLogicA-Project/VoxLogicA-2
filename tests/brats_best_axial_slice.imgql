@@ -31,19 +31,19 @@ segment_case(pflair) =
   let very = smoothen(geq_sv(vi_thr, pflair), 2.0) in
   grow(hyper, very)
 
-axial_mask_volume(seg, zi) = volume(and(seg, eq_sv(zi, z)))
+axial_mask_volume(seg, zi) = volume(and(seg, eq_sv(zi, z(seg))))
 
 best_axial_z(seg) =
   argmax(for zi in range(0, z_planes) do axial_mask_volume(seg, zi))
 
 overlay_at_z(pflair, seg, zi) =
-  let plane = and(seg, eq_sv(zi, z)) in
+  let plane = and(seg, eq_sv(zi, z(seg))) in
   mask(constant(255.0), plane) + mask(pflair, not(plane))
 
 extract_axial(img, zi) =
   Extract(
     img,
-    vector_uint32([max(x) + 1, max(y) + 1, 1]),
+    vector_uint32([max(x(img)) + 1, max(y(img)) + 1, 1]),
     vector_uint32([0, 0, zi])
   )
 
