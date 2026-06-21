@@ -885,10 +885,9 @@ def rgba(
     )
 
 
-def border() -> sitk.Image:
-    """True on image border voxels."""
-    base = _require_base()
-    size = list(base.GetSize())
+def border(img: sitk.Image) -> sitk.Image:
+    """True on image border voxels (geometry taken from img)."""
+    size = list(img.GetSize())
     ndim = len(size)
     shape = tuple(reversed(size))
     result = np.zeros(shape, dtype=np.uint8)
@@ -902,7 +901,7 @@ def border() -> sitk.Image:
         result[tuple(high_slice)] = 1
 
     image = sitk.GetImageFromArray(result, isVector=False)
-    image.CopyInformation(base)
+    image.CopyInformation(img)
     return image
 
 

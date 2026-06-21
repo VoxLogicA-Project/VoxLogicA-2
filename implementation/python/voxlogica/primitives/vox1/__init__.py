@@ -62,7 +62,7 @@ _PRIMITIVES: dict[str, tuple[Callable[..., Any], AritySpec]] = {
     "interior": (kernels.interior, AritySpec.fixed(1)),
     "through": (kernels.through, AritySpec.fixed(2)),
     "crossCorrelation": (kernels.crossCorrelation, AritySpec.fixed(7)),
-    "border": (kernels.border, AritySpec.fixed(0)),
+    "border": (kernels.border, AritySpec.fixed(1)),
     "x": (kernels.x, AritySpec.fixed(0)),
     "y": (kernels.y, AritySpec.fixed(0)),
     "z": (kernels.z, AritySpec.fixed(0)),
