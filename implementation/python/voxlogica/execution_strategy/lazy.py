@@ -473,12 +473,19 @@ class LazyExecutionStrategy(ExecutionStrategy):
                 # ── Back in event loop — no preemption ────────────────────────
                 prepared.values[nid] = value
 
-                if node.kind == "primitive" and node.operator in _LAZY_SEQUENCE_OPERATORS:
-                    self.cache(prepared, nid, value)
-                    for i, item in enumerate(value):
-                        self.cache_sequence_item(prepared, nid, i, item)
+                # Closures are not serialisable; constants are trivial. Only cache primitives.
+                if node.kind == "primitive":
+                    if node.operator in _LAZY_SEQUENCE_OPERATORS:
+                        self.cache(prepared, nid, value)
+                        for i, item in enumerate(value):
+                            self.cache_sequence_item(prepared, nid, i, item)
+                    else:
+                        self.cache(prepared, nid, value)
                 else:
-                    self.cache(prepared, nid, value)
+                    # Still mark progress for constants and closures.
+                    prepared.completed_nodes.add(nid)
+                    if self._progress is not None:
+                        self._progress.update(1)
 
                 new_ready: list[NodeId] = []
                 for child_id in dependents[nid]:
