@@ -143,60 +143,74 @@ def _make_image_from_flat(
 
 
 def num_div(left: float, right: float) -> float:
+    """Scalar floating-point division."""
     return float(left) / float(right)
 
 
 def num_mul(left: float, right: float) -> float:
+    """Scalar floating-point multiplication."""
     return float(left) * float(right)
 
 
 def num_add(left: float, right: float) -> float:
+    """Scalar floating-point addition."""
     return float(left) + float(right)
 
 
 def num_sub(left: float, right: float) -> float:
+    """Scalar floating-point subtraction."""
     return float(left) - float(right)
 
 
 def bool_and_scalar(left: bool, right: bool) -> bool:
+    """Scalar boolean and."""
     return bool(left) and bool(right)
 
 
 def bool_or_scalar(left: bool, right: bool) -> bool:
+    """Scalar boolean or."""
     return bool(left) or bool(right)
 
 
 def bool_not_scalar(value: bool) -> bool:
+    """Scalar boolean not."""
     return not bool(value)
 
 
 def not_compat(value: object) -> object:
+    """Boolean not dispatching over scalars and images."""
     if isinstance(value, (bool, int, float)):
         return bool_not_scalar(bool(value))
     return logical_not(value)
 
 
 def num_eq(left: float, right: float) -> bool:
+    """Scalar floating-point equality."""
     return float(left) == float(right)
 
 
 def num_neq(left: float, right: float) -> bool:
+    """Scalar floating-point inequality."""
     return float(left) != float(right)
 
 
 def num_leq(left: float, right: float) -> bool:
+    """Scalar floating-point less-or-equal."""
     return float(left) <= float(right)
 
 
 def num_lt(left: float, right: float) -> bool:
+    """Scalar floating-point less-than."""
     return float(left) < float(right)
 
 
 def num_geq(left: float, right: float) -> bool:
+    """Scalar floating-point greater-or-equal."""
     return float(left) >= float(right)
 
 
 def num_gt(left: float, right: float) -> bool:
+    """Scalar floating-point greater-than."""
     return float(left) > float(right)
 
 
@@ -237,6 +251,7 @@ def _comparison_values(left: object, right: object, op_name: str) -> object:
 
 
 def equal(left: object, right: object) -> object:
+    """Scalar or voxel-wise equality."""
     return apply_binary_op(
         "Equal",
         left,
@@ -246,6 +261,7 @@ def equal(left: object, right: object) -> object:
 
 
 def not_equal(left: object, right: object) -> object:
+    """Scalar or voxel-wise inequality."""
     return apply_binary_op(
         "NotEqual",
         left,
@@ -255,6 +271,7 @@ def not_equal(left: object, right: object) -> object:
 
 
 def less(left: object, right: object) -> object:
+    """Scalar or voxel-wise less-than."""
     return apply_binary_op(
         "Less",
         left,
@@ -264,6 +281,7 @@ def less(left: object, right: object) -> object:
 
 
 def less_equal(left: object, right: object) -> object:
+    """Scalar or voxel-wise less-or-equal."""
     return apply_binary_op(
         "LessEqual",
         left,
@@ -273,6 +291,7 @@ def less_equal(left: object, right: object) -> object:
 
 
 def greater(left: object, right: object) -> object:
+    """Scalar or voxel-wise greater-than."""
     return apply_binary_op(
         "Greater",
         left,
@@ -282,6 +301,7 @@ def greater(left: object, right: object) -> object:
 
 
 def greater_equal(left: object, right: object) -> object:
+    """Scalar or voxel-wise greater-or-equal."""
     return apply_binary_op(
         "GreaterEqual",
         left,
@@ -291,28 +311,33 @@ def greater_equal(left: object, right: object) -> object:
 
 
 def bconstant(value: bool) -> sitk.Image:
+    """Boolean constant image filled with a given value."""
     if bool(value):
         return tt()
     return ff()
 
 
 def tt() -> sitk.Image:
+    """Boolean true image."""
     base = _require_base()
     return _filled_image_like(base, sitk.sitkUInt8, 1)
 
 
 def ff() -> sitk.Image:
+    """Boolean false image."""
     base = _require_base()
     return _filled_image_like(base, sitk.sitkUInt8, 0)
 
 
 def logical_not(image: object) -> sitk.Image:
+    """Voxel-wise boolean negation."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.Not(img)
 
 
 def logical_and(left: object, right: object) -> object:
+    """Voxel-wise boolean and."""
     if _is_image(left) or _is_image(right):
         _remember_base_from_values(left, right)
         return sitk.And(left, right)
@@ -320,6 +345,7 @@ def logical_and(left: object, right: object) -> object:
 
 
 def logical_or(left: object, right: object) -> object:
+    """Voxel-wise boolean or."""
     if _is_image(left) or _is_image(right):
         _remember_base_from_values(left, right)
         return sitk.Or(left, right)
@@ -327,6 +353,7 @@ def logical_or(left: object, right: object) -> object:
 
 
 def dt(image: object) -> sitk.Image:
+    """Signed Maurer distance transform."""
     img = _as_image(image, "image")
     _remember_base(img)
     flt = sitk.SignedMaurerDistanceMapImageFilter()
@@ -337,36 +364,49 @@ def dt(image: object) -> sitk.Image:
     return flt.Execute(_as_bool_image(img))
 
 
+def gradient(image: object) -> sitk.Image:
+    """Gradient magnitude of an image."""
+    img = _as_image(image, "image")
+    _remember_base(img)
+    return sitk.GradientMagnitude(_as_float_image(img))
+
+
 def constant(value: float) -> sitk.Image:
+    """Numeric constant image filled with a given value."""
     base = _require_base()
     return _filled_image_like(base, sitk.sitkFloat32, float(value))
 
 
 def eq_sv(value: float, image: object) -> sitk.Image:
+    """Mask of voxels equal to a scalar value."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.BinaryThreshold(img, float(value), float(value), 1, 0)
 
 
 def geq_sv(value: float, image: object) -> sitk.Image:
+    """Mask of voxels greater than or equal to a scalar value."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.GreaterEqual(img, float(value))
 
 
 def leq_sv(value: float, image: object) -> sitk.Image:
+    """Mask of voxels less than or equal to a scalar value."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.LessEqual(img, float(value))
 
 
 def between(value1: float, value2: float, image: object) -> sitk.Image:
+    """Mask of voxels within an inclusive scalar range."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.BinaryThreshold(img, float(value1), float(value2), 1, 0)
 
 
 def max_value(image: object) -> float:
+    """Maximum voxel value."""
     img = _as_image(image, "image")
     _remember_base(img)
     flt = sitk.MinimumMaximumImageFilter()
@@ -375,12 +415,14 @@ def max_value(image: object) -> float:
 
 
 def abs_value(image: object) -> sitk.Image:
+    """Voxel-wise absolute value."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.Abs(img)
 
 
 def min_value(image: object) -> float:
+    """Minimum voxel value."""
     img = _as_image(image, "image")
     _remember_base(img)
     flt = sitk.MinimumMaximumImageFilter()
@@ -417,22 +459,27 @@ def _sub_values(left: object, right: object) -> object:
 
 
 def add(left: object, right: object) -> object:
+    """Voxel-wise or scalar addition."""
     return apply_binary_op("Add", left, right, _add_values)
 
 
 def multiply(left: object, right: object) -> object:
+    """Voxel-wise or scalar multiplication."""
     return apply_binary_op("Multiply", left, right, _mul_values)
 
 
 def divide(left: object, right: object) -> object:
+    """Voxel-wise or scalar division."""
     return apply_binary_op("Division", left, right, _div_values)
 
 
 def subtract(left: object, right: object) -> object:
+    """Voxel-wise or scalar subtraction."""
     return apply_binary_op("Subtraction", left, right, _sub_values)
 
 
 def mask(image: object, mask_image: object) -> sitk.Image:
+    """Zero out voxels where a boolean mask is false."""
     img = _as_image(image, "image")
     msk = _as_image(mask_image, "mask_image")
     _remember_base(img)
@@ -440,6 +487,7 @@ def mask(image: object, mask_image: object) -> sitk.Image:
 
 
 def avg(image: object, mask_image: object) -> float:
+    """Mean voxel value inside a boolean mask; raises if the mask is empty."""
     img = _as_image(image, "image")
     msk = _as_image(mask_image, "mask_image")
     _remember_base(img)
@@ -453,49 +501,70 @@ def avg(image: object, mask_image: object) -> float:
     return float(np.mean(selected, dtype=np.float64))
 
 
+def avg0(image: object, mask_image: object) -> float:
+    """Mean value inside a boolean mask, or 0.0 when the mask is empty."""
+    img = _as_image(image, "image")
+    msk = _as_image(mask_image, "mask_image")
+    _remember_base(img)
+    img_values = _flatten_image(_as_float_image(img), np.float32)
+    mask_values = _flatten_image(_as_bool_image(msk), np.uint8)
+    selected = img_values[mask_values > 0]
+    if selected.size == 0:
+        return 0.0
+    return float(np.mean(selected, dtype=np.float64))
+
+
 def div_sv(value: float, image: object) -> sitk.Image:
+    """Scalar divided by each voxel."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.Divide(float(value), img)
 
 
 def sub_sv(value: float, image: object) -> sitk.Image:
+    """Scalar minus each voxel."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.Subtract(float(value), img)
 
 
 def div_vs(image: object, value: float) -> sitk.Image:
+    """Each voxel divided by a scalar."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.Multiply(img, 1.0 / float(value))
 
 
 def sub_vs(image: object, value: float) -> sitk.Image:
+    """Each voxel minus a scalar."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.Subtract(img, float(value))
 
 
 def add_vs(image: object, value: float) -> sitk.Image:
+    """Each voxel plus a scalar."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.Add(img, float(value))
 
 
 def mul_vs(image: object, value: float) -> sitk.Image:
+    """Each voxel multiplied by a scalar."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.Multiply(img, float(value))
 
 
 def near(image: object) -> sitk.Image:
+    """Spatial dilation by one voxel (26-connectivity box kernel)."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.BinaryDilate(_as_bool_image(img), [1, 1, 1], sitk.sitkBox, 1.0)
 
 
 def interior(image: object) -> sitk.Image:
+    """Spatial erosion by one voxel (26-connectivity box kernel)."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.BinaryErode(_as_bool_image(img), [1, 1, 1], sitk.sitkBox, 0.0)
@@ -509,6 +578,7 @@ def _label_connected_components(image: sitk.Image) -> tuple[sitk.Image, int]:
 
 
 def lcc(image: object) -> sitk.Image:
+    """Connected-component label image (float32)."""
     img = _as_image(image, "image")
     _remember_base(img)
     labels, _ = _label_connected_components(img)
@@ -516,6 +586,7 @@ def lcc(image: object) -> sitk.Image:
 
 
 def Lcc(image: object) -> sitk.Image:
+    """Alias for lcc."""
     return lcc(image)
 
 
@@ -540,6 +611,7 @@ def _through_mask_components_numba(
 
 
 def through(image1: object, image2: object) -> sitk.Image:
+    """Mask of components of image2 that intersect image1."""
     img1 = _as_image(image1, "image1")
     img2 = _as_image(image2, "image2")
     _remember_base(img1)
@@ -570,6 +642,7 @@ def through(image1: object, image2: object) -> sitk.Image:
 
 
 def volume(image: object) -> float:
+    """Number of true (nonzero) voxels."""
     img = _as_image(image, "image")
     _remember_base(img)
     values = _flatten_image(_as_bool_image(img), np.uint8)
@@ -577,6 +650,7 @@ def volume(image: object) -> float:
 
 
 def vol(image: object) -> float:
+    """Alias for volume."""
     return volume(image)
 
 
@@ -593,6 +667,7 @@ def _as_index_vector(value: object, name: str, dims: int = 3) -> list[int]:
 
 
 def extract(image: object, size: object, index: object) -> sitk.Image:
+    """Extract a subregion from an image given size and origin index vectors."""
     img = _as_image(image, "image")
     _remember_base(img)
     return sitk.Extract(
@@ -603,6 +678,7 @@ def extract(image: object, size: object, index: object) -> sitk.Image:
 
 
 def otsu(image: object, mask_image: object, nbins: float) -> sitk.Image:
+    """Otsu threshold mask within a given mask region."""
     img = _as_image(image, "image")
     msk = _as_image(mask_image, "mask_image")
     _remember_base(img)
@@ -616,6 +692,7 @@ def otsu(image: object, mask_image: object, nbins: float) -> sitk.Image:
 
 
 def maxvol(image: object) -> sitk.Image:
+    """Largest connected component mask (ties keep union)."""
     img = _as_image(image, "image")
     _remember_base(img)
     labels_image, max_label = _label_connected_components(img)
@@ -681,6 +758,7 @@ def _percentiles_numba(
 
 
 def percentiles(image: object, mask_image: object, correction: float) -> sitk.Image:
+    """Percentile rank image within a mask, with tie-breaking correction factor."""
     img = _as_image(image, "image")
     msk = _as_image(mask_image, "mask_image")
     _remember_base(img)
@@ -725,6 +803,7 @@ def percentiles(image: object, mask_image: object, correction: float) -> sitk.Im
 
 
 def intensity(model: object) -> sitk.Image:
+    """Grayscale intensity: ITU-R BT.709 luminance for RGB, passthrough for single-channel."""
     img = _as_image(model, "model")
     _remember_base(img)
 
@@ -750,18 +829,22 @@ def _component(model: object, index: int) -> sitk.Image:
 
 
 def red(model: object) -> sitk.Image:
+    """Red channel of an RGB or RGBA image."""
     return _component(model, 0)
 
 
 def green(model: object) -> sitk.Image:
+    """Green channel of an RGB or RGBA image."""
     return _component(model, 1)
 
 
 def blue(model: object) -> sitk.Image:
+    """Blue channel of an RGB or RGBA image."""
     return _component(model, 2)
 
 
 def alpha(model: object) -> sitk.Image:
+    """Alpha channel; returns 255 for images without an alpha component."""
     img = _as_image(model, "model")
     _remember_base(img)
     if img.GetNumberOfComponentsPerPixel() < 4:
@@ -770,6 +853,7 @@ def alpha(model: object) -> sitk.Image:
 
 
 def rgb(red_image: object, green_image: object, blue_image: object) -> sitk.Image:
+    """Compose three float images into an RGB vector image."""
     red_img = _as_image(red_image, "red_image")
     green_img = _as_image(green_image, "green_image")
     blue_img = _as_image(blue_image, "blue_image")
@@ -787,6 +871,7 @@ def rgba(
     blue_image: object,
     alpha_image: object,
 ) -> sitk.Image:
+    """Compose four float images into an RGBA vector image."""
     red_img = _as_image(red_image, "red_image")
     green_img = _as_image(green_image, "green_image")
     blue_img = _as_image(blue_image, "blue_image")
@@ -801,6 +886,7 @@ def rgba(
 
 
 def border() -> sitk.Image:
+    """True on image border voxels."""
     base = _require_base()
     size = list(base.GetSize())
     ndim = len(size)
@@ -835,14 +921,17 @@ def _coord_image(coord: int) -> sitk.Image:
 
 
 def x() -> sitk.Image:
+    """x-coordinate image."""
     return _coord_image(0)
 
 
 def y() -> sitk.Image:
+    """y-coordinate image."""
     return _coord_image(1)
 
 
 def z() -> sitk.Image:
+    """z-coordinate image."""
     return _coord_image(2)
 
 
@@ -1302,6 +1391,7 @@ def crossCorrelation(
     m2: float,
     k: float,
 ) -> sitk.Image:
+    """Local cross-correlation map between two images over a spherical neighbourhood."""
     a_image = _as_float_image(_as_image(a, "a"))
     b_image = _as_float_image(_as_image(b, "b"))
     fb_image = _as_bool_image(_as_image(fb, "fb"))
