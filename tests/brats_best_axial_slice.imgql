@@ -23,7 +23,7 @@ flair_paths =
   )
 
 preprocess_flair(flair) =
-  let background = touch(leq_sv(0.1, flair), border) in
+  let background = touch(leq_sv(0.1, flair), border(flair)) in
   percentiles(flair, not(background), 0)
 
 segment_case(pflair) =
