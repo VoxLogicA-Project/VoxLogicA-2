@@ -15,6 +15,8 @@ import pickle
 import time
 import traceback
 
+from tqdm import tqdm
+
 from voxlogica.execution_strategy.base import ExecutionStrategy
 from voxlogica.execution_strategy.results import ExecutionResult, PageResult, PreparedPlan, SequenceValue
 from voxlogica.lazy.ir import NodeId, NodeSpec, SymbolicPlan
@@ -104,6 +106,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
         self.results_database = results_database
         self._cache_summary: dict[str, Any] = {}
         self._node_events: list[dict[str, Any]] = []
+        self._progress: tqdm | None = None
 
     def compile(self, plan: SymbolicPlan) -> PreparedPlan:
         """Prepare a plan for execution and reset namespace runtime state."""
@@ -130,9 +133,15 @@ class LazyExecutionStrategy(ExecutionStrategy):
         target_goals = [goal.id for goal in prepared.plan.goals] if goals is None else list(goals)
         target_goal_set = set(target_goals)
 
-        for goal in target_goal_set:
-            value = self._evaluate_node_lazy(prepared,goal,FullDemand())
-            prepared.values[goal] = value
+        self._progress = tqdm(total=len(prepared.plan.nodes), desc="nodes", unit="node",
+                              dynamic_ncols=True, file=__import__("sys").stderr, leave=True)
+        try:
+            for goal in target_goal_set:
+                value = self._evaluate_node_lazy(prepared,goal,FullDemand())
+                prepared.values[goal] = value
+        finally:
+            self._progress.close()
+            self._progress = None
 
         if goals is None:
             for goal in prepared.plan.goals:
@@ -205,6 +214,8 @@ class LazyExecutionStrategy(ExecutionStrategy):
         if prepared.materialization_store is not None:
             prepared.materialization_store.put(nodeId, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
         prepared.completed_nodes.add(nodeId)
+        if self._progress is not None:
+            self._progress.update(1)
 
     def cache_sequence_item(self, prepared: PreparedPlan, nodeId: NodeId, index:int, value:Any):
         node = prepared.plan.nodes[nodeId]
@@ -214,6 +225,8 @@ class LazyExecutionStrategy(ExecutionStrategy):
         if self.results_database is not None:
             self.results_database.put_success(id, value, metadata={"source": "runtime", "operator": node.operator, "index": id})
         prepared.completed_nodes.add(nodeId)
+        if self._progress is not None:
+            self._progress.update(1)
         if prepared.materialization_store is not None:
             prepared.materialization_store.put(id, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
 
@@ -222,6 +235,10 @@ class LazyExecutionStrategy(ExecutionStrategy):
         if prepared.materialization_store is not None:
             value = prepared.materialization_store.get(nodeId)
             if value is not None:
+                if nodeId not in prepared.completed_nodes:
+                    prepared.completed_nodes.add(nodeId)
+                    if self._progress is not None:
+                        self._progress.update(1)
                 return value
         if self.results_database is not None:
             tmp = self.results_database.get_record(nodeId)
@@ -230,6 +247,10 @@ class LazyExecutionStrategy(ExecutionStrategy):
                     value = tmp.payload_bin
                 else:
                     value = tmp.payload_json["value"]
+        if value is not None and nodeId not in prepared.completed_nodes:
+            prepared.completed_nodes.add(nodeId)
+            if self._progress is not None:
+                self._progress.update(1)
         return value
 
     def cache_sequence_item_lookup(self, prepared: PreparedPlan, nodeId: NodeId, index: int):
