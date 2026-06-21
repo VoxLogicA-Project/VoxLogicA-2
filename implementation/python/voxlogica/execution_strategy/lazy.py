@@ -30,8 +30,6 @@ _LAZY_SEQUENCE_OPERATORS = {
     "map",
     "default.filter",
     "filter",
-    "default.fold",
-    "fold",
     "default.for_loop",
     "for_loop"
 }
