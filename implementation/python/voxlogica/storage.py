@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Union
 from abc import ABC, abstractmethod
 import logging
+import os
 import queue
 import shutil
 import sqlite3
@@ -28,6 +30,9 @@ from voxlogica.value_model import VOX_FORMAT_VERSION
 MATERIALIZED_STATUS = "materialized"
 PLANNED_STATUS = "planned"
 STORE_SCHEMA_VERSION = 2
+# Maximum number of value-bearing entries kept in the in-memory cache tier.
+# Overridable via VOXLOGICA_MEMORY_CACHE_CAPACITY for memory-heavy runs.
+DEFAULT_MEMORY_CACHE_CAPACITY = 1024
 _RESULTS_TABLE_COLUMNS = frozenset(
     {
         "node_id",
@@ -53,6 +58,18 @@ def _default_db_path() -> Path:
     base = Path.home() / ".voxlogica"
     base.mkdir(parents=True, exist_ok=True)
     return base / "results.db"
+
+
+def _default_memory_capacity() -> int:
+    raw = os.environ.get("VOXLOGICA_MEMORY_CACHE_CAPACITY")
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return DEFAULT_MEMORY_CACHE_CAPACITY
 
 
 def results_store_paths(db_path: str | Path | None = None) -> tuple[Path, Path]:
@@ -419,10 +436,31 @@ class MaterializationRecord:
 
 
 class MaterializationStore:
-    """Runtime store with optional read/write-through persistence."""
+    """Two-level (memory + disk) result store with optional persistence.
 
-    def __init__(self, backend: StorageBackend | None = None, *, read_through: bool = True, write_through: bool = True):
-        self._records: dict[str, MaterializationRecord] = {}
+    Tier 1 is a bounded, LRU in-memory cache (``_memory``) holding the live
+    Python values. Tier 2 is the optional ``backend`` (disk). Bookkeeping
+    records in ``_records`` are kept for every materialized node so ``has`` and
+    ``completed_nodes`` stay correct even after a value is evicted from RAM.
+
+    A value is evicted from the memory tier only once it is durably persisted to
+    disk, so a node is never recomputed: an evicted value is reloaded from
+    tier 2 on demand. With no backend (e.g. ``--no-cache``) nothing is
+    persisted, hence nothing is evicted and the memory tier acts as an
+    unbounded per-run memo.
+    """
+
+    def __init__(
+        self,
+        backend: StorageBackend | None = None,
+        *,
+        read_through: bool = True,
+        write_through: bool = True,
+        memory_capacity: int | None = None,
+    ):
+        self._records: "OrderedDict[str, MaterializationRecord]" = OrderedDict()
+        self._memory: "OrderedDict[str, Any]" = OrderedDict()
+        self._memory_capacity = memory_capacity if memory_capacity is not None else _default_memory_capacity()
         self._backend = backend
         self._read_through = read_through
         self._write_through = write_through
@@ -434,42 +472,61 @@ class MaterializationStore:
             self._persist_thread = threading.Thread(target=self._persistence_loop, name="voxlogica-persist", daemon=True)
             self._persist_thread.start()
 
-    def _materialize_from_backend(self, node_id: str) -> MaterializationRecord | None:
+    def _remember(self, node_id: str, value: Any) -> None:
+        """Insert a value into the in-memory tier and trim to capacity."""
+        self._memory[node_id] = value
+        self._memory.move_to_end(node_id)
+        self._trim()
+
+    def _trim(self) -> None:
+        """Evict least-recently-used values that are safely reloadable from disk."""
+        while len(self._memory) > self._memory_capacity:
+            oldest_id = next(iter(self._memory))
+            record = self._records.get(oldest_id)
+            # Only drop a value we can reload from tier 2; otherwise the node
+            # would have to be recomputed. If the LRU victim is not yet durable,
+            # stop trimming and let the memory tier exceed capacity for now.
+            if not (self._read_through and record is not None and record.metadata.get("persisted") is True):
+                break
+            self._memory.pop(oldest_id, None)
+
+    def _load_from_backend(self, node_id: str) -> Any:
+        """Return a persisted value from tier 2 and refresh bookkeeping; None on miss."""
         if not self._read_through or self._backend is None:
             return None
         record = self._backend.get_record(node_id)
         if record is None or record.status != MATERIALIZED_STATUS:
             return None
-        materialized = MaterializationRecord(
+        self._records[node_id] = MaterializationRecord(
             status=MATERIALIZED_STATUS,
             expression=record.expression,
             dependencies=record.dependencies,
-            value=record.value,
-            metadata={**record.metadata, "source": "results-db", "cache_hit": True},
+            value=None,
+            metadata={**record.metadata, "source": "results-db", "cache_hit": True, "persisted": True},
             format_version=record.format_version,
             vox_type=record.vox_type,
         )
-        self._records[node_id] = materialized
-        return materialized
+        self._records.move_to_end(node_id)
+        return record.value
 
     def has(self, node_id: str) -> bool:
         with self._lock:
+            if node_id in self._memory:
+                return True
             record = self._records.get(node_id)
-            try:
-                if record is not None and record.status == MATERIALIZED_STATUS and record.metadata["persisted"] == True:
-                    return True
-            except KeyError:
-                if record is not None and record.status == MATERIALIZED_STATUS:
-                    return True
-            loaded = self._materialize_from_backend(node_id)
-            return loaded is not None and loaded.status == MATERIALIZED_STATUS
+            if record is not None and record.status == MATERIALIZED_STATUS and record.metadata.get("persisted") is True:
+                return True
+            return self._load_from_backend(node_id) is not None
 
     def get(self, node_id: str) -> Any:
         with self._lock:
-            record = self._records.get(node_id)
-            if record is None or record.status != MATERIALIZED_STATUS:
-                return None
-            return record.value
+            if node_id in self._memory:
+                self._memory.move_to_end(node_id)  # tier-1 hit
+                return self._memory[node_id]
+            value = self._load_from_backend(node_id)  # tier-2 fallback
+            if value is not None:
+                self._remember(node_id, value)
+            return value
 
     def put(self, node_id: str, expression: Any, dependencies: list[str], value: Any, metadata: dict[str, Any] | None = None) -> None:
         with self._lock:
@@ -477,20 +534,20 @@ class MaterializationStore:
             val,reason,encoded = can_serialize_value(value)
             format_version = encoded.format_version if encoded is not None else ""
             vox_type = encoded.vox_type if encoded is not None else ""
-            # Keep the live value in RAM so repeated demands for the same node
-            # within a run return the memoized result instead of recomputing it.
-            # Image-like values (image/bytes/ndarray/overlay) used to be replaced
-            # by a node-id placeholder here, which forced a backend round-trip on
-            # every reuse -- and with --no-cache (no backend) a full recomputation,
-            # so a shared image subtree was recomputed once per consumer.
-            self._records[node_id] = MaterializationRecord(MATERIALIZED_STATUS, expression, dependencies, value, record_metadata, format_version=format_version, vox_type=vox_type)
+            # The bookkeeping record holds no value; the live value lives in the
+            # bounded in-memory tier (and, once persisted, on disk).
+            self._records[node_id] = MaterializationRecord(MATERIALIZED_STATUS, expression, dependencies, None, record_metadata, format_version=format_version, vox_type=vox_type)
+            self._records.move_to_end(node_id)
             if self._backend is None or not self._write_through:
+                self._remember(node_id, value)
                 return
             if not val:
-                self._records[node_id].metadata["persisted"] = False
-                self._records[node_id].metadata["persist_error"] = reason
+                record_metadata["persisted"] = False
+                record_metadata["persist_error"] = reason
+                self._remember(node_id, value)
                 return
-            self._records[node_id].metadata["persisted"] = "pending"
+            record_metadata["persisted"] = "pending"
+            self._remember(node_id, value)
             self._persist_queue.put((node_id, value, record_metadata))
 
     # def fail(self, node_id: str, message: str) -> None:
