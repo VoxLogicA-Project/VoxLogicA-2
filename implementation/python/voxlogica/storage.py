@@ -467,15 +467,7 @@ class MaterializationStore:
     def get(self, node_id: str) -> Any:
         with self._lock:
             record = self._records.get(node_id)
-            if record is not None and record.value == node_id:
-                if self._backend is not None:
-                    backend_record = self._backend.get_record(node_id)
-                    if backend_record is not None and backend_record.status == MATERIALIZED_STATUS:
-                        return backend_record.value
-                # raise KeyError(f"No materialized record for node {node_id}")
-                return None
             if record is None or record.status != MATERIALIZED_STATUS:
-                # raise KeyError(f"No materialized record for node {node_id}")
                 return None
             return record.value
 
@@ -484,15 +476,14 @@ class MaterializationStore:
             record_metadata = dict(metadata or {})
             val,reason,encoded = can_serialize_value(value)
             format_version = encoded.format_version if encoded is not None else ""
-            vox_type = encoded.vox_type if encoded is not None else ""     
-            if vox_type == "bytes" or vox_type == "overlay" or vox_type == "ndarray" or vox_type == "image":
-                stored_value = node_id
-                # self._backend.put_success(node_id, value, metadata=record_metadata) if self._backend is not None else None
-            else:
-                stored_value = value
-            self._records[node_id] = MaterializationRecord(MATERIALIZED_STATUS, expression, dependencies, stored_value, record_metadata, format_version=format_version, vox_type=vox_type)
-            #if vox_type == "bytes" or vox_type == "ndarray":
-            #    return
+            vox_type = encoded.vox_type if encoded is not None else ""
+            # Keep the live value in RAM so repeated demands for the same node
+            # within a run return the memoized result instead of recomputing it.
+            # Image-like values (image/bytes/ndarray/overlay) used to be replaced
+            # by a node-id placeholder here, which forced a backend round-trip on
+            # every reuse -- and with --no-cache (no backend) a full recomputation,
+            # so a shared image subtree was recomputed once per consumer.
+            self._records[node_id] = MaterializationRecord(MATERIALIZED_STATUS, expression, dependencies, value, record_metadata, format_version=format_version, vox_type=vox_type)
             if self._backend is None or not self._write_through:
                 return
             if not val:
