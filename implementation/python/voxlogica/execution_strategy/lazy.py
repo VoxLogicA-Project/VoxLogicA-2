@@ -450,6 +450,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
 
         # ── Step 4: async execution ───────────────────────────────────────────
         active = len(ready)
+        first_error: BaseException | None = None
         done_event = asyncio.Event()
         if active == 0:
             done_event.set()
@@ -458,39 +459,41 @@ class LazyExecutionStrategy(ExecutionStrategy):
         loop = asyncio.get_running_loop()
 
         async def eval_node(nid: NodeId) -> None:
-            nonlocal active
+            nonlocal active, first_error
             node = prepared.plan.nodes[nid]
+            try:
+                if node.kind == "constant":
+                    value = node.attrs.get("value")
+                elif node.kind == "closure":
+                    value = self._build_runtime_closure_from_values_eager(prepared, node)
+                else:
+                    # Primitive: run in thread pool so ITK can use all cores (GIL released).
+                    value = await loop.run_in_executor(_executor, self._compute_primitive, prepared, nid)
 
-            if node.kind == "constant":
-                value = node.attrs.get("value")
-            elif node.kind == "closure":
-                # Closures are cheap Python objects; build in the event loop.
-                value = self._build_runtime_closure_from_values_eager(prepared, node)
-            else:
-                # Primitive: run in thread pool so ITK can use all cores (GIL released).
-                value = await loop.run_in_executor(_executor, self._compute_primitive, prepared, nid)
+                # ── Back in event loop — no preemption ────────────────────────
+                prepared.values[nid] = value
 
-            # ── Back in event loop — no preemption ────────────────────────────
-            prepared.values[nid] = value
+                if node.kind == "primitive" and node.operator in _LAZY_SEQUENCE_OPERATORS:
+                    self.cache(prepared, nid, value)
+                    for i, item in enumerate(value):
+                        self.cache_sequence_item(prepared, nid, i, item)
+                else:
+                    self.cache(prepared, nid, value)
 
-            # Cache the result (writes tqdm + store; safe: event-loop thread only).
-            if node.kind == "primitive" and node.operator in _LAZY_SEQUENCE_OPERATORS:
-                self.cache(prepared, nid, value)
-                for i, item in enumerate(value):
-                    self.cache_sequence_item(prepared, nid, i, item)
-            else:
-                self.cache(prepared, nid, value)
+                new_ready: list[NodeId] = []
+                for child_id in dependents[nid]:
+                    pending[child_id] -= 1
+                    if pending[child_id] == 0:
+                        new_ready.append(child_id)
 
-            # Launch newly-ready children.
-            new_ready: list[NodeId] = []
-            for child_id in dependents[nid]:
-                pending[child_id] -= 1
-                if pending[child_id] == 0:
-                    new_ready.append(child_id)
+                active += len(new_ready) - 1
+                for child_id in new_ready:
+                    asyncio.create_task(eval_node(child_id))
 
-            active += len(new_ready) - 1  # add children, subtract self (no preemption)
-            for child_id in new_ready:
-                asyncio.create_task(eval_node(child_id))
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+                active -= 1
 
             if active == 0:
                 done_event.set()
@@ -499,6 +502,9 @@ class LazyExecutionStrategy(ExecutionStrategy):
             asyncio.create_task(eval_node(nid))
 
         await done_event.wait()
+
+        if first_error is not None:
+            raise first_error
 
     # ── End async executor ───────────────────────────────────────────────────────────────────
 
