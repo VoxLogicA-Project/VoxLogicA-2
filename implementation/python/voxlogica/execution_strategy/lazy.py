@@ -54,6 +54,15 @@ def _default_max_concurrency() -> int:
 
 _MAX_CONCURRENCY = _default_max_concurrency()
 
+# Dynamic DAG expansion (issue #22): when a runtime-valued for-loop's iterable is
+# computed, unroll its body into one DAG node per element and splice them into the
+# live scheduler, instead of running the body sequentially in the for_loop kernel.
+# Disable with VOXLOGICA_DYNAMIC_EXPANSION=0 to fall back to the sequential kernel.
+_DYNAMIC_EXPANSION = os.environ.get("VOXLOGICA_DYNAMIC_EXPANSION", "1") != "0"
+
+# Operators eligible for dynamic expansion (closure-over-sequence form: args = (iterable, closure)).
+_DYNAMIC_EXPANSION_OPERATORS = {"for_loop", "default.for_loop"}
+
 # Module-level thread pool: workers call ITK kernels (GIL released → true parallelism).
 # Sized to the concurrency cap so queued futures don't pin more worker threads than
 # we allow to run.
@@ -389,6 +398,71 @@ class LazyExecutionStrategy(ExecutionStrategy):
             return self.results_database.has(nid)
         return False
 
+    # ── Dynamic DAG expansion (issue #22) ────────────────────────────────────────────────────
+
+    def _funcval_from_spec(self, spec: dict) -> Any:
+        """Rebuild a reduce-time FunctionVal from a serialized function_capture spec."""
+        from voxlogica.reducer import Environment, OperationVal, FunctionVal
+
+        env = Environment({})
+        for name, node_id in dict(spec.get("captures", {})).items():
+            env = env.bind(name, OperationVal(node_id))
+        for name, nested in dict(spec.get("functions", {})).items():
+            env = env.bind(name, self._funcval_from_spec(nested))
+        return FunctionVal(env, list(spec.get("parameters", [])), parse_expression_content(str(spec["body"])))
+
+    def _reduce_env_from_closure(self, node: NodeSpec) -> Any:
+        """Reconstruct the closure's reduce-time environment (captures + function captures)."""
+        from voxlogica.reducer import Environment, OperationVal
+
+        env = Environment({})
+        for name, arg_id in zip(node.attrs.get("capture_names", []), node.args, strict=False):
+            env = env.bind(name, OperationVal(arg_id))
+        for name, spec in dict(node.attrs.get("function_captures", {})).items():
+            env = env.bind(name, self._funcval_from_spec(spec))
+        return env
+
+    def _expand_for_loop(self, prepared: PreparedPlan, nid: NodeId, node: NodeSpec):
+        """Unroll a for_loop node over its (already-computed) iterable.
+
+        Returns (seq_id, new_node_ids) where seq_id is a `sequence` node over the
+        per-element body reductions, or None if the loop cannot be expanded (then the
+        caller falls back to the sequential kernel). Newly created nodes are interned
+        into prepared.plan.nodes via a WorkPlan sharing that same dict.
+        """
+        from voxlogica.reducer import WorkPlan, OperationVal, reduce_expression, _create_constant_node, _plan_primitive_call
+        from voxlogica.lazy.ir import NodeSpec as _NodeSpec  # noqa: F401
+
+        iterable_id, closure_id = node.args[0], node.args[1]
+        items = prepared.values.get(iterable_id)
+        if items is None:
+            return None
+        try:
+            items = list(items)
+        except TypeError:
+            return None
+
+        closure_node = prepared.plan.nodes[closure_id]
+        if closure_node.kind != "closure":
+            return None
+        variable = str(closure_node.attrs.get("parameter", "arg"))
+        body_ast = parse_expression_content(str(closure_node.attrs.get("body", "")))
+        base_env = self._reduce_env_from_closure(closure_node)
+
+        wp = WorkPlan(nodes=prepared.plan.nodes, registry=self.registry,
+                      imported_namespaces=list(prepared.plan.imported_namespaces))
+        before = set(prepared.plan.nodes.keys())
+
+        body_ids: list[NodeId] = []
+        for item in items:
+            const_id = _create_constant_node(wp, item)
+            env = base_env.bind(variable, OperationVal(const_id))
+            body_ids.append(reduce_expression(env, wp, body_ast))
+
+        seq_id = _plan_primitive_call(wp, "sequence", tuple(body_ids), output_kind="sequence")
+        new_ids = set(prepared.plan.nodes.keys()) - before
+        return seq_id, new_ids
+
     def _compute_primitive(self, prepared: PreparedPlan, nid: NodeId) -> Any:
         """Evaluate a single primitive node whose dependencies are already in prepared.values.
 
@@ -480,32 +554,17 @@ class LazyExecutionStrategy(ExecutionStrategy):
                     queue.append(dep)
 
         # ── Step 2: build dependency graph over the nodes to compute ──────────
-        # dependents[p] = list of children waiting on p (only p in to_compute).
+        # dependents[p] = list of children waiting on p (only p in `scheduled`).
         dependents: dict[NodeId, list[NodeId]] = defaultdict(list)
-        pending: dict[NodeId, int] = {}  # remaining unsatisfied to_compute deps
-        # consumers[p] = how many to_compute nodes will read p's value (covers
+        pending: dict[NodeId, int] = {}  # remaining unsatisfied scheduled deps
+        # consumers[p] = how many scheduled nodes will read p's value (covers
         # both computed and cached-leaf deps). Once that many have completed, p
         # is no longer needed and its (possibly large) value is dropped from
         # prepared.values to bound peak memory on wide plans.
         consumers: dict[NodeId, int] = defaultdict(int)
-
-        for nid in to_compute:
-            all_deps = self._get_all_deps(prepared.plan.nodes[nid])
-            # Only deps that must still be computed gate readiness; cached-leaf
-            # deps are loaded on demand by the worker just before this node runs.
-            deps_needed = [d for d in all_deps if d in to_compute]
-            pending[nid] = len(deps_needed)
-            for dep in deps_needed:
-                dependents[dep].append(nid)
-            for dep in all_deps:
-                consumers[dep] += 1
-
-        ready = [nid for nid, count in pending.items() if count == 0]
-
-        if not to_compute or not ready:
-            return
-
-        # ── Step 3: async execution ───────────────────────────────────────────
+        # `scheduled` is the set of nodes the executor will compute. It starts as
+        # to_compute and grows as runtime loop expansion splices in new nodes.
+        scheduled: set[NodeId] = set(to_compute)
 
         first_error: BaseException | None = None
         loop = asyncio.get_running_loop()
@@ -516,8 +575,32 @@ class LazyExecutionStrategy(ExecutionStrategy):
         # by the worker count rather than the plan width. The worker count is
         # the concurrency cap; ITK kernels run in the thread pool. See #20.
         ready_queue: asyncio.LifoQueue[NodeId] = asyncio.LifoQueue()
-        for nid in ready:
-            ready_queue.put_nowait(nid)
+
+        def register(rid: NodeId) -> bool:
+            """Add one node to the dependency bookkeeping; return True if ready now.
+
+            A dependency gates readiness only if it is itself scheduled for
+            computation; deps already in prepared.values or available as cached
+            leaves (loaded on demand by the worker) do not gate.
+            """
+            cnt = 0
+            for dep in self._get_all_deps(prepared.plan.nodes[rid]):
+                consumers[dep] += 1
+                if dep in scheduled:
+                    cnt += 1
+                    dependents[dep].append(rid)
+            pending[rid] = cnt
+            return cnt == 0
+
+        for nid in to_compute:
+            if register(nid):
+                ready_queue.put_nowait(nid)
+
+        if ready_queue.empty():
+            return
+
+        # for_loop nodes awaiting their spliced `sequence` result: alias[for_loop] = seq_id.
+        alias: dict[NodeId, NodeId] = {}
 
         def finish(nid: NodeId, node: NodeSpec, value: Any) -> None:
             """Event-loop bookkeeping after a node's value is known."""
@@ -555,6 +638,37 @@ class LazyExecutionStrategy(ExecutionStrategy):
                 if pending[child_id] == 0:
                     ready_queue.put_nowait(child_id)
 
+        def try_expand(nid: NodeId, node: NodeSpec) -> bool:
+            """Dynamically unroll a for_loop node and splice the bodies into the
+            scheduler. Returns True if expanded (the node now awaits its spliced
+            `sequence` result), False to fall back to the sequential kernel."""
+            if not _DYNAMIC_EXPANSION or node.operator not in _DYNAMIC_EXPANSION_OPERATORS:
+                return False
+            if len(node.args) != 2:
+                return False
+            try:
+                result = self._expand_for_loop(prepared, nid, node)
+            except Exception:  # noqa: BLE001 — any failure falls back to the sequential kernel
+                result = None
+            if result is None:
+                return False
+            seq_id, new_ids = result
+            # Register every spliced node, then queue the ones that are ready.
+            scheduled.update(new_ids)
+            for rid in new_ids:
+                if register(rid):
+                    ready_queue.put_nowait(rid)
+            # The for_loop node now forwards the spliced sequence's value: wait on it.
+            alias[nid] = seq_id
+            consumers[seq_id] += 1
+            if seq_id in scheduled and seq_id not in prepared.values:
+                pending[nid] = 1
+                dependents[seq_id].append(nid)
+            else:
+                pending[nid] = 0
+                ready_queue.put_nowait(nid)
+            return True
+
         async def worker() -> None:
             nonlocal first_error
             while True:
@@ -562,20 +676,31 @@ class LazyExecutionStrategy(ExecutionStrategy):
                 try:
                     if first_error is None:
                         node = prepared.plan.nodes[nid]
-                        # Load any cached-leaf dependencies on demand, in the event
-                        # loop (keeps prepared.values single-writer). Missing deps
-                        # are exactly the cached subtrees pruned in Step 1.
-                        for dep in self._get_all_deps(node):
-                            if dep not in prepared.values:
-                                prepared.values[dep] = self.cache_lookup(prepared, dep)
-                        if node.kind == "constant":
-                            value = node.attrs.get("value")
-                        elif node.kind == "closure":
-                            value = self._build_runtime_closure_from_values_eager(prepared, node)
+                        if nid in alias:
+                            # Spliced for_loop: forward the sequence value, then free it.
+                            seq_id = alias.pop(nid)
+                            value = prepared.values[seq_id]
+                            finish(nid, node, value)
+                            prepared.values.pop(seq_id, None)
+                            if prepared.materialization_store is not None:
+                                prepared.materialization_store.forget(seq_id)
+                        elif node.kind == "primitive" and try_expand(nid, node):
+                            pass  # expanded; node will run again via its alias
                         else:
-                            # ITK kernel: run in thread pool (GIL released → real parallelism).
-                            value = await loop.run_in_executor(_executor, self._compute_primitive, prepared, nid)
-                        finish(nid, node, value)
+                            # Load any cached-leaf dependencies on demand, in the event
+                            # loop (keeps prepared.values single-writer). Missing deps
+                            # are exactly the cached subtrees pruned in Step 1.
+                            for dep in self._get_all_deps(node):
+                                if dep not in prepared.values:
+                                    prepared.values[dep] = self.cache_lookup(prepared, dep)
+                            if node.kind == "constant":
+                                value = node.attrs.get("value")
+                            elif node.kind == "closure":
+                                value = self._build_runtime_closure_from_values_eager(prepared, node)
+                            else:
+                                # ITK kernel: run in thread pool (GIL released → real parallelism).
+                                value = await loop.run_in_executor(_executor, self._compute_primitive, prepared, nid)
+                            finish(nid, node, value)
                 except Exception as exc:  # noqa: BLE001
                     if first_error is None:
                         first_error = exc
