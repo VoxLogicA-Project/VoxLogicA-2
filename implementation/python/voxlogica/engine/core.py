@@ -99,7 +99,12 @@ class ComputationEngine:
         self._pre_ready.clear()
         workers = [asyncio.create_task(self._worker()) for _ in range(self.max_concurrency)]
         try:
+            import os
             await self._ready.join()
+            if os.environ.get("VOXLOGICA_ENGINE_DEBUG") and any(
+                n not in self.table.values for n in self._scheduled
+            ):
+                self._dump_stuck()
         finally:
             for worker in workers:
                 worker.cancel()
@@ -254,7 +259,7 @@ class ComputationEngine:
                 else:
                     for dep in self._deps(nid):
                         if dep not in self.table.values:
-                            self.table.values[dep] = self.table.load(dep)
+                            self._rematerialize(dep)  # recompute deps evicted since gating
                     self.table.begin(nid)  # enforces the no-double-computation invariant
                     value = await self.executor.run(self.table, nid)
                     self._finish(nid, value)
@@ -300,6 +305,18 @@ class ComputationEngine:
                 if current in self._scheduled and self._pending.get(current, 0) == 0:
                     self._enqueue(current)  # re-offer at the higher priority
             frontier.extend(self._deps(current))
+
+    def _dump_stuck(self) -> None:
+        """Diagnostic: report scheduled nodes that never became ready."""
+        import sys
+        stuck = [n for n in self._scheduled if n not in self.table.values]
+        print(f"[stuck] qsize={self._ready.qsize()} scheduled={len(self._scheduled)} "
+              f"values={len(self.table.values)} stuck={len(stuck)} alias={len(self._alias)}", file=sys.stderr)
+        for nid in stuck[:12]:
+            node = self.table.nodes[nid]
+            unmet = [d[:8] for d in self._deps(nid) if d in self._scheduled and d not in self.table.values]
+            print(f"  {nid[:8]} op={node.operator} kind={node.kind} pending={self._pending.get(nid)} "
+                  f"alias={nid in self._alias} unmet={unmet}", file=sys.stderr)
 
     def _settle_node(self, nid: NodeId) -> None:
         """Resolve any queries whose goal node just materialized."""

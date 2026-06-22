@@ -1,6 +1,24 @@
 # Unified Computation Engine — design
 
-Status: proposal. Target branch line: `feat/unified-execution` → `incoming`.
+Status: design accepted; engine **work-in-progress** on `feat/unified-execution`,
+**not merged** (the proven `lazy` strategy remains the default and runs the study).
+
+Implemented: the `voxlogica/engine/` package — `NodeTable` (Merkle identity, tiered
+values, the enforced no-double-computation guard), `ComputationEngine` (priority
+scheduler, submit/await/prioritize), pure `Executor`, single-semantics `Expander`,
+`Query` handles, and an opt-in `EngineExecutionStrategy` (`VOXLOGICA_ENGINE=1`).
+
+Validated: single-query evaluation, the real-data oracle (matches `lazy` exactly),
+and nested runtime loops.
+
+Open bug (next session): a **multi-query scheduling deadlock**. When several goals
+are submitted in one batch and share subexpressions, a value evicted after one
+query's consumers finish can be needed by another query's not-yet-run node, leaving
+nodes that never materialize (queue drains, `query.result()` waits forever). The
+fix lives in cross-query consumer accounting / eviction guarding — the same hard
+class resolved for the `lazy` path (ready-gating, capture pinning, rematerialisation
+of evicted loop-invariants), now across queries. The `VOXLOGICA_ENGINE_DEBUG=1`
+diagnostic in `core.py` dumps the stuck frontier.
 
 ## 1. Vision — a computation base, not a database
 
