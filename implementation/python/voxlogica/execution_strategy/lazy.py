@@ -536,6 +536,15 @@ class LazyExecutionStrategy(ExecutionStrategy):
                 if pending[child_id] == 0:
                     ready_queue.put_nowait(child_id)
 
+            if os.environ.get("VOXLOGICA_DEBUG_MEM"):
+                self._dbg = getattr(self, "_dbg", 0) + 1
+                if self._dbg % 300 == 0:
+                    import sys as _sys, resource as _res
+                    rss = _res.getrusage(_res.RUSAGE_SELF).ru_maxrss // 1024
+                    sm = len(prepared.materialization_store._memory) if prepared.materialization_store else -1
+                    pq = prepared.materialization_store._persist_queue.qsize() if prepared.materialization_store else -1
+                    print(f"[mem] fin={self._dbg} values={len(prepared.values)} store_mem={sm} pq={pq} rss={rss}MB", file=_sys.stderr, flush=True)
+
         async def worker() -> None:
             nonlocal first_error
             while True:
