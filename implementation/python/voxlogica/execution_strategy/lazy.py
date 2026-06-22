@@ -437,12 +437,22 @@ class LazyExecutionStrategy(ExecutionStrategy):
         # dependents[p] = list of children that are waiting on p
         dependents: dict[NodeId, list[NodeId]] = defaultdict(list)
         pending: dict[NodeId, int] = {}  # remaining unsatisfied deps within to_compute
+        # consumers[p] = how many to_compute nodes will read p's value. Once that
+        # many have completed, p is no longer needed and its (possibly large) value
+        # is dropped from prepared.values to bound peak memory on wide plans.
+        consumers: dict[NodeId, int] = defaultdict(int)
 
         for nid in to_compute:
-            deps_needed = [d for d in self._get_all_deps(prepared.plan.nodes[nid]) if d in to_compute]
+            all_deps = self._get_all_deps(prepared.plan.nodes[nid])
+            deps_needed = [d for d in all_deps if d in to_compute]
             pending[nid] = len(deps_needed)
             for dep in deps_needed:
                 dependents[dep].append(nid)
+            for dep in all_deps:
+                consumers[dep] += 1
+
+        # Goal values must survive until run() reads them for side-effects.
+        goal_set = set(goal_ids)
 
         ready = [nid for nid, count in pending.items() if count == 0]
 
@@ -488,6 +498,15 @@ class LazyExecutionStrategy(ExecutionStrategy):
                     if self._progress is not None:
                         self._progress.set_postfix_str(node.operator, refresh=False)
                         self._progress.update(1)
+
+                # This node has now consumed its dependencies; free any whose
+                # last consumer has run (kept values stay live in the memo cache).
+                for dep in self._get_all_deps(node):
+                    remaining = consumers.get(dep, 0)
+                    if remaining > 0:
+                        consumers[dep] = remaining - 1
+                        if consumers[dep] == 0 and dep not in goal_set:
+                            prepared.values.pop(dep, None)
 
                 new_ready: list[NodeId] = []
                 for child_id in dependents[nid]:
