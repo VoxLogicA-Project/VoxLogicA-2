@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Sequence
 import logging
+import os
 
 from voxlogica.lazy import GoalSpec, NodeId, NodeSpec, SymbolicPlan
 from voxlogica.lazy.ir import OutputKind
@@ -43,6 +44,14 @@ logger = logging.getLogger(__name__)
 
 identifier = str
 Stack = list[tuple[str, str]]
+
+# A `for x in <iterable> do <body>` whose iterable is a compile-time-known constant
+# sequence of length <= this cap is expanded into one DAG node per element, so the
+# async executor can evaluate the bodies in parallel instead of running them
+# sequentially inside a single for_loop kernel. Longer literal lists, and all
+# range()/dir() iterables, fall back to the lazy for_loop node. Override with
+# VOXLOGICA_FOR_EXPANSION_CAP=0 to disable expansion entirely.
+_FOR_EXPANSION_CAP = int(os.environ.get("VOXLOGICA_FOR_EXPANSION_CAP", "4096"))
 
 _PRIMITIVE_OPERATOR_ALIASES: dict[str, str] = {
     "!": "not_compat",
@@ -608,6 +617,30 @@ def _reduce_map_call(
     )
 
 
+def _constant_sequence_elements(
+    work_plan: WorkPlan, node_id: NodeId
+) -> Optional[tuple[NodeId, ...]]:
+    """Return the element node ids if ``node_id`` is a sequence of constants.
+
+    A node qualifies when it is a ``sequence`` primitive (the form emitted for
+    array literals) whose every argument is a ``constant`` node. Returns ``None``
+    otherwise — including for ``range``/``dir`` sequences, whose elements are not
+    materialized as constant nodes at reduce time, so those loops stay lazy.
+    """
+    node = work_plan.nodes.get(node_id)
+    if node is None or node.kind != "primitive":
+        return None
+    if node.operator not in ("sequence", "default.sequence"):
+        return None
+    if node.kwargs:
+        return None
+    for arg_id in node.args:
+        arg = work_plan.nodes.get(arg_id)
+        if arg is None or arg.kind != "constant":
+            return None
+    return tuple(node.args)
+
+
 def reduce_expression(
     env: Environment,
     work_plan: WorkPlan,
@@ -755,6 +788,30 @@ def reduce_expression(
 
     if isinstance(expr, EFor):
         iterable_id = reduce_expression(env, work_plan, expr.iterable, current_stack)
+
+        # Expand the loop when the iterable is a compile-time-known constant
+        # sequence: bind the loop variable to each element's constant node and
+        # re-reduce the body, emitting one DAG node per element. Hash-consing
+        # dedupes subexpressions shared across iterations. See issue #20.
+        element_ids = _constant_sequence_elements(work_plan, iterable_id)
+        if element_ids is not None and 0 <= len(element_ids) <= _FOR_EXPANSION_CAP:
+            body_ids = tuple(
+                reduce_expression(
+                    env.bind(expr.variable, OperationVal(element_id)),
+                    work_plan,
+                    expr.body,
+                    current_stack,
+                )
+                for element_id in element_ids
+            )
+            return _plan_primitive_call(
+                work_plan,
+                identifier="sequence",
+                args=body_ids,
+                output_kind="sequence",
+                position=expr.position,
+            )
+
         closure_id = _create_closure_node(
             variable=expr.variable,
             expression=expr.body,

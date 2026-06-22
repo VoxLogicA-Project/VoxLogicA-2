@@ -220,6 +220,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
             prepared.materialization_store.put(nodeId, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
         prepared.completed_nodes.add(nodeId)
         if self._progress is not None:
+            self._progress.set_postfix_str(node.operator, refresh=False)
             self._progress.update(1)
 
     def cache_sequence_item(self, prepared: PreparedPlan, nodeId: NodeId, index:int, value:Any):
@@ -485,6 +486,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
                     # Still mark progress for constants and closures.
                     prepared.completed_nodes.add(nid)
                     if self._progress is not None:
+                        self._progress.set_postfix_str(node.operator, refresh=False)
                         self._progress.update(1)
 
                 new_ready: list[NodeId] = []
