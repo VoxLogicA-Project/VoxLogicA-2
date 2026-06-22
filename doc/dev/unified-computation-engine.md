@@ -86,6 +86,12 @@ descendants are pruned unless demanded elsewhere.
   recomputed concurrently (in-flight nodes are awaited, not duplicated).
 - **Monotonic DAG**: nodes are only added; values may be evicted (they are
   recomputable from the recipe) but identities are stable.
+- **No double computation (enforced)**: a node id is dispatched to the executor
+  at most once while unmaterialized. If the engine is ever about to start a
+  second computation for a hash that is already running or already materialized,
+  it **raises** rather than proceeding — the whole point of content addressing is
+  that this never happens, so a violation is a scheduler bug we want to catch
+  loudly, not absorb.
 
 ## 6. Public surface
 

@@ -94,7 +94,14 @@ class ExecutionEngine:
         self.primitives = primitives_loader or PrimitivesLoader()
         self.registry = self.primitives.registry
         self.storage = (storage_backend or get_storage())
-        self._strategy = LazyExecutionStrategy(self.registry, self.storage)
+        # The live computation engine is opt-in while it matures; the proven
+        # lazy strategy remains the default. See doc/dev/unified-computation-engine.md.
+        import os
+        if os.environ.get("VOXLOGICA_ENGINE") == "1":
+            from voxlogica.engine.strategy import EngineExecutionStrategy
+            self._strategy = EngineExecutionStrategy(self.registry, self.storage)
+        else:
+            self._strategy = LazyExecutionStrategy(self.registry, self.storage)
         self.default_strategy = self._strategy.name
         self._last_prepared: PreparedPlan | None = None
 
