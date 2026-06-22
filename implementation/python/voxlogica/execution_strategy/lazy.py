@@ -596,13 +596,19 @@ class LazyExecutionStrategy(ExecutionStrategy):
             cnt = 0
             for dep in self._get_all_deps(prepared.plan.nodes[rid]):
                 consumers[dep] += 1
-                # A dep gates readiness only if it is scheduled AND not yet
-                # produced. A scheduled dep already in prepared.values has its
-                # finish() behind us, so a dependent added now would never be
-                # released — treat it as satisfied.
-                if dep in scheduled and dep not in prepared.values:
-                    cnt += 1
-                    dependents[dep].append(rid)
+                if dep in prepared.values:
+                    continue  # already available
+                if dep in scheduled:
+                    if dep in prepared.completed_nodes:
+                        # Finished earlier and evicted; it will never release a
+                        # new dependent, so bring its value back instead of gating.
+                        # Pin it so a further expansion can reuse it without churn.
+                        rematerialize(dep)
+                        pinned.add(dep)
+                    else:
+                        cnt += 1
+                        dependents[dep].append(rid)
+                # else: a cached leaf, loaded on demand by the worker.
             pending[rid] = cnt
             return cnt == 0
 
@@ -616,6 +622,47 @@ class LazyExecutionStrategy(ExecutionStrategy):
 
         # for_loop nodes awaiting their spliced `sequence` result: alias[for_loop] = seq_id.
         alias: dict[NodeId, NodeId] = {}
+
+        def release(dep: NodeId) -> None:
+            """Drop one consumer of `dep`; evict its value once none remain."""
+            remaining = consumers.get(dep, 0)
+            if remaining > 0:
+                consumers[dep] = remaining - 1
+                if consumers[dep] == 0 and dep not in goal_set and dep not in pinned:
+                    prepared.values.pop(dep, None)
+                    if prepared.materialization_store is not None:
+                        prepared.materialization_store.forget(dep)
+
+        def rematerialize(dep: NodeId) -> Any:
+            """Recompute a node whose value was evicted but is needed again.
+
+            Dynamic expansion can splice a body that references, by id, a
+            loop-invariant node already finished and evicted earlier in the run.
+            Such a node will never finish again, so gating on it would deadlock;
+            instead we synchronously recompute it (in the event loop) and put it
+            back into prepared.values. Recursion bottoms out at live or constant
+            nodes; results are cheap for the loop-invariant subexpressions that
+            trigger this (constants, small scalars), occasionally an image.
+            """
+            if dep in prepared.values:
+                return prepared.values[dep]
+            cached = self.cache_lookup(prepared, dep)
+            if cached is not None:
+                prepared.values[dep] = cached
+                return cached
+            dn = prepared.plan.nodes[dep]
+            if dn.kind == "constant":
+                value = dn.attrs.get("value")
+            elif dn.kind == "closure":
+                for child in self._get_all_deps(dn):
+                    rematerialize(child)
+                value = self._build_runtime_closure_from_values_eager(prepared, dn)
+            else:
+                for child in self._get_all_deps(dn):
+                    rematerialize(child)
+                value = self._compute_primitive(prepared, dep)
+            prepared.values[dep] = value
+            return value
 
         def finish(nid: NodeId, node: NodeSpec, value: Any) -> None:
             """Event-loop bookkeeping after a node's value is known."""
@@ -639,13 +686,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
             # consumer has now run, from both prepared.values and the memo tier,
             # so peak memory tracks the live frontier rather than the whole plan.
             for dep in self._get_all_deps(node):
-                remaining = consumers.get(dep, 0)
-                if remaining > 0:
-                    consumers[dep] = remaining - 1
-                    if consumers[dep] == 0 and dep not in goal_set and dep not in pinned:
-                        prepared.values.pop(dep, None)
-                        if prepared.materialization_store is not None:
-                            prepared.materialization_store.forget(dep)
+                release(dep)
 
             # Enable children whose dependencies are now all satisfied.
             for child_id in dependents[nid]:
@@ -697,9 +738,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
                             seq_id = alias.pop(nid)
                             value = prepared.values[seq_id]
                             finish(nid, node, value)
-                            prepared.values.pop(seq_id, None)
-                            if prepared.materialization_store is not None:
-                                prepared.materialization_store.forget(seq_id)
+                            release(seq_id)  # the for_loop was seq_id's consumer
                         elif node.kind == "primitive" and try_expand(nid, node):
                             pass  # expanded; node will run again via its alias
                         else:
