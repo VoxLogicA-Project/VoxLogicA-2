@@ -565,6 +565,16 @@ class LazyExecutionStrategy(ExecutionStrategy):
         # `scheduled` is the set of nodes the executor will compute. It starts as
         # to_compute and grows as runtime loop expansion splices in new nodes.
         scheduled: set[NodeId] = set(to_compute)
+        # `pinned` values must not be evicted: a closure holds its captured nodes
+        # by id, and a for_loop re-reads those captures when it is expanded — which
+        # can happen long after the capture's last ordinary consumer has run.
+        pinned: set[NodeId] = set()
+
+        def pin_closures(node_ids) -> None:
+            for cid in node_ids:
+                cnode = prepared.plan.nodes.get(cid)
+                if cnode is not None and cnode.kind == "closure":
+                    pinned.update(self._get_all_deps(cnode))
 
         first_error: BaseException | None = None
         loop = asyncio.get_running_loop()
@@ -586,12 +596,17 @@ class LazyExecutionStrategy(ExecutionStrategy):
             cnt = 0
             for dep in self._get_all_deps(prepared.plan.nodes[rid]):
                 consumers[dep] += 1
-                if dep in scheduled:
+                # A dep gates readiness only if it is scheduled AND not yet
+                # produced. A scheduled dep already in prepared.values has its
+                # finish() behind us, so a dependent added now would never be
+                # released — treat it as satisfied.
+                if dep in scheduled and dep not in prepared.values:
                     cnt += 1
                     dependents[dep].append(rid)
             pending[rid] = cnt
             return cnt == 0
 
+        pin_closures(to_compute)
         for nid in to_compute:
             if register(nid):
                 ready_queue.put_nowait(nid)
@@ -627,7 +642,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
                 remaining = consumers.get(dep, 0)
                 if remaining > 0:
                     consumers[dep] = remaining - 1
-                    if consumers[dep] == 0 and dep not in goal_set:
+                    if consumers[dep] == 0 and dep not in goal_set and dep not in pinned:
                         prepared.values.pop(dep, None)
                         if prepared.materialization_store is not None:
                             prepared.materialization_store.forget(dep)
@@ -655,6 +670,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
             seq_id, new_ids = result
             # Register every spliced node, then queue the ones that are ready.
             scheduled.update(new_ids)
+            pin_closures(new_ids)
             for rid in new_ids:
                 if register(rid):
                     ready_queue.put_nowait(rid)
