@@ -694,7 +694,15 @@ def reduce_expression(
         if expr.identifier in {"map", "default.map"} and len(expr.arguments) == 2:
             return _reduce_map_call(env, work_plan, expr, current_stack)
 
-        if expr.identifier in _PRIMITIVE_OPERATOR_ALIASES:
+        # A user-defined function shadows the primitive alias table: resolve it
+        # through the environment below, exactly as the runtime closure path does.
+        # Without this guard the reduce path would force e.g. `!` to the scalar
+        # `not_compat` even where compat.imgql defines `let !(a) = not(a)`, so an
+        # image `!(region)` would compile to a scalar not and feed a bool into
+        # downstream image kernels (e.g. dt). See issue #20.
+        if expr.identifier in _PRIMITIVE_OPERATOR_ALIASES and not isinstance(
+            env.try_find(expr.identifier), FunctionVal
+        ):
             args_ids = tuple(
                 reduce_expression(env, work_plan, arg, current_stack)
                 for arg in expr.arguments
