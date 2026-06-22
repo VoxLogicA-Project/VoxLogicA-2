@@ -485,83 +485,84 @@ class LazyExecutionStrategy(ExecutionStrategy):
             return
 
         # ── Step 4: async execution ───────────────────────────────────────────
-        active = len(ready)
-        first_error: BaseException | None = None
-        done_event = asyncio.Event()
-        if active == 0:
-            done_event.set()
+        if not ready:
             return
 
+        first_error: BaseException | None = None
         loop = asyncio.get_running_loop()
-        # Bound concurrent kernel execution: caps peak memory (in-flight working
-        # sets + results awaiting persistence). See _default_max_concurrency.
-        sem = asyncio.Semaphore(_MAX_CONCURRENCY)
 
-        async def eval_node(nid: NodeId) -> None:
-            nonlocal active, first_error
-            node = prepared.plan.nodes[nid]
-            try:
-                if node.kind == "constant":
-                    value = node.attrs.get("value")
-                elif node.kind == "closure":
-                    value = self._build_runtime_closure_from_values_eager(prepared, node)
-                else:
-                    # Primitive: run in thread pool so ITK can use all cores (GIL released).
-                    async with sem:
-                        value = await loop.run_in_executor(_executor, self._compute_primitive, prepared, nid)
-
-                # ── Back in event loop — no preemption ────────────────────────
-                prepared.values[nid] = value
-
-                # Closures are not serialisable; constants are trivial. Only cache primitives.
-                if node.kind == "primitive":
-                    if node.operator in _LAZY_SEQUENCE_OPERATORS:
-                        self.cache(prepared, nid, value)
-                        for i, item in enumerate(value):
-                            self.cache_sequence_item(prepared, nid, i, item)
-                    else:
-                        self.cache(prepared, nid, value)
-                else:
-                    # Still mark progress for constants and closures.
-                    prepared.completed_nodes.add(nid)
-                    if self._progress is not None:
-                        self._progress.set_postfix_str(node.operator, refresh=False)
-                        self._progress.update(1)
-
-                # This node has now consumed its dependencies; free any whose
-                # last consumer has run. Drop the strong ref here and from the
-                # memo tier so peak memory tracks the live frontier, not the plan.
-                for dep in self._get_all_deps(node):
-                    remaining = consumers.get(dep, 0)
-                    if remaining > 0:
-                        consumers[dep] = remaining - 1
-                        if consumers[dep] == 0 and dep not in goal_set:
-                            prepared.values.pop(dep, None)
-                            if prepared.materialization_store is not None:
-                                prepared.materialization_store.forget(dep)
-
-                new_ready: list[NodeId] = []
-                for child_id in dependents[nid]:
-                    pending[child_id] -= 1
-                    if pending[child_id] == 0:
-                        new_ready.append(child_id)
-
-                active += len(new_ready) - 1
-                for child_id in new_ready:
-                    asyncio.create_task(eval_node(child_id))
-
-            except Exception as exc:
-                if first_error is None:
-                    first_error = exc
-                active -= 1
-
-            if active == 0:
-                done_event.set()
-
+        # LIFO ready queue + a fixed pool of workers. LIFO drives each pipeline
+        # depth-first to completion before spreading out, so the live (computed
+        # but not-yet-consumed) frontier — and thus peak memory — stays bounded
+        # by the worker count rather than the plan width. The worker count is
+        # the concurrency cap; ITK kernels run in the thread pool. See #20.
+        ready_queue: asyncio.LifoQueue[NodeId] = asyncio.LifoQueue()
         for nid in ready:
-            asyncio.create_task(eval_node(nid))
+            ready_queue.put_nowait(nid)
 
-        await done_event.wait()
+        def finish(nid: NodeId, node: NodeSpec, value: Any) -> None:
+            """Event-loop bookkeeping after a node's value is known."""
+            prepared.values[nid] = value
+
+            if node.kind == "primitive":
+                if node.operator in _LAZY_SEQUENCE_OPERATORS:
+                    self.cache(prepared, nid, value)
+                    for i, item in enumerate(value):
+                        self.cache_sequence_item(prepared, nid, i, item)
+                else:
+                    self.cache(prepared, nid, value)
+            else:
+                # Constants/closures are not persisted; just record progress.
+                prepared.completed_nodes.add(nid)
+                if self._progress is not None:
+                    self._progress.set_postfix_str(node.operator, refresh=False)
+                    self._progress.update(1)
+
+            # This node has consumed its dependencies; free any whose last
+            # consumer has now run, from both prepared.values and the memo tier,
+            # so peak memory tracks the live frontier rather than the whole plan.
+            for dep in self._get_all_deps(node):
+                remaining = consumers.get(dep, 0)
+                if remaining > 0:
+                    consumers[dep] = remaining - 1
+                    if consumers[dep] == 0 and dep not in goal_set:
+                        prepared.values.pop(dep, None)
+                        if prepared.materialization_store is not None:
+                            prepared.materialization_store.forget(dep)
+
+            # Enable children whose dependencies are now all satisfied.
+            for child_id in dependents[nid]:
+                pending[child_id] -= 1
+                if pending[child_id] == 0:
+                    ready_queue.put_nowait(child_id)
+
+        async def worker() -> None:
+            nonlocal first_error
+            while True:
+                nid = await ready_queue.get()
+                try:
+                    if first_error is None:
+                        node = prepared.plan.nodes[nid]
+                        if node.kind == "constant":
+                            value = node.attrs.get("value")
+                        elif node.kind == "closure":
+                            value = self._build_runtime_closure_from_values_eager(prepared, node)
+                        else:
+                            # ITK kernel: run in thread pool (GIL released → real parallelism).
+                            value = await loop.run_in_executor(_executor, self._compute_primitive, prepared, nid)
+                        finish(nid, node, value)
+                except Exception as exc:  # noqa: BLE001
+                    if first_error is None:
+                        first_error = exc
+                finally:
+                    ready_queue.task_done()
+
+        workers = [asyncio.create_task(worker()) for _ in range(_MAX_CONCURRENCY)]
+        try:
+            await ready_queue.join()
+        finally:
+            for w in workers:
+                w.cancel()
 
         if first_error is not None:
             raise first_error
