@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable
 import inspect
 import json
+import os
 import pickle
 import time
 import traceback
@@ -30,9 +31,33 @@ from voxlogica.value_model import adapt_runtime_value
 from voxlogica.pod_codec import encode_for_storage
 from voxlogica.lazy.hash import hash_sequence_item
 
+def _default_max_concurrency() -> int:
+    """Max primitive kernels running concurrently in the async executor.
+
+    ITK kernels are internally multithreaded, so a handful already saturate the
+    CPU; the cap's real job is to bound peak memory. Each in-flight image kernel
+    holds a large working set and produces a result that the (single) persistence
+    thread must write to disk before the memo cache can evict it. Too many
+    concurrent producers outrun persistence and the un-evictable results pile up
+    until OOM. Default to the core count; override with VOXLOGICA_MAX_CONCURRENCY.
+    """
+    raw = os.environ.get("VOXLOGICA_MAX_CONCURRENCY")
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return os.cpu_count() or 8
+
+
+_MAX_CONCURRENCY = _default_max_concurrency()
+
 # Module-level thread pool: workers call ITK kernels (GIL released → true parallelism).
-# max_workers=None → Python default: min(32, cpu_count + 4).
-_executor = ThreadPoolExecutor(max_workers=None)
+# Sized to the concurrency cap so queued futures don't pin more worker threads than
+# we allow to run.
+_executor = ThreadPoolExecutor(max_workers=_MAX_CONCURRENCY)
 
 _LAZY_SEQUENCE_OPERATORS = {
     "default.map", 
@@ -468,6 +493,9 @@ class LazyExecutionStrategy(ExecutionStrategy):
             return
 
         loop = asyncio.get_running_loop()
+        # Bound concurrent kernel execution: caps peak memory (in-flight working
+        # sets + results awaiting persistence). See _default_max_concurrency.
+        sem = asyncio.Semaphore(_MAX_CONCURRENCY)
 
         async def eval_node(nid: NodeId) -> None:
             nonlocal active, first_error
@@ -479,7 +507,8 @@ class LazyExecutionStrategy(ExecutionStrategy):
                     value = self._build_runtime_closure_from_values_eager(prepared, node)
                 else:
                     # Primitive: run in thread pool so ITK can use all cores (GIL released).
-                    value = await loop.run_in_executor(_executor, self._compute_primitive, prepared, nid)
+                    async with sem:
+                        value = await loop.run_in_executor(_executor, self._compute_primitive, prepared, nid)
 
                 # ── Back in event loop — no preemption ────────────────────────
                 prepared.values[nid] = value
