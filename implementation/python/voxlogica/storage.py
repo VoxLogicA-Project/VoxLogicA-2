@@ -33,6 +33,10 @@ STORE_SCHEMA_VERSION = 2
 # Maximum number of value-bearing entries kept in the in-memory cache tier.
 # Overridable via VOXLOGICA_MEMORY_CACHE_CAPACITY for memory-heavy runs.
 DEFAULT_MEMORY_CACHE_CAPACITY = 1024
+# Maximum number of results queued for async persistence before producers block.
+# Bounds peak memory: each queued result pins its (possibly large) value until
+# the persistence thread writes it. Overridable via VOXLOGICA_PERSIST_QUEUE_MAX.
+DEFAULT_PERSIST_QUEUE_MAX = 64
 _RESULTS_TABLE_COLUMNS = frozenset(
     {
         "node_id",
@@ -70,6 +74,18 @@ def _default_memory_capacity() -> int:
         if value > 0:
             return value
     return DEFAULT_MEMORY_CACHE_CAPACITY
+
+
+def _default_persist_queue_max() -> int:
+    raw = os.environ.get("VOXLOGICA_PERSIST_QUEUE_MAX")
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return DEFAULT_PERSIST_QUEUE_MAX
 
 
 def results_store_paths(db_path: str | Path | None = None) -> tuple[Path, Path]:
@@ -465,7 +481,9 @@ class MaterializationStore:
         self._read_through = read_through
         self._write_through = write_through
         self._lock = threading.RLock()
-        self._persist_queue: queue.Queue[tuple[str, Any, dict[str, Any]]] = queue.Queue()
+        self._persist_queue: queue.Queue[tuple[str, Any, dict[str, Any]]] = queue.Queue(
+            maxsize=_default_persist_queue_max()
+        )
         self._persist_stop = threading.Event()
         self._persist_thread: threading.Thread | None = None
         if self._backend is not None and self._write_through:
@@ -529,6 +547,7 @@ class MaterializationStore:
             return value
 
     def put(self, node_id: str, expression: Any, dependencies: list[str], value: Any, metadata: dict[str, Any] | None = None) -> None:
+        enqueue: tuple[str, Any, dict[str, Any]] | None = None
         with self._lock:
             record_metadata = dict(metadata or {})
             val,reason,encoded = can_serialize_value(value)
@@ -548,7 +567,23 @@ class MaterializationStore:
                 return
             record_metadata["persisted"] = "pending"
             self._remember(node_id, value)
-            self._persist_queue.put((node_id, value, record_metadata))
+            enqueue = (node_id, value, record_metadata)
+        # Enqueue outside the lock: the bounded queue blocks the producer when
+        # full (backpressure that bounds memory), and the persistence thread
+        # needs the lock to mark items done — holding it here would deadlock.
+        if enqueue is not None:
+            self._persist_queue.put(enqueue)
+
+    def forget(self, node_id: str) -> None:
+        """Drop a value from the in-memory tier once the caller no longer needs it.
+
+        Used by the executor to release intermediates whose every consumer has
+        run. The bookkeeping record is retained (so completed_nodes stays
+        correct); a persisted value remains reloadable from disk, and an
+        un-persisted one is simply recomputed if a later run needs it.
+        """
+        with self._lock:
+            self._memory.pop(node_id, None)
 
     # def fail(self, node_id: str, message: str) -> None:
     #     with self._lock:

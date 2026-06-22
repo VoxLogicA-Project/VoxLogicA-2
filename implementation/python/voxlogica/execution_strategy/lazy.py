@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable
 import inspect
 import json
+import os
 import pickle
 import time
 import traceback
@@ -30,9 +31,33 @@ from voxlogica.value_model import adapt_runtime_value
 from voxlogica.pod_codec import encode_for_storage
 from voxlogica.lazy.hash import hash_sequence_item
 
+def _default_max_concurrency() -> int:
+    """Max primitive kernels running concurrently in the async executor.
+
+    ITK kernels are internally multithreaded, so a handful already saturate the
+    CPU; the cap's real job is to bound peak memory. Each in-flight image kernel
+    holds a large working set and produces a result that the (single) persistence
+    thread must write to disk before the memo cache can evict it. Too many
+    concurrent producers outrun persistence and the un-evictable results pile up
+    until OOM. Default to the core count; override with VOXLOGICA_MAX_CONCURRENCY.
+    """
+    raw = os.environ.get("VOXLOGICA_MAX_CONCURRENCY")
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return os.cpu_count() or 8
+
+
+_MAX_CONCURRENCY = _default_max_concurrency()
+
 # Module-level thread pool: workers call ITK kernels (GIL released → true parallelism).
-# max_workers=None → Python default: min(32, cpu_count + 4).
-_executor = ThreadPoolExecutor(max_workers=None)
+# Sized to the concurrency cap so queued futures don't pin more worker threads than
+# we allow to run.
+_executor = ThreadPoolExecutor(max_workers=_MAX_CONCURRENCY)
 
 _LAZY_SEQUENCE_OPERATORS = {
     "default.map", 
@@ -214,12 +239,15 @@ class LazyExecutionStrategy(ExecutionStrategy):
         node = prepared.plan.nodes[nodeId]
         expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
         dependencies = list(node.args) + [value_id for _, value_id in node.kwargs]
-        if self.results_database is not None:
-            self.results_database.put_success(nodeId, value, metadata={"source": "runtime", "operator": node.operator})
+        # Persist only through the materialization store (its backend is the
+        # results database). A second synchronous results_database.put_success
+        # here would double-write and, for large images, block the event loop on
+        # disk I/O — starving the executor of work. See issue #19.
         if prepared.materialization_store is not None:
             prepared.materialization_store.put(nodeId, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
         prepared.completed_nodes.add(nodeId)
         if self._progress is not None:
+            self._progress.set_postfix_str(node.operator, refresh=False)
             self._progress.update(1)
 
     def cache_sequence_item(self, prepared: PreparedPlan, nodeId: NodeId, index:int, value:Any):
@@ -227,8 +255,6 @@ class LazyExecutionStrategy(ExecutionStrategy):
         id = hash_sequence_item(nodeId,index)
         expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
         dependencies = list(node.args) + [value_id for _, value_id in node.kwargs]
-        if self.results_database is not None:
-            self.results_database.put_success(id, value, metadata={"source": "runtime", "operator": node.operator, "index": id})
         prepared.completed_nodes.add(nodeId)
         if self._progress is not None:
             self._progress.update(1)
@@ -350,6 +376,19 @@ class LazyExecutionStrategy(ExecutionStrategy):
             deps.update(self._extract_function_spec_node_ids(spec))
         return deps
 
+    def _cached_exists(self, prepared: PreparedPlan, nid: NodeId) -> bool:
+        """Cheap existence check for a previously-persisted node value.
+
+        Must not materialize the value (that would defeat lazy loading). Only
+        consults the in-RAM memo tier and the backend's existence index.
+        """
+        store = prepared.materialization_store
+        if store is not None and nid in store._memory:
+            return True
+        if self.results_database is not None:
+            return self.results_database.has(nid)
+        return False
+
     def _compute_primitive(self, prepared: PreparedPlan, nid: NodeId) -> Any:
         """Evaluate a single primitive node whose dependencies are already in prepared.values.
 
@@ -404,111 +443,151 @@ class LazyExecutionStrategy(ExecutionStrategy):
         """Async task-graph executor: evaluate all nodes reachable from goal_ids in parallel.
 
         Strategy:
-          1. BFS from goals to find all reachable nodes.
-          2. Pre-populate from cache; exclude already-known nodes.
-          3. Build a reverse-edge dependency graph over nodes still needing computation.
-          4. Seed with zero-in-degree nodes; when a node finishes, decrement its dependents
+          1. BFS from goals to find nodes to compute, pruning at cached subtrees
+             (cached values are loaded lazily, never bulk-pre-loaded into RAM).
+          2. Build a reverse-edge dependency graph over nodes still needing computation.
+          3. Seed with zero-in-degree nodes; when a node finishes, decrement its dependents
              and launch any that become ready.  ITK kernels run in a ThreadPoolExecutor
              (GIL released → true CPU parallelism).  All bookkeeping stays in the event loop.
         """
-        # ── Step 1: find reachable nodes ──────────────────────────────────────
-        reachable: set[NodeId] = set()
+        # Goal values must survive until run() reads them for side-effects.
+        goal_set = set(goal_ids)
+
+        # ── Step 1: find nodes to compute, pruning at cached subtrees ─────────
+        # BFS from the goals, but stop descending whenever a node's value is
+        # already persisted: we will load it lazily on demand and never need its
+        # dependencies. This keeps a re-run from walking (and bulk-loading) the
+        # entire historical DAG, which would blow up memory on wide plans.
+        to_compute: set[NodeId] = set()
+        cached_leaves: set[NodeId] = set()
         queue = list(goal_ids)
+        seen: set[NodeId] = set()
         while queue:
             nid = queue.pop()
-            if nid in reachable:
+            if nid in seen:
                 continue
-            reachable.add(nid)
+            seen.add(nid)
+            if nid in prepared.values:
+                continue
+            # A goal must be materialized for its side-effect even if cached, so
+            # it is always computed/loaded as a graph node (never a pruned leaf).
+            if nid not in goal_set and self._cached_exists(prepared, nid):
+                cached_leaves.add(nid)
+                continue
+            to_compute.add(nid)
             for dep in self._get_all_deps(prepared.plan.nodes[nid]):
-                if dep not in reachable:
+                if dep not in seen:
                     queue.append(dep)
 
-        # ── Step 2: pre-populate from cache ───────────────────────────────────
-        for nid in list(reachable):
-            if nid not in prepared.values:
-                value = self.cache_lookup(prepared, nid)
-                if value is not None:
-                    prepared.values[nid] = value
-
-        # ── Step 3: build dependency graph for uncached nodes ─────────────────
-        to_compute: set[NodeId] = {nid for nid in reachable if nid not in prepared.values}
-
-        # dependents[p] = list of children that are waiting on p
+        # ── Step 2: build dependency graph over the nodes to compute ──────────
+        # dependents[p] = list of children waiting on p (only p in to_compute).
         dependents: dict[NodeId, list[NodeId]] = defaultdict(list)
-        pending: dict[NodeId, int] = {}  # remaining unsatisfied deps within to_compute
+        pending: dict[NodeId, int] = {}  # remaining unsatisfied to_compute deps
+        # consumers[p] = how many to_compute nodes will read p's value (covers
+        # both computed and cached-leaf deps). Once that many have completed, p
+        # is no longer needed and its (possibly large) value is dropped from
+        # prepared.values to bound peak memory on wide plans.
+        consumers: dict[NodeId, int] = defaultdict(int)
 
         for nid in to_compute:
-            deps_needed = [d for d in self._get_all_deps(prepared.plan.nodes[nid]) if d in to_compute]
+            all_deps = self._get_all_deps(prepared.plan.nodes[nid])
+            # Only deps that must still be computed gate readiness; cached-leaf
+            # deps are loaded on demand by the worker just before this node runs.
+            deps_needed = [d for d in all_deps if d in to_compute]
             pending[nid] = len(deps_needed)
             for dep in deps_needed:
                 dependents[dep].append(nid)
+            for dep in all_deps:
+                consumers[dep] += 1
 
         ready = [nid for nid, count in pending.items() if count == 0]
 
-        if not to_compute:
+        if not to_compute or not ready:
             return
 
-        # ── Step 4: async execution ───────────────────────────────────────────
-        active = len(ready)
+        # ── Step 3: async execution ───────────────────────────────────────────
+
         first_error: BaseException | None = None
-        done_event = asyncio.Event()
-        if active == 0:
-            done_event.set()
-            return
-
         loop = asyncio.get_running_loop()
 
-        async def eval_node(nid: NodeId) -> None:
-            nonlocal active, first_error
-            node = prepared.plan.nodes[nid]
-            try:
-                if node.kind == "constant":
-                    value = node.attrs.get("value")
-                elif node.kind == "closure":
-                    value = self._build_runtime_closure_from_values_eager(prepared, node)
-                else:
-                    # Primitive: run in thread pool so ITK can use all cores (GIL released).
-                    value = await loop.run_in_executor(_executor, self._compute_primitive, prepared, nid)
-
-                # ── Back in event loop — no preemption ────────────────────────
-                prepared.values[nid] = value
-
-                # Closures are not serialisable; constants are trivial. Only cache primitives.
-                if node.kind == "primitive":
-                    if node.operator in _LAZY_SEQUENCE_OPERATORS:
-                        self.cache(prepared, nid, value)
-                        for i, item in enumerate(value):
-                            self.cache_sequence_item(prepared, nid, i, item)
-                    else:
-                        self.cache(prepared, nid, value)
-                else:
-                    # Still mark progress for constants and closures.
-                    prepared.completed_nodes.add(nid)
-                    if self._progress is not None:
-                        self._progress.update(1)
-
-                new_ready: list[NodeId] = []
-                for child_id in dependents[nid]:
-                    pending[child_id] -= 1
-                    if pending[child_id] == 0:
-                        new_ready.append(child_id)
-
-                active += len(new_ready) - 1
-                for child_id in new_ready:
-                    asyncio.create_task(eval_node(child_id))
-
-            except Exception as exc:
-                if first_error is None:
-                    first_error = exc
-                active -= 1
-
-            if active == 0:
-                done_event.set()
-
+        # LIFO ready queue + a fixed pool of workers. LIFO drives each pipeline
+        # depth-first to completion before spreading out, so the live (computed
+        # but not-yet-consumed) frontier — and thus peak memory — stays bounded
+        # by the worker count rather than the plan width. The worker count is
+        # the concurrency cap; ITK kernels run in the thread pool. See #20.
+        ready_queue: asyncio.LifoQueue[NodeId] = asyncio.LifoQueue()
         for nid in ready:
-            asyncio.create_task(eval_node(nid))
+            ready_queue.put_nowait(nid)
 
-        await done_event.wait()
+        def finish(nid: NodeId, node: NodeSpec, value: Any) -> None:
+            """Event-loop bookkeeping after a node's value is known."""
+            prepared.values[nid] = value
+
+            if node.kind == "primitive":
+                if node.operator in _LAZY_SEQUENCE_OPERATORS:
+                    self.cache(prepared, nid, value)
+                    for i, item in enumerate(value):
+                        self.cache_sequence_item(prepared, nid, i, item)
+                else:
+                    self.cache(prepared, nid, value)
+            else:
+                # Constants/closures are not persisted; just record progress.
+                prepared.completed_nodes.add(nid)
+                if self._progress is not None:
+                    self._progress.set_postfix_str(node.operator, refresh=False)
+                    self._progress.update(1)
+
+            # This node has consumed its dependencies; free any whose last
+            # consumer has now run, from both prepared.values and the memo tier,
+            # so peak memory tracks the live frontier rather than the whole plan.
+            for dep in self._get_all_deps(node):
+                remaining = consumers.get(dep, 0)
+                if remaining > 0:
+                    consumers[dep] = remaining - 1
+                    if consumers[dep] == 0 and dep not in goal_set:
+                        prepared.values.pop(dep, None)
+                        if prepared.materialization_store is not None:
+                            prepared.materialization_store.forget(dep)
+
+            # Enable children whose dependencies are now all satisfied.
+            for child_id in dependents[nid]:
+                pending[child_id] -= 1
+                if pending[child_id] == 0:
+                    ready_queue.put_nowait(child_id)
+
+        async def worker() -> None:
+            nonlocal first_error
+            while True:
+                nid = await ready_queue.get()
+                try:
+                    if first_error is None:
+                        node = prepared.plan.nodes[nid]
+                        # Load any cached-leaf dependencies on demand, in the event
+                        # loop (keeps prepared.values single-writer). Missing deps
+                        # are exactly the cached subtrees pruned in Step 1.
+                        for dep in self._get_all_deps(node):
+                            if dep not in prepared.values:
+                                prepared.values[dep] = self.cache_lookup(prepared, dep)
+                        if node.kind == "constant":
+                            value = node.attrs.get("value")
+                        elif node.kind == "closure":
+                            value = self._build_runtime_closure_from_values_eager(prepared, node)
+                        else:
+                            # ITK kernel: run in thread pool (GIL released → real parallelism).
+                            value = await loop.run_in_executor(_executor, self._compute_primitive, prepared, nid)
+                        finish(nid, node, value)
+                except Exception as exc:  # noqa: BLE001
+                    if first_error is None:
+                        first_error = exc
+                finally:
+                    ready_queue.task_done()
+
+        workers = [asyncio.create_task(worker()) for _ in range(_MAX_CONCURRENCY)]
+        try:
+            await ready_queue.join()
+        finally:
+            for w in workers:
+                w.cancel()
 
         if first_error is not None:
             raise first_error
