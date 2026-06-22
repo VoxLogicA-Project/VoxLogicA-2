@@ -239,8 +239,10 @@ class LazyExecutionStrategy(ExecutionStrategy):
         node = prepared.plan.nodes[nodeId]
         expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
         dependencies = list(node.args) + [value_id for _, value_id in node.kwargs]
-        if self.results_database is not None:
-            self.results_database.put_success(nodeId, value, metadata={"source": "runtime", "operator": node.operator})
+        # Persist only through the materialization store (its backend is the
+        # results database). A second synchronous results_database.put_success
+        # here would double-write and, for large images, block the event loop on
+        # disk I/O — starving the executor of work. See issue #19.
         if prepared.materialization_store is not None:
             prepared.materialization_store.put(nodeId, expression, dependencies, value, metadata={"source": "runtime", "operator": node.operator})
         prepared.completed_nodes.add(nodeId)
@@ -253,8 +255,6 @@ class LazyExecutionStrategy(ExecutionStrategy):
         id = hash_sequence_item(nodeId,index)
         expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
         dependencies = list(node.args) + [value_id for _, value_id in node.kwargs]
-        if self.results_database is not None:
-            self.results_database.put_success(id, value, metadata={"source": "runtime", "operator": node.operator, "index": id})
         prepared.completed_nodes.add(nodeId)
         if self._progress is not None:
             self._progress.update(1)
@@ -529,13 +529,16 @@ class LazyExecutionStrategy(ExecutionStrategy):
                         self._progress.update(1)
 
                 # This node has now consumed its dependencies; free any whose
-                # last consumer has run (kept values stay live in the memo cache).
+                # last consumer has run. Drop the strong ref here and from the
+                # memo tier so peak memory tracks the live frontier, not the plan.
                 for dep in self._get_all_deps(node):
                     remaining = consumers.get(dep, 0)
                     if remaining > 0:
                         consumers[dep] = remaining - 1
                         if consumers[dep] == 0 and dep not in goal_set:
                             prepared.values.pop(dep, None)
+                            if prepared.materialization_store is not None:
+                                prepared.materialization_store.forget(dep)
 
                 new_ready: list[NodeId] = []
                 for child_id in dependents[nid]:
