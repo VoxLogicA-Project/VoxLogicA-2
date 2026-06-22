@@ -376,6 +376,19 @@ class LazyExecutionStrategy(ExecutionStrategy):
             deps.update(self._extract_function_spec_node_ids(spec))
         return deps
 
+    def _cached_exists(self, prepared: PreparedPlan, nid: NodeId) -> bool:
+        """Cheap existence check for a previously-persisted node value.
+
+        Must not materialize the value (that would defeat lazy loading). Only
+        consults the in-RAM memo tier and the backend's existence index.
+        """
+        store = prepared.materialization_store
+        if store is not None and nid in store._memory:
+            return True
+        if self.results_database is not None:
+            return self.results_database.has(nid)
+        return False
+
     def _compute_primitive(self, prepared: PreparedPlan, nid: NodeId) -> Any:
         """Evaluate a single primitive node whose dependencies are already in prepared.values.
 
@@ -430,45 +443,56 @@ class LazyExecutionStrategy(ExecutionStrategy):
         """Async task-graph executor: evaluate all nodes reachable from goal_ids in parallel.
 
         Strategy:
-          1. BFS from goals to find all reachable nodes.
-          2. Pre-populate from cache; exclude already-known nodes.
-          3. Build a reverse-edge dependency graph over nodes still needing computation.
-          4. Seed with zero-in-degree nodes; when a node finishes, decrement its dependents
+          1. BFS from goals to find nodes to compute, pruning at cached subtrees
+             (cached values are loaded lazily, never bulk-pre-loaded into RAM).
+          2. Build a reverse-edge dependency graph over nodes still needing computation.
+          3. Seed with zero-in-degree nodes; when a node finishes, decrement its dependents
              and launch any that become ready.  ITK kernels run in a ThreadPoolExecutor
              (GIL released → true CPU parallelism).  All bookkeeping stays in the event loop.
         """
-        # ── Step 1: find reachable nodes ──────────────────────────────────────
-        reachable: set[NodeId] = set()
+        # Goal values must survive until run() reads them for side-effects.
+        goal_set = set(goal_ids)
+
+        # ── Step 1: find nodes to compute, pruning at cached subtrees ─────────
+        # BFS from the goals, but stop descending whenever a node's value is
+        # already persisted: we will load it lazily on demand and never need its
+        # dependencies. This keeps a re-run from walking (and bulk-loading) the
+        # entire historical DAG, which would blow up memory on wide plans.
+        to_compute: set[NodeId] = set()
+        cached_leaves: set[NodeId] = set()
         queue = list(goal_ids)
+        seen: set[NodeId] = set()
         while queue:
             nid = queue.pop()
-            if nid in reachable:
+            if nid in seen:
                 continue
-            reachable.add(nid)
+            seen.add(nid)
+            if nid in prepared.values:
+                continue
+            # A goal must be materialized for its side-effect even if cached, so
+            # it is always computed/loaded as a graph node (never a pruned leaf).
+            if nid not in goal_set and self._cached_exists(prepared, nid):
+                cached_leaves.add(nid)
+                continue
+            to_compute.add(nid)
             for dep in self._get_all_deps(prepared.plan.nodes[nid]):
-                if dep not in reachable:
+                if dep not in seen:
                     queue.append(dep)
 
-        # ── Step 2: pre-populate from cache ───────────────────────────────────
-        for nid in list(reachable):
-            if nid not in prepared.values:
-                value = self.cache_lookup(prepared, nid)
-                if value is not None:
-                    prepared.values[nid] = value
-
-        # ── Step 3: build dependency graph for uncached nodes ─────────────────
-        to_compute: set[NodeId] = {nid for nid in reachable if nid not in prepared.values}
-
-        # dependents[p] = list of children that are waiting on p
+        # ── Step 2: build dependency graph over the nodes to compute ──────────
+        # dependents[p] = list of children waiting on p (only p in to_compute).
         dependents: dict[NodeId, list[NodeId]] = defaultdict(list)
-        pending: dict[NodeId, int] = {}  # remaining unsatisfied deps within to_compute
-        # consumers[p] = how many to_compute nodes will read p's value. Once that
-        # many have completed, p is no longer needed and its (possibly large) value
-        # is dropped from prepared.values to bound peak memory on wide plans.
+        pending: dict[NodeId, int] = {}  # remaining unsatisfied to_compute deps
+        # consumers[p] = how many to_compute nodes will read p's value (covers
+        # both computed and cached-leaf deps). Once that many have completed, p
+        # is no longer needed and its (possibly large) value is dropped from
+        # prepared.values to bound peak memory on wide plans.
         consumers: dict[NodeId, int] = defaultdict(int)
 
         for nid in to_compute:
             all_deps = self._get_all_deps(prepared.plan.nodes[nid])
+            # Only deps that must still be computed gate readiness; cached-leaf
+            # deps are loaded on demand by the worker just before this node runs.
             deps_needed = [d for d in all_deps if d in to_compute]
             pending[nid] = len(deps_needed)
             for dep in deps_needed:
@@ -476,17 +500,12 @@ class LazyExecutionStrategy(ExecutionStrategy):
             for dep in all_deps:
                 consumers[dep] += 1
 
-        # Goal values must survive until run() reads them for side-effects.
-        goal_set = set(goal_ids)
-
         ready = [nid for nid, count in pending.items() if count == 0]
 
-        if not to_compute:
+        if not to_compute or not ready:
             return
 
-        # ── Step 4: async execution ───────────────────────────────────────────
-        if not ready:
-            return
+        # ── Step 3: async execution ───────────────────────────────────────────
 
         first_error: BaseException | None = None
         loop = asyncio.get_running_loop()
@@ -552,6 +571,12 @@ class LazyExecutionStrategy(ExecutionStrategy):
                 try:
                     if first_error is None:
                         node = prepared.plan.nodes[nid]
+                        # Load any cached-leaf dependencies on demand, in the event
+                        # loop (keeps prepared.values single-writer). Missing deps
+                        # are exactly the cached subtrees pruned in Step 1.
+                        for dep in self._get_all_deps(node):
+                            if dep not in prepared.values:
+                                prepared.values[dep] = self.cache_lookup(prepared, dep)
                         if node.kind == "constant":
                             value = node.attrs.get("value")
                         elif node.kind == "closure":
