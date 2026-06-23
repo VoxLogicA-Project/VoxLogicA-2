@@ -28,9 +28,13 @@ class EngineExecutionStrategy:
 
     name = "engine"
 
-    def __init__(self, registry: PrimitiveRegistry | None = None, results_database: StorageBackend | None = None):
+    def __init__(self, registry: PrimitiveRegistry | None = None, results_database: StorageBackend | None = None,
+                 threads: int = 0, memory_mb: int | None = None, debug: bool = False):
         self.registry = registry or PrimitiveRegistry()
         self.results_database = results_database
+        self.threads = threads
+        self.memory_mb = memory_mb
+        self.debug = debug
 
     def compile(self, plan: SymbolicPlan) -> PreparedPlan:
         """Prepare a plan; the engine owns its own node table at run time."""
@@ -42,7 +46,9 @@ class EngineExecutionStrategy:
         """Submit goals, evaluate in parallel, then run their side effects."""
         started = time.time()
         plan = prepared.plan
-        engine = ComputationEngine(registry=self.registry, backend=self.results_database, progress=True)
+        engine = ComputationEngine(registry=self.registry, backend=self.results_database,
+                                   max_concurrency=self.threads, memory_mb=self.memory_mb,
+                                   progress=True, debug=self.debug)
         engine.adopt_plan(plan)
 
         target = plan.goals if goals is None else [g for g in plan.goals if g.id in set(goals)]

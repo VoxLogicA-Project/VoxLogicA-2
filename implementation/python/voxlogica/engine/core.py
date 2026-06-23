@@ -42,13 +42,15 @@ class ComputationEngine:
 
     def __init__(self, registry: PrimitiveRegistry | None = None,
                  backend: StorageBackend | None = None, max_concurrency: int = 0,
-                 progress: bool = False):
+                 memory_mb: int | None = None, progress: bool = False, debug: bool = False):
         self.registry = registry or PrimitiveRegistry()
         self.table = NodeTable(backend=backend)
-        self.executor = Executor(self.registry, max_concurrency or (os.cpu_count() or 8))
-        self.expander = Expander(self.table, self.registry)
         self.max_concurrency = max_concurrency or (os.cpu_count() or 8)
+        self.executor = Executor(self.registry, self.max_concurrency)
+        self.expander = Expander(self.table, self.registry)
+        self._memory_limit = memory_limit_bytes(memory_mb)
         self._show_progress = progress
+        self._debug = debug
         self._progress: tqdm | None = None
 
         # Scheduling state (event-loop owned).
@@ -60,7 +62,6 @@ class ComputationEngine:
         self._goals: set[NodeId] = set()
         # Nodes whose consumers are all done: evictable, oldest first, under pressure.
         self._releasable: OrderedDict[NodeId, None] = OrderedDict()
-        self._memory_limit = memory_limit_bytes()
         self._alias: dict[NodeId, NodeId] = {}
         self._waiters: dict[NodeId, list[Query]] = defaultdict(list)
         # The ready queue is created once the event loop is running; submissions
@@ -112,9 +113,7 @@ class ComputationEngine:
         workers = [asyncio.create_task(self._worker()) for _ in range(self.max_concurrency)]
         try:
             await self._ready.join()
-            if os.environ.get("VOXLOGICA_ENGINE_DEBUG") and any(
-                n not in self.table.completed for n in self._scheduled
-            ):
+            if self._debug and any(n not in self.table.completed for n in self._scheduled):
                 self._dump_stuck()
         finally:
             for worker in workers:

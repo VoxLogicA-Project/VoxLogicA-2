@@ -31,42 +31,8 @@ from voxlogica.value_model import adapt_runtime_value
 from voxlogica.pod_codec import encode_for_storage
 from voxlogica.lazy.hash import hash_sequence_item
 
-def _default_max_concurrency() -> int:
-    """Max primitive kernels running concurrently in the async executor.
-
-    ITK kernels are internally multithreaded, so a handful already saturate the
-    CPU; the cap's real job is to bound peak memory. Each in-flight image kernel
-    holds a large working set and produces a result that the (single) persistence
-    thread must write to disk before the memo cache can evict it. Too many
-    concurrent producers outrun persistence and the un-evictable results pile up
-    until OOM. Default to the core count; override with VOXLOGICA_MAX_CONCURRENCY.
-    """
-    raw = os.environ.get("VOXLOGICA_MAX_CONCURRENCY")
-    if raw:
-        try:
-            value = int(raw)
-        except ValueError:
-            value = 0
-        if value > 0:
-            return value
-    return os.cpu_count() or 8
-
-
-_MAX_CONCURRENCY = _default_max_concurrency()
-
-# Dynamic DAG expansion (issue #22): when a runtime-valued for-loop's iterable is
-# computed, unroll its body into one DAG node per element and splice them into the
-# live scheduler, instead of running the body sequentially in the for_loop kernel.
-# Disable with VOXLOGICA_DYNAMIC_EXPANSION=0 to fall back to the sequential kernel.
-_DYNAMIC_EXPANSION = os.environ.get("VOXLOGICA_DYNAMIC_EXPANSION", "1") != "0"
-
 # Operators eligible for dynamic expansion (closure-over-sequence form: args = (iterable, closure)).
 _DYNAMIC_EXPANSION_OPERATORS = {"for_loop", "default.for_loop"}
-
-# Module-level thread pool: workers call ITK kernels (GIL released → true parallelism).
-# Sized to the concurrency cap so queued futures don't pin more worker threads than
-# we allow to run.
-_executor = ThreadPoolExecutor(max_workers=_MAX_CONCURRENCY)
 
 _LAZY_SEQUENCE_OPERATORS = {
     "default.map", 
@@ -142,12 +108,21 @@ class LazyExecutionStrategy(ExecutionStrategy):
 
     name = "lazy"
 
-    def __init__(self, registry: PrimitiveRegistry | None = None, results_database: StorageBackend | None = None):
+    def __init__(self, registry: PrimitiveRegistry | None = None, results_database: StorageBackend | None = None,
+                 threads: int = 0, dynamic_expansion: bool = True):
         self.registry = registry or PrimitiveRegistry()
         self.results_database = results_database
         self._cache_summary: dict[str, Any] = {}
         self._node_events: list[dict[str, Any]] = []
         self._progress: tqdm | None = None
+        # ITK kernels are internally multithreaded, so a handful already saturate
+        # the CPU; the cap's real job is to bound peak memory. Default to the core
+        # count. Each strategy owns its pool so the thread count is per-run.
+        self._max_concurrency = threads or (os.cpu_count() or 8)
+        self._executor = ThreadPoolExecutor(max_workers=self._max_concurrency)
+        # Dynamic DAG expansion (#22): unroll a runtime-valued for-loop into nodes
+        # once its iterable is known, rather than running the body sequentially.
+        self._dynamic_expansion = dynamic_expansion
 
     def compile(self, plan: SymbolicPlan) -> PreparedPlan:
         """Prepare a plan for execution and reset namespace runtime state."""
@@ -698,7 +673,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
             """Dynamically unroll a for_loop node and splice the bodies into the
             scheduler. Returns True if expanded (the node now awaits its spliced
             `sequence` result), False to fall back to the sequential kernel."""
-            if not _DYNAMIC_EXPANSION or node.operator not in _DYNAMIC_EXPANSION_OPERATORS:
+            if not self._dynamic_expansion or node.operator not in _DYNAMIC_EXPANSION_OPERATORS:
                 return False
             if len(node.args) != 2:
                 return False
@@ -759,7 +734,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
                                 value = self._build_runtime_closure_from_values_eager(prepared, node)
                             else:
                                 # ITK kernel: run in thread pool (GIL released → real parallelism).
-                                value = await loop.run_in_executor(_executor, self._compute_primitive, prepared, nid)
+                                value = await loop.run_in_executor(self._executor, self._compute_primitive, prepared, nid)
                             finish(nid, node, value)
                 except Exception as exc:  # noqa: BLE001
                     if first_error is None:
@@ -767,7 +742,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
                 finally:
                     ready_queue.task_done()
 
-        workers = [asyncio.create_task(worker()) for _ in range(_MAX_CONCURRENCY)]
+        workers = [asyncio.create_task(worker()) for _ in range(self._max_concurrency)]
         try:
             await ready_queue.join()
         finally:

@@ -30,11 +30,10 @@ def estimate_bytes(value: object) -> int:
     return 64  # scalars and small objects
 
 
-def memory_limit_bytes() -> int:
-    """The live-tier budget: VOXLOGICA_ENGINE_MEMORY_MB, else 60% of system RAM."""
-    override = os.environ.get("VOXLOGICA_ENGINE_MEMORY_MB")
-    if override:
-        return int(override) * 1024 * 1024
+def memory_limit_bytes(mb: int | None = None) -> int:
+    """The live-tier budget: ``mb`` megabytes if given, else 60% of system RAM."""
+    if mb:
+        return mb * 1024 * 1024
     total = _system_memory_bytes()
     return int(total * 0.6) if total else 4 * 1024 ** 3
 

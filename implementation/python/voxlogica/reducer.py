@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Sequence
 import logging
-import os
 
 from voxlogica.lazy import GoalSpec, NodeId, NodeSpec, SymbolicPlan
 from voxlogica.lazy.ir import OutputKind
@@ -45,13 +44,13 @@ logger = logging.getLogger(__name__)
 identifier = str
 Stack = list[tuple[str, str]]
 
-# A `for x in <iterable> do <body>` whose iterable is a compile-time-known constant
-# sequence of length <= this cap is expanded into one DAG node per element, so the
-# async executor can evaluate the bodies in parallel instead of running them
-# sequentially inside a single for_loop kernel. Longer literal lists, and all
-# range()/dir() iterables, fall back to the lazy for_loop node. Override with
-# VOXLOGICA_FOR_EXPANSION_CAP=0 to disable expansion entirely.
-_FOR_EXPANSION_CAP = int(os.environ.get("VOXLOGICA_FOR_EXPANSION_CAP", "4096"))
+# Default cap for static loop unrolling. A `for x in <iterable> do <body>` whose
+# iterable is a compile-time-known constant sequence of length <= the cap is
+# expanded into one DAG node per element (parallelisable), instead of a single
+# sequential for_loop kernel. Longer literal lists, and all range()/dir()
+# iterables, fall back to the lazy for_loop node. Carried per-plan on WorkPlan;
+# overridable via the --for-expansion-cap CLI option (0 disables expansion).
+_DEFAULT_FOR_EXPANSION_CAP = 4096
 
 _PRIMITIVE_OPERATOR_ALIASES: dict[str, str] = {
     "!": "not_compat",
@@ -129,6 +128,7 @@ class WorkPlan:
     goals: list[GoalSpec] = field(default_factory=list)
     imported_namespaces: list[str] = field(default_factory=list)
     registry: PrimitiveRegistry = field(default_factory=PrimitiveRegistry, repr=False)
+    for_expansion_cap: int = _DEFAULT_FOR_EXPANSION_CAP
 
     def add_node(self, node: NodeSpec) -> NodeId:
         """Hash-cons a node and return the stable id assigned to it."""
@@ -802,7 +802,7 @@ def reduce_expression(
         # re-reduce the body, emitting one DAG node per element. Hash-consing
         # dedupes subexpressions shared across iterations. See issue #20.
         element_ids = _constant_sequence_elements(work_plan, iterable_id)
-        if element_ids is not None and 0 <= len(element_ids) <= _FOR_EXPANSION_CAP:
+        if element_ids is not None and 0 <= len(element_ids) <= work_plan.for_expansion_cap:
             body_ids = tuple(
                 reduce_expression(
                     env.bind(expr.variable, OperationVal(element_id)),
@@ -952,9 +952,10 @@ def _reduce_program_internal(
     *,
     source_name: str = "<input>",
     collect_bindings: bool = False,
+    for_expansion_cap: int = _DEFAULT_FOR_EXPANSION_CAP,
 ) -> tuple[WorkPlan, dict[str, NodeId]]:
     """Reduce a whole program, optionally tracking final declaration bindings."""
-    work_plan = WorkPlan()
+    work_plan = WorkPlan(for_expansion_cap=for_expansion_cap)
     env = Environment() if environment is None else environment
     env = _seed_program_variables(env, work_plan, source_name)
     parsed_imports: set[str] = set()
@@ -997,12 +998,14 @@ def _reduce_program_internal(
     return work_plan, declaration_bindings
 
 
-def reduce_program(program: Program, *, source_name: str = "<input>") -> WorkPlan:
+def reduce_program(program: Program, *, source_name: str = "<input>",
+                   for_expansion_cap: int = _DEFAULT_FOR_EXPANSION_CAP) -> WorkPlan:
     """Reduce a parsed program into a work plan without exposing bindings."""
     work_plan, _bindings = _reduce_program_internal(
         program,
         collect_bindings=False,
         source_name=source_name,
+        for_expansion_cap=for_expansion_cap,
     )
     return work_plan
 

@@ -30,10 +30,10 @@ def _configure_logging(debug: bool) -> None:
     )
 
 
-def build_workplan(program_text: str, source_name: str = "<input>"):
+def build_workplan(program_text: str, source_name: str = "<input>", for_expansion_cap: int = 4096):
     """Parse source text and reduce it into a symbolic work plan."""
     syntax = parse_program_content(program_text, source_name=source_name)
-    return syntax, reduce_program(syntax, source_name=source_name)
+    return syntax, reduce_program(syntax, source_name=source_name, for_expansion_cap=for_expansion_cap)
 
 
 def _write_text(path: str | None, content: str) -> None:
@@ -96,7 +96,8 @@ def run_command(args: argparse.Namespace) -> int:
 
     program_text = Path(args.filename).read_text(encoding="utf-8")
     try:
-        syntax, workplan = build_workplan(program_text, source_name=args.filename)
+        syntax, workplan = build_workplan(program_text, source_name=args.filename,
+                                          for_expansion_cap=args.for_expansion_cap)
     except ProgramParseError as exc:
         print(exc.format_block())
         return 2
@@ -117,7 +118,15 @@ def run_command(args: argparse.Namespace) -> int:
     execution_result = None
     if args.execute:
         storage = NoCacheStorageBackend() if args.no_cache else SQLiteResultsDatabase(db_path=args.store_db)
-        execution_result = ExecutionEngine(storage_backend=storage, no_cache=args.no_cache).execute_workplan(workplan)
+        execution_result = ExecutionEngine(
+            storage_backend=storage,
+            no_cache=args.no_cache,
+            use_engine=args.engine,
+            threads=args.threads,
+            memory_mb=args.memory_mb or None,
+            engine_debug=args.engine_debug,
+            dynamic_expansion=args.dynamic_expansion,
+        ).execute_workplan(workplan)
         print(json.dumps(_summary_payload(workplan, execution_result), indent=2))
         print(f"Execution time: {execution_result.execution_time:.2f} seconds")
         if not execution_result.success:
@@ -164,6 +173,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--store-db", help="Path to the persistent results SQLite database")
     run_parser.add_argument("--debug", action="store_true")
+    run_parser.add_argument("--engine", action="store_true",
+                            help="Use the live computation engine instead of the lazy strategy")
+    run_parser.add_argument("--threads", type=int, default=0, metavar="N",
+                            help="Concurrent kernels (default: CPU count)")
+    run_parser.add_argument("--memory-mb", type=int, default=0, metavar="MB",
+                            help="Engine live-tier memory budget in MB (default: 60%% of RAM)")
+    run_parser.add_argument("--engine-debug", action="store_true",
+                            help="On engine failure, dump the stuck node frontier")
+    run_parser.add_argument("--dynamic-expansion", action=argparse.BooleanOptionalAction, default=True,
+                            help="Unroll runtime-valued for-loops into parallel nodes (lazy strategy)")
+    run_parser.add_argument("--for-expansion-cap", type=int, default=4096, metavar="N",
+                            help="Max constant-loop static unroll length (0 disables)")
     run_parser.set_defaults(handler=run_command)
 
     list_parser = subparsers.add_parser("list-primitives", help="List primitive kernels.")

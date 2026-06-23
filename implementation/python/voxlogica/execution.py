@@ -89,19 +89,29 @@ class ExecutionEngine:
         primitives_loader: PrimitivesLoader | None = None,
         storage_backend: StorageBackend | None = None,
         no_cache: bool = False,
+        use_engine: bool = False,
+        threads: int = 0,
+        memory_mb: int | None = None,
+        engine_debug: bool = False,
+        dynamic_expansion: bool = True,
     ):
-        """Create an engine bound to one primitive registry and one strategy."""
+        """Create an engine bound to one primitive registry and one strategy.
+
+        ``use_engine`` selects the live computation engine; otherwise the proven
+        lazy strategy runs. ``threads`` caps concurrent kernels for either; the
+        remaining knobs are engine-/lazy-specific. See
+        doc/dev/unified-computation-engine.md.
+        """
         self.primitives = primitives_loader or PrimitivesLoader()
         self.registry = self.primitives.registry
         self.storage = (storage_backend or get_storage())
-        # The live computation engine is opt-in while it matures; the proven
-        # lazy strategy remains the default. See doc/dev/unified-computation-engine.md.
-        import os
-        if os.environ.get("VOXLOGICA_ENGINE") == "1":
+        if use_engine:
             from voxlogica.engine.strategy import EngineExecutionStrategy
-            self._strategy = EngineExecutionStrategy(self.registry, self.storage)
+            self._strategy = EngineExecutionStrategy(
+                self.registry, self.storage, threads=threads, memory_mb=memory_mb, debug=engine_debug)
         else:
-            self._strategy = LazyExecutionStrategy(self.registry, self.storage)
+            self._strategy = LazyExecutionStrategy(
+                self.registry, self.storage, threads=threads, dynamic_expansion=dynamic_expansion)
         self.default_strategy = self._strategy.name
         self._last_prepared: PreparedPlan | None = None
 
