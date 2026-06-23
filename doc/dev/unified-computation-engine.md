@@ -1,24 +1,24 @@
 # Unified Computation Engine — design
 
-Status: design accepted; engine **work-in-progress** on `feat/unified-execution`,
-**not merged** (the proven `lazy` strategy remains the default and runs the study).
+Status: implemented and working on `feat/unified-execution`, opt-in via
+`VOXLOGICA_ENGINE=1`. The proven `lazy` strategy remains the default until the
+engine has had broad real-workload validation.
 
-Implemented: the `voxlogica/engine/` package — `NodeTable` (Merkle identity, tiered
-values, the enforced no-double-computation guard), `ComputationEngine` (priority
-scheduler, submit/await/prioritize), pure `Executor`, single-semantics `Expander`,
-`Query` handles, and an opt-in `EngineExecutionStrategy` (`VOXLOGICA_ENGINE=1`).
+Implemented (`voxlogica/engine/`): `NodeTable` (Merkle identity, tiered values,
+the enforced no-double-computation guard), `ComputationEngine` (priority
+scheduler, submit/await/prioritise), pure `Executor`, single-semantics
+`Expander`, `Query` handles, memory-pressure eviction, and an
+`EngineExecutionStrategy` adapter.
 
-Validated: single-query evaluation, the real-data oracle (matches `lazy` exactly),
-and nested runtime loops.
+Key correctness property: readiness is gated on **completion** (monotonic), never
+on value residency. Values are evicted under a byte budget and **rematerialised on
+demand**, so eviction can only ever cost a recompute — never a deadlock. This is
+what made multi-query sharing and aggressive eviction safe.
 
-Open bug (next session): a **multi-query scheduling deadlock**. When several goals
-are submitted in one batch and share subexpressions, a value evicted after one
-query's consumers finish can be needed by another query's not-yet-run node, leaving
-nodes that never materialize (queue drains, `query.result()` waits forever). The
-fix lives in cross-query consumer accounting / eviction guarding — the same hard
-class resolved for the `lazy` path (ready-gating, capture pinning, rematerialisation
-of evicted loop-invariants), now across queries. The `VOXLOGICA_ENGINE_DEBUG=1`
-diagnostic in `core.py` dumps the stuck frontier.
+Validated: single- and multi-query evaluation, nested runtime loops, the real-data
+oracle (matches `lazy` exactly), 18 unit tests under the engine, and correctness
+under a forced 1 MB / 300 MB live-tier budget (real image eviction + rematerialise).
+`VOXLOGICA_ENGINE_DEBUG=1` dumps the stuck frontier if a future change regresses.
 
 ## 1. Vision — a computation base, not a database
 

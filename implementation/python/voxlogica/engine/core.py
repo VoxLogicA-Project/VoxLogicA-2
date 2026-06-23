@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import os
 from collections import OrderedDict, defaultdict
 from typing import Any
 
@@ -38,7 +39,6 @@ class ComputationEngine:
 
     def __init__(self, registry: PrimitiveRegistry | None = None,
                  backend: StorageBackend | None = None, max_concurrency: int = 0):
-        import os
         self.registry = registry or PrimitiveRegistry()
         self.table = NodeTable(backend=backend)
         self.executor = Executor(self.registry, max_concurrency or (os.cpu_count() or 8))
@@ -102,7 +102,6 @@ class ComputationEngine:
         self._pre_ready.clear()
         workers = [asyncio.create_task(self._worker()) for _ in range(self.max_concurrency)]
         try:
-            import os
             await self._ready.join()
             if os.environ.get("VOXLOGICA_ENGINE_DEBUG") and any(
                 n not in self.table.completed for n in self._scheduled
@@ -243,8 +242,6 @@ class ComputationEngine:
         self.table.set_value(nid, value)
         return value
 
-    def _rematerialize(self, nid: NodeId) -> Any:
-        """Recompute a node whose value was evicted but is needed by a new edge."""
     # ── Workers ─────────────────────────────────────────────────────────────────────────────
 
     async def _worker(self) -> None:
