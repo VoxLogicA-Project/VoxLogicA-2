@@ -17,8 +17,11 @@ from __future__ import annotations
 import asyncio
 import itertools
 import os
+import sys
 from collections import OrderedDict, defaultdict
 from typing import Any
+
+from tqdm import tqdm
 
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
@@ -38,12 +41,15 @@ class ComputationEngine:
     """A persistent, content-addressed, priority-scheduled evaluator."""
 
     def __init__(self, registry: PrimitiveRegistry | None = None,
-                 backend: StorageBackend | None = None, max_concurrency: int = 0):
+                 backend: StorageBackend | None = None, max_concurrency: int = 0,
+                 progress: bool = False):
         self.registry = registry or PrimitiveRegistry()
         self.table = NodeTable(backend=backend)
         self.executor = Executor(self.registry, max_concurrency or (os.cpu_count() or 8))
         self.expander = Expander(self.table, self.registry)
         self.max_concurrency = max_concurrency or (os.cpu_count() or 8)
+        self._show_progress = progress
+        self._progress: tqdm | None = None
 
         # Scheduling state (event-loop owned).
         self._pending: dict[NodeId, int] = {}
@@ -100,6 +106,9 @@ class ComputationEngine:
         for entry in self._pre_ready:
             self._ready.put_nowait(entry)
         self._pre_ready.clear()
+        if self._show_progress:
+            self._progress = tqdm(total=len(self._scheduled), desc="nodes", unit="node",
+                                  dynamic_ncols=True, file=sys.stderr, leave=True)
         workers = [asyncio.create_task(self._worker()) for _ in range(self.max_concurrency)]
         try:
             await self._ready.join()
@@ -110,6 +119,9 @@ class ComputationEngine:
         finally:
             for worker in workers:
                 worker.cancel()
+            if self._progress is not None:
+                self._progress.close()
+                self._progress = None
         self.table.flush()
         if self._first_error is not None:
             raise self._first_error
@@ -181,6 +193,9 @@ class ComputationEngine:
                 self._enqueue(child)
         self._settle_node(nid)
         self._relieve_memory()
+        if self._progress is not None:
+            self._progress.set_postfix_str(node.operator, refresh=False)
+            self._progress.update(1)
 
     def _release(self, dep: NodeId) -> None:
         """Mark a dependency evictable once its last consumer has run."""
@@ -210,6 +225,9 @@ class ComputationEngine:
             raise RuntimeError(f"cannot expand loop node {nid[:12]} ({node.operator})")
         seq_id, new_ids = result
         self._scheduled.update(new_ids)
+        if self._progress is not None and new_ids:
+            self._progress.total += len(new_ids)  # the graph grew; track the new work
+            self._progress.refresh()
         priority = self._priority.get(nid, int(Priority.NORMAL))
         for rid in new_ids:
             self._priority[rid] = max(self._priority.get(rid, 0), priority)

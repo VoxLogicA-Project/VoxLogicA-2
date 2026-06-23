@@ -42,7 +42,7 @@ class EngineExecutionStrategy:
         """Submit goals, evaluate in parallel, then run their side effects."""
         started = time.time()
         plan = prepared.plan
-        engine = ComputationEngine(registry=self.registry, backend=self.results_database)
+        engine = ComputationEngine(registry=self.registry, backend=self.results_database, progress=True)
         engine.adopt_plan(plan)
 
         target = plan.goals if goals is None else [g for g in plan.goals if g.id in set(goals)]
