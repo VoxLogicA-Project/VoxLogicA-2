@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from typing import Any
 
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
+from voxlogica.engine.memory import memory_limit_bytes
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.engine.priority import Priority
 from voxlogica.engine.query import Query, QueryStatus
@@ -50,8 +51,10 @@ class ComputationEngine:
         self._consumers: dict[NodeId, int] = defaultdict(int)
         self._priority: dict[NodeId, int] = {}
         self._scheduled: set[NodeId] = set()
-        self._pinned: set[NodeId] = set()
         self._goals: set[NodeId] = set()
+        # Nodes whose consumers are all done: evictable, oldest first, under pressure.
+        self._releasable: OrderedDict[NodeId, None] = OrderedDict()
+        self._memory_limit = memory_limit_bytes()
         self._alias: dict[NodeId, NodeId] = {}
         self._waiters: dict[NodeId, list[Query]] = defaultdict(list)
         # The ready queue is created once the event loop is running; submissions
@@ -102,7 +105,7 @@ class ComputationEngine:
             import os
             await self._ready.join()
             if os.environ.get("VOXLOGICA_ENGINE_DEBUG") and any(
-                n not in self.table.values for n in self._scheduled
+                n not in self.table.completed for n in self._scheduled
             ):
                 self._dump_stuck()
         finally:
@@ -125,7 +128,7 @@ class ComputationEngine:
                 continue
             seen.add(nid)
             self._priority[nid] = max(self._priority.get(nid, 0), priority)
-            if nid in self.table.values or nid in self._scheduled:
+            if nid in self._scheduled or nid in self.table.completed:
                 continue
             if nid not in self._goals and self.table.persisted(nid):
                 continue  # cached leaf: loaded on demand
@@ -133,25 +136,25 @@ class ComputationEngine:
             discovered.append(nid)
             for dep in self._deps(nid):
                 frontier.append(dep)
-        self._pin_closures(discovered)
         for nid in discovered:
             if self._register(nid):
                 self._enqueue(nid)
 
     def _register(self, nid: NodeId) -> bool:
-        """Wire one node into the dependency graph; return True if ready now."""
+        """Wire one node into the dependency graph; return True if ready now.
+
+        Readiness is gated only on whether a dependency has *completed* (a
+        monotonic fact), never on whether its value is currently resident.
+        Values may be evicted under memory pressure and rematerialised on demand,
+        so gating on residency would risk waiting forever on an evicted value.
+        """
         count = 0
         for dep in self._deps(nid):
             self._consumers[dep] += 1
-            if dep in self.table.values:
-                continue
-            if dep in self._scheduled:
-                if dep in self.table.completed:
-                    self._rematerialize(dep)  # evicted; bring back, do not gate
-                    self._pinned.add(dep)
-                else:
-                    count += 1
-                    self._dependents[dep].append(nid)
+            self._releasable.pop(dep, None)  # newly demanded: cancel pending eviction
+            if dep in self._scheduled and dep not in self.table.completed:
+                count += 1
+                self._dependents[dep].append(nid)
         self._pending[nid] = count
         return count == 0
 
@@ -169,7 +172,7 @@ class ComputationEngine:
                 for index, item in enumerate(value):
                     self.table.complete_item(nid, index, item)
         else:
-            self.table.values[nid] = value
+            self.table.set_value(nid, value)
             self.table.completed.add(nid)
         for dep in self._deps(nid):
             self._release(dep)
@@ -178,29 +181,36 @@ class ComputationEngine:
             if self._pending[child] == 0:
                 self._enqueue(child)
         self._settle_node(nid)
+        self._relieve_memory()
 
     def _release(self, dep: NodeId) -> None:
-        """Drop one consumer of dep; demote its value once none remain."""
+        """Mark a dependency evictable once its last consumer has run."""
         remaining = self._consumers.get(dep, 0)
         if remaining <= 0:
             return
         self._consumers[dep] = remaining - 1
-        if self._consumers[dep] == 0 and dep not in self._goals and dep not in self._pinned:
-            self.table.evict(dep)
+        if self._consumers[dep] == 0 and dep not in self._goals:
+            self._releasable[dep] = None  # evicted later, only under memory pressure
 
-    def _expand(self, nid: NodeId, node) -> bool:
-        """Splice a loop's per-element bodies into the live schedule."""
-        if not self.expander.can_expand(node):
-            return False
-        try:
-            result = self.expander.expand(nid, node)
-        except Exception:  # noqa: BLE001 — fall back to the sequential kernel
-            result = None
+    def _relieve_memory(self) -> None:
+        """Evict the oldest evictable values while over the live-tier budget."""
+        while self.table.live_bytes > self._memory_limit and self._releasable:
+            dep, _ = self._releasable.popitem(last=False)
+            if self._consumers.get(dep, 0) == 0 and dep not in self._goals:
+                self.table.evict(dep)
+
+    def _expand(self, nid: NodeId, node) -> None:
+        """Splice a loop's per-element bodies into the live schedule.
+
+        The iterable is rematerialised first, so expansion always succeeds; the
+        loop node then aliases the spliced sequence and forwards its value.
+        """
+        self._rematerialize(node.args[0])  # ensure the iterable value is resident
+        result = self.expander.expand(nid, node)
         if result is None:
-            return False
+            raise RuntimeError(f"cannot expand loop node {nid[:12]} ({node.operator})")
         seq_id, new_ids = result
         self._scheduled.update(new_ids)
-        self._pin_closures(new_ids)
         priority = self._priority.get(nid, int(Priority.NORMAL))
         for rid in new_ids:
             self._priority[rid] = max(self._priority.get(rid, 0), priority)
@@ -208,15 +218,14 @@ class ComputationEngine:
                 self._enqueue(rid)
         self._alias[nid] = seq_id
         self._consumers[seq_id] += 1
-        if seq_id in self._scheduled and seq_id not in self.table.values:
+        if seq_id in self._scheduled and seq_id not in self.table.completed:
             self._pending[nid] = 1
             self._dependents[seq_id].append(nid)
         else:
             self._enqueue(nid)
-        return True
 
     def _rematerialize(self, nid: NodeId) -> Any:
-        """Recompute a node whose value was evicted but is needed by a new edge."""
+        """Recompute (or reload) a completed node whose value was evicted."""
         if nid in self.table.values:
             return self.table.values[nid]
         loaded = self.table.load(nid)
@@ -226,16 +235,16 @@ class ComputationEngine:
         if node.kind == "constant":
             value = node.attrs.get("value")
         elif node.kind == "closure":
-            for child in self._deps(nid):
-                self._rematerialize(child)
-            value = self._build_closure(node)
+            value = None  # closures are trivial; only their captures carry data
         else:
             for child in self._deps(nid):
                 self._rematerialize(child)
             value = self.executor._compute(self.table, nid)
-        self.table.values[nid] = value
+        self.table.set_value(nid, value)
         return value
 
+    def _rematerialize(self, nid: NodeId) -> Any:
+        """Recompute a node whose value was evicted but is needed by a new edge."""
     # ── Workers ─────────────────────────────────────────────────────────────────────────────
 
     async def _worker(self) -> None:
@@ -243,15 +252,15 @@ class ComputationEngine:
         while True:
             _, _, nid = await self._ready.get()
             try:
-                if self._first_error is not None or nid in self.table.values:
-                    continue
+                if self._first_error is not None or nid in self.table.completed:
+                    continue  # cancelled, or a duplicate of an already-finished node
                 node = self.table.nodes[nid]
                 if nid in self._alias:
                     seq_id = self._alias.pop(nid)
-                    self._finish(nid, self.table.values[seq_id])  # forward spliced result
-                    self._release(seq_id)                          # the loop was its only consumer
-                elif node.kind == "primitive" and self._expand(nid, node):
-                    pass  # expanded; the node will run again via its alias
+                    self._finish(nid, self._rematerialize(seq_id))  # forward spliced result
+                    self._release(seq_id)                            # the loop was its only consumer
+                elif self.expander.can_expand(node):
+                    self._expand(nid, node)  # splices bodies; node re-runs via its alias
                 elif node.kind == "constant":
                     self._finish(nid, node.attrs.get("value"), persist=False)
                 elif node.kind == "closure":
@@ -259,7 +268,7 @@ class ComputationEngine:
                 else:
                     for dep in self._deps(nid):
                         if dep not in self.table.values:
-                            self._rematerialize(dep)  # recompute deps evicted since gating
+                            self._rematerialize(dep)  # recompute deps evicted under pressure
                     self.table.begin(nid)  # enforces the no-double-computation invariant
                     value = await self.executor.run(self.table, nid)
                     self._finish(nid, value)
@@ -284,37 +293,32 @@ class ComputationEngine:
         else:
             self._ready.put_nowait(entry)
 
-    def _pin_closures(self, node_ids) -> None:
-        """Pin closure captures so a later expansion can re-read them."""
-        for cid in node_ids:
-            node = self.table.nodes.get(cid)
-            if node is not None and node.kind == "closure":
-                self._pinned |= Expander.closure_capture_ids(node)
-
     def _raise_priority(self, nid: NodeId, priority: int) -> None:
-        """Propagate a priority bump to a node and its unfinished dependencies."""
+        """Propagate a priority bump to a node and its unfinished dependencies.
+
+        Each node is enqueued exactly once, so we do not re-offer already-queued
+        nodes; raising the recorded priority lifts not-yet-enqueued descendants
+        when they become ready.
+        """
         frontier = [nid]
         seen: set[NodeId] = set()
         while frontier:
             current = frontier.pop()
-            if current in seen or current in self.table.values:
+            if current in seen or current in self.table.completed:
                 continue
             seen.add(current)
-            if priority > self._priority.get(current, 0):
-                self._priority[current] = priority
-                if current in self._scheduled and self._pending.get(current, 0) == 0:
-                    self._enqueue(current)  # re-offer at the higher priority
+            self._priority[current] = max(self._priority.get(current, 0), priority)
             frontier.extend(self._deps(current))
 
     def _dump_stuck(self) -> None:
-        """Diagnostic: report scheduled nodes that never became ready."""
+        """Diagnostic: report scheduled nodes that never completed."""
         import sys
-        stuck = [n for n in self._scheduled if n not in self.table.values]
+        stuck = [n for n in self._scheduled if n not in self.table.completed]
         print(f"[stuck] qsize={self._ready.qsize()} scheduled={len(self._scheduled)} "
-              f"values={len(self.table.values)} stuck={len(stuck)} alias={len(self._alias)}", file=sys.stderr)
+              f"completed={len(self.table.completed)} stuck={len(stuck)} alias={len(self._alias)}", file=sys.stderr)
         for nid in stuck[:12]:
             node = self.table.nodes[nid]
-            unmet = [d[:8] for d in self._deps(nid) if d in self._scheduled and d not in self.table.values]
+            unmet = [d[:8] for d in self._deps(nid) if d in self._scheduled and d not in self.table.completed]
             print(f"  {nid[:8]} op={node.operator} kind={node.kind} pending={self._pending.get(nid)} "
                   f"alias={nid in self._alias} unmet={unmet}", file=sys.stderr)
 

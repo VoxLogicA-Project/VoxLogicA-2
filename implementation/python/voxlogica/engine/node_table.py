@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from voxlogica.engine.memory import estimate_bytes
 from voxlogica.lazy.hash import hash_node, hash_sequence_item
 from voxlogica.lazy.ir import NodeId, NodeSpec
 from voxlogica.storage import MaterializationStore, StorageBackend
@@ -30,10 +31,17 @@ class NodeTable:
     def __init__(self, backend: StorageBackend | None = None):
         self.nodes: dict[NodeId, NodeSpec] = {}
         self.values: dict[NodeId, Any] = {}
+        self.live_bytes = 0  # estimated resident size of self.values
         self._store = MaterializationStore(backend=backend, read_through=True, write_through=True)
         self._backend = backend
         self._running: set[NodeId] = set()
         self.completed: set[NodeId] = set()
+
+    def set_value(self, node_id: NodeId, value: Any) -> None:
+        """Place a value in the live tier, accounting for its size once."""
+        if node_id not in self.values:
+            self.live_bytes += estimate_bytes(value)
+        self.values[node_id] = value
 
     def intern(self, node: NodeSpec) -> NodeId:
         """Add a node by structural identity, returning its stable hash id."""
@@ -59,7 +67,7 @@ class NodeTable:
             if record is not None:
                 value = record.payload_bin if record.vox_type == "image" else record.payload_json["value"]
         if value is not None:
-            self.values[node_id] = value
+            self.set_value(node_id, value)
         return value
 
     def begin(self, node_id: NodeId) -> None:
@@ -73,7 +81,7 @@ class NodeTable:
     def complete(self, node_id: NodeId, value: Any) -> None:
         """Record a freshly computed value and persist it through the tiers."""
         self._running.discard(node_id)
-        self.values[node_id] = value
+        self.set_value(node_id, value)
         self.completed.add(node_id)
         node = self.nodes[node_id]
         dependencies = list(node.args) + [vid for _, vid in node.kwargs]
@@ -91,7 +99,8 @@ class NodeTable:
 
     def evict(self, node_id: NodeId) -> None:
         """Demote a value out of the live tier (recoverable from the backend)."""
-        self.values.pop(node_id, None)
+        if node_id in self.values:
+            self.live_bytes -= estimate_bytes(self.values.pop(node_id))
         self._store.forget(node_id)
 
     def flush(self, timeout_s: float = 10.0) -> None:
