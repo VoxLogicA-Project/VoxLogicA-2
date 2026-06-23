@@ -712,6 +712,11 @@ class LazyExecutionStrategy(ExecutionStrategy):
             # Register every spliced node, then queue the ones that are ready.
             scheduled.update(new_ids)
             pin_closures(new_ids)
+            # The progress total was fixed before the run; runtime expansion adds
+            # nodes, so grow the denominator to keep the bar meaningful.
+            if self._progress is not None and new_ids:
+                self._progress.total += len(new_ids)
+                self._progress.refresh()
             for rid in new_ids:
                 if register(rid):
                     ready_queue.put_nowait(rid)
