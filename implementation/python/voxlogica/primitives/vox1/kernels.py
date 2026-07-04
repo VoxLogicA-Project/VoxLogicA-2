@@ -677,6 +677,43 @@ def extract(image: object, size: object, index: object) -> sitk.Image:
     )
 
 
+def slic(image: object, grid_spacing: float, spatial_weight: float) -> sitk.Image:
+    """SLIC superpixels/supervoxels with an integer grid spacing (voxels per cell
+    edge). Accepts a scalar or a multi-channel (vector) image -- compose modalities
+    with rgb/rgba for multimodal superpixels. Returns an integer label image; higher
+    grid_spacing -> fewer, larger regions. Wraps sitk.SLIC so the grid vector is cast
+    to the uint type SimpleITK requires (ImgQL numbers are floats)."""
+    img = _as_image(image, "image")
+    _remember_base(img)
+    g = max(1, int(round(float(grid_spacing))))
+    dim = img.GetDimension()
+    return sitk.SLIC(img, [g] * dim, float(spatial_weight), 10, True, True)
+
+
+def label_mean(label_image: object, value_image: object) -> sitk.Image:
+    """Region-average quotient: paint every label of `label_image` with the mean
+    of `value_image` over that label. Turns an over-segmentation (SLIC superpixels,
+    watershed basins, percentile-band components) into a piecewise-constant
+    homogeneity quotient -- a computable proxy for a bisimilarity quotient on which
+    spatial-logic thresholds select whole regions rather than single voxels."""
+    lab = _as_image(label_image, "label_image")
+    val = _as_image(value_image, "value_image")
+    _remember_base(val)
+    lab_values = _flatten_image(lab, np.int64)
+    val_values = _flatten_image(_as_float_image(val), np.float64)
+    if lab_values.shape[0] != val_values.shape[0]:
+        raise ValueError("label_mean requires images with the same number of voxels")
+    n = int(lab_values.max(initial=0)) + 1
+    sums = np.bincount(lab_values, weights=val_values, minlength=n)
+    counts = np.bincount(lab_values, minlength=n)
+    means = np.zeros(n, dtype=np.float64)
+    nonzero = counts > 0
+    means[nonzero] = sums[nonzero] / counts[nonzero]
+    out = means[lab_values].astype(np.float32)
+    shape = sitk.GetArrayViewFromImage(lab).shape
+    return _make_image_from_flat(out, shape, lab, np.float32)
+
+
 def otsu(image: object, mask_image: object, nbins: float) -> sitk.Image:
     """Otsu threshold mask within a given mask region."""
     img = _as_image(image, "image")
