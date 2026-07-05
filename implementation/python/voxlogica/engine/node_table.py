@@ -111,20 +111,21 @@ class NodeTable:
             )
         self._running.add(node_id)
 
-    def complete(self, node_id: NodeId, value: Any, compute_ms: float = 0.0) -> None:
+    def complete(self, node_id: NodeId, value: Any, compute_ms: float = 0.0, critical: bool = False) -> None:
         """Record a freshly computed value and hand it to the background writer.
 
         ``compute_ms`` is the kernel's measured wall-time; it feeds the cache's
         cost-aware eviction so expensive results are kept over cheap ones.
+
+        Persistence is best-effort for cheap values (skipped when the writer is
+        behind, so compute never stalls) but *guaranteed* for ``critical`` ones —
+        expensive or widely-shared results, exactly what makes cross-run reuse
+        pay off. Dropping those was why warm re-runs recomputed everything.
         """
         self._running.discard(node_id)
         self.set_value(node_id, value)
         self.completed.add(node_id)
-        # Caching is best-effort: when the background writer is behind (backlog
-        # over budget) we skip persisting this value rather than stalling compute.
-        # The value stays in the live tier for correctness; it just may not be on
-        # disk for later reuse. Compute never waits on the cache.
-        if self._persister is not None and not self._persister.over_budget:
+        if self._persister is not None and (critical or not self._persister.over_budget):
             node = self.nodes[node_id]
             self._persister.submit(node_id, value, {"source": "runtime", "operator": node.operator}, compute_ms)
 
