@@ -18,14 +18,13 @@ import asyncio
 import itertools
 import os
 import sys
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from typing import Any
 
 from tqdm import tqdm
 
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
-from voxlogica.engine.memory import memory_limit_bytes
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.engine.priority import Priority
 from voxlogica.engine.query import Query, QueryStatus
@@ -42,13 +41,12 @@ class ComputationEngine:
 
     def __init__(self, registry: PrimitiveRegistry | None = None,
                  backend: StorageBackend | None = None, max_concurrency: int = 0,
-                 memory_mb: int | None = None, progress: bool = False, debug: bool = False):
+                 progress: bool = False, debug: bool = False):
         self.registry = registry or PrimitiveRegistry()
         self.table = NodeTable(backend=backend)
         self.max_concurrency = max_concurrency or (os.cpu_count() or 8)
         self.executor = Executor(self.registry, self.max_concurrency)
         self.expander = Expander(self.table, self.registry)
-        self._memory_limit = memory_limit_bytes(memory_mb)
         self._show_progress = progress
         self._debug = debug
         self._progress: tqdm | None = None
@@ -60,8 +58,6 @@ class ComputationEngine:
         self._priority: dict[NodeId, int] = {}
         self._scheduled: set[NodeId] = set()
         self._goals: set[NodeId] = set()
-        # Nodes whose consumers are all done: evictable, oldest first, under pressure.
-        self._releasable: OrderedDict[NodeId, None] = OrderedDict()
         self._alias: dict[NodeId, NodeId] = {}
         self._waiters: dict[NodeId, list[Query]] = defaultdict(list)
         # The ready queue is created once the event loop is running; submissions
@@ -161,7 +157,6 @@ class ComputationEngine:
         count = 0
         for dep in self._deps(nid):
             self._consumers[dep] += 1
-            self._releasable.pop(dep, None)  # newly demanded: cancel pending eviction
             if dep in self._scheduled and dep not in self.table.completed:
                 count += 1
                 self._dependents[dep].append(nid)
@@ -191,26 +186,25 @@ class ComputationEngine:
             if self._pending[child] == 0:
                 self._enqueue(child)
         self._settle_node(nid)
-        self._relieve_memory()
         if self._progress is not None:
             self._progress.set_postfix_str(node.operator, refresh=False)
             self._progress.update(1)
 
     def _release(self, dep: NodeId) -> None:
-        """Mark a dependency evictable once its last consumer has run."""
+        """Drop a dependency's value once its last consumer has run.
+
+        Readiness is gated on completion, never on residency, so freeing the
+        value here at worst costs a recompute if a later query demands it again
+        — the value never survives past its last consumer, matching the lazy
+        strategy's garbage-collection behaviour and keeping the live tier small.
+        """
         remaining = self._consumers.get(dep, 0)
         if remaining <= 0:
             return
-        self._consumers[dep] = remaining - 1
-        if self._consumers[dep] == 0 and dep not in self._goals:
-            self._releasable[dep] = None  # evicted later, only under memory pressure
-
-    def _relieve_memory(self) -> None:
-        """Evict the oldest evictable values while over the live-tier budget."""
-        while self.table.live_bytes > self._memory_limit and self._releasable:
-            dep, _ = self._releasable.popitem(last=False)
-            if self._consumers.get(dep, 0) == 0 and dep not in self._goals:
-                self.table.evict(dep)
+        remaining -= 1
+        self._consumers[dep] = remaining
+        if remaining == 0 and dep not in self._goals:
+            self.table.evict(dep)
 
     def _expand(self, nid: NodeId, node) -> None:
         """Splice a loop's per-element bodies into the live schedule.
@@ -300,8 +294,16 @@ class ComputationEngine:
         return Expander.dependencies(self.table.nodes[nid])
 
     def _enqueue(self, nid: NodeId) -> None:
-        """Offer a ready node to the workers at its current priority."""
-        entry = (-self._priority.get(nid, 0), next(self._seq), nid)
+        """Offer a ready node to the workers at its current priority.
+
+        Equal-priority nodes are drained newest-first (LIFO, via the negated
+        sequence number). This makes evaluation depth-first: a freshly produced
+        value is consumed by its dependent before more siblings are produced, so
+        intermediates (e.g. a threshold image feeding a single ``volume``) are
+        evicted almost immediately instead of piling up breadth-first. This is
+        what keeps the live tier — and peak memory — small under wide fan-out.
+        """
+        entry = (-self._priority.get(nid, 0), -next(self._seq), nid)
         if self._ready is None:
             self._pre_ready.append(entry)
         else:

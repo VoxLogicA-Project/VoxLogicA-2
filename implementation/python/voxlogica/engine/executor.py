@@ -24,6 +24,9 @@ class Executor:
     def __init__(self, registry: PrimitiveRegistry, max_workers: int):
         self.registry = registry
         self._pool = ThreadPoolExecutor(max_workers=max_workers)
+        # Signature introspection is stable per kernel; cache it so the hot path
+        # doesn't re-parse it on every one of a sweep's thousands of calls.
+        self._signatures: dict[Any, tuple[list, bool, bool]] = {}
 
     async def run(self, table: NodeTable, node_id: NodeId) -> Any:
         """Materialize one primitive node off the event loop."""
@@ -46,10 +49,7 @@ class Executor:
 
     def _invoke(self, kernel, args: list[Any], kwargs: dict[str, Any], attrs: dict[str, Any] | None = None) -> Any:
         """Adapt engine arguments to the kernel's declared Python signature."""
-        signature = inspect.signature(kernel)
-        params = list(signature.parameters.values())
-        has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
-        has_varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+        params, has_varkw, has_varargs = self._signature(kernel)
 
         if has_varkw:
             payload = {str(index): value for index, value in enumerate(args)}
@@ -68,6 +68,17 @@ class Executor:
             if param.name not in bound:
                 bound[param.name] = value
         return kernel(**bound)
+
+    def _signature(self, kernel) -> tuple[list, bool, bool]:
+        """Return the kernel's (params, has_varkw, has_varargs), cached per kernel."""
+        cached = self._signatures.get(kernel)
+        if cached is None:
+            params = list(inspect.signature(kernel).parameters.values())
+            has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
+            has_varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+            cached = (params, has_varkw, has_varargs)
+            self._signatures[kernel] = cached
+        return cached
 
     def shutdown(self) -> None:
         """Release the thread pool."""

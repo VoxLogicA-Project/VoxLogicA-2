@@ -123,7 +123,6 @@ def run_command(args: argparse.Namespace) -> int:
             no_cache=args.no_cache,
             use_engine=args.engine,
             threads=args.threads,
-            memory_mb=args.memory_mb or None,
             engine_debug=args.engine_debug,
             dynamic_expansion=args.dynamic_expansion,
         ).execute_workplan(workplan)
@@ -177,8 +176,6 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Use the live computation engine instead of the lazy strategy")
     run_parser.add_argument("--threads", type=int, default=0, metavar="N",
                             help="Concurrent kernels (default: CPU count)")
-    run_parser.add_argument("--memory-mb", type=int, default=0, metavar="MB",
-                            help="Engine live-tier memory budget in MB (default: 60%% of RAM)")
     run_parser.add_argument("--engine-debug", action="store_true",
                             help="On engine failure, dump the stuck node frontier")
     run_parser.add_argument("--dynamic-expansion", action=argparse.BooleanOptionalAction, default=True,

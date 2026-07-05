@@ -91,7 +91,6 @@ class ExecutionEngine:
         no_cache: bool = False,
         use_engine: bool = False,
         threads: int = 0,
-        memory_mb: int | None = None,
         engine_debug: bool = False,
         dynamic_expansion: bool = True,
     ):
@@ -108,7 +107,7 @@ class ExecutionEngine:
         if use_engine:
             from voxlogica.engine.strategy import EngineExecutionStrategy
             self._strategy = EngineExecutionStrategy(
-                self.registry, self.storage, threads=threads, memory_mb=memory_mb, debug=engine_debug)
+                self.registry, self.storage, threads=threads, debug=engine_debug)
         else:
             self._strategy = LazyExecutionStrategy(
                 self.registry, self.storage, threads=threads, dynamic_expansion=dynamic_expansion)
