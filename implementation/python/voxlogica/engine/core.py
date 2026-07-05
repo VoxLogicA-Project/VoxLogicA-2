@@ -59,6 +59,7 @@ class ComputationEngine:
         self._scheduled: set[NodeId] = set()
         self._goals: set[NodeId] = set()
         self._alias: dict[NodeId, NodeId] = {}
+        self._deps_cache: dict[NodeId, frozenset[NodeId]] = {}
         self._waiters: dict[NodeId, list[Query]] = defaultdict(list)
         # The ready queue is created once the event loop is running; submissions
         # made before run() buffer here and are seeded in run().
@@ -179,8 +180,14 @@ class ComputationEngine:
         else:
             self.table.set_value(nid, value)
             self.table.completed.add(nid)
-        for dep in self._deps(nid):
-            self._release(dep)
+        if node.kind != "closure":
+            # A closure completes trivially, but its captures must stay pinned
+            # until the loop it gates has expanded — the per-element bodies read
+            # those captures. Releasing here would evict a value (e.g. the loop's
+            # input image) that the imminent expansion still needs, forcing a
+            # wasteful recompute. _expand transfers the hold to the bodies.
+            for dep in self._deps(nid):
+                self._release(dep)
         for child in self._dependents.get(nid, ()):
             self._pending[child] -= 1
             if self._pending[child] == 0:
@@ -226,6 +233,12 @@ class ComputationEngine:
             self._priority[rid] = max(self._priority.get(rid, 0), priority)
             if self._register(rid):
                 self._enqueue(rid)
+        # The bodies just registered as the real consumers of the closure's
+        # captures; hand the closure's pin over to them (see _finish). The
+        # captures stay resident throughout — never dropping to zero — so the
+        # loop's inputs are read once, not recomputed per expansion.
+        for dep in self._deps(node.args[1]):
+            self._release(dep)
         self._alias[nid] = seq_id
         self._consumers[seq_id] += 1
         if seq_id in self._scheduled and seq_id not in self.table.completed:
@@ -289,9 +302,19 @@ class ComputationEngine:
 
     # ── Helpers ─────────────────────────────────────────────────────────────────────────────
 
-    def _deps(self, nid: NodeId) -> set[NodeId]:
-        """All dependency ids of a node, including closure-capture references."""
-        return Expander.dependencies(self.table.nodes[nid])
+    def _deps(self, nid: NodeId) -> frozenset[NodeId]:
+        """All dependency ids of a node, including closure-capture references.
+
+        Node specs are immutable, so a node's dependency set is stable: compute
+        it once and memoise. This hot helper is called several times per node
+        (registration, completion, expansion, priority raising), and rebuilding
+        the set each time was pure scheduling overhead.
+        """
+        cached = self._deps_cache.get(nid)
+        if cached is None:
+            cached = frozenset(Expander.dependencies(self.table.nodes[nid]))
+            self._deps_cache[nid] = cached
+        return cached
 
     def _enqueue(self, nid: NodeId) -> None:
         """Offer a ready node to the workers at its current priority.
