@@ -51,7 +51,7 @@ class AsyncPersister:
     def __init__(self, backend: StorageBackend, max_pending_bytes: int):
         self._backend = backend
         self._max_pending_bytes = max_pending_bytes
-        self._queue: "queue.SimpleQueue[tuple[NodeId, Any, dict, int] | None]" = queue.SimpleQueue()
+        self._queue: "queue.SimpleQueue[tuple[NodeId, Any, dict, int, float] | None]" = queue.SimpleQueue()
         self._lock = threading.Lock()
         self._pending_bytes = 0
         self._drained = threading.Event()
@@ -59,13 +59,13 @@ class AsyncPersister:
         self._thread = threading.Thread(target=self._run, name="voxlogica-persist", daemon=True)
         self._thread.start()
 
-    def submit(self, node_id: NodeId, value: Any, metadata: dict) -> None:
+    def submit(self, node_id: NodeId, value: Any, metadata: dict, compute_ms: float = 0.0) -> None:
         """Hand a value to the writer thread. Never blocks."""
         size = approx_bytes(value)
         with self._lock:
             self._pending_bytes += size
             self._drained.clear()
-        self._queue.put((node_id, value, metadata, size))
+        self._queue.put((node_id, value, metadata, size, compute_ms))
 
     @property
     def over_budget(self) -> bool:
@@ -86,12 +86,12 @@ class AsyncPersister:
             item = self._queue.get()
             if item is None:
                 return
-            node_id, value, metadata, size = item
+            node_id, value, metadata, size, compute_ms = item
             try:
                 # Idempotent: skip a value already durable on disk, so re-runs
                 # over a warm cache do not rewrite unchanged payloads.
                 if not self._backend.has(node_id):
-                    self._backend.put_success(node_id, value, metadata=metadata)
+                    self._backend.put_success(node_id, value, metadata=metadata, compute_ms=compute_ms)
             except Exception:  # noqa: BLE001
                 logger.exception("async persistence failed for node %s", node_id)
             finally:

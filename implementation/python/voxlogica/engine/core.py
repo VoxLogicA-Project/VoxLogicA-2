@@ -18,6 +18,7 @@ import asyncio
 import itertools
 import os
 import sys
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -168,7 +169,7 @@ class ComputationEngine:
         self._pending[nid] = count
         return count == 0
 
-    def _finish(self, nid: NodeId, value: Any, persist: bool = True) -> None:
+    def _finish(self, nid: NodeId, value: Any, persist: bool = True, compute_ms: float = 0.0) -> None:
         """Record a value, release dependencies, and unblock dependents.
 
         Constants and closures are trivial and not persisted: a closure exists
@@ -177,7 +178,7 @@ class ComputationEngine:
         """
         node = self.table.nodes[nid]
         if persist:
-            self.table.complete(nid, value)
+            self.table.complete(nid, value, compute_ms)
             if node.operator in _SEQUENCE_OPERATORS:
                 for index, item in enumerate(value):
                     self.table.complete_item(nid, index, item)
@@ -305,8 +306,10 @@ class ComputationEngine:
                         if dep not in self.table.values:
                             self._rematerialize(dep)  # recompute deps evicted under pressure
                     self.table.begin(nid)  # enforces the no-double-computation invariant
+                    started = time.perf_counter()
                     value = await self.executor.run(self.table, nid)
-                    self._finish(nid, value)
+                    # measured recompute cost feeds the cache's cost-aware eviction
+                    self._finish(nid, value, compute_ms=(time.perf_counter() - started) * 1000.0)
             except Exception as exc:  # noqa: BLE001
                 if self._first_error is None:
                     self._first_error = exc

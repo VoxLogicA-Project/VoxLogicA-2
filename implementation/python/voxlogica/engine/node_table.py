@@ -99,14 +99,18 @@ class NodeTable:
             )
         self._running.add(node_id)
 
-    def complete(self, node_id: NodeId, value: Any) -> None:
-        """Record a freshly computed value and hand it to the background writer."""
+    def complete(self, node_id: NodeId, value: Any, compute_ms: float = 0.0) -> None:
+        """Record a freshly computed value and hand it to the background writer.
+
+        ``compute_ms`` is the kernel's measured wall-time; it feeds the cache's
+        cost-aware eviction so expensive results are kept over cheap ones.
+        """
         self._running.discard(node_id)
         self.set_value(node_id, value)
         self.completed.add(node_id)
         if self._persister is not None:
             node = self.nodes[node_id]
-            self._persister.submit(node_id, value, {"source": "runtime", "operator": node.operator})
+            self._persister.submit(node_id, value, {"source": "runtime", "operator": node.operator}, compute_ms)
 
     def complete_item(self, node_id: NodeId, index: int, value: Any) -> None:
         """Persist one element of a sequence-valued node under its derived key."""
