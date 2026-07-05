@@ -120,13 +120,17 @@ class NodeTable:
         self._running.discard(node_id)
         self.set_value(node_id, value)
         self.completed.add(node_id)
-        if self._persister is not None:
+        # Caching is best-effort: when the background writer is behind (backlog
+        # over budget) we skip persisting this value rather than stalling compute.
+        # The value stays in the live tier for correctness; it just may not be on
+        # disk for later reuse. Compute never waits on the cache.
+        if self._persister is not None and not self._persister.over_budget:
             node = self.nodes[node_id]
             self._persister.submit(node_id, value, {"source": "runtime", "operator": node.operator}, compute_ms)
 
     def complete_item(self, node_id: NodeId, index: int, value: Any) -> None:
         """Persist one element of a sequence-valued node under its derived key."""
-        if self._persister is not None:
+        if self._persister is not None and not self._persister.over_budget:
             item_id = hash_sequence_item(node_id, index)
             self._persister.submit(item_id, value, {"source": "runtime", "index": index})
 
