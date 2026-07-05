@@ -141,6 +141,53 @@ the rewrite. Regression coverage: `tests/unit/test_sequence_fusion.py` pins both
 the semantics and the "only demanded elements computed" property, on both
 strategies.
 
+## Pass 3 — CPU parity and non-blocking disk cache
+
+**Beating `main` on CPU.** The kernels are identical, so the only CPU to win
+back is redundant work. Profiling the sweep exposed one: `ReadImage` and
+`MinimumMaximum` ran **twice per case** (20 calls for 10 cases). Cause: a closure
+releases its captured values when it completes, but a closure completes
+trivially the instant its captures exist — *before* the loop it gates has
+expanded. With eager eviction that dropped the loop's input image to zero
+consumers and evicted it, so the first expanded body re-read it. Fix
+(`core._finish`/`_expand`): a closure no longer releases its captures on
+completion; expansion transfers that hold to the per-element bodies once they
+are the real consumers, so captures stay resident and inputs are read once
+(20 → 10 calls). `_deps` is also memoized (immutable node specs) to trim
+per-node scheduling cost.
+
+Result: the engine no longer does 2× the reads on a sliced workload; on equal
+work its CPU now **matches `main`** (was worse) while wall-clock stays ~1.6×
+better. Meaningfully *beating* `main` on CPU is not achievable — the kernels are
+identical and the engine carries irreducible bookkeeping (node objects,
+hash-consing, scheduling) that `main`'s direct recursion does not; the residual
+few-percent gap is that bookkeeping. Capping ITK per-op threads was tested and
+does not help (these kernels are not ITK-multithreaded here).
+
+**Non-blocking disk cache.** Caching previously (a) blocked the event loop when
+its bounded persist queue filled, (b) serialized values on the scheduling
+thread, and (c) rewrote every value on every run — so a cached run was ~2×
+slower than `--no-cache` and a warm re-run got no speedup. Replaced with a
+dedicated `AsyncPersister` (`engine/persist.py`):
+
+- Completed values are handed to one IO-bound writer thread through an unbounded
+  queue — `submit` never blocks the event loop, and serialization + disk writes
+  happen entirely off the scheduling thread.
+- Each value's reference is dropped the moment it is written, so it is
+  collectible as soon as the live tier has also released it — persistence never
+  pins memory past the write.
+- Writes are idempotent: a value already durable on disk is not rewritten, so a
+  warm re-run persists nothing.
+- The in-flight (unwritten) backlog is bounded by bytes; when it exceeds budget
+  the engine throttles dispatch of *new* kernels (an `await asyncio.sleep`, not a
+  blocked loop), so memory stays bounded without ever stalling scheduling.
+
+Effect on the 10-case sweep with a real SQLite backend: warm re-run **10.3 s →
+5.07 s** (now compute-bound, no rewrites); cold **10.1 s → 9.0 s**; peak RSS
+bounded at ~950 MB (backpressure) instead of ballooning; cold/warm/`--no-cache`
+outputs byte-identical. Regression coverage in
+`tests/unit/test_engine_caching.py`.
+
 ## Still open
 
 - **Peak memory > `main`** remains (parallelism working set; bounded) — the
@@ -156,3 +203,13 @@ strategies.
   (intermittent, order-dependent, in the lazy strategy's `fold` handling) is
   unrelated to this work — it reproduces on the pre-change tree — and is left
   for a separate investigation.
+- **Caching persists every intermediate.** A cold cached sweep still writes
+  ~8.5 GB (all 1000 threshold masks), so its wall-clock is disk-bound. These
+  intermediates are cheap to recompute and rarely reused, so the real win would
+  be a *policy* that caches only goals and expensive nodes — orthogonal to the
+  now-non-blocking write path, and a natural follow-up.
+- **Warm runs still recompute runtime-expanded nodes.** Cache short-circuiting
+  prunes only symbolic-plan nodes at schedule time; nodes created by runtime
+  loop expansion are not checked against the cache. For these cheap kernels
+  recompute is faster than reloading their large payloads anyway, so this only
+  matters once the caching policy above is in place.

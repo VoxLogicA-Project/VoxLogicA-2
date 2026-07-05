@@ -287,6 +287,14 @@ class ComputationEngine:
                 elif node.kind == "closure":
                     self._finish(nid, None, persist=False)  # trivial; only its captures matter
                 else:
+                    # Throttle *new* kernels when the disk writer is behind, so
+                    # the unwritten backlog can't grow without bound. This yields
+                    # the event loop (completions and writes keep flowing) rather
+                    # than blocking it, then re-queues this node to retry.
+                    if self.table.persist_over_budget:
+                        await asyncio.sleep(0.002)
+                        self._enqueue(nid)
+                        continue
                     for dep in self._deps(nid):
                         if dep not in self.table.values:
                             self._rematerialize(dep)  # recompute deps evicted under pressure
