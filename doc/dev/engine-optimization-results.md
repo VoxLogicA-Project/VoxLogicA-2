@@ -203,12 +203,18 @@ outputs byte-identical. Regression coverage in
   (intermittent, order-dependent, in the lazy strategy's `fold` handling) is
   unrelated to this work — it reproduces on the pre-change tree — and is left
   for a separate investigation.
-- **Caching persists every intermediate**, but binary payloads are now
-  gzip-compressed (level 1) — label maps and threshold masks are mostly constant
-  and shrink ~70× (a 10-case sweep's payloads went 8.5 GB → 124 MB). A full
-  dataset is now far more tractable, though a **cost-aware policy** (skip
-  cheap-and-huge intermediates entirely) is still the deferred follow-up; the
-  machinery is ready for it (the writer sees each value's size).
+- **The persistent store is a bounded LRU cache.** It persists every value
+  (gzip level 1; masks shrink ~70×) but caps total payload bytes at a budget
+  (default 100 GB, `--cache-max-gb`, 0 = unbounded) and evicts least-recently-
+  used payloads past it — oldest access first, larger first among ties, on the
+  async writer thread. Evicted values are regenerable from lineage, so eviction
+  only ever costs a recompute. This is deliberately *eviction*, not admission:
+  admission is a blind bet at write time (refuse a subtree, get a variant next
+  line, lose it), whereas eviction observes actual reuse and recency naturally
+  protects the "variant on the next line" case. Verified end-to-end: a 1-case
+  brats014 run that would write ~6 GB stays at ~1.8 GB under a 2 GB budget, with
+  correct output. Upgrading LRU to size/cost/frequency-weighted (GDSF/LHD) is a
+  possible refinement if profiling shows hot scalars evicted for cold images.
 
 ## Pass 4 — one scheduling/caching path for every node
 

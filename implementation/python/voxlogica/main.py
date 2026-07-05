@@ -117,7 +117,8 @@ def run_command(args: argparse.Namespace) -> int:
 
     execution_result = None
     if args.execute:
-        storage = NoCacheStorageBackend() if args.no_cache else SQLiteResultsDatabase(db_path=args.store_db)
+        storage = NoCacheStorageBackend() if args.no_cache else SQLiteResultsDatabase(
+            db_path=args.store_db, max_bytes=int(args.cache_max_gb * 1024 ** 3))
         execution_result = ExecutionEngine(
             storage_backend=storage,
             no_cache=args.no_cache,
@@ -171,6 +172,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete the persistent results database and payload files before running (prompts for confirmation)",
     )
     run_parser.add_argument("--store-db", help="Path to the persistent results SQLite database")
+    run_parser.add_argument("--cache-max-gb", type=float, default=100.0, metavar="GB",
+                            help="Persistent cache byte budget in GB; LRU-evict past it (0 = unbounded)")
     run_parser.add_argument("--debug", action="store_true")
     run_parser.add_argument("--engine", action=argparse.BooleanOptionalAction, default=True,
                             help="Use the live computation engine (default); --no-engine selects the lazy strategy")
