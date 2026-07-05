@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from voxlogica.engine.persist import AsyncPersister
+from voxlogica.engine.persist import AsyncPersister, approx_bytes
 from voxlogica.lazy.hash import hash_node, hash_sequence_item
 from voxlogica.lazy.ir import NodeId, NodeSpec
 from voxlogica.storage import NoCacheStorageBackend, StorageBackend
@@ -57,9 +57,21 @@ class NodeTable:
         self.completed: set[NodeId] = set()
         self._backend = backend if backend is not None and not isinstance(backend, NoCacheStorageBackend) else None
         self._persister = AsyncPersister(self._backend, _persist_backlog_budget()) if self._backend else None
+        # Bytes resident in the live tier, tracked incrementally so the scheduler
+        # can bound the working set (admission control) without rescanning values.
+        self._sizeof: dict[NodeId, int] = {}
+        self.live_bytes = 0
+        self.peak_live_bytes = 0
 
     def set_value(self, node_id: NodeId, value: Any) -> None:
-        """Place a value in the live tier."""
+        """Place a value in the live tier, updating the resident-bytes total."""
+        if node_id in self._sizeof:
+            self.live_bytes -= self._sizeof[node_id]
+        size = approx_bytes(value)
+        self._sizeof[node_id] = size
+        self.live_bytes += size
+        if self.live_bytes > self.peak_live_bytes:
+            self.peak_live_bytes = self.live_bytes
         self.values[node_id] = value
 
     def intern(self, node: NodeSpec) -> NodeId:
@@ -124,7 +136,8 @@ class NodeTable:
         A pending disk write keeps its own reference, so the value survives until
         written; the persistent tier can reload it later on demand.
         """
-        self.values.pop(node_id, None)
+        if self.values.pop(node_id, None) is not None:
+            self.live_bytes -= self._sizeof.pop(node_id, 0)
 
     def flush(self, timeout_s: float = 30.0) -> None:
         """Block until the background writer has drained (called once, at end of run)."""

@@ -76,6 +76,7 @@ class EngineExecutionStrategy:
             failed_operations=failures,
             execution_time=time.time() - started,
             total_operations=len(engine.table.nodes),
+            cache_summary=engine.metrics(),
         )
 
     # ── Goal side effects ─────────────────────────────────────────────────────────────────────

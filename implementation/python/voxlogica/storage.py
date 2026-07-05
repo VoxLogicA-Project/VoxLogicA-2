@@ -204,7 +204,8 @@ class SQLiteResultsDatabase:
         self._gd_clock = float(
             (self._connection.execute("SELECT COALESCE(MIN(gd_key), 0.0) FROM results WHERE payload_bytes > 0").fetchone() or [0.0])[0]
         )
-        self._stats = {"writes": 0, "evictions": 0, "evicted_bytes": 0, "hits": 0}
+        self._stats = {"writes": 0, "evictions": 0, "evicted_bytes": 0, "hits": 0,
+                       "evicted_dead": 0, "evicted_live": 0}
 
     def _results_table_matches_schema(self) -> bool:
         rows = self._connection.execute("PRAGMA table_info(results)").fetchall()
@@ -469,6 +470,7 @@ class SQLiteResultsDatabase:
                     self._payload_bytes -= int(nbytes or 0)
                     self._gd_clock = max(self._gd_clock, float(gd_key))
                     self._stats["evictions"] += 1
+                    self._stats["evicted_dead"] += 1
                     self._stats["evicted_bytes"] += int(nbytes or 0)
                 # If no dead values were evicted and we're still over, evict live (last resort)
                 if not dead_evicted and self._payload_bytes > low_water:
@@ -485,6 +487,7 @@ class SQLiteResultsDatabase:
                         self._payload_bytes -= int(nbytes or 0)
                         self._gd_clock = max(self._gd_clock, float(gd_key))
                         self._stats["evictions"] += 1
+                        self._stats["evicted_live"] += 1
                         self._stats["evicted_bytes"] += int(nbytes or 0)
                     break  # one forced pass is enough
 

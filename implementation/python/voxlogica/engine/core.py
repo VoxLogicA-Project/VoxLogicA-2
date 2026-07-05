@@ -15,6 +15,7 @@ locks); only primitive kernels run off-thread.
 from __future__ import annotations
 
 import asyncio
+import heapq
 import itertools
 import os
 import sys
@@ -23,6 +24,27 @@ from collections import defaultdict
 from typing import Any
 
 from tqdm import tqdm
+
+
+def _default_live_budget() -> int:
+    """Default cap on live-tier bytes for admission control.
+
+    Bounds the working set so a wide fan-out cannot make the whole DAG live at
+    once. Overridable via ``VOXLOGICA_MAX_LIVE_GB``; otherwise ~40% of system RAM
+    (fallback 8 GB), which keeps the frontier well within memory while leaving
+    room for the interpreter and off-heap kernel buffers.
+    """
+    raw = os.environ.get("VOXLOGICA_MAX_LIVE_GB")
+    if raw:
+        try:
+            return max(1, int(float(raw) * 1024 ** 3))
+        except ValueError:
+            pass
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return int(total * 0.4)
+    except (ValueError, OSError, AttributeError):
+        return 8 * 1024 ** 3
 
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
@@ -42,10 +64,11 @@ class ComputationEngine:
 
     def __init__(self, registry: PrimitiveRegistry | None = None,
                  backend: StorageBackend | None = None, max_concurrency: int = 0,
-                 progress: bool = False, debug: bool = False):
+                 progress: bool = False, debug: bool = False, max_live_bytes: int = 0):
         self.registry = registry or PrimitiveRegistry()
         self.table = NodeTable(backend=backend)
         self.max_concurrency = max_concurrency or (os.cpu_count() or 8)
+        self._max_live_bytes = max_live_bytes or _default_live_budget()
         self.executor = Executor(self.registry, self.max_concurrency)
         self.expander = Expander(self.table, self.registry)
         self._show_progress = progress
@@ -70,6 +93,11 @@ class ComputationEngine:
         self._queries: list[Query] = []
         self._query_ids = itertools.count()
         self._first_error: BaseException | None = None
+        # Admission control: ready nodes held back while the live tier is over
+        # budget, so a wide fan-out cannot make the whole DAG live at once.
+        self._deferred: list[tuple[int, int, NodeId]] = []
+        self._recomputes = 0  # times an evicted value had to be recomputed (not reloaded)
+        self._live_refresh = 0  # throttles the O(n) live-set push to the backend
 
     # ── Public API ──────────────────────────────────────────────────────────────────────────
 
@@ -193,10 +221,16 @@ class ComputationEngine:
             self._pending[child] -= 1
             if self._pending[child] == 0:
                 self._enqueue(child)
-        # Update storage's live-node set so eviction prioritizes dead values over
-        # live ones. Do this after enqueuing dependents so the set is current.
+        # Refresh storage's live-node set so eviction prefers dead values, but
+        # only periodically: recomputing it is O(scheduled), and disk-evicting a
+        # still-RAM-resident value is free anyway, so a slightly stale set is
+        # harmless. (Doing this every completion was quadratic and starved the
+        # event loop — the original cause of the single-core collapse.)
         if self.table._backend is not None:
-            self.table._backend.set_live_nodes(self._compute_live_values())
+            self._live_refresh += 1
+            if self._live_refresh >= 128:
+                self._live_refresh = 0
+                self.table._backend.set_live_nodes(self._compute_live_values())
         self._settle_node(nid)
         if self._progress is not None:
             self._progress.set_postfix_str(node.operator, refresh=False)
@@ -269,6 +303,7 @@ class ComputationEngine:
         else:
             for child in self._deps(nid):
                 self._rematerialize(child)
+            self._recomputes += 1  # an evicted value we could neither find nor reload
             value = self.executor._compute(self.table, nid)
         self.table.set_value(nid, value)
         return value
@@ -315,6 +350,10 @@ class ComputationEngine:
                     self._first_error = exc
                 self._fail_waiters(nid, exc)
             finally:
+                # Admit held-back work before signalling this task done, so the
+                # ready queue is never observed empty while nodes are deferred
+                # (which would let _ready.join() return with work outstanding).
+                self._admit()
                 self._ready.task_done()
 
     # ── Helpers ─────────────────────────────────────────────────────────────────────────────
@@ -332,6 +371,26 @@ class ComputationEngine:
             cached = frozenset(Expander.dependencies(self.table.nodes[nid]))
             self._deps_cache[nid] = cached
         return cached
+
+    def metrics(self) -> dict[str, Any]:
+        """Scheduler/cache statistics for the run summary.
+
+        ``recomputes`` should be ~0: a healthy run computes each node once, so a
+        large value signals eviction⇄recompute thrash. ``peak_live_bytes`` is the
+        high-water mark of the resident working set (what admission control bounds).
+        """
+        m: dict[str, Any] = {
+            "peak_live_mb": round(self.table.peak_live_bytes / 1024 ** 2, 1),
+            "live_budget_mb": round(self._max_live_bytes / 1024 ** 2, 1),
+            "recomputes": self._recomputes,
+        }
+        backend = self.table._backend
+        if backend is not None and hasattr(backend, "stats"):
+            s = backend.stats()
+            m["cache_bytes_mb"] = round(s.get("payload_bytes", 0) / 1024 ** 2, 1)
+            m["evicted_dead"] = s.get("evicted_dead", 0)
+            m["evicted_live"] = s.get("evicted_live", 0)
+        return m
 
     def _compute_live_values(self) -> set[NodeId]:
         """Return nodes still needed by any active goal or incomplete work.
@@ -368,8 +427,31 @@ class ComputationEngine:
         entry = (-self._priority.get(nid, 0), -next(self._seq), nid)
         if self._ready is None:
             self._pre_ready.append(entry)
+        elif (self.table.live_bytes > self._max_live_bytes
+              and self._ready.qsize() >= self.max_concurrency):
+            # Live tier over budget and workers already have enough to do: hold
+            # this node back rather than widening the frontier. It is admitted
+            # again once completions free live bytes (or the queue would starve).
+            heapq.heappush(self._deferred, entry)
         else:
             self._ready.put_nowait(entry)
+
+    def _admit(self) -> None:
+        """Move held-back nodes into the ready queue as capacity frees up.
+
+        Admits while the live tier is under budget, and *always* admits when the
+        ready queue would otherwise starve workers — this is the progress floor
+        that guarantees forward progress (and prevents ``_ready.join()`` from
+        returning while work is still deferred), at the cost of briefly exceeding
+        the soft budget when a single step's inputs are unavoidably large.
+        """
+        if self._ready is None:
+            return
+        while self._deferred:
+            starving = self._ready.qsize() < self.max_concurrency
+            if self.table.live_bytes > self._max_live_bytes and not starving:
+                break
+            self._ready.put_nowait(heapq.heappop(self._deferred))
 
     def _raise_priority(self, nid: NodeId, priority: int) -> None:
         """Propagate a priority bump to a node and its unfinished dependencies.
