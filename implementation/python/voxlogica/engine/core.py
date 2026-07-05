@@ -25,27 +25,7 @@ from typing import Any
 
 from tqdm import tqdm
 
-
-def _default_live_budget() -> int:
-    """Default cap on live-tier bytes for admission control.
-
-    Bounds the working set so a wide fan-out cannot make the whole DAG live at
-    once. Overridable via ``VOXLOGICA_MAX_LIVE_GB``; otherwise ~40% of system RAM
-    (fallback 8 GB), which keeps the frontier well within memory while leaving
-    room for the interpreter and off-heap kernel buffers.
-    """
-    raw = os.environ.get("VOXLOGICA_MAX_LIVE_GB")
-    if raw:
-        try:
-            return max(1, int(float(raw) * 1024 ** 3))
-        except ValueError:
-            pass
-    try:
-        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-        return int(total * 0.4)
-    except (ValueError, OSError, AttributeError):
-        return 8 * 1024 ** 3
-
+from voxlogica.engine.config import EngineConfig
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
 from voxlogica.engine.node_table import NodeTable
@@ -55,6 +35,8 @@ from voxlogica.lazy.ir import NodeId, SymbolicPlan
 from voxlogica.primitives.registry import PrimitiveRegistry
 from voxlogica.storage import StorageBackend
 
+# Operators whose result is a sequence produced by a (possibly runtime-unrolled)
+# loop. Persisting one of these prunes its whole subtree on a warm re-run.
 _SEQUENCE_OPERATORS = {"default.sequence", "sequence", "default.map", "map",
                        "default.for_loop", "for_loop", "default.filter", "filter"}
 
@@ -68,52 +50,57 @@ class ComputationEngine:
         self.registry = registry or PrimitiveRegistry()
         self.table = NodeTable(backend=backend)
         self.max_concurrency = max_concurrency or (os.cpu_count() or 8)
-        self._max_live_bytes = max_live_bytes or _default_live_budget()
+        self.config = EngineConfig.from_env(self.max_concurrency, max_live_bytes)
         self.executor = Executor(self.registry, self.max_concurrency)
         self.expander = Expander(self.table, self.registry)
         self._show_progress = progress
         self._debug = debug
         self._progress: tqdm | None = None
 
-        # Scheduling state (event-loop owned).
-        self._pending: dict[NodeId, int] = {}
+        # ── Dependency graph (event-loop owned; no locks) ──
+        self._deps_cache: dict[NodeId, frozenset[NodeId]] = {}  # memoised, node specs are immutable
+        self._consumers: dict[NodeId, int] = defaultdict(int)   # refcount: unrun consumers of a value
         self._dependents: dict[NodeId, list[NodeId]] = defaultdict(list)
-        self._consumers: dict[NodeId, int] = defaultdict(int)
+        self._pending: dict[NodeId, int] = {}                   # unmet deps before a node is ready
         self._priority: dict[NodeId, int] = {}
         self._scheduled: set[NodeId] = set()
+        self._alias: dict[NodeId, NodeId] = {}                  # a loop node -> its spliced sequence node
+
+        # ── Queries / goals ──
         self._goals: set[NodeId] = set()
-        self._alias: dict[NodeId, NodeId] = {}
-        self._deps_cache: dict[NodeId, frozenset[NodeId]] = {}
-        self._waiters: dict[NodeId, list[Query]] = defaultdict(list)
-        # The ready queue is created once the event loop is running; submissions
-        # made before run() buffer here and are seeded in run().
-        self._ready: asyncio.PriorityQueue | None = None
-        self._pre_ready: list[tuple[int, int, NodeId]] = []
-        self._seq = itertools.count()
         self._queries: list[Query] = []
         self._query_ids = itertools.count()
+        self._waiters: dict[NodeId, list[Query]] = defaultdict(list)
         self._first_error: BaseException | None = None
-        # Admission control: ready nodes held back while the live tier is over
-        # budget, so a wide fan-out cannot make the whole DAG live at once.
+
+        # ── Ready queue + admission control ──
+        # Ready entries are (-priority, -seq, nid): highest priority, newest-first
+        # (depth-first). Built once run() is on the event loop; earlier submissions
+        # buffer in _pre_ready. Nodes are held in _deferred while the live tier is
+        # over budget, so a wide fan-out cannot make the whole DAG resident at once.
+        self._ready: asyncio.PriorityQueue | None = None
+        self._pre_ready: list[tuple[int, int, NodeId]] = []
         self._deferred: list[tuple[int, int, NodeId]] = []
-        self._recomputes = 0  # times an evicted value had to be recomputed (not reloaded)
-        self._live_refresh = 0  # throttles the O(n) live-set push to the backend
-        # Bounded loop unrolling: a loop registers only a window of its
-        # independent bodies at a time and admits the next as they complete, so a
-        # 30x150 sweep never makes the whole DAG "live" at once (which is what
-        # left the cache no dead values to evict and forced live eviction/thrash).
-        self._body_window = max(self.max_concurrency, int(os.environ.get("VOXLOGICA_LOOP_WINDOW", 0)) or self.max_concurrency)
+        self._seq = itertools.count()
+        self._reload_deferred: set[NodeId] = set()  # deferred once to prefer resident-ready work
+
+        # ── Bounded loop unrolling ──
+        # A loop schedules only config.loop_window of its independent bodies at a
+        # time, admitting the next as each completes, so the live frontier stays
+        # bounded regardless of loop width.
         self._loop_bodies: dict[NodeId, list[NodeId]] = {}
         self._loop_next: dict[NodeId, int] = {}
-        self._loop_captures: dict[NodeId, list[NodeId]] = {}  # captures pinned for a loop's whole unroll
         self._body_owner: dict[NodeId, NodeId] = {}
-        self._peak_frontier = 0  # max scheduled-but-not-completed nodes (in-flight breadth)
-        self._reload_deferred: set[NodeId] = set()  # nodes deferred once to let resident-ready work run first
-        self._kernels_executed = 0  # kernels actually run this session (cold high; warm ~0 = full reuse)
-        self._critical_nodes: set[NodeId] = set()  # cut nodes to persist for-sure (goal deps): pruning them collapses whole subtrees on a warm re-run
-        # A result is persisted with a guarantee if it cost at least this long to
-        # compute or feeds at least this many consumers (env-overridable).
-        self._persist_fanout = int(os.environ.get("VOXLOGICA_PERSIST_FANOUT", 8))
+        self._loop_captures: dict[NodeId, list[NodeId]] = {}  # captures pinned for a loop's whole unroll
+
+        # ── Cache-admission policy + metrics ──
+        # Goal dependencies are the reuse "cut": persisting them prunes whole
+        # subtrees on a warm re-run (see _is_critical).
+        self._critical_nodes: set[NodeId] = set()
+        self._live_refresh = 0          # completions since the last live-set push
+        self._peak_frontier = 0         # max in-flight (scheduled-but-incomplete) nodes
+        self._kernels_executed = 0      # kernels run this session (cold high; warm ~0 = full reuse)
+        self._recomputes = 0            # evicted values that had to be recomputed, not reloaded
 
     # ── Public API ──────────────────────────────────────────────────────────────────────────
 
@@ -223,28 +210,7 @@ class ComputationEngine:
         """
         node = self.table.nodes[nid]
         if persist:
-            # Guarantee persistence of results worth reusing across runs. Besides
-            # the obvious ones (expensive to recompute, or shared by many
-            # consumers), this MUST include the structural loop/sequence nodes:
-            # they are cheap to compute but persisting one prunes its entire
-            # subtree on a warm re-run (the node is loaded instead of re-expanded
-            # and recomputed). Missing these was why a warm re-run still recomputed
-            # almost everything — the highest-leverage writes were being dropped.
-            # The critical set is kept SMALL on purpose: the goal-dependency cut
-            # plus the structural loop/sequence nodes. Persisting these (cheap,
-            # scalar/list-valued) prunes their whole subtrees on a warm re-run —
-            # coverage of nearly the entire DAG — so warm ≈ 0 kernels. Big image
-            # intermediates stay best-effort: forcing them critical would neither
-            # help warm pruning (pruned above them anyway) nor fit the writer, and
-            # would pin gigabytes in the persist backlog. Widely-shared results
-            # (high fan-out — a per-case image feeding every combo) are also kept,
-            # so a *variant* sweep reusing the same preprocessing recomputes only
-            # its changed tail; this is a small set (the sharing roots), not every
-            # intermediate.
-            critical = (nid in self._critical_nodes
-                        or node.operator in _SEQUENCE_OPERATORS
-                        or self._consumers.get(nid, 0) >= self._persist_fanout)
-            self.table.complete(nid, value, compute_ms, critical=critical)
+            self.table.complete(nid, value, compute_ms, critical=self._is_critical(nid, node))
             if node.operator in _SEQUENCE_OPERATORS:
                 for index, item in enumerate(value):
                     self.table.complete_item(nid, index, item)
@@ -264,27 +230,34 @@ class ComputationEngine:
             if self._pending[child] == 0:
                 self._enqueue(child)
         # If this node was a loop body, admit the next body of its loop now that
-        # one slot has freed — keeping ~_body_window bodies in flight.
+        # one slot has freed — keeping ~loop_window bodies in flight.
         owner = self._body_owner.pop(nid, None)
         if owner is not None:
             self._admit_bodies(owner, 1)
         frontier = len(self._scheduled) - len(self.table.completed)
-        if frontier > self._peak_frontier:
-            self._peak_frontier = frontier
-        # Refresh storage's live-node set so eviction prefers dead values, but
-        # only periodically: recomputing it is O(scheduled), and disk-evicting a
-        # still-RAM-resident value is free anyway, so a slightly stale set is
-        # harmless. (Doing this every completion was quadratic and starved the
-        # event loop — the original cause of the single-core collapse.)
-        if self.table._backend is not None:
-            self._live_refresh += 1
-            if self._live_refresh >= 128:
-                self._live_refresh = 0
-                self.table._backend.set_live_nodes(self._compute_live_values())
+        self._peak_frontier = max(self._peak_frontier, frontier)
+        self._refresh_live_nodes()
         self._settle_node(nid)
         if self._progress is not None:
             self._progress.set_postfix_str(node.operator, refresh=False)
             self._progress.update(1)
+
+    def _is_critical(self, nid: NodeId, node) -> bool:
+        """Whether a result must be persisted (vs. best-effort) for cross-run reuse.
+
+        The critical set is deliberately small and cheap, yet covers nearly the
+        whole DAG on a warm re-run:
+        - goal-dependency *cut* nodes — pruning one collapses its entire subtree;
+        - structural loop/sequence nodes — same leverage, and they gate re-expansion;
+        - widely-shared results (high fan-out) — a per-case image feeding every
+          combo, so a *variant* sweep reuses it and recomputes only its changed tail.
+        Everything else (large one-shot intermediates) stays best-effort: forcing
+        it critical would not aid warm pruning and would pin gigabytes in the
+        persist backlog.
+        """
+        return (nid in self._critical_nodes
+                or node.operator in _SEQUENCE_OPERATORS
+                or self._consumers.get(nid, 0) >= self.config.persist_fanout)
 
     def _release(self, dep: NodeId) -> None:
         """Drop a dependency's value once its last consumer has run.
@@ -347,7 +320,7 @@ class ComputationEngine:
             else:
                 self._loop_bodies[seq_id] = pending
                 self._loop_next[seq_id] = 0
-                self._admit_bodies(seq_id, self._body_window)
+                self._admit_bodies(seq_id, self.config.loop_window)
         # Hand the closure's capture-pin over to the bodies (see _finish). If the
         # loop is still unrolling in waves, keep holding the captures until it is
         # fully unrolled: releasing now would let a value shared across bodies
@@ -469,9 +442,9 @@ class ComputationEngine:
         """
         m: dict[str, Any] = {
             "peak_live_mb": round(self.table.peak_live_bytes / 1024 ** 2, 1),
-            "live_budget_mb": round(self._max_live_bytes / 1024 ** 2, 1),
+            "live_budget_mb": round(self.config.max_live_bytes / 1024 ** 2, 1),
             "peak_frontier": self._peak_frontier,
-            "loop_window": self._body_window,
+            "loop_window": self.config.loop_window,
             "kernels_executed": self._kernels_executed,
             "recomputes": self._recomputes,
         }
@@ -483,6 +456,23 @@ class ComputationEngine:
             m["evicted_dead"] = s.get("evicted_dead", 0)
             m["evicted_live"] = s.get("evicted_live", 0)
         return m
+
+    def _refresh_live_nodes(self) -> None:
+        """Periodically tell the cache which values are still live.
+
+        Eviction prefers dead values, but recomputing the live set is O(scheduled)
+        and disk-evicting a still-RAM-resident value is free anyway, so a slightly
+        stale set is harmless — refresh only every ``live_refresh_interval``
+        completions. (Doing it every completion was quadratic and starved the
+        event loop — the original single-core collapse.)
+        """
+        backend = self.table._backend
+        if backend is None:
+            return
+        self._live_refresh += 1
+        if self._live_refresh >= self.config.live_refresh_interval:
+            self._live_refresh = 0
+            backend.set_live_nodes(self._compute_live_values())
 
     def _compute_live_values(self) -> set[NodeId]:
         """Return nodes still needed by any active goal or incomplete work.
@@ -519,7 +509,7 @@ class ComputationEngine:
         entry = (-self._priority.get(nid, 0), -next(self._seq), nid)
         if self._ready is None:
             self._pre_ready.append(entry)
-        elif (self.table.live_bytes > self._max_live_bytes
+        elif (self.table.live_bytes > self.config.max_live_bytes
               and self._ready.qsize() >= self.max_concurrency):
             # Live tier over budget and workers already have enough to do: hold
             # this node back rather than widening the frontier. It is admitted
@@ -569,7 +559,7 @@ class ComputationEngine:
             return
         while self._deferred:
             starving = self._ready.qsize() < self.max_concurrency
-            if self.table.live_bytes > self._max_live_bytes and not starving:
+            if self.table.live_bytes > self.config.max_live_bytes and not starving:
                 break
             self._ready.put_nowait(heapq.heappop(self._deferred))
 
@@ -592,7 +582,6 @@ class ComputationEngine:
 
     def _dump_stuck(self) -> None:
         """Diagnostic: report scheduled nodes that never completed."""
-        import sys
         stuck = [n for n in self._scheduled if n not in self.table.completed]
         print(f"[stuck] qsize={self._ready.qsize()} scheduled={len(self._scheduled)} "
               f"completed={len(self.table.completed)} stuck={len(stuck)} alias={len(self._alias)}", file=sys.stderr)
