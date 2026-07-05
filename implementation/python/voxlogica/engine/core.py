@@ -110,6 +110,7 @@ class ComputationEngine:
         self._peak_frontier = 0  # max scheduled-but-not-completed nodes (in-flight breadth)
         self._reload_deferred: set[NodeId] = set()  # nodes deferred once to let resident-ready work run first
         self._kernels_executed = 0  # kernels actually run this session (cold high; warm ~0 = full reuse)
+        self._critical_nodes: set[NodeId] = set()  # cut nodes to persist for-sure (goal deps): pruning them collapses whole subtrees on a warm re-run
         # A result is persisted with a guarantee if it cost at least this long to
         # compute or feeds at least this many consumers (env-overridable).
         self._persist_cost_ms = float(os.environ.get("VOXLOGICA_PERSIST_COST_MS", 50))
@@ -131,6 +132,11 @@ class ComputationEngine:
                       name=name, priority=priority)
         self._queries.append(query)
         self._goals.add(node_id)
+        # A goal's direct dependencies are the reuse "cut": persisting them means a
+        # warm re-run prunes (and reloads) their whole subtrees instead of
+        # recomputing. They are typically cheap (a per-case result), so this is
+        # near-free to persist yet collapses the entire computation on re-run.
+        self._critical_nodes.update(self._deps(node_id))
         self._waiters[node_id].append(query)
         query.status = QueryStatus.RUNNING
         self._schedule_subgraph(node_id, int(priority))
@@ -229,7 +235,8 @@ class ComputationEngine:
             # subtree on a warm re-run (the node is loaded instead of re-expanded
             # and recomputed). Missing these was why a warm re-run still recomputed
             # almost everything — the highest-leverage writes were being dropped.
-            critical = (node.operator in _SEQUENCE_OPERATORS
+            critical = (nid in self._critical_nodes
+                        or node.operator in _SEQUENCE_OPERATORS
                         or compute_ms >= self._persist_cost_ms
                         or self._consumers.get(nid, 0) >= self._persist_fanout)
             self.table.complete(nid, value, compute_ms, critical=critical)
