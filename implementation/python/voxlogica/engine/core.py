@@ -98,6 +98,15 @@ class ComputationEngine:
         self._deferred: list[tuple[int, int, NodeId]] = []
         self._recomputes = 0  # times an evicted value had to be recomputed (not reloaded)
         self._live_refresh = 0  # throttles the O(n) live-set push to the backend
+        # Bounded loop unrolling: a loop registers only a window of its
+        # independent bodies at a time and admits the next as they complete, so a
+        # 30x150 sweep never makes the whole DAG "live" at once (which is what
+        # left the cache no dead values to evict and forced live eviction/thrash).
+        self._body_window = max(self.max_concurrency, int(os.environ.get("VOXLOGICA_LOOP_WINDOW", 0)) or self.max_concurrency)
+        self._loop_bodies: dict[NodeId, list[NodeId]] = {}
+        self._loop_next: dict[NodeId, int] = {}
+        self._body_owner: dict[NodeId, NodeId] = {}
+        self._peak_frontier = 0  # max scheduled-but-not-completed nodes (in-flight breadth)
 
     # ── Public API ──────────────────────────────────────────────────────────────────────────
 
@@ -225,6 +234,14 @@ class ComputationEngine:
             self._pending[child] -= 1
             if self._pending[child] == 0:
                 self._enqueue(child)
+        # If this node was a loop body, admit the next body of its loop now that
+        # one slot has freed — keeping ~_body_window bodies in flight.
+        owner = self._body_owner.pop(nid, None)
+        if owner is not None:
+            self._admit_bodies(owner, 1)
+        frontier = len(self._scheduled) - len(self.table.completed)
+        if frontier > self._peak_frontier:
+            self._peak_frontier = frontier
         # Refresh storage's live-node set so eviction prefers dead values, but
         # only periodically: recomputing it is O(scheduled), and disk-evicting a
         # still-RAM-resident value is free anyway, so a slightly stale set is
@@ -273,11 +290,35 @@ class ComputationEngine:
             raise RuntimeError(f"cannot expand loop node {nid[:12]} ({node.operator})")
         seq_id, _new_ids = result
         priority = self._priority.get(nid, int(Priority.NORMAL))
-        before = len(self._scheduled)
-        self._schedule_subgraph(seq_id, priority)
-        if self._progress is not None and len(self._scheduled) > before:
-            self._progress.total += len(self._scheduled) - before  # the graph grew
-            self._progress.refresh()
+        if (seq_id in self._scheduled or seq_id in self.table.completed
+                or (seq_id not in self._goals and self.table.persisted(seq_id))):
+            # Already scheduled or cached: nothing to unroll, take the normal path.
+            self._schedule_subgraph(seq_id, priority)
+        else:
+            # Bounded unroll: register the sequence node depending on all bodies,
+            # but only schedule a window of body subtrees now; the rest are
+            # admitted as bodies complete (see _finish -> _admit_bodies). This
+            # keeps the set of incomplete (== "live") nodes small so the cache
+            # always has dead values to evict instead of live ones.
+            self._scheduled.add(seq_id)
+            self._priority[seq_id] = max(self._priority.get(seq_id, 0), priority)
+            pending = []
+            count = 0
+            for body in self.table.nodes[seq_id].args:
+                self._consumers[body] += 1
+                if body in self.table.completed:
+                    continue
+                self._dependents[body].append(seq_id)
+                self._body_owner[body] = seq_id
+                pending.append(body)
+                count += 1
+            self._pending[seq_id] = count
+            if count == 0:
+                self._enqueue(seq_id)
+            else:
+                self._loop_bodies[seq_id] = pending
+                self._loop_next[seq_id] = 0
+                self._admit_bodies(seq_id, self._body_window)
         # The bodies just registered as the real consumers of the closure's
         # captures; hand the closure's pin over to them (see _finish). The
         # captures stay resident throughout — never dropping to zero — so the
@@ -386,6 +427,8 @@ class ComputationEngine:
         m: dict[str, Any] = {
             "peak_live_mb": round(self.table.peak_live_bytes / 1024 ** 2, 1),
             "live_budget_mb": round(self._max_live_bytes / 1024 ** 2, 1),
+            "peak_frontier": self._peak_frontier,
+            "loop_window": self._body_window,
             "recomputes": self._recomputes,
         }
         backend = self.table._backend
@@ -439,6 +482,30 @@ class ComputationEngine:
             heapq.heappush(self._deferred, entry)
         else:
             self._ready.put_nowait(entry)
+
+    def _admit_bodies(self, seq_id: NodeId, count: int) -> None:
+        """Schedule up to ``count`` more of a loop's not-yet-admitted bodies.
+
+        Called with the window size at expansion, then with 1 each time a body of
+        this loop completes — so roughly ``_body_window`` bodies are in flight at
+        once, bounding how much of the DAG is live regardless of the loop's width.
+        """
+        bodies = self._loop_bodies.get(seq_id)
+        if bodies is None:
+            return
+        index = self._loop_next[seq_id]
+        priority = self._priority.get(seq_id, int(Priority.NORMAL))
+        admitted = 0
+        while index < len(bodies) and admitted < count:
+            body = bodies[index]
+            index += 1
+            admitted += 1
+            if body not in self._scheduled and body not in self.table.completed:
+                self._schedule_subgraph(body, priority)
+        self._loop_next[seq_id] = index
+        if index >= len(bodies):  # fully unrolled; drop the bookkeeping
+            self._loop_bodies.pop(seq_id, None)
+            self._loop_next.pop(seq_id, None)
 
     def _admit(self) -> None:
         """Move held-back nodes into the ready queue as capacity frees up.
