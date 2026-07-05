@@ -29,7 +29,12 @@ from voxlogica.value_model import VOX_FORMAT_VERSION
 
 MATERIALIZED_STATUS = "materialized"
 PLANNED_STATUS = "planned"
-STORE_SCHEMA_VERSION = 2
+STORE_SCHEMA_VERSION = 3
+# The persistent result store is a bounded cache: once its payloads exceed this
+# many bytes, least-recently-used entries are evicted (their rows + payload files
+# deleted) until back under budget. Values are regenerable from lineage, so an
+# evicted entry only ever costs a recompute. 0 disables the bound (unbounded).
+DEFAULT_CACHE_MAX_BYTES = 100 * 1024 ** 3
 # Maximum number of value-bearing entries kept in the in-memory cache tier.
 # Overridable via VOXLOGICA_MEMORY_CACHE_CAPACITY for memory-heavy runs.
 DEFAULT_MEMORY_CACHE_CAPACITY = 1024
@@ -53,6 +58,8 @@ _RESULTS_TABLE_COLUMNS = frozenset(
         "runtime_version",
         "created_at",
         "updated_at",
+        "accessed_at",
+        "payload_bytes",
     }
 )
 logger = logging.getLogger(__name__)
@@ -165,17 +172,24 @@ class StorageBackend(ABC):
 class SQLiteResultsDatabase:
     """SQLite plus payload-file storage keyed by stable node hashes."""
 
-    def __init__(self, db_path: str | Path | None = None, runtime_version: str | None = None):
+    def __init__(self, db_path: str | Path | None = None, runtime_version: str | None = None,
+                 max_bytes: int | None = None):
         self.db_path = Path(db_path) if db_path is not None else _default_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.payload_dir = self.db_path.with_suffix(self.db_path.suffix + ".files")
         self.payload_dir.mkdir(parents=True, exist_ok=True)
         self.runtime_version = runtime_version or "unknown"
+        self._max_bytes = DEFAULT_CACHE_MAX_BYTES if max_bytes is None else max_bytes
         self._lock = threading.RLock()
         self._connection = sqlite3.connect(str(self.db_path), check_same_thread=False, isolation_level=None, timeout=5.0)
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA synchronous=NORMAL")
         self._initialize_schema()
+        # Running total of stored payload bytes, so the byte budget can be
+        # enforced without restatting the payload directory on every write.
+        self._payload_bytes = int(
+            (self._connection.execute("SELECT COALESCE(SUM(payload_bytes), 0) FROM results").fetchone() or [0])[0]
+        )
 
     def _results_table_matches_schema(self) -> bool:
         rows = self._connection.execute("PRAGMA table_info(results)").fetchall()
@@ -188,6 +202,11 @@ class SQLiteResultsDatabase:
             version = int((self._connection.execute("PRAGMA user_version").fetchone() or [0])[0])
             if version != STORE_SCHEMA_VERSION or not self._results_table_matches_schema():
                 self._connection.execute("DROP TABLE IF EXISTS results")
+                # A schema reset abandons every old payload file; clear them so
+                # they don't linger uncounted against the byte budget.
+                if self.payload_dir.exists():
+                    shutil.rmtree(self.payload_dir)
+                self.payload_dir.mkdir(parents=True, exist_ok=True)
                 self._connection.execute(
                     """
                     CREATE TABLE results (
@@ -204,11 +223,15 @@ class SQLiteResultsDatabase:
                         dependencies_json TEXT NOT NULL,
                         runtime_version TEXT NOT NULL,
                         created_at REAL NOT NULL,
-                        updated_at REAL NOT NULL
+                        updated_at REAL NOT NULL,
+                        accessed_at REAL NOT NULL,
+                        payload_bytes INTEGER NOT NULL DEFAULT 0
                     )
                     """
                 )
                 self._connection.execute("CREATE INDEX idx_results_status ON results(status)")
+                # Eviction scans by recency among rows that actually hold payload bytes.
+                self._connection.execute("CREATE INDEX idx_results_lru ON results(accessed_at) WHERE payload_bytes > 0")
                 self._connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
 
     def has(self, node_id: str) -> bool:
@@ -277,6 +300,11 @@ class SQLiteResultsDatabase:
             ).fetchone()
         if row is None:
             return None
+        if str(row[1]) == MATERIALIZED_STATUS:
+            # A load is a genuine reuse — refresh recency so the LRU budget keeps
+            # what is actually being used and evicts what is not.
+            with self._lock:
+                self._connection.execute("UPDATE results SET accessed_at = ? WHERE node_id = ?", (time.time(), node_id))
         payload_bin = None
         payload_file = row[6]
         if payload_file:
@@ -311,25 +339,29 @@ class SQLiteResultsDatabase:
         encoded = encode_for_storage(value)
         now = time.time()
         payload_file = None
+        payload_bytes = 0
         if encoded.payload_bin is not None:
             payload_file = f"{node_id}.bin"
             (self.payload_dir / payload_file).write_bytes(encoded.payload_bin)
+            payload_bytes = len(encoded.payload_bin)
         metadata_json = dumps_json(dict(metadata or {}))
         with self._lock:
             row = self._connection.execute(
-                "SELECT created_at, expression_json, dependencies_json FROM results WHERE node_id = ?",
+                "SELECT created_at, expression_json, dependencies_json, payload_bytes FROM results WHERE node_id = ?",
                 (node_id,),
             ).fetchone()
             created_at = float(row[0]) if row is not None else now
             expression_json = row[1] if row is not None else "{}"
             dependencies_json = row[2] if row is not None else "{}"
+            previous_bytes = int(row[3]) if row is not None else 0
             self._connection.execute(
                 """
                 INSERT INTO results (
                     node_id, status, format_version, vox_type, descriptor_json,
                     payload_json, payload_file, error, metadata_json, expression_json,
-                    dependencies_json, runtime_version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    dependencies_json, runtime_version, created_at, updated_at,
+                    accessed_at, payload_bytes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(node_id) DO UPDATE SET
                     status = excluded.status,
                     format_version = excluded.format_version,
@@ -342,7 +374,9 @@ class SQLiteResultsDatabase:
                     expression_json = excluded.expression_json,
                     dependencies_json = excluded.dependencies_json,
                     runtime_version = excluded.runtime_version,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    accessed_at = excluded.accessed_at,
+                    payload_bytes = excluded.payload_bytes
                 """,
                 (
                     node_id,
@@ -359,12 +393,46 @@ class SQLiteResultsDatabase:
                     self.runtime_version,
                     created_at,
                     now,
+                    now,
+                    payload_bytes,
                 ),
             )
+            self._payload_bytes += payload_bytes - previous_bytes
+        self._enforce_budget()
+
+    def _enforce_budget(self) -> None:
+        """Evict least-recently-used payloads until back under the byte budget.
+
+        Runs on the async persister thread (off the event loop). Only rows that
+        actually hold payload bytes are evicted, oldest access first and larger
+        first among ties, so a giant cold image is dropped before many hot
+        scalars. Evicted values remain regenerable from lineage.
+        """
+        if self._max_bytes <= 0 or self._payload_bytes <= self._max_bytes:
+            return
+        low_water = int(self._max_bytes * 0.9)
+        with self._lock:
+            while self._payload_bytes > low_water:
+                rows = self._connection.execute(
+                    "SELECT node_id, payload_file, payload_bytes FROM results "
+                    "WHERE payload_bytes > 0 ORDER BY accessed_at ASC, payload_bytes DESC LIMIT 128"
+                ).fetchall()
+                if not rows:
+                    break
+                for node_id, payload_file, nbytes in rows:
+                    if self._payload_bytes <= low_water:
+                        break
+                    if payload_file:
+                        (self.payload_dir / str(payload_file)).unlink(missing_ok=True)
+                    self._connection.execute("DELETE FROM results WHERE node_id = ?", (node_id,))
+                    self._payload_bytes -= int(nbytes or 0)
 
     def delete(self, node_id: str) -> None:
         with self._lock:
+            row = self._connection.execute("SELECT payload_bytes FROM results WHERE node_id = ?", (node_id,)).fetchone()
             self._connection.execute("DELETE FROM results WHERE node_id = ?", (node_id,))
+            if row is not None:
+                self._payload_bytes -= int(row[0] or 0)
         payload = self.payload_dir / f"{node_id}.bin"
         if payload.exists():
             payload.unlink()
@@ -372,6 +440,7 @@ class SQLiteResultsDatabase:
     def clear(self) -> None:
         with self._lock:
             self._connection.execute("DELETE FROM results")
+            self._payload_bytes = 0
         for payload in self.payload_dir.glob("*.bin"):
             payload.unlink()
 
