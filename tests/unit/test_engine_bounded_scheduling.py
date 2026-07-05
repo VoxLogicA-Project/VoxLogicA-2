@@ -1,56 +1,50 @@
-"""An oversubscribed working set must complete without eviction⇄recompute thrash.
+"""Bounded loop unrolling: a wide independent fan-out must not make the whole
+DAG live at once.
 
-Runs a wide independent fan-out whose produced values dwarf the cache cap, and
-asserts the run (a) completes, (b) keeps the resident working set bounded (well
-below the total produced), and (c) does not thrash (recompute count stays small,
-not proportional to the work). Metrics come from the engine's run summary.
+The engine registers only a window of a loop's bodies at a time, admitting the
+next as they complete. This bounds the set of incomplete ("live") nodes, so a
+bounded cache always has *dead* values to evict rather than being forced to evict
+live ones (the cause of the eviction⇄recompute thrash). Crucially, unrolling in
+waves must not change results.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import contextlib
+import io
 
 import pytest
 
 from voxlogica.execution import ExecutionEngine
 from voxlogica.parser import parse_program_content
 from voxlogica.reducer import reduce_program
-from voxlogica.storage import SQLiteResultsDatabase
 
-# 60 independent cases, each building a distinct image plus a shared one, then
-# reducing to small stats. Every case is demanded (no slicing), so the whole
-# fan-out runs; the images total far more than the tiny live budget below.
-PROGRAM = """
-import "simpleitk"
-import "geom"
-import "arrays"
-shared = blank(600, 600, 1.0)
-work(g) = array_stats(Add(blank(600, 600, g), shared))
-cases = range(0, 60)
-out = for g in cases do work(g)
-print "r" out
-"""
+PROGRAM = 'out = for g in range(0, 400) do g * g + g\nprint "r" out\n'
+
+
+def _run(window: int, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VOXLOGICA_LOOP_WINDOW", str(window))
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        result = ExecutionEngine(no_cache=True, use_engine=True).execute_workplan(
+            reduce_program(parse_program_content(PROGRAM))
+        )
+    printed = next((line for line in buffer.getvalue().splitlines() if line.startswith("r=")), None)
+    return result, printed
 
 
 @pytest.mark.unit
-def test_oversubscribed_working_set_completes_without_thrash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    pytest.importorskip("SimpleITK")
-    monkeypatch.setenv("VOXLOGICA_MAX_LIVE_GB", "0.008")  # 8 MB live budget
-    backend = SQLiteResultsDatabase(db_path=str(tmp_path / "c.db"), max_bytes=8 * 1024 * 1024)
-    try:
-        result = ExecutionEngine(storage_backend=backend, use_engine=True).execute_workplan(
-            reduce_program(parse_program_content(PROGRAM))
-        )
-    finally:
-        backend.close()
+def test_bounded_unroll_bounds_frontier_and_preserves_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    windowed, windowed_out = _run(4, monkeypatch)
+    unrolled, unrolled_out = _run(10_000, monkeypatch)
 
-    assert result.success, result.failed_operations
-    summary = result.cache_summary
-    # Resident working set stayed bounded — nowhere near the ~85 MB of images
-    # produced across the 60 cases (depth-first + eviction + admission together).
-    assert summary["peak_live_mb"] < 45, summary
-    # And it did not thrash: recomputes are bounded, not proportional to the work.
-    assert summary["recomputes"] < 30, summary
-    assert "r=" in capsys.readouterr().out  # produced results
+    assert windowed.success and unrolled.success
+    # A small window keeps the in-flight breadth tiny; unbounded lets all 400
+    # bodies go live at once.
+    assert windowed.cache_summary["peak_frontier"] < 60, windowed.cache_summary
+    assert unrolled.cache_summary["peak_frontier"] > 300, unrolled.cache_summary
+    # Same numeric results either way — unrolling in waves only reorders work.
+    assert windowed_out == unrolled_out
+    assert windowed_out is not None and windowed_out.startswith("r=[0.0, 2.0, 6.0")
+    # Windowing this independent fan-out costs no recomputes.
+    assert windowed.cache_summary["recomputes"] == 0, windowed.cache_summary
