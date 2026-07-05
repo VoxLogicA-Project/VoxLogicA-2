@@ -89,19 +89,54 @@ plumbing (the budget concept no longer governs the live tier).
   the engine's higher parallelism (more concurrent images), and it is now
   bounded. Capping concurrency would trade away the wall-clock win.
 
-## Next step — real lazy evaluation over sequences
+## Pass 2 — lazy sequence access (short-cut fusion)
 
-The one place the engine (and `incoming`'s lazy strategy) still does more work
-than `main` is `subsequence(result, 0, k)`: both fully expand the outer loop and
-compute all N cases, while `main` computes only the demanded k. `main` wins that
-comparison purely by laziness, not by a better evaluator.
+Pass 1 left one gap: `subsequence(result, 0, k)` where `result = for path in
+paths do …` fully expanded the loop and computed all N cases, while `main`'s
+lazy strategy computed only the demanded k. That was the whole of `main`'s
+apparent 2× CPU edge — laziness, not a better evaluator.
 
-The right fix is a proper lazy-demand layer over the dynamic DAG: only compute
-what a goal actually needs, while keeping the beautiful runtime-expanding DAG.
-Treat it like a query engine — a demanded slice/`index`/`fold` pushes its
-demand down into the producing loop, so `subsequence(for … , 0, k)` expands and
-materializes only elements `0..k-1`. Sequence items are already
-content-addressed (`hash_sequence_item`, `complete_item`), which is the hook to
-make individual elements independently demandable rather than gated on the whole
-sequence node. This should let the engine beat `main` on CPU and memory *as
-well as* wall-clock, on the brief's own script. Deferred to the next pass.
+Fixed at reduction time with **short-cut fusion** (the deforestation rewrite
+lazy compilers use): a positional slice/index commutes with a
+position-independent producer, so it is pushed into the producer's iterable and
+only the demanded elements are ever produced.
+
+```
+subsequence(for x in xs do e, a, b)      ->  for x in subsequence(xs, a, b) do e
+slice      (for x in xs do e, a, b)      ->  for x in slice(xs, a, b) do e
+index      (sequence(e0, e1, …), i)      ->  e_i                     (constant i)
+subsequence(sequence(e0, e1, …), a, b)   ->  sequence(e_a … e_{b-1})  (constant bounds)
+```
+
+`map` is fused the same way; `filter` is deliberately excluded (it changes the
+position→element mapping, so slicing does not commute). The rewrite lives in
+`reducer._fuse_sequence_access`, hooked into `_plan_primitive_call`, so it is
+strategy-agnostic — **both** the engine and the lazy strategy benefit — and
+needs no scheduler change. It sees through `let` because the reducer has already
+substituted bindings to node ids, and it composes (nested slices fuse in one
+bottom-up pass). Output stays byte-identical to `main`.
+
+**Effect (BraTS sweep, `subsequence(result, 0, 5)` over 10 volumes; interleaved,
+machine under load so read the ratios, not the absolutes):**
+
+| config                 | wall-clock | user CPU | peak RSS | ops computed |
+|------------------------|-----------:|---------:|---------:|-------------:|
+| engine, before fusion  |    ~4.9 s  |  ~25 s   |  850 MB  |   3118 (all 10) |
+| engine, after fusion   |  **~2.6 s**|  ~12 s   |  690 MB  |   1568 (only 5) |
+| main (lazy)            |    ~7.7 s  |  ~13 s   |  230 MB  |   ~5 cases      |
+
+Fusion halves the work (10 cases → the 5 demanded), roughly halving wall-clock
+and CPU and trimming memory. On `main`'s own script the engine now **matches
+`main` on CPU** (same cases computed) and **beats it on wall-clock** (higher
+parallelism). When the full sequence *is* demanded (print all 10) fusion is a
+no-op and pre/post numbers are identical within noise — no regression. No test
+regressions.
+
+## Still open
+
+- **Peak memory > `main`** remains (parallelism working set; bounded).
+- **`index` over a runtime loop** is not fused (only over literal sequences), to
+  avoid a re-entrant rewrite; `subsequence`/`slice` cover the demand cases. A
+  general element-demand layer (independently demandable content-addressed
+  sequence items via `hash_sequence_item`/`complete_item`) would subsume both
+  and is the natural next step if broader laziness is wanted.

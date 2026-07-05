@@ -516,6 +516,15 @@ def _plan_primitive_call(
     """Validate a primitive call and add its symbolic node to the plan."""
     attrs = dict(attrs or {})
     identifier = _normalize_primitive_identifier(identifier)
+
+    # Lazy sequence access: rewrite a slice/index over a producer so only the
+    # demanded elements are ever computed (see _fuse_sequence_access). Skipped
+    # when the call carries kwargs/attrs, which these positional ops never do.
+    if identifier in _SEQUENCE_ACCESS_OPERATORS and not kwargs and not attrs:
+        fused = _fuse_sequence_access(work_plan, identifier, args)
+        if fused is not None:
+            return fused
+
     call = PrimitiveCall(args=args, kwargs=kwargs, attrs=attrs)
 
     try:
@@ -639,6 +648,127 @@ def _constant_sequence_elements(
         if arg is None or arg.kind != "constant":
             return None
     return tuple(node.args)
+
+
+# Sequence producers whose bodies are position-independent (element i depends
+# only on input element i), so a positional slice/index may be pushed through
+# them into their iterable. ``filter`` is deliberately excluded: it changes both
+# length and the position→element mapping, so slicing cannot commute with it.
+_PRODUCER_OPERATORS = ("for_loop", "default.for_loop", "map", "default.map")
+_SEQUENCE_LITERAL_OPERATORS = ("sequence", "default.sequence")
+_SLICE_OPERATORS = ("subsequence", "default.subsequence", "slice", "default.slice")
+_INDEX_OPERATORS = ("index", "default.index")
+_SEQUENCE_ACCESS_OPERATORS = _SLICE_OPERATORS + _INDEX_OPERATORS
+
+
+def _is_subsequence(operator: str) -> bool:
+    return operator in ("subsequence", "default.subsequence")
+
+
+def _constant_value(work_plan: WorkPlan, node_id: NodeId) -> tuple[bool, Any]:
+    """Return ``(True, value)`` if ``node_id`` is a constant node, else ``(False, None)``."""
+    node = work_plan.nodes.get(node_id)
+    if node is not None and node.kind == "constant":
+        return True, node.attrs.get("value")
+    return False, None
+
+
+def _constant_bound(work_plan: WorkPlan, node_id: NodeId) -> tuple[bool, Optional[int]]:
+    """Interpret a slice-bound node as a constant ``int`` or open bound (``None``)."""
+    ok, value = _constant_value(work_plan, node_id)
+    if not ok:
+        return False, None
+    if value is None:
+        return True, None
+    if isinstance(value, bool):
+        return False, None
+    if isinstance(value, int):
+        return True, value
+    if isinstance(value, float) and value.is_integer():
+        return True, int(value)
+    return False, None
+
+
+def _literal_slice_range(
+    work_plan: WorkPlan, operator: str, args: tuple[NodeId, ...], length: int
+) -> Optional[tuple[int, int]]:
+    """Resolve constant slice bounds to a half-open ``[start, stop)`` over ``length``.
+
+    Returns ``None`` when a bound is not a compile-time constant, so the caller
+    falls back to the ordinary (runtime) slice node.
+    """
+    if _is_subsequence(operator):
+        if len(args) == 3:
+            ok_start, start = _constant_bound(work_plan, args[1])
+            ok_stop, stop = _constant_bound(work_plan, args[2])
+        else:  # subsequence(seq, stop)
+            ok_start, start = True, 0
+            ok_stop, stop = _constant_bound(work_plan, args[1])
+    else:  # default.slice: (seq, start, stop), either bound possibly open
+        ok_start, start = _constant_bound(work_plan, args[1])
+        ok_stop, stop = _constant_bound(work_plan, args[2])
+    if not (ok_start and ok_stop):
+        return None
+    start = 0 if start is None else max(0, start)
+    stop = length if stop is None else max(0, stop)
+    return start, min(stop, length)
+
+
+def _fuse_sequence_access(
+    work_plan: WorkPlan, operator: str, args: tuple[NodeId, ...]
+) -> Optional[NodeId]:
+    """Push a positional slice/index through its producer (short-cut fusion).
+
+    Because map/for_loop bodies are position-independent, slicing commutes with
+    them, so we only ever produce the demanded elements::
+
+        subsequence(for x in xs do e, a, b)  ->  for x in subsequence(xs, a, b) do e
+        slice      (for x in xs do e, a, b)  ->  for x in slice(xs, a, b) do e
+        index      (sequence(e0, e1, ...), i)  ->  e_i          (constant index)
+        subsequence(sequence(e0, e1, ...), a, b) -> sequence(e_a, ..., e_{b-1})
+
+    Returns the rewritten node id, or ``None`` when no rewrite applies (the
+    caller then builds the ordinary node). The recursion terminates because each
+    step moves strictly toward the leaf iterable, and rebuilding the producer
+    (a non-slice operator) never re-enters fusion.
+    """
+    if not args:
+        return None
+    producer = work_plan.nodes.get(args[0])
+    if producer is None or producer.kind != "primitive":
+        return None
+
+    # Direct positional selection over a literal sequence node.
+    if producer.operator in _SEQUENCE_LITERAL_OPERATORS and not producer.kwargs:
+        elements = producer.args
+        if operator in _INDEX_OPERATORS:
+            ok, index = _constant_bound(work_plan, args[1])
+            if ok and index is not None and 0 <= index < len(elements):
+                return elements[index]
+            return None
+        span = _literal_slice_range(work_plan, operator, args, len(elements))
+        if span is None:
+            return None
+        start, stop = span
+        return _plan_primitive_call(
+            work_plan, identifier="sequence",
+            args=elements[start:stop], output_kind="sequence",
+        )
+
+    # Push a slice through a map/for_loop into its (possibly runtime) iterable.
+    if operator in _SLICE_OPERATORS and producer.operator in _PRODUCER_OPERATORS \
+            and len(producer.args) == 2 and not producer.kwargs:
+        iterable_id, closure_id = producer.args
+        sliced_iterable = _plan_primitive_call(
+            work_plan, identifier=operator,
+            args=(iterable_id, *args[1:]), output_kind="sequence",
+        )
+        return _plan_primitive_call(
+            work_plan, identifier=producer.operator,
+            args=(sliced_iterable, closure_id), output_kind="sequence",
+        )
+
+    return None
 
 
 def reduce_expression(
