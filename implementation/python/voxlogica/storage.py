@@ -193,6 +193,12 @@ class SQLiteResultsDatabase:
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA synchronous=NORMAL")
         self._initialize_schema()
+        # Reads (the compute-path reload) use per-thread read-only connections so
+        # they never wait on the write lock held by the persister's writes and
+        # evictions. WAL lets readers run concurrently with the single writer, so
+        # a worker reloading an evicted input never stalls the other workers —
+        # cache housekeeping stays off the critical path.
+        self._reader_local = threading.local()
         # Running total of stored payload bytes, so the byte budget can be
         # enforced without restatting the payload directory on every write.
         self._payload_bytes = int(
@@ -252,13 +258,21 @@ class SQLiteResultsDatabase:
                 self._connection.execute("CREATE INDEX idx_results_evict ON results(gd_key) WHERE payload_bytes > 0")
                 self._connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
 
+    def _reader(self) -> sqlite3.Connection:
+        """A per-thread read-only connection (WAL: concurrent with the writer)."""
+        conn = getattr(self._reader_local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self.db_path), check_same_thread=False, isolation_level=None, timeout=5.0)
+            conn.execute("PRAGMA query_only=1")
+            self._reader_local.conn = conn
+        return conn
+
     def has(self, node_id: str) -> bool:
-        with self._lock:
-            row = self._connection.execute(
-                "SELECT 1 FROM results WHERE node_id = ? AND status = ? LIMIT 1",
-                (node_id, MATERIALIZED_STATUS),
-            ).fetchone()
-            return row is not None
+        row = self._reader().execute(
+            "SELECT 1 FROM results WHERE node_id = ? AND status = ? LIMIT 1",
+            (node_id, MATERIALIZED_STATUS),
+        ).fetchone()
+        return row is not None
 
     #def put_definition(self, node_id: str, node: NodeSpec) -> None:
     #    expression = node_payload(node)
@@ -306,29 +320,25 @@ class SQLiteResultsDatabase:
     #        self.put_definition(node_id, node)
 
     def get_record(self, node_id: str) -> ResultRecord | None:
-        with self._lock:
-            row = self._connection.execute(
-                """
-                SELECT node_id, status, format_version, vox_type, descriptor_json,
-                       payload_json, payload_file, error, metadata_json, expression_json,
-                       dependencies_json, created_at, updated_at, runtime_version
-                FROM results WHERE node_id = ?
-                """,
-                (node_id,),
-            ).fetchone()
+        # Read on a per-thread read connection with no write lock, so a compute
+        # worker reloading an evicted value runs concurrently with the persister's
+        # writes/evictions (WAL) instead of serialising behind them. Recency is
+        # deliberately not refreshed here: writing on every read would re-couple
+        # reads to the write lock, and hot values are kept resident in RAM anyway
+        # (correct consumer counts), so they are rarely reloaded from disk.
+        row = self._reader().execute(
+            """
+            SELECT node_id, status, format_version, vox_type, descriptor_json,
+                   payload_json, payload_file, error, metadata_json, expression_json,
+                   dependencies_json, created_at, updated_at, runtime_version
+            FROM results WHERE node_id = ?
+            """,
+            (node_id,),
+        ).fetchone()
         if row is None:
             return None
         if str(row[1]) == MATERIALIZED_STATUS:
-            # A load is a genuine reuse — refresh recency and re-seat the
-            # GreedyDual key at the current clock so reused values are kept.
-            with self._lock:
-                self._stats["hits"] += 1
-                self._connection.execute(
-                    "UPDATE results SET accessed_at = ?, "
-                    "gd_key = ? + CASE WHEN payload_bytes > 0 THEN compute_ms / payload_bytes ELSE 0 END "
-                    "WHERE node_id = ?",
-                    (time.time(), self._gd_clock, node_id),
-                )
+            self._stats["hits"] += 1
         payload_bin = None
         payload_file = row[6]
         if payload_file:
