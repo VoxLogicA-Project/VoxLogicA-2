@@ -203,18 +203,20 @@ outputs byte-identical. Regression coverage in
   (intermittent, order-dependent, in the lazy strategy's `fold` handling) is
   unrelated to this work — it reproduces on the pre-change tree — and is left
   for a separate investigation.
-- **The persistent store is a bounded LRU cache.** It persists every value
-  (gzip level 1; masks shrink ~70×) but caps total payload bytes at a budget
-  (default 100 GB, `--cache-max-gb`, 0 = unbounded) and evicts least-recently-
-  used payloads past it — oldest access first, larger first among ties, on the
-  async writer thread. Evicted values are regenerable from lineage, so eviction
-  only ever costs a recompute. This is deliberately *eviction*, not admission:
-  admission is a blind bet at write time (refuse a subtree, get a variant next
-  line, lose it), whereas eviction observes actual reuse and recency naturally
-  protects the "variant on the next line" case. Verified end-to-end: a 1-case
-  brats014 run that would write ~6 GB stays at ~1.8 GB under a 2 GB budget, with
-  correct output. Upgrading LRU to size/cost/frequency-weighted (GDSF/LHD) is a
-  possible refinement if profiling shows hot scalars evicted for cold images.
+- **The persistent store is a bounded, cost-aware cache.** It persists every
+  value (gzip level 1; masks shrink ~70×) but caps total payload bytes at a
+  budget (default 100 GB, `--cache-max-gb`, 0 = unbounded) and evicts past it by
+  **GreedyDual-Size**: eviction key = `clock + compute_ms / bytes`, on the async
+  writer thread. So a *small value that was expensive to compute* (a precious,
+  hard-won result) is kept over a *large cheap intermediate* — size is the
+  denominator, measured compute effort the numerator, recency the clock. Each
+  kernel's wall-time is measured in the worker and stored per node
+  (`compute_ms`), which also powers `backend.stats()` (live entries/bytes,
+  compute-ms banked, hits, evictions, most-expensive cached nodes). Eviction not
+  admission, so no blind write-time bets; evicted values are regenerable from
+  lineage. Verified: cost-aware unit tests (small-expensive survives large-cheap)
+  and end-to-end a 1-case brats014 run that would write ~6 GB stays ~1.8 GB under
+  a 2 GB budget with correct output.
 
 ## Pass 4 — one scheduling/caching path for every node
 
