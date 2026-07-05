@@ -144,7 +144,13 @@ class NodeTable:
         if self.values.pop(node_id, None) is not None:
             self.live_bytes -= self._sizeof.pop(node_id, 0)
 
-    def flush(self, timeout_s: float = 30.0) -> None:
-        """Block until the background writer has drained (called once, at end of run)."""
+    def flush(self, timeout_s: float = 600.0) -> None:
+        """Block until the background writer has drained (called once, at end of run).
+
+        Must actually finish: the run promised to persist its critical results
+        (the reuse cut), and those complete last, so a short timeout would abandon
+        exactly them — leaving a warm re-run nothing to prune. The critical set is
+        small, so this drains quickly.
+        """
         if self._persister is not None:
             self._persister.flush(timeout_s=timeout_s)

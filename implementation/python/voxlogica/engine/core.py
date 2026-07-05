@@ -231,10 +231,14 @@ class ComputationEngine:
             # subtree on a warm re-run (the node is loaded instead of re-expanded
             # and recomputed). Missing these was why a warm re-run still recomputed
             # almost everything — the highest-leverage writes were being dropped.
-            critical = (nid in self._critical_nodes
-                        or node.operator in _SEQUENCE_OPERATORS
-                        or compute_ms >= self._persist_cost_ms
-                        or self._consumers.get(nid, 0) >= self._persist_fanout)
+            # The critical set is kept SMALL on purpose: the goal-dependency cut
+            # plus the structural loop/sequence nodes. Persisting these (cheap,
+            # scalar/list-valued) prunes their whole subtrees on a warm re-run —
+            # coverage of nearly the entire DAG — so warm ≈ 0 kernels. Big image
+            # intermediates stay best-effort: forcing them critical would neither
+            # help warm pruning (pruned above them anyway) nor fit the writer, and
+            # would pin gigabytes in the persist backlog.
+            critical = (nid in self._critical_nodes or node.operator in _SEQUENCE_OPERATORS)
             self.table.complete(nid, value, compute_ms, critical=critical)
             if node.operator in _SEQUENCE_OPERATORS:
                 for index, item in enumerate(value):
