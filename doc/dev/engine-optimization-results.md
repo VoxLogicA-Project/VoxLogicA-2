@@ -203,12 +203,12 @@ outputs byte-identical. Regression coverage in
   (intermittent, order-dependent, in the lazy strategy's `fold` handling) is
   unrelated to this work — it reproduces on the pre-change tree — and is left
   for a separate investigation.
-- **Caching persists every intermediate.** A cold cached sweep still writes all
-  intermediates (≈8.5 GB for 10 cases; ~1 TB for a full dataset), so a *cold*
-  cached run is disk-bound — don't point `--store-db` at a full-dataset sweep
-  yet. A **cost-aware policy** (cache expensive-or-small, skip cheap-and-huge
-  intermediates) is the deferred follow-up; the machinery is ready for it (the
-  writer sees each value's size, and kernels could report compute time).
+- **Caching persists every intermediate**, but binary payloads are now
+  gzip-compressed (level 1) — label maps and threshold masks are mostly constant
+  and shrink ~70× (a 10-case sweep's payloads went 8.5 GB → 124 MB). A full
+  dataset is now far more tractable, though a **cost-aware policy** (skip
+  cheap-and-huge intermediates entirely) is still the deferred follow-up; the
+  machinery is ready for it (the writer sees each value's size).
 
 ## Pass 4 — one scheduling/caching path for every node
 
