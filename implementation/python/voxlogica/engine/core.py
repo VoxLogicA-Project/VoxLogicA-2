@@ -193,6 +193,10 @@ class ComputationEngine:
             self._pending[child] -= 1
             if self._pending[child] == 0:
                 self._enqueue(child)
+        # Update storage's live-node set so eviction prioritizes dead values over
+        # live ones. Do this after enqueuing dependents so the set is current.
+        if self.table._backend is not None:
+            self.table._backend.set_live_nodes(self._compute_live_values())
         self._settle_node(nid)
         if self._progress is not None:
             self._progress.set_postfix_str(node.operator, refresh=False)
@@ -328,6 +332,28 @@ class ComputationEngine:
             cached = frozenset(Expander.dependencies(self.table.nodes[nid]))
             self._deps_cache[nid] = cached
         return cached
+
+    def _compute_live_values(self) -> set[NodeId]:
+        """Return nodes still needed by any active goal or incomplete work.
+
+        A value is "live" if there is any path from it to an active goal or any
+        node that is queued, running, or not yet completed. The storage backend
+        uses this to prioritize what to evict: dead values first, live only if
+        forced. This prevents evicting something that will be needed soon.
+        """
+        incomplete = set(nid for nid in self._scheduled if nid not in self.table.completed)
+        for query in self._queries:
+            if query.node_id not in self.table.completed:
+                incomplete.add(query.node_id)
+        live = set()
+        frontier = list(incomplete)
+        while frontier:
+            nid = frontier.pop()
+            if nid in live:
+                continue
+            live.add(nid)
+            frontier.extend(self._deps(nid))
+        return live
 
     def _enqueue(self, nid: NodeId) -> None:
         """Offer a ready node to the workers at its current priority.
