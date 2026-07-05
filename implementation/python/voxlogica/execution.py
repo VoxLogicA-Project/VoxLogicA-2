@@ -89,19 +89,19 @@ class ExecutionEngine:
         primitives_loader: PrimitivesLoader | None = None,
         storage_backend: StorageBackend | None = None,
         no_cache: bool = False,
-        use_engine: bool = False,
+        use_engine: bool = True,
         threads: int = 0,
         engine_debug: bool = False,
         dynamic_expansion: bool = True,
     ):
         """Create an engine bound to one primitive registry and one strategy.
 
-        ``use_engine`` selects the live computation engine; it is the default at
-        the CLI (see ``main.py``), but this library constructor defaults to the
-        lazy strategy for backward compatibility: the engine eagerly evicts
-        intermediates, so — unlike lazy — it does not retain every binding's
-        value in ``prepared.values`` for later inspection. ``threads`` caps
-        concurrent kernels for either. See doc/dev/unified-computation-engine.md.
+        ``use_engine`` selects the live computation engine (the default); pass
+        ``False`` to fall back to the older lazy strategy. Note the engine
+        eagerly evicts intermediates, so — unlike lazy — it does not retain every
+        binding's value in ``prepared.values`` after a run; read a value through a
+        ``print``/``save`` goal instead. ``threads`` caps concurrent kernels for
+        either. See doc/dev/unified-computation-engine.md.
         """
         self.primitives = primitives_loader or PrimitivesLoader()
         self.registry = self.primitives.registry
