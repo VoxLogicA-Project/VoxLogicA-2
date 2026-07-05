@@ -5,8 +5,26 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 import base64
+import gzip
 import json
 import math
+
+# Binary payloads (voxel buffers, ndarrays) are gzipped before storage — label
+# maps and threshold masks are mostly-constant and shrink by 10-100x, losslessly.
+# Level 1 keeps compression well off the critical path (it runs on the async
+# persister thread). Reads are self-describing: a payload is gunzipped iff it
+# carries the gzip magic bytes, so older uncompressed payloads still decode.
+_GZIP_LEVEL = 1
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _compress(raw: bytes) -> bytes:
+    return gzip.compress(raw, compresslevel=_GZIP_LEVEL)
+
+
+def _decompress(payload_bin: bytes | None) -> bytes:
+    data = payload_bin or b""
+    return gzip.decompress(data) if data[:2] == _GZIP_MAGIC else data
 
 from voxlogica.value_model import (
     OverlayLayer,
@@ -79,7 +97,7 @@ def _ndarray_payload(array: Any) -> tuple[dict[str, Any], bytes]:
         "shape": [int(v) for v in array.shape],
         "order": "C",
         "byte_order": "little",
-    }, bytes(array.tobytes(order="C"))
+    }, _compress(array.tobytes(order="C"))
 
 
 def _encode_embedded_record(value: Any, *, page_size: int) -> dict[str, Any]:
@@ -136,7 +154,7 @@ def encode_for_storage(value: Any, *, page_size: int = 128) -> EncodedRecord:
             "byte_order": "little",
             "metadata": adapted.storage_metadata(),
         }
-        payload_bin = bytes(array.tobytes(order="C"))
+        payload_bin = _compress(array.tobytes(order="C"))
         return EncodedRecord(VOX_FORMAT_VERSION, "image", descriptor, payload_json, payload_bin)
 
     if isinstance(adapted, VoxBytesValue):
@@ -145,7 +163,7 @@ def encode_for_storage(value: Any, *, page_size: int = 128) -> EncodedRecord:
             vox_type="bytes",
             descriptor=descriptor,
             payload_json={"encoding": "bytes-binary-v1", "length": len(value)},
-            payload_bin=bytes(value),
+            payload_bin=_compress(bytes(value)),
         )
 
     if isinstance(adapted, VoxNdArrayValue):
@@ -197,7 +215,7 @@ def decode_runtime_value(vox_type: str, payload_json: dict[str, Any], payload_bi
     if vox_type in {"null", "boolean", "integer", "number", "string"}:
         return payload_json.get("value")
     if vox_type == "bytes":
-        return bytes(payload_bin or b"")
+        return _decompress(payload_bin)
     if vox_type == "mapping":
         return dict(payload_json.get("value") or {})
     if vox_type == "sequence":
@@ -207,13 +225,13 @@ def decode_runtime_value(vox_type: str, payload_json: dict[str, Any], payload_bi
             raise RuntimeError("NumPy is required to decode ndarray values.")
         dtype = np.dtype(str(payload_json["dtype"]))
         shape = tuple(int(v) for v in payload_json["shape"])
-        return np.frombuffer(payload_bin or b"", dtype=dtype).reshape(shape, order="C")
+        return np.frombuffer(_decompress(payload_bin), dtype=dtype).reshape(shape, order="C")
     if vox_type == "image":
         if np is None:
             raise RuntimeError("NumPy is required to decode image values.")
         dtype = np.dtype(str(payload_json["dtype"]))
         shape = tuple(int(v) for v in payload_json["shape"])
-        array = np.frombuffer(payload_bin or b"", dtype=dtype).reshape(shape, order="C")
+        array = np.frombuffer(_decompress(payload_bin), dtype=dtype).reshape(shape, order="C")
         return restore_runtime_image(payload_json, array)
     if vox_type == "overlay":
         layers = []

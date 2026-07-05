@@ -29,7 +29,10 @@ def test_ndarray_binary_payload_has_consistent_shape_and_size() -> None:
     assert encoded.payload_json["shape"] == [3, 4, 5]
     assert encoded.payload_json["dtype"] == "float32"
     assert encoded.payload_bin is not None
-    assert len(encoded.payload_bin) == arr.size * arr.dtype.itemsize
+    # payload_bin is gzip-compressed; decompressing recovers the exact raw buffer.
+    from voxlogica.pod_codec import _decompress
+
+    assert len(_decompress(encoded.payload_bin)) == arr.size * arr.dtype.itemsize
 
 
 @pytest.mark.unit
