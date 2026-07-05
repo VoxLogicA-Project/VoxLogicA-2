@@ -512,15 +512,21 @@ def _plan_primitive_call(
     attrs: Optional[dict[str, Any]] = None,
     output_kind: OutputKind = "scalar",
     position: str | None = None,
+    fuse: bool = True,
 ) -> NodeId:
-    """Validate a primitive call and add its symbolic node to the plan."""
+    """Validate a primitive call and add its symbolic node to the plan.
+
+    ``fuse=False`` builds the node verbatim, bypassing the lazy sequence-access
+    rewrite; the rewrite itself uses it to emit the terminal access node without
+    re-triggering fusion on the loop it just produced.
+    """
     attrs = dict(attrs or {})
     identifier = _normalize_primitive_identifier(identifier)
 
     # Lazy sequence access: rewrite a slice/index over a producer so only the
     # demanded elements are ever computed (see _fuse_sequence_access). Skipped
     # when the call carries kwargs/attrs, which these positional ops never do.
-    if identifier in _SEQUENCE_ACCESS_OPERATORS and not kwargs and not attrs:
+    if fuse and identifier in _SEQUENCE_ACCESS_OPERATORS and not kwargs and not attrs:
         fused = _fuse_sequence_access(work_plan, identifier, args)
         if fused is not None:
             return fused
@@ -724,6 +730,7 @@ def _fuse_sequence_access(
 
         subsequence(for x in xs do e, a, b)  ->  for x in subsequence(xs, a, b) do e
         slice      (for x in xs do e, a, b)  ->  for x in slice(xs, a, b) do e
+        index      (for x in xs do e, i)     ->  index(for x in xs[i:i+1] do e, 0)
         index      (sequence(e0, e1, ...), i)  ->  e_i          (constant index)
         subsequence(sequence(e0, e1, ...), a, b) -> sequence(e_a, ..., e_{b-1})
 
@@ -766,6 +773,33 @@ def _fuse_sequence_access(
         return _plan_primitive_call(
             work_plan, identifier=producer.operator,
             args=(sliced_iterable, closure_id), output_kind="sequence",
+        )
+
+    # Index through a map/for_loop at a constant position: slice the iterable to
+    # that single element, run the producer over it, and take the sole result.
+    # (Runtime positions are left alone: computing i+1 would need an arithmetic
+    # node, and positional indexing by a computed value is vanishingly rare.)
+    if operator in _INDEX_OPERATORS and producer.operator in _PRODUCER_OPERATORS \
+            and len(producer.args) == 2 and not producer.kwargs:
+        ok, index = _constant_bound(work_plan, args[1])
+        if not ok or index is None or index < 0:
+            return None
+        iterable_id, closure_id = producer.args
+        singleton = _plan_primitive_call(
+            work_plan, identifier="subsequence",
+            args=(iterable_id,
+                  _create_constant_node(work_plan, index),
+                  _create_constant_node(work_plan, index + 1)),
+            output_kind="sequence",
+        )
+        one_element_loop = _plan_primitive_call(
+            work_plan, identifier=producer.operator,
+            args=(singleton, closure_id), output_kind="sequence",
+        )
+        return _plan_primitive_call(
+            work_plan, identifier="index",
+            args=(one_element_loop, _create_constant_node(work_plan, 0)),
+            output_kind="scalar", fuse=False,
         )
 
     return None

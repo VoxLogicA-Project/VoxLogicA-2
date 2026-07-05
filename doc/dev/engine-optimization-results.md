@@ -104,6 +104,7 @@ only the demanded elements are ever produced.
 ```
 subsequence(for x in xs do e, a, b)      ->  for x in subsequence(xs, a, b) do e
 slice      (for x in xs do e, a, b)      ->  for x in slice(xs, a, b) do e
+index      (for x in xs do e, i)         ->  index(for x in xs[i:i+1] do e, 0)  (constant i)
 index      (sequence(e0, e1, …), i)      ->  e_i                     (constant i)
 subsequence(sequence(e0, e1, …), a, b)   ->  sequence(e_a … e_{b-1})  (constant bounds)
 ```
@@ -132,11 +133,26 @@ parallelism). When the full sequence *is* demanded (print all 10) fusion is a
 no-op and pre/post numbers are identical within noise — no regression. No test
 regressions.
 
+`index` over a loop at a **constant** position is fused too: the iterable is
+sliced to that single element (`xs[i:i+1]`), the producer runs over it, and the
+sole result is taken — so an indexed access computes one element, not N. The
+terminal `index(…, 0)` is emitted with fusion disabled so it does not re-enter
+the rewrite. Regression coverage: `tests/unit/test_sequence_fusion.py` pins both
+the semantics and the "only demanded elements computed" property, on both
+strategies.
+
 ## Still open
 
-- **Peak memory > `main`** remains (parallelism working set; bounded).
-- **`index` over a runtime loop** is not fused (only over literal sequences), to
-  avoid a re-entrant rewrite; `subsequence`/`slice` cover the demand cases. A
-  general element-demand layer (independently demandable content-addressed
-  sequence items via `hash_sequence_item`/`complete_item`) would subsume both
-  and is the natural next step if broader laziness is wanted.
+- **Peak memory > `main`** remains (parallelism working set; bounded) — the
+  space–time cost of the engine's higher parallelism, not a leak.
+- **Index/slice by a *runtime* (non-constant) position** is left unfused: it
+  would need an arithmetic `i+1` node, and computed-position access is
+  vanishingly rare. Constant positions (the overwhelmingly common case) are
+  fused. A fully general runtime element-demand layer (independently demandable
+  content-addressed sequence items via `hash_sequence_item`/`complete_item`)
+  would subsume this, but adds real scheduler complexity for little practical
+  gain over the fusion above.
+- **Pre-existing `fold` flake** in `tests/unit/test_lazy_subsequence.py`
+  (intermittent, order-dependent, in the lazy strategy's `fold` handling) is
+  unrelated to this work — it reproduces on the pre-change tree — and is left
+  for a separate investigation.
