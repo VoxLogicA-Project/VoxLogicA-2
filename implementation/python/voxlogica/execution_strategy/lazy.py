@@ -149,8 +149,12 @@ class LazyExecutionStrategy(ExecutionStrategy):
         target_goals = [goal.id for goal in prepared.plan.goals] if goals is None else list(goals)
         target_goal_set = set(target_goals)
 
+        # disable=None auto-disables the bar when stderr is not a TTY (redirected
+        # to a file/pipe), keeping logs clean; dynamic_ncols re-reads the terminal
+        # width on every refresh so the bar reflows instead of garbling on resize.
         self._progress = tqdm(total=len(prepared.plan.nodes), desc="nodes", unit="node",
-                              dynamic_ncols=True, file=__import__("sys").stderr, leave=True)
+                              dynamic_ncols=True, disable=None,
+                              file=__import__("sys").stderr, leave=True)
         try:
             asyncio.run(self._async_run(prepared, list(target_goal_set)))
         finally:

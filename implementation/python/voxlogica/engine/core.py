@@ -108,8 +108,12 @@ class ComputationEngine:
             self._ready.put_nowait(entry)
         self._pre_ready.clear()
         if self._show_progress:
+            # disable=None auto-disables the bar when stderr is not a TTY
+            # (redirected to a file/pipe), keeping logs clean; dynamic_ncols
+            # re-reads the terminal width on every refresh so the bar reflows
+            # instead of garbling on resize.
             self._progress = tqdm(total=len(self._scheduled), desc="nodes", unit="node",
-                                  dynamic_ncols=True, file=sys.stderr, leave=True)
+                                  dynamic_ncols=True, disable=None, file=sys.stderr, leave=True)
         workers = [asyncio.create_task(self._worker()) for _ in range(self.max_concurrency)]
         try:
             await self._ready.join()

@@ -54,7 +54,10 @@ def _summary_payload(workplan, execution_result: Any | None) -> dict[str, Any]:
     if execution_result is not None:
         payload["execution"] = {
             "success": execution_result.success,
-            "completed_operations": sorted(execution_result.completed_operations),
+            # Count only: the full node-id list is one entry per DAG node (tens of
+            # thousands after loop expansion) and floods the terminal. The list
+            # remains on execution_result.completed_operations for programmatic use.
+            "completed_operations": len(execution_result.completed_operations),
             "failed_operations": execution_result.failed_operations,
             "execution_time": execution_result.execution_time,
             "total_operations": execution_result.total_operations,
