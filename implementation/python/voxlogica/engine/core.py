@@ -375,6 +375,15 @@ class ComputationEngine:
                 if self._first_error is not None or nid in self.table.completed:
                     continue  # cancelled, or a duplicate of an already-finished node
                 node = self.table.nodes[nid]
+                if nid not in self._alias and nid in self.table.values:
+                    # Materialized since this node was enqueued — a warm cache can
+                    # fill table.values via load() (disk reload) or a shared path
+                    # reaching the same node through another goal. Forward the value
+                    # instead of recomputing; recomputing would trip the
+                    # single-computation guard in begin(). (Alias nodes keep their
+                    # own forwarding path below, which also releases the sequence.)
+                    self._finish(nid, self.table.values[nid], persist=False)
+                    continue
                 if nid in self._alias:
                     seq_id = self._alias.pop(nid)
                     self._finish(nid, self._rematerialize(seq_id))  # forward spliced result
