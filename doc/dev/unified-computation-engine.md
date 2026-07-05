@@ -1,8 +1,8 @@
 # Unified Computation Engine — design
 
-Status: implemented and working on `feat/unified-execution`, opt-in via
-`VOXLOGICA_ENGINE=1`. The proven `lazy` strategy remains the default until the
-engine has had broad real-workload validation.
+Status: implemented and working on `feat/unified-execution`, opt-in via the
+`--engine` CLI flag (`voxlogica run --engine ...`). The proven `lazy` strategy
+remains the default until the engine has had broad real-workload validation.
 
 Implemented (`voxlogica/engine/`): `NodeTable` (Merkle identity, tiered values,
 the enforced no-double-computation guard), `ComputationEngine` (priority
@@ -18,7 +18,7 @@ what made multi-query sharing and aggressive eviction safe.
 Validated: single- and multi-query evaluation, nested runtime loops, the real-data
 oracle (matches `lazy` exactly), 18 unit tests under the engine, and correctness
 under a forced 1 MB / 300 MB live-tier budget (real image eviction + rematerialise).
-`VOXLOGICA_ENGINE_DEBUG=1` dumps the stuck frontier if a future change regresses.
+`--engine-debug` dumps the stuck frontier if a future change regresses.
 
 ## 1. Vision — a computation base, not a database
 
