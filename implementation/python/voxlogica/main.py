@@ -172,8 +172,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--store-db", help="Path to the persistent results SQLite database")
     run_parser.add_argument("--debug", action="store_true")
-    run_parser.add_argument("--engine", action="store_true",
-                            help="Use the live computation engine instead of the lazy strategy")
+    run_parser.add_argument("--engine", action=argparse.BooleanOptionalAction, default=True,
+                            help="Use the live computation engine (default); --no-engine selects the lazy strategy")
     run_parser.add_argument("--threads", type=int, default=0, metavar="N",
                             help="Concurrent kernels (default: CPU count)")
     run_parser.add_argument("--engine-debug", action="store_true",
