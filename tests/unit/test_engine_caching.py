@@ -48,6 +48,35 @@ def test_engine_cold_and_warm_runs_agree(tmp_path: Path, capsys: pytest.CaptureF
 
 
 @pytest.mark.unit
+def test_warm_run_reuses_runtime_expanded_nodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`for x in range(...)` expands into nodes at runtime; a warm re-run must
+    reuse those cached results through the same machinery as any other node —
+    i.e. recompute nothing."""
+    from voxlogica.engine import executor as executor_module
+
+    calls: list[str] = []
+    original = executor_module.Executor._compute
+
+    def counting_compute(self, table, node_id):  # noqa: ANN001
+        calls.append(node_id)
+        return original(self, table, node_id)
+
+    monkeypatch.setattr(executor_module.Executor, "_compute", counting_compute)
+
+    db = tmp_path / "results.db"
+    _run_engine(db, capsys)
+    cold_calls = len(calls)
+    calls.clear()
+    _run_engine(db, capsys)
+    warm_calls = len(calls)
+
+    assert cold_calls > 0, "cold run should have computed the expanded nodes"
+    assert warm_calls == 0, f"warm run recomputed {warm_calls} nodes instead of reusing the cache"
+
+
+@pytest.mark.unit
 def test_engine_persists_values_to_backend(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     db = tmp_path / "results.db"
     _run_engine(db, capsys)

@@ -203,13 +203,27 @@ outputs byte-identical. Regression coverage in
   (intermittent, order-dependent, in the lazy strategy's `fold` handling) is
   unrelated to this work — it reproduces on the pre-change tree — and is left
   for a separate investigation.
-- **Caching persists every intermediate.** A cold cached sweep still writes
-  ~8.5 GB (all 1000 threshold masks), so its wall-clock is disk-bound. These
-  intermediates are cheap to recompute and rarely reused, so the real win would
-  be a *policy* that caches only goals and expensive nodes — orthogonal to the
-  now-non-blocking write path, and a natural follow-up.
-- **Warm runs still recompute runtime-expanded nodes.** Cache short-circuiting
-  prunes only symbolic-plan nodes at schedule time; nodes created by runtime
-  loop expansion are not checked against the cache. For these cheap kernels
-  recompute is faster than reloading their large payloads anyway, so this only
-  matters once the caching policy above is in place.
+- **Caching persists every intermediate.** A cold cached sweep still writes all
+  intermediates (≈8.5 GB for 10 cases; ~1 TB for a full dataset), so a *cold*
+  cached run is disk-bound — don't point `--store-db` at a full-dataset sweep
+  yet. A **cost-aware policy** (cache expensive-or-small, skip cheap-and-huge
+  intermediates) is the deferred follow-up; the machinery is ready for it (the
+  writer sees each value's size, and kernels could report compute time).
+
+## Pass 4 — one scheduling/caching path for every node
+
+Runtime loop-expanded nodes used to be scheduled by a hand-rolled loop inside
+`_expand` that skipped the cache-prune every other node gets in
+`_schedule_subgraph`. So a warm re-run recomputed all 2086 expanded kernels even
+though their results were on disk — defeating the reason we materialise nodes at
+all. `_expand` now schedules the spliced subgraph through the **same**
+`_schedule_subgraph`, so an expanded node is treated identically to any other:
+already-persisted results are pruned and loaded from the cache on demand. There
+is one scheduling/caching/storing path, not two.
+
+Effect (10-case sweep, SQLite): a **warm re-run runs 0 kernels**, 4.0 s → 0.54 s,
+895 MB → 168 MB, output byte-identical. Because identity is content-addressed,
+this also means expensive preprocessing shared across *different* sweeps
+(`ReadImage`, distance transforms, superpixels, …) is computed once and reused
+everywhere. Regression coverage: `test_engine_caching.py`
+(`test_warm_run_reuses_runtime_expanded_nodes`).

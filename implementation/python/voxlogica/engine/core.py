@@ -216,23 +216,25 @@ class ComputationEngine:
     def _expand(self, nid: NodeId, node) -> None:
         """Splice a loop's per-element bodies into the live schedule.
 
-        The iterable is rematerialised first, so expansion always succeeds; the
-        loop node then aliases the spliced sequence and forwards its value.
+        The spliced subgraph is scheduled through the very same routine as any
+        other subgraph (``_schedule_subgraph``), so an expanded node is treated
+        identically to one present before expansion: if it is already persisted
+        it is pruned and loaded from the cache on demand rather than recomputed.
+        There is deliberately one scheduling/caching path, never a separate one
+        for expanded work — generating the nodes at all is precisely what lets
+        the cache be hit.
         """
         self._rematerialize(node.args[0])  # ensure the iterable value is resident
         result = self.expander.expand(nid, node)
         if result is None:
             raise RuntimeError(f"cannot expand loop node {nid[:12]} ({node.operator})")
-        seq_id, new_ids = result
-        self._scheduled.update(new_ids)
-        if self._progress is not None and new_ids:
-            self._progress.total += len(new_ids)  # the graph grew; track the new work
-            self._progress.refresh()
+        seq_id, _new_ids = result
         priority = self._priority.get(nid, int(Priority.NORMAL))
-        for rid in new_ids:
-            self._priority[rid] = max(self._priority.get(rid, 0), priority)
-            if self._register(rid):
-                self._enqueue(rid)
+        before = len(self._scheduled)
+        self._schedule_subgraph(seq_id, priority)
+        if self._progress is not None and len(self._scheduled) > before:
+            self._progress.total += len(self._scheduled) - before  # the graph grew
+            self._progress.refresh()
         # The bodies just registered as the real consumers of the closure's
         # captures; hand the closure's pin over to them (see _finish). The
         # captures stay resident throughout — never dropping to zero — so the
