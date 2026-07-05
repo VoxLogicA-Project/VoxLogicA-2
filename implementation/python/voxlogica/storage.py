@@ -188,6 +188,7 @@ class SQLiteResultsDatabase:
         self.runtime_version = runtime_version or "unknown"
         self._max_bytes = DEFAULT_CACHE_MAX_BYTES if max_bytes is None else max_bytes
         self._lock = threading.RLock()
+        self._live_node_ids: set[str] = set()  # updated by the engine; used in eviction
         self._connection = sqlite3.connect(str(self.db_path), check_same_thread=False, isolation_level=None, timeout=5.0)
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA synchronous=NORMAL")
@@ -431,30 +432,37 @@ class SQLiteResultsDatabase:
             self._stats["writes"] += 1
         self._enforce_budget()
 
-    def _enforce_budget(self) -> None:
-        """Evict payloads by GreedyDual-Size key until back under the byte budget.
+    def set_live_nodes(self, node_ids: set[str]) -> None:
+        """Update the set of nodes still needed by active work (passed by the engine)."""
+        with self._lock:
+            self._live_node_ids = set(node_ids)
 
-        Runs on the async persister thread (off the event loop). Only rows that
-        hold payload bytes are candidates, evicted in ascending ``gd_key`` order
-        (cheapest-to-recompute-per-byte first) — so a small, expensively-computed
-        value is kept while a large, cheap intermediate goes first. The clock
-        rises to each evicted key, folding recency into future keys. Evicted
-        values remain regenerable from lineage.
+    def _enforce_budget(self) -> None:
+        """Evict payloads to stay under budget: dead values first, live only if forced.
+
+        Runs on the async persister thread (off the event loop). Within each tier
+        (dead, then live), evict by GreedyDual-Size key (cheapest-to-recompute-per-
+        byte first). The clock rises to each evicted key, folding recency into
+        future keys. Evicted values remain regenerable from lineage.
         """
         if self._max_bytes <= 0 or self._payload_bytes <= self._max_bytes:
             return
         low_water = int(self._max_bytes * 0.9)
         with self._lock:
+            live = set(self._live_node_ids)  # snapshot to avoid lock contention
             while self._payload_bytes > low_water:
+                # First pass: evict only dead values (not needed by active work)
                 rows = self._connection.execute(
                     "SELECT node_id, payload_file, payload_bytes, gd_key FROM results "
                     "WHERE payload_bytes > 0 ORDER BY gd_key ASC LIMIT 128"
                 ).fetchall()
-                if not rows:
-                    break
+                dead_evicted = False
                 for node_id, payload_file, nbytes, gd_key in rows:
                     if self._payload_bytes <= low_water:
                         break
+                    if node_id in live:
+                        continue  # skip live; try dead first
+                    dead_evicted = True
                     if payload_file:
                         (self.payload_dir / str(payload_file)).unlink(missing_ok=True)
                     self._connection.execute("DELETE FROM results WHERE node_id = ?", (node_id,))
@@ -462,6 +470,23 @@ class SQLiteResultsDatabase:
                     self._gd_clock = max(self._gd_clock, float(gd_key))
                     self._stats["evictions"] += 1
                     self._stats["evicted_bytes"] += int(nbytes or 0)
+                # If no dead values were evicted and we're still over, evict live (last resort)
+                if not dead_evicted and self._payload_bytes > low_water:
+                    rows = self._connection.execute(
+                        "SELECT node_id, payload_file, payload_bytes, gd_key FROM results "
+                        "WHERE payload_bytes > 0 ORDER BY gd_key ASC LIMIT 128"
+                    ).fetchall()
+                    for node_id, payload_file, nbytes, gd_key in rows:
+                        if self._payload_bytes <= low_water:
+                            break
+                        if payload_file:
+                            (self.payload_dir / str(payload_file)).unlink(missing_ok=True)
+                        self._connection.execute("DELETE FROM results WHERE node_id = ?", (node_id,))
+                        self._payload_bytes -= int(nbytes or 0)
+                        self._gd_clock = max(self._gd_clock, float(gd_key))
+                        self._stats["evictions"] += 1
+                        self._stats["evicted_bytes"] += int(nbytes or 0)
+                    break  # one forced pass is enough
 
     def stats(self) -> dict[str, Any]:
         """Cache statistics: live entries/bytes, cumulative work banked, activity."""
@@ -522,6 +547,9 @@ class NoCacheStorageBackend:
 
     def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None,
                     compute_ms: float = 0.0) -> None:
+        return None
+
+    def set_live_nodes(self, node_ids: set[str]) -> None:
         return None
 
     def delete(self, node_id: str) -> None:
