@@ -113,8 +113,7 @@ class ComputationEngine:
         self._critical_nodes: set[NodeId] = set()  # cut nodes to persist for-sure (goal deps): pruning them collapses whole subtrees on a warm re-run
         # A result is persisted with a guarantee if it cost at least this long to
         # compute or feeds at least this many consumers (env-overridable).
-        self._persist_cost_ms = float(os.environ.get("VOXLOGICA_PERSIST_COST_MS", 50))
-        self._persist_fanout = int(os.environ.get("VOXLOGICA_PERSIST_FANOUT", 4))
+        self._persist_fanout = int(os.environ.get("VOXLOGICA_PERSIST_FANOUT", 8))
 
     # ── Public API ──────────────────────────────────────────────────────────────────────────
 
@@ -241,8 +240,14 @@ class ComputationEngine:
             # coverage of nearly the entire DAG — so warm ≈ 0 kernels. Big image
             # intermediates stay best-effort: forcing them critical would neither
             # help warm pruning (pruned above them anyway) nor fit the writer, and
-            # would pin gigabytes in the persist backlog.
-            critical = (nid in self._critical_nodes or node.operator in _SEQUENCE_OPERATORS)
+            # would pin gigabytes in the persist backlog. Widely-shared results
+            # (high fan-out — a per-case image feeding every combo) are also kept,
+            # so a *variant* sweep reusing the same preprocessing recomputes only
+            # its changed tail; this is a small set (the sharing roots), not every
+            # intermediate.
+            critical = (nid in self._critical_nodes
+                        or node.operator in _SEQUENCE_OPERATORS
+                        or self._consumers.get(nid, 0) >= self._persist_fanout)
             self.table.complete(nid, value, compute_ms, critical=critical)
             if node.operator in _SEQUENCE_OPERATORS:
                 for index, item in enumerate(value):
