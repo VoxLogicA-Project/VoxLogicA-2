@@ -378,14 +378,10 @@ class ComputationEngine:
                 elif node.kind == "closure":
                     self._finish(nid, None, persist=False)  # trivial; only its captures matter
                 else:
-                    # Throttle *new* kernels when the disk writer is behind, so
-                    # the unwritten backlog can't grow without bound. This yields
-                    # the event loop (completions and writes keep flowing) rather
-                    # than blocking it, then re-queues this node to retry.
-                    if self.table.persist_over_budget:
-                        await asyncio.sleep(0.002)
-                        self._enqueue(nid)
-                        continue
+                    # Persistence never throttles compute: when the writer is
+                    # behind, NodeTable.complete simply skips caching that value
+                    # (best-effort), so the workers keep running at full width and
+                    # cache housekeeping stays a background, best-effort activity.
                     # Prefer resident-ready work: if this node would have to reload
                     # an evicted input and there is plenty of other ready work whose
                     # inputs are resident, let that run first (defer once). Keeps the
