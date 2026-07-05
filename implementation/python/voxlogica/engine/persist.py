@@ -56,8 +56,19 @@ class AsyncPersister:
         self._pending_bytes = 0
         self._drained = threading.Event()
         self._drained.set()
-        self._thread = threading.Thread(target=self._run, name="voxlogica-persist", daemon=True)
-        self._thread.start()
+        # Several writer threads so persistence throughput keeps up with compute:
+        # gzip (the costly part) and the payload-file write happen outside the
+        # backend's write lock, so N writers compress in parallel and serialise
+        # only the short SQLite insert. Without this a single writer fell behind a
+        # wide sweep and best-effort dropped the very results worth caching.
+        import os
+        self._num_writers = int(os.environ.get("VOXLOGICA_PERSIST_WRITERS", 0)) or min(4, (os.cpu_count() or 4))
+        self._threads = [
+            threading.Thread(target=self._run, name=f"voxlogica-persist-{i}", daemon=True)
+            for i in range(self._num_writers)
+        ]
+        for thread in self._threads:
+            thread.start()
 
     def submit(self, node_id: NodeId, value: Any, metadata: dict, compute_ms: float = 0.0) -> None:
         """Hand a value to the writer thread. Never blocks."""
@@ -77,9 +88,11 @@ class AsyncPersister:
         self._drained.wait(timeout_s)
 
     def close(self) -> None:
-        """Stop the writer thread after it drains."""
-        self._queue.put(None)
-        self._thread.join(timeout=2.0)
+        """Stop the writer threads after they drain."""
+        for _ in self._threads:
+            self._queue.put(None)
+        for thread in self._threads:
+            thread.join(timeout=2.0)
 
     def _run(self) -> None:
         while True:

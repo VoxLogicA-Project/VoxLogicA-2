@@ -109,6 +109,11 @@ class ComputationEngine:
         self._body_owner: dict[NodeId, NodeId] = {}
         self._peak_frontier = 0  # max scheduled-but-not-completed nodes (in-flight breadth)
         self._reload_deferred: set[NodeId] = set()  # nodes deferred once to let resident-ready work run first
+        self._kernels_executed = 0  # kernels actually run this session (cold high; warm ~0 = full reuse)
+        # A result is persisted with a guarantee if it cost at least this long to
+        # compute or feeds at least this many consumers (env-overridable).
+        self._persist_cost_ms = float(os.environ.get("VOXLOGICA_PERSIST_COST_MS", 50))
+        self._persist_fanout = int(os.environ.get("VOXLOGICA_PERSIST_FANOUT", 4))
 
     # ── Public API ──────────────────────────────────────────────────────────────────────────
 
@@ -217,7 +222,13 @@ class ComputationEngine:
         """
         node = self.table.nodes[nid]
         if persist:
-            self.table.complete(nid, value, compute_ms)
+            # Guarantee persistence of results worth reusing across runs — those
+            # expensive to recompute or shared by many consumers — so a warm
+            # re-run reloads them instead of recomputing. Cheap, one-shot values
+            # stay best-effort (dropped under writer pressure).
+            critical = (compute_ms >= self._persist_cost_ms
+                        or self._consumers.get(nid, 0) >= self._persist_fanout)
+            self.table.complete(nid, value, compute_ms, critical=critical)
             if node.operator in _SEQUENCE_OPERATORS:
                 for index, item in enumerate(value):
                     self.table.complete_item(nid, index, item)
@@ -401,6 +412,7 @@ class ComputationEngine:
                         if dep not in self.table.values:
                             self._rematerialize(dep)  # recompute deps evicted under pressure
                     self.table.begin(nid)  # enforces the no-double-computation invariant
+                    self._kernels_executed += 1
                     started = time.perf_counter()
                     value = await self.executor.run(self.table, nid)
                     # measured recompute cost feeds the cache's cost-aware eviction
@@ -444,11 +456,13 @@ class ComputationEngine:
             "live_budget_mb": round(self._max_live_bytes / 1024 ** 2, 1),
             "peak_frontier": self._peak_frontier,
             "loop_window": self._body_window,
+            "kernels_executed": self._kernels_executed,
             "recomputes": self._recomputes,
         }
         backend = self.table._backend
         if backend is not None and hasattr(backend, "stats"):
             s = backend.stats()
+            m["cache_hits"] = s.get("hits", 0)  # values reloaded from disk (cross-run reuse)
             m["cache_bytes_mb"] = round(s.get("payload_bytes", 0) / 1024 ** 2, 1)
             m["evicted_dead"] = s.get("evicted_dead", 0)
             m["evicted_live"] = s.get("evicted_live", 0)
