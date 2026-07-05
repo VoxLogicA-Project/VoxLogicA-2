@@ -218,11 +218,15 @@ class ComputationEngine:
         """
         node = self.table.nodes[nid]
         if persist:
-            # Guarantee persistence of results worth reusing across runs — those
-            # expensive to recompute or shared by many consumers — so a warm
-            # re-run reloads them instead of recomputing. Cheap, one-shot values
-            # stay best-effort (dropped under writer pressure).
-            critical = (compute_ms >= self._persist_cost_ms
+            # Guarantee persistence of results worth reusing across runs. Besides
+            # the obvious ones (expensive to recompute, or shared by many
+            # consumers), this MUST include the structural loop/sequence nodes:
+            # they are cheap to compute but persisting one prunes its entire
+            # subtree on a warm re-run (the node is loaded instead of re-expanded
+            # and recomputed). Missing these was why a warm re-run still recomputed
+            # almost everything — the highest-leverage writes were being dropped.
+            critical = (node.operator in _SEQUENCE_OPERATORS
+                        or compute_ms >= self._persist_cost_ms
                         or self._consumers.get(nid, 0) >= self._persist_fanout)
             self.table.complete(nid, value, compute_ms, critical=critical)
             if node.operator in _SEQUENCE_OPERATORS:
