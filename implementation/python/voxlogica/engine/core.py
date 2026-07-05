@@ -105,8 +105,10 @@ class ComputationEngine:
         self._body_window = max(self.max_concurrency, int(os.environ.get("VOXLOGICA_LOOP_WINDOW", 0)) or self.max_concurrency)
         self._loop_bodies: dict[NodeId, list[NodeId]] = {}
         self._loop_next: dict[NodeId, int] = {}
+        self._loop_captures: dict[NodeId, list[NodeId]] = {}  # captures pinned for a loop's whole unroll
         self._body_owner: dict[NodeId, NodeId] = {}
         self._peak_frontier = 0  # max scheduled-but-not-completed nodes (in-flight breadth)
+        self._reload_deferred: set[NodeId] = set()  # nodes deferred once to let resident-ready work run first
 
     # ── Public API ──────────────────────────────────────────────────────────────────────────
 
@@ -319,12 +321,18 @@ class ComputationEngine:
                 self._loop_bodies[seq_id] = pending
                 self._loop_next[seq_id] = 0
                 self._admit_bodies(seq_id, self._body_window)
-        # The bodies just registered as the real consumers of the closure's
-        # captures; hand the closure's pin over to them (see _finish). The
-        # captures stay resident throughout — never dropping to zero — so the
-        # loop's inputs are read once, not recomputed per expansion.
-        for dep in self._deps(node.args[1]):
-            self._release(dep)
+        # Hand the closure's capture-pin over to the bodies (see _finish). If the
+        # loop is still unrolling in waves, keep holding the captures until it is
+        # fully unrolled: releasing now would let a value shared across bodies
+        # (e.g. a per-case image feeding every combo) drop to zero consumers
+        # between waves and be evicted, forcing a reload each wave. Held here, it
+        # is computed once and stays resident for the whole loop.
+        captures = list(self._deps(node.args[1]))
+        if seq_id in self._loop_bodies:
+            self._loop_captures[seq_id] = captures  # released in _admit_bodies at full unroll
+        else:
+            for dep in captures:
+                self._release(dep)
         self._alias[nid] = seq_id
         self._consumers[seq_id] += 1
         if seq_id in self._scheduled and seq_id not in self.table.completed:
@@ -382,6 +390,17 @@ class ComputationEngine:
                         await asyncio.sleep(0.002)
                         self._enqueue(nid)
                         continue
+                    # Prefer resident-ready work: if this node would have to reload
+                    # an evicted input and there is plenty of other ready work whose
+                    # inputs are resident, let that run first (defer once). Keeps the
+                    # workers busy on RAM-resident data instead of stalling on I/O.
+                    if (nid not in self._reload_deferred
+                            and self._ready.qsize() >= self.max_concurrency
+                            and any(dep not in self.table.values for dep in self._deps(nid))):
+                        self._reload_deferred.add(nid)
+                        self._enqueue(nid)
+                        continue
+                    self._reload_deferred.discard(nid)
                     for dep in self._deps(nid):
                         if dep not in self.table.values:
                             self._rematerialize(dep)  # recompute deps evicted under pressure
@@ -506,6 +525,10 @@ class ComputationEngine:
         if index >= len(bodies):  # fully unrolled; drop the bookkeeping
             self._loop_bodies.pop(seq_id, None)
             self._loop_next.pop(seq_id, None)
+            # Every body is now registered as a consumer of the captures, so the
+            # loop-duration hold can be handed off (see _expand).
+            for dep in self._loop_captures.pop(seq_id, ()):
+                self._release(dep)
 
     def _admit(self) -> None:
         """Move held-back nodes into the ready queue as capacity frees up.
