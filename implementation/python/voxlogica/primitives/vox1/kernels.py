@@ -728,6 +728,28 @@ def otsu(image: object, mask_image: object, nbins: float) -> sitk.Image:
     return flt.Execute(img, _as_bool_image(msk))
 
 
+def n4(image: object, mask_image: object) -> sitk.Image:
+    """N4 bias-field correction within a mask (per-image, deterministic; NO learning).
+
+    Removes the low-frequency multiplicative intensity bias (coil/shim inhomogeneity) so a
+    single intensity threshold behaves uniformly across the field of view. The bias field is
+    estimated on a 2x-shrunk image for speed (it is low-frequency by construction), then the
+    full-resolution log-bias is divided out of the original. Returns the corrected intensity
+    image (float32); feed it to `percentiles` exactly like a raw channel.
+    """
+    img = _as_float_image(_as_image(image, "image"))
+    msk = _as_bool_image(_as_image(mask_image, "mask_image"))
+    _remember_base(img)
+    dim = img.GetDimension()
+    img_s = sitk.Shrink(img, [2] * dim)
+    msk_s = sitk.Shrink(msk, [2] * dim)
+    corrector = sitk.N4BiasFieldCorrectionImageFilter()
+    corrector.SetMaximumNumberOfIterations([30, 20, 10])
+    corrector.Execute(img_s, msk_s)                    # estimate on the shrunk image
+    log_bias = corrector.GetLogBiasFieldAsImage(img)   # evaluate at full resolution
+    return img / sitk.Exp(log_bias)
+
+
 def maxvol(image: object) -> sitk.Image:
     """Largest connected component mask (ties keep union)."""
     img = _as_image(image, "image")
