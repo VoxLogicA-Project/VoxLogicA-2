@@ -82,6 +82,8 @@ _PRIMITIVES: dict[str, tuple[Callable[..., Any], AritySpec]] = {
     "Lcc": (kernels.Lcc, AritySpec.fixed(1)),
     "otsu": (kernels.otsu, AritySpec.fixed(3)),
     "n4": (kernels.n4, AritySpec.fixed(2)),
+    "hd95": (kernels.hd95, AritySpec.fixed(2)),
+    "nsd": (kernels.nsd, AritySpec.fixed(3)),
     "label_mean": (kernels.label_mean, AritySpec.fixed(2)),
     "slic": (kernels.slic, AritySpec.fixed(3)),
 }

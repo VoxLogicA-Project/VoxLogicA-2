@@ -750,6 +750,54 @@ def n4(image: object, mask_image: object) -> sitk.Image:
     return img / sitk.Exp(log_bias)
 
 
+def _surface_distances(a_obj: object, b_obj: object):
+    """Symmetric surface distances (mm, image spacing) between two boolean masks.
+
+    Returns (d_pred->ref, d_ref->pred) arrays of per-surface-voxel nearest distances, or
+    None if either mask is empty (metric undefined). Used by hd95 and nsd below.
+    """
+    A = _as_bool_image(_as_image(a_obj, "a"))
+    B = _as_bool_image(_as_image(b_obj, "b"))
+    an = sitk.GetArrayFromImage(A).astype(bool)
+    bn = sitk.GetArrayFromImage(B).astype(bool)
+    if not an.any() or not bn.any():
+        return None
+    dist_to_a = np.abs(sitk.GetArrayFromImage(
+        sitk.SignedMaurerDistanceMap(A, squaredDistance=False, useImageSpacing=True)))
+    dist_to_b = np.abs(sitk.GetArrayFromImage(
+        sitk.SignedMaurerDistanceMap(B, squaredDistance=False, useImageSpacing=True)))
+    a_surf = an & ~sitk.GetArrayFromImage(sitk.BinaryErode(A, [1, 1, 1])).astype(bool)
+    b_surf = bn & ~sitk.GetArrayFromImage(sitk.BinaryErode(B, [1, 1, 1])).astype(bool)
+    return dist_to_b[a_surf], dist_to_a[b_surf]
+
+
+def hd95(prediction: object, reference: object) -> float:
+    """95th-percentile (robust) Hausdorff surface distance in mm (lower = better).
+
+    A boundary metric that, unlike Dice, is sensitive to localized boundary errors on large
+    objects (Metrics Reloaded). Returns -1.0 if either mask is empty (undefined)."""
+    sd = _surface_distances(prediction, reference)
+    if sd is None:
+        return -1.0
+    return float(np.percentile(np.concatenate(sd), 95))
+
+
+def nsd(prediction: object, reference: object, tolerance_mm: float) -> float:
+    """Normalized Surface Dice at tolerance tau mm (higher = better, 1 = perfect boundary).
+
+    Fraction of both surfaces lying within tau of the other surface — the boundary analogue
+    of Dice, robust to clinically-irrelevant sub-tau deviations. -1.0 if either mask empty."""
+    sd = _surface_distances(prediction, reference)
+    if sd is None:
+        return -1.0
+    d_ab, d_ba = sd
+    tau = float(tolerance_mm)
+    total = len(d_ab) + len(d_ba)
+    if total == 0:
+        return -1.0
+    return float(int((d_ab <= tau).sum() + (d_ba <= tau).sum()) / total)
+
+
 def maxvol(image: object) -> sitk.Image:
     """Largest connected component mask (ties keep union)."""
     img = _as_image(image, "image")
