@@ -727,11 +727,22 @@ class MaterializationStore:
             record_metadata["persisted"] = "pending"
             self._remember(node_id, value)
             enqueue = (node_id, value, record_metadata)
-        # Enqueue outside the lock: the bounded queue blocks the producer when
-        # full (backpressure that bounds memory), and the persistence thread
-        # needs the lock to mark items done — holding it here would deadlock.
+        # Enqueue outside the lock (the persistence thread needs the lock to mark
+        # items done). Persistence is BEST-EFFORT and must never block the producer:
+        # a blocking put here can be reached from the single engine thread and freeze
+        # all scheduling (0%-CPU hang). If the writer is behind and the queue is full,
+        # drop this write — the value stays in the in-memory tier and is recomputed
+        # if a later run needs it. Bounding of in-flight work is done upstream
+        # (AsyncPersister.over_budget), so dropping here only costs a cache entry.
         if enqueue is not None:
-            self._persist_queue.put(enqueue)
+            try:
+                self._persist_queue.put_nowait(enqueue)
+            except queue.Full:
+                with self._lock:
+                    rec = self._records.get(node_id)
+                    if rec is not None:
+                        rec.metadata["persisted"] = False
+                        rec.metadata["persist_error"] = "persist queue full (dropped, best-effort)"
 
     def forget(self, node_id: str) -> None:
         """Drop a value from the in-memory tier once the caller no longer needs it.

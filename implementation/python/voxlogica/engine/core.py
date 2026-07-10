@@ -101,6 +101,7 @@ class ComputationEngine:
         self._peak_frontier = 0         # max in-flight (scheduled-but-incomplete) nodes
         self._kernels_executed = 0      # kernels run this session (cold high; warm ~0 = full reuse)
         self._recomputes = 0            # evicted values that had to be recomputed, not reloaded
+        self._in_flight = 0             # kernels currently executing (watchdog: 0 + no progress = deadlock)
 
     # ── Public API ──────────────────────────────────────────────────────────────────────────
 
@@ -150,7 +151,7 @@ class ComputationEngine:
                                   dynamic_ncols=True, disable=None, file=sys.stderr, leave=True)
         workers = [asyncio.create_task(self._worker()) for _ in range(self.max_concurrency)]
         try:
-            await self._ready.join()
+            await self._join_with_watchdog()
             if self._debug and any(n not in self.table.completed for n in self._scheduled):
                 self._dump_stuck()
         finally:
@@ -162,6 +163,47 @@ class ComputationEngine:
         self.table.flush()
         if self._first_error is not None:
             raise self._first_error
+
+    async def _join_with_watchdog(self) -> None:
+        """Wait for all work to finish, but NEVER hang silently.
+
+        A bare ``await self._ready.join()`` waits forever if a scheduling/persistence
+        bug ever leaves work outstanding with no worker able to advance it (the 0%-CPU
+        freeze). This watchdog converts any such stall into a loud, diagnosable failure:
+        it samples progress, and if no node completes for ``stall`` seconds it decides
+        whether this is a genuine deadlock (nothing is executing and nothing is ready —
+        so no amount of waiting will help) or merely a very slow kernel (something is
+        still in flight), dumping the stuck frontier and raising only in the former case.
+        A generous absolute backstop catches a single wedged kernel too. Tunable via
+        VOXLOGICA_STALL_TIMEOUT_S (deadlock, default 180) and VOXLOGICA_HANG_TIMEOUT_S
+        (wedged-kernel backstop, default 3600).
+        """
+        join = asyncio.ensure_future(self._ready.join())
+        stall = float(os.environ.get("VOXLOGICA_STALL_TIMEOUT_S", "180"))
+        hard = float(os.environ.get("VOXLOGICA_HANG_TIMEOUT_S", "3600"))
+        interval = max(1.0, min(15.0, stall / 4.0))
+        last_done, idle = -1, 0.0
+        while True:
+            done, _ = await asyncio.wait({join}, timeout=interval)
+            if join in done:
+                return
+            cur = len(self.table.completed)
+            if cur != last_done:
+                last_done, idle = cur, 0.0
+                continue
+            idle += interval
+            # genuine deadlock: no progress, nothing executing, nothing ready to run
+            deadlocked = (self._in_flight == 0 and self._ready is not None
+                          and self._ready.qsize() == 0)
+            if (idle >= stall and deadlocked) or idle >= hard:
+                join.cancel()
+                self._dump_stuck()
+                raise RuntimeError(
+                    f"engine stalled: no node completed for {idle:.0f}s "
+                    f"({cur}/{len(self._scheduled)} done, in_flight={self._in_flight}, "
+                    f"ready={self._ready.qsize()}). Stuck frontier dumped above. "
+                    f"This is an engine bug (a hang must never happen) — please report; "
+                    f"raise VOXLOGICA_STALL_TIMEOUT_S if this was a genuinely slow kernel.")
 
     # ── Scheduling ──────────────────────────────────────────────────────────────────────────
 
@@ -416,7 +458,11 @@ class ComputationEngine:
                     self.table.begin(nid)  # enforces the no-double-computation invariant
                     self._kernels_executed += 1
                     started = time.perf_counter()
-                    value = await self.executor.run(self.table, nid)
+                    self._in_flight += 1
+                    try:
+                        value = await self.executor.run(self.table, nid)
+                    finally:
+                        self._in_flight -= 1
                     # measured recompute cost feeds the cache's cost-aware eviction
                     self._finish(nid, value, compute_ms=(time.perf_counter() - started) * 1000.0)
             except Exception as exc:  # noqa: BLE001
