@@ -591,6 +591,14 @@ class ComputationEngine:
         priority = self._priority.get(seq_id, int(Priority.NORMAL))
         admitted = 0
         while index < len(bodies) and admitted < count:
+            # Memory-ADAPTIVE window: once the live tier is over budget, stop opening
+            # new loop bodies (unless the workers would otherwise starve — the progress
+            # floor). The effective window shrinks automatically under memory pressure
+            # and grows back as values drain (see _admit), so a wide loop over a large
+            # dataset never thrashes or OOMs — with no VOXLOGICA_LOOP_WINDOW tuning.
+            starving = self._ready is None or self._ready.qsize() < self.max_concurrency
+            if self.table.live_bytes > self.config.max_live_bytes and not starving:
+                break
             body = bodies[index]
             index += 1
             admitted += 1
@@ -621,6 +629,12 @@ class ComputationEngine:
             if self.table.live_bytes > self.config.max_live_bytes and not starving:
                 break
             self._ready.put_nowait(heapq.heappop(self._deferred))
+        # Resume loop bodies that the memory-adaptive window held back, now that the
+        # live tier has drained — so a loop throttled under pressure never stalls.
+        if self._loop_bodies and (self.table.live_bytes <= self.config.max_live_bytes
+                                  or self._ready.qsize() < self.max_concurrency):
+            for seq_id in list(self._loop_bodies):
+                self._admit_bodies(seq_id, 1)
 
     def _raise_priority(self, nid: NodeId, priority: int) -> None:
         """Propagate a priority bump to a node and its unfinished dependencies.
