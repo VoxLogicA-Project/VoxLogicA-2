@@ -2,6 +2,24 @@
 
 Status: implemented (2026-07). Companion benchmark: `tests/perf/bench_scheduler.py`.
 
+## Measured results (18-core M-series, disk cache on, ~2ms GIL-releasing kernels)
+
+| plan size | old engine | frontier scheduler |
+|---|---|---|
+| 50k nodes | 2,579 nodes/s (3.9 busy cores) | 9,201 nodes/s |
+| 300k nodes | 686 nodes/s, 439 s wall, 1.5 busy cores, frontier = whole plan (301k) | 6,817 nodes/s, 44 s wall, frontier 36k |
+| 1.2M nodes | (extrapolates to ~200 nodes/s, hours) | 5,805 nodes/s, 207 s wall, frontier 36k |
+
+Old per-node cost grew with plan size (−73% throughput from 50k→300k;
+extrapolating the curve to the production 9M-node plan reproduces the observed
+25–35 nodes/s). New per-node cost is flat: −2% from 300k→1.2M, with an
+identical open frontier at both scales. With production-weight kernels (~10ms)
+wall time is within 3% of the theoretical minimum (kernel-core-seconds / 18),
+i.e. the pool is saturated. A single process now exceeds the aggregate
+throughput of the 9-process split (~1,440 nodes/s) by ~4×. Startup: expansion
+no longer blocks the event loop — first completion at t≈0 instead of after a
+minutes-long single-core DAG-build phase.
+
 ## The problem it replaces
 
 The previous engine's per-node coordination cost grew with total plan size, so a

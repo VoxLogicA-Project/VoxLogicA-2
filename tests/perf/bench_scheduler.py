@@ -72,7 +72,8 @@ def main() -> None:
     parser.add_argument("--profile-out", type=str, default="", help="dump .pstats here")
     parser.add_argument("--progress", action="store_true", help="show the tqdm bar")
     parser.add_argument("--live-refresh", type=int, default=0,
-                        help="override live_refresh_interval (ablation; 0 = engine default)")
+                        help="(baseline-only ablation) override live_refresh_interval; "
+                             "no-op on the frontier scheduler, which has no periodic walk")
     parser.add_argument("--json", action="store_true", help="emit machine-readable summary")
     args = parser.parse_args()
 
@@ -97,8 +98,8 @@ def main() -> None:
 
     engine = ComputationEngine(backend=backend, max_concurrency=args.threads,
                                progress=args.progress)
-    if args.live_refresh:
-        import dataclasses
+    if args.live_refresh and hasattr(engine.config, "live_refresh_interval"):
+        import dataclasses  # only meaningful on the pre-frontier engine (ablation)
         engine.config = dataclasses.replace(engine.config, live_refresh_interval=args.live_refresh)
     engine.adopt_plan(plan)
     for goal in plan.goals:

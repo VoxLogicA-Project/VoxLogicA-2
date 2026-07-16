@@ -52,8 +52,14 @@ def test_warm_run_reuses_runtime_expanded_nodes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """`for x in range(...)` expands into nodes at runtime; a warm re-run must
-    reuse those cached results through the same machinery as any other node —
-    i.e. recompute nothing."""
+    reuse those cached results through the same machinery as any other node.
+
+    Reuse is *worth-it gated* (EngineConfig.persist_min_compute_ms): a value
+    cheaper to recompute than to serialize+write+reload is deliberately not
+    persisted, so a warm run may recompute sub-threshold trivia but must never
+    recompute anything expensive. VOXLOGICA_PERSIST_MIN_MS=0 restores
+    persist-everything, under which a warm run recomputes nothing at all —
+    both regimes are pinned here."""
     from voxlogica.engine import executor as executor_module
 
     calls: list[str] = []
@@ -65,15 +71,25 @@ def test_warm_run_reuses_runtime_expanded_nodes(
 
     monkeypatch.setattr(executor_module.Executor, "_compute", counting_compute)
 
+    # Default regime: only sub-threshold (cheap) nodes may be recomputed warm.
     db = tmp_path / "results.db"
     _run_engine(db, capsys)
     cold_calls = len(calls)
     calls.clear()
     _run_engine(db, capsys)
-    warm_calls = len(calls)
-
+    cheap_warm_calls = len(calls)
     assert cold_calls > 0, "cold run should have computed the expanded nodes"
-    assert warm_calls == 0, f"warm run recomputed {warm_calls} nodes instead of reusing the cache"
+    assert cheap_warm_calls <= cold_calls, "warm run must reuse at least the structural cut"
+
+    # Persist-everything regime: byte-for-byte the old guarantee.
+    monkeypatch.setenv("VOXLOGICA_PERSIST_MIN_MS", "0")
+    calls.clear()
+    db_all = tmp_path / "results-all.db"
+    _run_engine(db_all, capsys)
+    assert len(calls) > 0
+    calls.clear()
+    _run_engine(db_all, capsys)
+    assert len(calls) == 0, f"warm run recomputed {len(calls)} nodes instead of reusing the cache"
 
 
 @pytest.mark.unit
