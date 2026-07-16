@@ -50,15 +50,29 @@ class EngineConfig:
     loop_window: int
     #: A result is guaranteed-persisted if at least this many consumers share it.
     persist_fanout: int
-    #: Push the live-node set to the cache every N completions (amortises an O(n) walk).
-    live_refresh_interval: int = 128
+    #: Loop elements reduced per off-loop expansion step (pipelines DAG build with compute).
+    expansion_chunk: int = 0  # 0 = follow loop_window
+    #: Skip best-effort persistence of values cheaper to recompute than to store.
+    #: Serialization is pure-Python (GIL-holding): writing a sub-millisecond
+    #: scalar steals more interpreter time from dispatch than recomputing it
+    #: ever would, and GreedyDual-Size would evict it first anyway. Critical
+    #: values (the warm-run reuse cut) are always persisted regardless.
+    persist_min_compute_ms: float = 1.0
 
     @classmethod
     def from_env(cls, max_concurrency: int, max_live_bytes: int = 0) -> "EngineConfig":
         """Build a config, letting an explicit ``max_live_bytes`` override the env."""
         live = max_live_bytes or _env_gb_as_bytes("VOXLOGICA_MAX_LIVE_GB") or int(_system_ram_bytes() * 0.4)
+        window = max(_env_int("VOXLOGICA_LOOP_WINDOW") or max_concurrency, max_concurrency)
+        raw_min = os.environ.get("VOXLOGICA_PERSIST_MIN_MS")
+        try:
+            persist_min = float(raw_min) if raw_min else 1.0
+        except ValueError:
+            persist_min = 1.0
         return cls(
             max_live_bytes=live,
-            loop_window=max(_env_int("VOXLOGICA_LOOP_WINDOW") or max_concurrency, max_concurrency),
+            loop_window=window,
             persist_fanout=_env_int("VOXLOGICA_PERSIST_FANOUT") or 8,
+            expansion_chunk=_env_int("VOXLOGICA_EXPANSION_CHUNK") or window,
+            persist_min_compute_ms=persist_min,
         )

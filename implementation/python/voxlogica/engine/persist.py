@@ -48,9 +48,15 @@ def approx_bytes(value: object) -> int:
 class AsyncPersister:
     """Writes completed values to a backend on one IO thread, never blocking submit."""
 
-    def __init__(self, backend: StorageBackend, max_pending_bytes: int):
+    def __init__(self, backend: StorageBackend, max_pending_bytes: int,
+                 persisted_ids: set[NodeId] | None = None):
         self._backend = backend
         self._max_pending_bytes = max_pending_bytes
+        # Shared with NodeTable: consulted to skip a redundant disk probe per
+        # write, appended after each successful write so ``persisted()`` sees
+        # this run's results without touching SQLite. Single set ops from this
+        # thread are GIL-atomic; no lock needed.
+        self._persisted_ids = persisted_ids
         self._queue: "queue.SimpleQueue[tuple[NodeId, Any, dict, int, float] | None]" = queue.SimpleQueue()
         self._lock = threading.Lock()
         self._pending_bytes = 0
@@ -70,9 +76,16 @@ class AsyncPersister:
         for thread in self._threads:
             thread.start()
 
-    def submit(self, node_id: NodeId, value: Any, metadata: dict, compute_ms: float = 0.0) -> None:
-        """Hand a value to the writer thread. Never blocks."""
-        size = approx_bytes(value)
+    def submit(self, node_id: NodeId, value: Any, metadata: dict, compute_ms: float = 0.0,
+               size: int | None = None) -> None:
+        """Hand a value to the writer thread. Never blocks.
+
+        ``size`` lets the caller pass an already-computed ``approx_bytes`` so
+        the (recursive, per-completion) measurement is not repeated on the
+        event loop.
+        """
+        if size is None:
+            size = approx_bytes(value)
         with self._lock:
             self._pending_bytes += size
             self._drained.clear()
@@ -94,23 +107,67 @@ class AsyncPersister:
         for thread in self._threads:
             thread.join(timeout=2.0)
 
+    # Rows committed per transaction. Without batching every row pays its own
+    # WAL commit; at frontier-scheduler dispatch rates that made the writer
+    # fsync-bound and the queue drained slower than compute filled it.
+    _BATCH = 64
+
     def _run(self) -> None:
         while True:
             item = self._queue.get()
             if item is None:
                 return
-            node_id, value, metadata, size, compute_ms = item
-            try:
-                # Idempotent: skip a value already durable on disk, so re-runs
-                # over a warm cache do not rewrite unchanged payloads.
-                if not self._backend.has(node_id):
-                    self._backend.put_success(node_id, value, metadata=metadata, compute_ms=compute_ms)
-            except Exception:  # noqa: BLE001
-                logger.exception("async persistence failed for node %s", node_id)
-            finally:
-                value = item = None  # drop the reference: collectible once evicted
-                with self._lock:
-                    self._pending_bytes -= size
-                    if self._pending_bytes <= 0:
-                        self._pending_bytes = 0
-                        self._drained.set()
+            # Opportunistically drain more work into the same transaction. A
+            # sentinel drained by mistake is put back for its intended thread.
+            batch = [item]
+            while len(batch) < self._BATCH:
+                try:
+                    extra = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if extra is None:
+                    self._queue.put(None)
+                    break
+                batch.append(extra)
+            self._write_batch(batch)
+
+    def _write_batch(self, batch: list[tuple[NodeId, Any, dict, int, float]]) -> None:
+        try:
+            # Idempotent: skip values already durable on disk, so re-runs over
+            # a warm cache do not rewrite unchanged payloads. The id index
+            # (startup snapshot + our own writes) answers this with no disk
+            # probe; without an index, ask the backend. A concurrent *other*
+            # process's write is invisible to the index, but writes upsert, so
+            # the worst case is one redundant write.
+            if self._persisted_ids is not None:
+                fresh = [b for b in batch if b[0] not in self._persisted_ids]
+            else:
+                fresh = [b for b in batch if not self._backend.has(b[0])]
+            if fresh:
+                entries = [(nid, value, metadata, compute_ms)
+                           for nid, value, metadata, _size, compute_ms in fresh]
+                try:
+                    if hasattr(self._backend, "put_success_batch"):
+                        self._backend.put_success_batch(entries)
+                    else:
+                        raise NotImplementedError
+                except Exception:  # noqa: BLE001 — one bad value must not sink the batch
+                    for nid, value, metadata, compute_ms in entries:
+                        try:
+                            self._backend.put_success(nid, value, metadata=metadata, compute_ms=compute_ms)
+                        except Exception:  # noqa: BLE001
+                            logger.exception("async persistence failed for node %s", nid)
+            if self._persisted_ids is not None:
+                for nid, *_rest in batch:
+                    self._persisted_ids.add(nid)
+        except Exception:  # noqa: BLE001
+            logger.exception("async persistence failed for batch of %d (first: %s)",
+                             len(batch), batch[0][0])
+        finally:
+            written = sum(size for _nid, _value, _metadata, size, _cms in batch)
+            batch.clear()  # drop the references: collectible once evicted
+            with self._lock:
+                self._pending_bytes -= written
+                if self._pending_bytes <= 0:
+                    self._pending_bytes = 0
+                    self._drained.set()

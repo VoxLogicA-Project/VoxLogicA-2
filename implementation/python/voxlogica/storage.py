@@ -188,7 +188,9 @@ class SQLiteResultsDatabase:
         self.runtime_version = runtime_version or "unknown"
         self._max_bytes = DEFAULT_CACHE_MAX_BYTES if max_bytes is None else max_bytes
         self._lock = threading.RLock()
-        self._live_node_ids: set[str] = set()  # updated by the engine; used in eviction
+        self._live_node_ids: set[str] = set()  # legacy push-style live set (see set_live_nodes)
+        self._live_probe = None                # preferred: O(1) predicate from the engine
+        self._id_index: set[str] | None = None # engine's persisted-id index; kept truthful on evict
         self._connection = sqlite3.connect(str(self.db_path), check_same_thread=False, isolation_level=None, timeout=5.0)
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA synchronous=NORMAL")
@@ -371,82 +373,141 @@ class SQLiteResultsDatabase:
 
     def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None,
                     compute_ms: float = 0.0) -> None:
-        encoded = encode_for_storage(value)
+        self.put_success_batch([(node_id, value, metadata, compute_ms)])
+
+    def put_success_batch(self, entries: list[tuple[str, Any, dict[str, Any] | None, float]]) -> None:
+        """Write many results in ONE transaction.
+
+        The connection is autocommit (``isolation_level=None``), so without an
+        explicit transaction every row pays its own WAL commit — at the
+        frontier scheduler's dispatch rates the writer became fsync-bound and
+        the persist queue drained slower than compute filled it. Encoding
+        (gzip — the expensive, GIL-releasing part) happens before the lock;
+        only the inserts serialize.
+        """
+        prepared = []  # (node_id, encoded, payload_file, payload_bytes, metadata_json, compute_ms)
+        for node_id, value, metadata, compute_ms in entries:
+            encoded = encode_for_storage(value)
+            payload_file = None
+            payload_bytes = 0
+            if encoded.payload_bin is not None:
+                payload_file = f"{node_id}.bin"
+                (self.payload_dir / payload_file).write_bytes(encoded.payload_bin)
+                payload_bytes = len(encoded.payload_bin)
+            prepared.append((node_id, encoded, payload_file, payload_bytes,
+                             dumps_json(dict(metadata or {})), compute_ms))
         now = time.time()
-        payload_file = None
-        payload_bytes = 0
-        if encoded.payload_bin is not None:
-            payload_file = f"{node_id}.bin"
-            (self.payload_dir / payload_file).write_bytes(encoded.payload_bin)
-            payload_bytes = len(encoded.payload_bin)
-        metadata_json = dumps_json(dict(metadata or {}))
+        with self._lock:
+            self._connection.execute("BEGIN")
+            try:
+                for item in prepared:
+                    self._put_encoded_locked(*item, now=now)
+                self._connection.execute("COMMIT")
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
+        self._enforce_budget()
+
+    def _put_encoded_locked(self, node_id: str, encoded, payload_file: str | None,
+                            payload_bytes: int, metadata_json: str, compute_ms: float,
+                            now: float) -> None:
+        """Insert/update one already-encoded result row. Caller holds the lock
+        and an open transaction; budget enforcement happens once per batch."""
         # GreedyDual-Size key: recency clock + recompute cost per byte. Small +
         # expensive ranks highest (kept longest); large + cheap ranks lowest.
         gd_key = self._gd_clock + (compute_ms / payload_bytes if payload_bytes else 0.0)
-        with self._lock:
-            row = self._connection.execute(
-                "SELECT created_at, expression_json, dependencies_json, payload_bytes FROM results WHERE node_id = ?",
-                (node_id,),
-            ).fetchone()
-            created_at = float(row[0]) if row is not None else now
-            expression_json = row[1] if row is not None else "{}"
-            dependencies_json = row[2] if row is not None else "{}"
-            previous_bytes = int(row[3]) if row is not None else 0
-            self._connection.execute(
-                """
-                INSERT INTO results (
-                    node_id, status, format_version, vox_type, descriptor_json,
-                    payload_json, payload_file, error, metadata_json, expression_json,
-                    dependencies_json, runtime_version, created_at, updated_at,
-                    accessed_at, payload_bytes, compute_ms, gd_key
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(node_id) DO UPDATE SET
-                    status = excluded.status,
-                    format_version = excluded.format_version,
-                    vox_type = excluded.vox_type,
-                    descriptor_json = excluded.descriptor_json,
-                    payload_json = excluded.payload_json,
-                    payload_file = excluded.payload_file,
-                    error = NULL,
-                    metadata_json = excluded.metadata_json,
-                    expression_json = excluded.expression_json,
-                    dependencies_json = excluded.dependencies_json,
-                    runtime_version = excluded.runtime_version,
-                    updated_at = excluded.updated_at,
-                    accessed_at = excluded.accessed_at,
-                    payload_bytes = excluded.payload_bytes,
-                    compute_ms = excluded.compute_ms,
-                    gd_key = excluded.gd_key
-                """,
-                (
-                    node_id,
-                    MATERIALIZED_STATUS,
-                    encoded.format_version,
-                    encoded.vox_type,
-                    dumps_json(encoded.descriptor),
-                    dumps_json(encoded.payload_json),
-                    payload_file,
-                    None,
-                    metadata_json,
-                    expression_json,
-                    dependencies_json,
-                    self.runtime_version,
-                    created_at,
-                    now,
-                    now,
-                    payload_bytes,
-                    float(compute_ms),
-                    gd_key,
-                ),
-            )
-            self._payload_bytes += payload_bytes - previous_bytes
-            self._stats["writes"] += 1
-        self._enforce_budget()
+        row = self._connection.execute(
+            "SELECT created_at, expression_json, dependencies_json, payload_bytes FROM results WHERE node_id = ?",
+            (node_id,),
+        ).fetchone()
+        created_at = float(row[0]) if row is not None else now
+        expression_json = row[1] if row is not None else "{}"
+        dependencies_json = row[2] if row is not None else "{}"
+        previous_bytes = int(row[3]) if row is not None else 0
+        self._connection.execute(
+            """
+            INSERT INTO results (
+                node_id, status, format_version, vox_type, descriptor_json,
+                payload_json, payload_file, error, metadata_json, expression_json,
+                dependencies_json, runtime_version, created_at, updated_at,
+                accessed_at, payload_bytes, compute_ms, gd_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(node_id) DO UPDATE SET
+                status = excluded.status,
+                format_version = excluded.format_version,
+                vox_type = excluded.vox_type,
+                descriptor_json = excluded.descriptor_json,
+                payload_json = excluded.payload_json,
+                payload_file = excluded.payload_file,
+                error = NULL,
+                metadata_json = excluded.metadata_json,
+                expression_json = excluded.expression_json,
+                dependencies_json = excluded.dependencies_json,
+                runtime_version = excluded.runtime_version,
+                updated_at = excluded.updated_at,
+                accessed_at = excluded.accessed_at,
+                payload_bytes = excluded.payload_bytes,
+                compute_ms = excluded.compute_ms,
+                gd_key = excluded.gd_key
+            """,
+            (
+                node_id,
+                MATERIALIZED_STATUS,
+                encoded.format_version,
+                encoded.vox_type,
+                dumps_json(encoded.descriptor),
+                dumps_json(encoded.payload_json),
+                payload_file,
+                None,
+                metadata_json,
+                expression_json,
+                dependencies_json,
+                self.runtime_version,
+                created_at,
+                now,
+                now,
+                payload_bytes,
+                float(compute_ms),
+                gd_key,
+            ),
+        )
+        self._payload_bytes += payload_bytes - previous_bytes
+        self._stats["writes"] += 1
 
     def set_live_nodes(self, node_ids: set[str]) -> None:
         """Update the set of nodes still needed by active work (passed by the engine)."""
         with self._lock:
             self._live_node_ids = set(node_ids)
+
+    def set_live_probe(self, probe) -> None:
+        """Install an O(1) liveness predicate, replacing periodic set pushes.
+
+        The engine maintains liveness incrementally (see engine/liveness.py);
+        eviction consults the predicate per candidate instead of receiving
+        whole-set snapshots. The probe reads engine-side dicts without a lock —
+        single membership tests are GIL-atomic and staleness only shifts an
+        eviction preference, never correctness.
+        """
+        self._live_probe = probe
+
+    def set_id_index(self, index: set[str]) -> None:
+        """Share the engine's persisted-id set so eviction keeps it truthful."""
+        self._id_index = index
+
+    def materialized_ids(self) -> list[str]:
+        """All materialized node ids — one index-only scan at engine startup."""
+        rows = self._reader().execute(
+            "SELECT node_id FROM results WHERE status = ?", (MATERIALIZED_STATUS,)
+        ).fetchall()
+        return [str(r[0]) for r in rows]
+
+    def _is_live(self, node_id: str, snapshot: set[str]) -> bool:
+        if self._live_probe is not None:
+            try:
+                return bool(self._live_probe(node_id))
+            except Exception:  # noqa: BLE001 — a dying engine must not block eviction
+                return False
+        return node_id in snapshot
 
     _EVICT_SCAN = ("SELECT node_id, payload_file, payload_bytes, gd_key FROM results "
                    "WHERE payload_bytes > 0 ORDER BY gd_key ASC LIMIT 128")
@@ -456,6 +517,8 @@ class SQLiteResultsDatabase:
         if payload_file:
             (self.payload_dir / str(payload_file)).unlink(missing_ok=True)
         self._connection.execute("DELETE FROM results WHERE node_id = ?", (node_id,))
+        if self._id_index is not None:
+            self._id_index.discard(node_id)  # keep the engine's membership index truthful
         self._payload_bytes -= int(nbytes or 0)
         self._gd_clock = max(self._gd_clock, float(gd_key))
         self._stats["evictions"] += 1
@@ -478,7 +541,7 @@ class SQLiteResultsDatabase:
             live = set(self._live_node_ids)  # snapshot to avoid lock contention
             while self._payload_bytes > low_water:
                 rows = self._connection.execute(self._EVICT_SCAN).fetchall()
-                dead = [r for r in rows if r[0] not in live]
+                dead = [r for r in rows if not self._is_live(r[0], live)]
                 for node_id, payload_file, nbytes, gd_key in dead:
                     if self._payload_bytes <= low_water:
                         break
@@ -555,6 +618,9 @@ class NoCacheStorageBackend:
         return None
 
     def set_live_nodes(self, node_ids: set[str]) -> None:
+        return None
+
+    def set_live_probe(self, probe) -> None:
         return None
 
     def delete(self, node_id: str) -> None:

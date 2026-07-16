@@ -6,11 +6,17 @@ sub-recipes are one node, shared by every query.
 
 ``values`` is the sole in-RAM tier and the working set of live results: the
 scheduler drops a value the moment its last consumer has run (see
-``ComputationEngine._release``), so the table only ever holds what is still
+``DependencyGraph.release``), so the table only ever holds what is still
 needed. When a persistent backend is configured, completed values are also
 written through to disk, so an evicted value can be reloaded instead of
 recomputed; without one (e.g. ``--no-cache``) an evicted value is simply
 recomputed on demand.
+
+MEMBERSHIP IS IN-MEMORY: ``persisted()`` answers from an id index loaded once
+at startup (a single index-only scan) and appended by the background writer.
+The old per-call SQLite probe put one synchronous SELECT on the event loop for
+*every node the scheduler discovered* — the classic N+1 — which alone consumed
+~30% of the event loop on large runs.
 
 It also enforces the no-double-computation invariant: a node is dispatched at
 most once while unmaterialized. Starting a second computation for a hash that is
@@ -56,15 +62,27 @@ class NodeTable:
         self._running: set[NodeId] = set()
         self.completed: set[NodeId] = set()
         self._backend = backend if backend is not None and not isinstance(backend, NoCacheStorageBackend) else None
-        self._persister = AsyncPersister(self._backend, _persist_backlog_budget()) if self._backend else None
+        # One snapshot query instead of one SELECT per scheduled node. The
+        # writer appends as it persists, so the index tracks this run's writes;
+        # concurrent *other* processes' writes are missed until the next run —
+        # the same staleness window the per-call probe had in practice (and a
+        # miss only costs a recompute; content addressing keeps it correct).
+        self._persisted_ids: set[NodeId] | None = None
+        if self._backend is not None and hasattr(self._backend, "materialized_ids"):
+            self._persisted_ids = set(self._backend.materialized_ids())
+            if hasattr(self._backend, "set_id_index"):
+                self._backend.set_id_index(self._persisted_ids)  # evictions stay truthful
+        self._persister = (AsyncPersister(self._backend, _persist_backlog_budget(),
+                                          persisted_ids=self._persisted_ids)
+                           if self._backend else None)
         # Bytes resident in the live tier, tracked incrementally so the scheduler
         # can bound the working set (admission control) without rescanning values.
         self._sizeof: dict[NodeId, int] = {}
         self.live_bytes = 0
         self.peak_live_bytes = 0
 
-    def set_value(self, node_id: NodeId, value: Any) -> None:
-        """Place a value in the live tier, updating the resident-bytes total."""
+    def set_value(self, node_id: NodeId, value: Any) -> int:
+        """Place a value in the live tier; return its size (resident bytes)."""
         if node_id in self._sizeof:
             self.live_bytes -= self._sizeof[node_id]
         size = approx_bytes(value)
@@ -73,6 +91,7 @@ class NodeTable:
         if self.live_bytes > self.peak_live_bytes:
             self.peak_live_bytes = self.live_bytes
         self.values[node_id] = value
+        return size
 
     def intern(self, node: NodeSpec) -> NodeId:
         """Add a node by structural identity, returning its stable hash id."""
@@ -90,7 +109,9 @@ class NodeTable:
         return self._persister is not None and self._persister.over_budget
 
     def persisted(self, node_id: NodeId) -> bool:
-        """Cheap existence check against the disk tier (no materialization)."""
+        """Existence check against the disk tier — an in-memory set lookup."""
+        if self._persisted_ids is not None:
+            return node_id in self._persisted_ids
         return self._backend is not None and self._backend.has(node_id)
 
     def load(self, node_id: NodeId) -> Any:
@@ -111,23 +132,26 @@ class NodeTable:
             )
         self._running.add(node_id)
 
-    def complete(self, node_id: NodeId, value: Any, compute_ms: float = 0.0, critical: bool = False) -> None:
+    def complete(self, node_id: NodeId, value: Any, compute_ms: float = 0.0, critical: bool = False,
+                 persist: bool = True) -> None:
         """Record a freshly computed value and hand it to the background writer.
 
         ``compute_ms`` is the kernel's measured wall-time; it feeds the cache's
         cost-aware eviction so expensive results are kept over cheap ones.
 
         Persistence is best-effort for cheap values (skipped when the writer is
-        behind, so compute never stalls) but *guaranteed* for ``critical`` ones —
+        behind or when the scheduler judges the value cheaper to recompute than
+        to store — ``persist=False``) but *guaranteed* for ``critical`` ones —
         expensive or widely-shared results, exactly what makes cross-run reuse
         pay off. Dropping those was why warm re-runs recomputed everything.
         """
         self._running.discard(node_id)
-        self.set_value(node_id, value)
+        size = self.set_value(node_id, value)
         self.completed.add(node_id)
-        if self._persister is not None and (critical or not self._persister.over_budget):
+        if self._persister is not None and (critical or (persist and not self._persister.over_budget)):
             node = self.nodes[node_id]
-            self._persister.submit(node_id, value, {"source": "runtime", "operator": node.operator}, compute_ms)
+            self._persister.submit(node_id, value, {"source": "runtime", "operator": node.operator},
+                                   compute_ms, size=size)
 
     def complete_item(self, node_id: NodeId, index: int, value: Any) -> None:
         """Persist one element of a sequence-valued node under its derived key."""

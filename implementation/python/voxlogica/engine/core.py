@@ -1,21 +1,29 @@
-"""The live computation engine.
+"""The live computation engine — a thin coordinator over four cohesive parts.
 
-Ties the pieces together: a query is submitted (a goal node to materialize), its
-unmaterialized subgraph is registered with the scheduler, and a pool of workers
-drains a priority-ordered ready queue — running primitives on the executor,
-expanding loops into nodes via the single reduction semantics, releasing and
-demoting values once their last consumer has run. Queries sharing subexpressions
+A query submits a goal node; the goal's unmaterialized subgraph is registered
+with the dependency graph (``engine/graph.py``: Kahn-style pending counts +
+consumer refcounts), ready nodes drain through a priority queue
+(``engine/ready.py``) into worker coroutines that run kernels on a thread pool,
+runtime loops unroll incrementally under windowed backpressure
+(``engine/admission.py``), and the disk cache's eviction preference reads an
+O(1) liveness probe (``engine/liveness.py``). Queries sharing subexpressions
 share work automatically (Merkle identity); a higher-priority query lifts its
 dependencies above older work.
 
+THE THROUGHPUT CONTRACT: nothing on the event loop is O(plan) or blocks on
+I/O. Per-completion work is O(node degree); cache membership is an in-memory
+set; liveness is incremental; expansion is chunked and off-loop. Per-node
+scheduling state is dropped at completion, so the working set tracks the
+*frontier* — the same run costs the same per node whether the plan holds ten
+thousand nodes or ten million.
+
 Coordination runs on one event loop (single-writer over the scheduling maps, no
-locks); only primitive kernels run off-thread.
+locks); only primitive kernels and expansion chunks run off-thread.
 """
 
 from __future__ import annotations
 
 import asyncio
-import heapq
 import itertools
 import os
 import sys
@@ -25,12 +33,16 @@ from typing import Any
 
 from tqdm import tqdm
 
+from voxlogica.engine.admission import LoopAdmission
 from voxlogica.engine.config import EngineConfig
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
+from voxlogica.engine.graph import DependencyGraph
+from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.engine.priority import Priority
 from voxlogica.engine.query import Query, QueryStatus
+from voxlogica.engine.ready import ReadyQueue
 from voxlogica.lazy.ir import NodeId, SymbolicPlan
 from voxlogica.primitives.registry import PrimitiveRegistry
 from voxlogica.storage import StorageBackend
@@ -39,6 +51,8 @@ from voxlogica.storage import StorageBackend
 # loop. Persisting one of these prunes its whole subtree on a warm re-run.
 _SEQUENCE_OPERATORS = {"default.sequence", "sequence", "default.map", "map",
                        "default.for_loop", "for_loop", "default.filter", "filter"}
+
+_PROGRESS_BATCH = 64  # completions folded into one progress-bar refresh
 
 
 class ComputationEngine:
@@ -56,25 +70,26 @@ class ComputationEngine:
         self._show_progress = progress
         self._debug = debug
         self._progress: tqdm | None = None
+        self._progress_pending = 0
+        self._progress_op = ""
 
-        # ── Dependency graph (event-loop owned; no locks) ──
-        self._deps_cache: dict[NodeId, frozenset[NodeId]] = {}  # memoised, node specs are immutable
-        self._consumers: dict[NodeId, int] = defaultdict(int)   # refcount: unrun consumers of a value
-        self._dependents: dict[NodeId, list[NodeId]] = defaultdict(list)
-        self._pending: dict[NodeId, int] = {}                   # unmet deps before a node is ready
-        self._priority: dict[NodeId, int] = {}
-        self._scheduled: set[NodeId] = set()
-        # Nodes that are scheduled but not yet completed. Unlike `_scheduled`
-        # (which only ever grows — it is the full history of everything ever
-        # admitted, needed for the `in self._scheduled` membership checks),
-        # this set is maintained incrementally so `_compute_live_values` can
-        # read it in O(current incomplete) instead of rebuilding it by
-        # rescanning all of `_scheduled` — which, on a large plan (hundreds of
-        # thousands of nodes admitted from wide loop windows), made every
-        # periodic refresh cost more than the last and dominated the event
-        # loop, starving the executor thread pool of dispatches.
-        self._incomplete: set[NodeId] = set()
-        self._alias: dict[NodeId, NodeId] = {}                  # a loop node -> its spliced sequence node
+        # ── The four parts (all event-loop owned; see module docstrings) ──
+        self.graph = DependencyGraph(self.table)
+        self.ready = ReadyQueue()
+        self.liveness = LivenessProbe(self.graph)
+        self.liveness.install(self.table._backend)
+        self.admission = LoopAdmission(
+            self.expander, self.graph, self.ready, self.liveness,
+            window=self.config.loop_window,
+            chunk=self.config.expansion_chunk or self.config.loop_window,
+            workers=self.max_concurrency,
+            max_live_bytes=self.config.max_live_bytes,
+            schedule=self._schedule_subgraph,
+            available=self._available,
+            materialize=self._rematerialize,
+            on_spliced=self._on_spliced,
+            fail_node=self._fail_node,
+        )
 
         # ── Queries / goals ──
         self._goals: set[NodeId] = set()
@@ -83,35 +98,19 @@ class ComputationEngine:
         self._waiters: dict[NodeId, list[Query]] = defaultdict(list)
         self._first_error: BaseException | None = None
 
-        # ── Ready queue + admission control ──
-        # Ready entries are (-priority, -seq, nid): highest priority, newest-first
-        # (depth-first). Built once run() is on the event loop; earlier submissions
-        # buffer in _pre_ready. Nodes are held in _deferred while the live tier is
-        # over budget, so a wide fan-out cannot make the whole DAG resident at once.
-        self._ready: asyncio.PriorityQueue | None = None
-        self._pre_ready: list[tuple[int, int, NodeId]] = []
-        self._deferred: list[tuple[int, int, NodeId]] = []
-        self._seq = itertools.count()
+        # ── Per-node scheduling extras (pruned at completion) ──
+        self._priority: dict[NodeId, int] = {}
+        self._alias: dict[NodeId, NodeId] = {}      # a loop node -> its spliced sequence node
         self._reload_deferred: set[NodeId] = set()  # deferred once to prefer resident-ready work
-
-        # ── Bounded loop unrolling ──
-        # A loop schedules only config.loop_window of its independent bodies at a
-        # time, admitting the next as each completes, so the live frontier stays
-        # bounded regardless of loop width.
-        self._loop_bodies: dict[NodeId, list[NodeId]] = {}
-        self._loop_next: dict[NodeId, int] = {}
-        self._body_owner: dict[NodeId, NodeId] = {}
-        self._loop_captures: dict[NodeId, list[NodeId]] = {}  # captures pinned for a loop's whole unroll
 
         # ── Cache-admission policy + metrics ──
         # Goal dependencies are the reuse "cut": persisting them prunes whole
         # subtrees on a warm re-run (see _is_critical).
         self._critical_nodes: set[NodeId] = set()
-        self._live_refresh = 0          # completions since the last live-set push
-        self._peak_frontier = 0         # max in-flight (scheduled-but-incomplete) nodes
-        self._kernels_executed = 0      # kernels run this session (cold high; warm ~0 = full reuse)
-        self._recomputes = 0            # evicted values that had to be recomputed, not reloaded
-        self._in_flight = 0             # kernels currently executing (watchdog: 0 + no progress = deadlock)
+        self._peak_frontier = 0     # max in-flight (registered-but-incomplete) nodes
+        self._kernels_executed = 0  # kernels run this session (cold high; warm ~0 = full reuse)
+        self._recomputes = 0        # evicted values that had to be recomputed, not reloaded
+        self._in_flight = 0         # kernels currently executing (watchdog: 0 + no progress = deadlock)
 
     # ── Public API ──────────────────────────────────────────────────────────────────────────
 
@@ -129,11 +128,13 @@ class ComputationEngine:
                       name=name, priority=priority)
         self._queries.append(query)
         self._goals.add(node_id)
+        self.graph.protected.add(node_id)      # a goal's value survives its last consumer
+        self.liveness.unsettled_goals.add(node_id)
         # A goal's direct dependencies are the reuse "cut": persisting them means a
         # warm re-run prunes (and reloads) their whole subtrees instead of
         # recomputing. They are typically cheap (a per-case result), so this is
         # near-free to persist yet collapses the entire computation on re-run.
-        self._critical_nodes.update(self._deps(node_id))
+        self._critical_nodes.update(self.graph.deps(node_id))
         self._waiters[node_id].append(query)
         query.status = QueryStatus.RUNNING
         self._schedule_subgraph(node_id, int(priority))
@@ -147,27 +148,25 @@ class ComputationEngine:
         self._raise_priority(query.node_id, int(priority))
 
     async def run(self) -> None:
-        """Drain the ready queue until every scheduled node is materialized."""
-        self._ready = asyncio.PriorityQueue()
-        for entry in self._pre_ready:
-            self._ready.put_nowait(entry)
-        self._pre_ready.clear()
+        """Drain the ready queue until every admitted unit of work has finished."""
         if self._show_progress:
             # disable=None auto-disables the bar when stderr is not a TTY
             # (redirected to a file/pipe), keeping logs clean; dynamic_ncols
             # re-reads the terminal width on every refresh so the bar reflows
             # instead of garbling on resize.
-            self._progress = tqdm(total=len(self._scheduled), desc="nodes", unit="node",
+            self._progress = tqdm(total=self.graph.registered_total, desc="nodes", unit="node",
                                   dynamic_ncols=True, disable=None, file=sys.stderr, leave=True)
         workers = [asyncio.create_task(self._worker()) for _ in range(self.max_concurrency)]
         try:
             await self._join_with_watchdog()
-            if self._debug and any(n not in self.table.completed for n in self._scheduled):
+            if self._debug and self.graph.incomplete:
                 self._dump_stuck()
         finally:
             for worker in workers:
                 worker.cancel()
+            self.admission.shutdown()
             if self._progress is not None:
+                self._flush_progress()
                 self._progress.close()
                 self._progress = None
         self.table.flush()
@@ -177,18 +176,18 @@ class ComputationEngine:
     async def _join_with_watchdog(self) -> None:
         """Wait for all work to finish, but NEVER hang silently.
 
-        A bare ``await self._ready.join()`` waits forever if a scheduling/persistence
-        bug ever leaves work outstanding with no worker able to advance it (the 0%-CPU
-        freeze). This watchdog converts any such stall into a loud, diagnosable failure:
-        it samples progress, and if no node completes for ``stall`` seconds it decides
-        whether this is a genuine deadlock (nothing is executing and nothing is ready —
-        so no amount of waiting will help) or merely a very slow kernel (something is
-        still in flight), dumping the stuck frontier and raising only in the former case.
-        A generous absolute backstop catches a single wedged kernel too. Tunable via
-        VOXLOGICA_STALL_TIMEOUT_S (deadlock, default 180) and VOXLOGICA_HANG_TIMEOUT_S
-        (wedged-kernel backstop, default 3600).
+        A bare wait on run-completion would sit forever if a scheduling bug ever
+        left work outstanding with no worker able to advance it (the 0%-CPU
+        freeze). This watchdog converts any such stall into a loud, diagnosable
+        failure: it samples progress, and if no node completes for ``stall``
+        seconds it decides whether this is a genuine deadlock (nothing executing,
+        nothing ready, no loop mid-expansion — so no amount of waiting will help)
+        or merely a very slow kernel, dumping the stuck frontier and raising only
+        in the former case. A generous absolute backstop catches a single wedged
+        kernel too. Tunable via VOXLOGICA_STALL_TIMEOUT_S (deadlock, default 180)
+        and VOXLOGICA_HANG_TIMEOUT_S (wedged-kernel backstop, default 3600).
         """
-        join = asyncio.ensure_future(self._ready.join())
+        join = asyncio.ensure_future(self.ready.wait_idle())
         stall = float(os.environ.get("VOXLOGICA_STALL_TIMEOUT_S", "180"))
         hard = float(os.environ.get("VOXLOGICA_HANG_TIMEOUT_S", "3600"))
         interval = max(1.0, min(15.0, stall / 4.0))
@@ -202,103 +201,159 @@ class ComputationEngine:
                 last_done, idle = cur, 0.0
                 continue
             idle += interval
-            # genuine deadlock: no progress, nothing executing, nothing ready to run
-            deadlocked = (self._in_flight == 0 and self._ready is not None
-                          and self._ready.qsize() == 0)
+            self._maintain()  # belt: memory-parked work must never be forgotten
+            deadlocked = (self._in_flight == 0 and self.ready.qsize() == 0
+                          and self.admission.active_jobs == 0)
             if (idle >= stall and deadlocked) or idle >= hard:
                 join.cancel()
                 self._dump_stuck()
                 raise RuntimeError(
                     f"engine stalled: no node completed for {idle:.0f}s "
-                    f"({cur}/{len(self._scheduled)} done, in_flight={self._in_flight}, "
-                    f"ready={self._ready.qsize()}). Stuck frontier dumped above. "
+                    f"({cur} done, in_flight={self._in_flight}, ready={self.ready.qsize()}, "
+                    f"jobs={self.admission.active_jobs}, outstanding={self.ready.outstanding}). "
+                    f"Stuck frontier dumped above. "
                     f"This is an engine bug (a hang must never happen) — please report; "
                     f"raise VOXLOGICA_STALL_TIMEOUT_S if this was a genuinely slow kernel.")
 
     # ── Scheduling ──────────────────────────────────────────────────────────────────────────
 
+    def _available(self, nid: NodeId) -> bool:
+        """Available = no scheduling needed: done this run, or loadable from disk.
+
+        THE availability rule — every registration path uses this one predicate
+        (goals excepted: they are always scheduled so their queries settle
+        through the normal completion path).
+        """
+        return nid in self.table.completed or (nid not in self._goals and self.table.persisted(nid))
+
     def _schedule_subgraph(self, goal: NodeId, priority: int) -> None:
-        """BFS from a goal, pruning at materialized/persisted nodes, registering the rest."""
+        """BFS from a goal, pruning at available nodes, registering the rest.
+
+        Two phases: first *discover* the whole unmaterialized subtree (marking
+        the frontier), then wire pending counts — a single pass would let a
+        parent register before its own dependency was discovered and fire
+        early. Constants and closures complete eagerly right here: they need no
+        worker, and in loop-heavy plans they are roughly half of all nodes.
+        """
         frontier = [goal]
-        seen: set[NodeId] = set()
         discovered: list[NodeId] = []
+        incomplete = self.graph.incomplete
+        completed = self.table.completed
         while frontier:
             nid = frontier.pop()
-            if nid in seen:
+            if nid in incomplete:
+                self._priority[nid] = max(self._priority.get(nid, 0), priority)
                 continue
-            seen.add(nid)
-            self._priority[nid] = max(self._priority.get(nid, 0), priority)
-            if nid in self._scheduled or nid in self.table.completed:
+            if nid in completed:
                 continue
             if nid not in self._goals and self.table.persisted(nid):
-                continue  # cached leaf: loaded on demand
-            self._scheduled.add(nid)
-            self._incomplete.add(nid)
+                continue  # cached: loaded on demand
+            node = self.table.nodes[nid]
+            if node.kind == "constant" and nid not in self._goals:
+                self.table.set_value(nid, node.attrs.get("value"))
+                self.graph.complete_trivial(nid)
+                continue
+            if node.kind == "closure":
+                # Trivial value, but its captures must stay resident until the
+                # loop it gates has fully expanded — per-element bodies read
+                # them. The hold is released by the loop's expansion job.
+                self.table.set_value(nid, None)
+                self.graph.complete_trivial(nid)
+                captures = tuple(Expander.closure_capture_ids(node))
+                self.admission.hold_captures(nid, captures)
+                frontier.extend(captures)
+                continue
+            incomplete.add(nid)  # mark now; wired below once discovery is complete
+            self._priority[nid] = max(self._priority.get(nid, 0), priority)
             discovered.append(nid)
-            for dep in self._deps(nid):
-                frontier.append(dep)
+            frontier.extend(self.graph.deps(nid))
         for nid in discovered:
-            if self._register(nid):
+            if self.graph.register(nid):
                 self._enqueue(nid)
 
-    def _register(self, nid: NodeId) -> bool:
-        """Wire one node into the dependency graph; return True if ready now.
+    def _enqueue(self, nid: NodeId) -> None:
+        """Offer a ready node to the workers, or park it under memory pressure.
 
-        Readiness is gated only on whether a dependency has *completed* (a
-        monotonic fact), never on whether its value is currently resident.
-        Values may be evicted under memory pressure and rematerialised on demand,
-        so gating on residency would risk waiting forever on an evicted value.
+        Parking keeps a wide fan-out from making the whole DAG resident at
+        once; the progress floor in ``_maintain`` guarantees parked work is
+        admitted before the workers could ever starve.
         """
-        count = 0
-        for dep in self._deps(nid):
-            self._consumers[dep] += 1
-            if dep in self._scheduled and dep not in self.table.completed:
-                count += 1
-                self._dependents[dep].append(nid)
-        self._pending[nid] = count
-        return count == 0
+        priority = self._priority.get(nid, 0)
+        if (self.table.live_bytes > self.config.max_live_bytes
+                and self.ready.qsize() >= self.max_concurrency):
+            self.ready.park(nid, priority)
+        else:
+            self.ready.push(nid, priority)
+
+    def _maintain(self) -> None:
+        """Admit memory-parked work as budget frees (always when starving)."""
+        if self.ready.parked_count:
+            over = self.table.live_bytes > self.config.max_live_bytes
+            starving = self.ready.qsize() < self.max_concurrency
+            self.ready.unpark(over_budget=over and self._first_error is None,
+                              starving=starving)
+
+    def _on_spliced(self, loop_id: NodeId, seq_id: NodeId, priority: int) -> None:
+        """A loop finished expanding: forward its value from the spliced sequence.
+
+        The loop node re-fires once the sequence completes (or immediately, if
+        the sequence was already available) and its worker turn then forwards
+        the sequence's value — one extra hold keeps that value resident until
+        the forward has happened.
+        """
+        self._alias[loop_id] = seq_id
+        self.graph.pin(seq_id)
+        self._priority[seq_id] = max(self._priority.get(seq_id, 0), priority)
+        if seq_id in self.graph.incomplete:
+            self.graph.await_one(loop_id, seq_id)
+        else:
+            self.ready.push(loop_id, priority)
+
+    # ── Completion ──────────────────────────────────────────────────────────────────────────
 
     def _finish(self, nid: NodeId, value: Any, persist: bool = True, compute_ms: float = 0.0) -> None:
-        """Record a value, release dependencies, and unblock dependents.
+        """Record a value, fire dependents, release inputs. O(node degree).
 
         Constants and closures are trivial and not persisted: a closure exists
         only to force its captures to materialize and to gate its loop; the loop
         reads the closure's structure, never a computed closure value.
         """
         node = self.table.nodes[nid]
-        self._incomplete.discard(nid)
         if persist:
-            self.table.complete(nid, value, compute_ms, critical=self._is_critical(nid, node))
+            critical = self._is_critical(nid, node)
+            # Best-effort persistence is also *worth-it gated*: serializing a
+            # value is GIL-holding Python work, so writing something cheaper to
+            # recompute than to store would tax dispatch for nothing (and the
+            # cache's cost-aware eviction would drop it first anyway).
+            worth_it = critical or compute_ms >= self.config.persist_min_compute_ms
+            self.table.complete(nid, value, compute_ms, critical=critical, persist=worth_it)
             if node.operator in _SEQUENCE_OPERATORS:
                 for index, item in enumerate(value):
                     self.table.complete_item(nid, index, item)
         else:
             self.table.set_value(nid, value)
             self.table.completed.add(nid)
-        if node.kind != "closure":
-            # A closure completes trivially, but its captures must stay pinned
-            # until the loop it gates has expanded — the per-element bodies read
-            # those captures. Releasing here would evict a value (e.g. the loop's
-            # input image) that the imminent expansion still needs, forcing a
-            # wasteful recompute. _expand transfers the hold to the bodies.
-            for dep in self._deps(nid):
-                self._release(dep)
-        for child in self._dependents.get(nid, ()):
-            self._pending[child] -= 1
-            if self._pending[child] == 0:
-                self._enqueue(child)
-        # If this node was a loop body, admit the next body of its loop now that
-        # one slot has freed — keeping ~loop_window bodies in flight.
-        owner = self._body_owner.pop(nid, None)
-        if owner is not None:
-            self._admit_bodies(owner, 1)
-        frontier = len(self._scheduled) - len(self.table.completed)
-        self._peak_frontier = max(self._peak_frontier, frontier)
-        self._refresh_live_nodes()
+        # Closures never release their captures here — the loop's expansion job
+        # owns that hold (see LoopAdmission.hold_captures).
+        for child in self.graph.on_complete(nid, release_inputs=node.kind != "closure"):
+            self._enqueue(child)
+        self._priority.pop(nid, None)
+        self.admission.on_complete(nid)
+        frontier = len(self.graph.incomplete)
+        if frontier > self._peak_frontier:
+            self._peak_frontier = frontier
         self._settle_node(nid)
         if self._progress is not None:
-            self._progress.set_postfix_str(node.operator, refresh=False)
-            self._progress.update(1)
+            self._progress_pending += 1
+            self._progress_op = node.operator
+            if self._progress_pending >= _PROGRESS_BATCH:
+                self._flush_progress()
+
+    def _flush_progress(self) -> None:
+        self._progress.total = self.graph.registered_total
+        self._progress.set_postfix_str(self._progress_op, refresh=False)
+        self._progress.update(self._progress_pending)
+        self._progress_pending = 0
 
     def _is_critical(self, nid: NodeId, node) -> bool:
         """Whether a result must be persisted (vs. best-effort) for cross-run reuse.
@@ -315,90 +370,7 @@ class ComputationEngine:
         """
         return (nid in self._critical_nodes
                 or node.operator in _SEQUENCE_OPERATORS
-                or self._consumers.get(nid, 0) >= self.config.persist_fanout)
-
-    def _release(self, dep: NodeId) -> None:
-        """Drop a dependency's value once its last consumer has run.
-
-        Readiness is gated on completion, never on residency, so freeing the
-        value here at worst costs a recompute if a later query demands it again
-        — the value never survives past its last consumer, matching the lazy
-        strategy's garbage-collection behaviour and keeping the live tier small.
-        """
-        remaining = self._consumers.get(dep, 0)
-        if remaining <= 0:
-            return
-        remaining -= 1
-        self._consumers[dep] = remaining
-        if remaining == 0 and dep not in self._goals:
-            self.table.evict(dep)
-
-    def _expand(self, nid: NodeId, node) -> None:
-        """Splice a loop's per-element bodies into the live schedule.
-
-        The spliced subgraph is scheduled through the very same routine as any
-        other subgraph (``_schedule_subgraph``), so an expanded node is treated
-        identically to one present before expansion: if it is already persisted
-        it is pruned and loaded from the cache on demand rather than recomputed.
-        There is deliberately one scheduling/caching path, never a separate one
-        for expanded work — generating the nodes at all is precisely what lets
-        the cache be hit.
-        """
-        self._rematerialize(node.args[0])  # ensure the iterable value is resident
-        result = self.expander.expand(nid, node)
-        if result is None:
-            raise RuntimeError(f"cannot expand loop node {nid[:12]} ({node.operator})")
-        seq_id, _new_ids = result
-        priority = self._priority.get(nid, int(Priority.NORMAL))
-        if (seq_id in self._scheduled or seq_id in self.table.completed
-                or (seq_id not in self._goals and self.table.persisted(seq_id))):
-            # Already scheduled or cached: nothing to unroll, take the normal path.
-            self._schedule_subgraph(seq_id, priority)
-        else:
-            # Bounded unroll: register the sequence node depending on all bodies,
-            # but only schedule a window of body subtrees now; the rest are
-            # admitted as bodies complete (see _finish -> _admit_bodies). This
-            # keeps the set of incomplete (== "live") nodes small so the cache
-            # always has dead values to evict instead of live ones.
-            self._scheduled.add(seq_id)
-            self._incomplete.add(seq_id)
-            self._priority[seq_id] = max(self._priority.get(seq_id, 0), priority)
-            pending = []
-            count = 0
-            for body in self.table.nodes[seq_id].args:
-                self._consumers[body] += 1
-                if body in self.table.completed:
-                    continue
-                self._dependents[body].append(seq_id)
-                self._body_owner[body] = seq_id
-                pending.append(body)
-                count += 1
-            self._pending[seq_id] = count
-            if count == 0:
-                self._enqueue(seq_id)
-            else:
-                self._loop_bodies[seq_id] = pending
-                self._loop_next[seq_id] = 0
-                self._admit_bodies(seq_id, self.config.loop_window)
-        # Hand the closure's capture-pin over to the bodies (see _finish). If the
-        # loop is still unrolling in waves, keep holding the captures until it is
-        # fully unrolled: releasing now would let a value shared across bodies
-        # (e.g. a per-case image feeding every combo) drop to zero consumers
-        # between waves and be evicted, forcing a reload each wave. Held here, it
-        # is computed once and stays resident for the whole loop.
-        captures = list(self._deps(node.args[1]))
-        if seq_id in self._loop_bodies:
-            self._loop_captures[seq_id] = captures  # released in _admit_bodies at full unroll
-        else:
-            for dep in captures:
-                self._release(dep)
-        self._alias[nid] = seq_id
-        self._consumers[seq_id] += 1
-        if seq_id in self._scheduled and seq_id not in self.table.completed:
-            self._pending[nid] = 1
-            self._dependents[seq_id].append(nid)
-        else:
-            self._enqueue(nid)
+                or self.graph.consumers.get(nid, 0) >= self.config.persist_fanout)
 
     def _rematerialize(self, nid: NodeId) -> Any:
         """Recompute (or reload) a completed node whose value was evicted."""
@@ -413,7 +385,7 @@ class ComputationEngine:
         elif node.kind == "closure":
             value = None  # closures are trivial; only their captures carry data
         else:
-            for child in self._deps(nid):
+            for child in self.graph.deps(nid):
                 self._rematerialize(child)
             self._recomputes += 1  # an evicted value we could neither find nor reload
             value = self.executor._compute(self.table, nid)
@@ -425,26 +397,28 @@ class ComputationEngine:
     async def _worker(self) -> None:
         """Pull ready nodes by priority and drive them to completion."""
         while True:
-            _, _, nid = await self._ready.get()
+            nid = await self.ready.pop()
             try:
                 if self._first_error is not None or nid in self.table.completed:
                     continue  # cancelled, or a duplicate of an already-finished node
                 node = self.table.nodes[nid]
-                if nid not in self._alias and nid in self.table.values:
+                if nid in self._alias:
+                    seq_id = self._alias.pop(nid)
+                    self._finish(nid, self._rematerialize(seq_id))  # forward spliced result
+                    self.graph.release(seq_id)                      # the forward's hold
+                elif nid in self.table.values:
                     # Materialized since this node was enqueued — a warm cache can
                     # fill table.values via load() (disk reload) or a shared path
                     # reaching the same node through another goal. Forward the value
                     # instead of recomputing; recomputing would trip the
-                    # single-computation guard in begin(). (Alias nodes keep their
-                    # own forwarding path below, which also releases the sequence.)
+                    # single-computation guard in begin().
                     self._finish(nid, self.table.values[nid], persist=False)
-                    continue
-                if nid in self._alias:
-                    seq_id = self._alias.pop(nid)
-                    self._finish(nid, self._rematerialize(seq_id))  # forward spliced result
-                    self._release(seq_id)                            # the loop was its only consumer
                 elif self.expander.can_expand(node):
-                    self._expand(nid, node)  # splices bodies; node re-runs via its alias
+                    # Hand the loop to the admission unit: bodies are reduced in
+                    # chunks off-loop and admitted under the window. This turn
+                    # ends now; the loop node re-fires via its alias once the
+                    # spliced sequence completes.
+                    self.admission.start(nid, node, self._priority.get(nid, int(Priority.NORMAL)))
                 elif node.kind == "constant":
                     self._finish(nid, node.attrs.get("value"), persist=False)
                 elif node.kind == "closure":
@@ -459,13 +433,13 @@ class ComputationEngine:
                     # inputs are resident, let that run first (defer once). Keeps the
                     # workers busy on RAM-resident data instead of stalling on I/O.
                     if (nid not in self._reload_deferred
-                            and self._ready.qsize() >= self.max_concurrency
-                            and any(dep not in self.table.values for dep in self._deps(nid))):
+                            and self.ready.qsize() >= self.max_concurrency
+                            and any(dep not in self.table.values for dep in self.graph.deps(nid))):
                         self._reload_deferred.add(nid)
-                        self._enqueue(nid)
+                        self.ready.push(nid, self._priority.get(nid, 0))
                         continue
                     self._reload_deferred.discard(nid)
-                    for dep in self._deps(nid):
+                    for dep in self.graph.deps(nid):
                         if dep not in self.table.values:
                             self._rematerialize(dep)  # recompute deps evicted under pressure
                     self.table.begin(nid)  # enforces the no-double-computation invariant
@@ -479,38 +453,68 @@ class ComputationEngine:
                     # measured recompute cost feeds the cache's cost-aware eviction
                     self._finish(nid, value, compute_ms=(time.perf_counter() - started) * 1000.0)
             except Exception as exc:  # noqa: BLE001
-                if self._first_error is None:
-                    self._first_error = exc
-                self._fail_waiters(nid, exc)
+                self._fail_node(nid, exc)
             finally:
-                # Admit held-back work before signalling this task done, so the
-                # ready queue is never observed empty while nodes are deferred
-                # (which would let _ready.join() return with work outstanding).
-                self._admit()
-                self._ready.task_done()
+                # Admit held-back work before retiring this unit, so the queue
+                # is never observed empty while admissible work is parked.
+                self._maintain()
+                self.ready.end_unit()
+
+    # ── Failure / diagnostics ───────────────────────────────────────────────────────────────
+
+    def _fail_node(self, nid: NodeId, error: BaseException) -> None:
+        """First failure wins: record it, fail the node's waiters, drain fast.
+
+        Aborting admission wakes paused expansion jobs so they exit; unparking
+        everything lets the workers consume-and-skip the remaining units, so
+        ``run`` terminates promptly and reports the error instead of hanging.
+        """
+        if self._first_error is None:
+            self._first_error = error
+            self.admission.abort(error)
+            self.ready.unpark(over_budget=False, starving=False)
+        self._fail_waiters(nid, error)
+
+    def _dump_stuck(self) -> None:
+        """Diagnostic: report frontier nodes that never completed."""
+        stuck = list(self.graph.incomplete)
+        print(f"[stuck] qsize={self.ready.qsize()} outstanding={self.ready.outstanding} "
+              f"completed={len(self.table.completed)} stuck={len(stuck)} "
+              f"alias={len(self._alias)} jobs={self.admission.active_jobs}", file=sys.stderr)
+        for nid in stuck[:12]:
+            node = self.table.nodes[nid]
+            unmet = [d[:8] for d in self.graph.deps(nid) if d in self.graph.incomplete]
+            print(f"  {nid[:8]} op={node.operator} kind={node.kind} "
+                  f"pending={self.graph.pending.get(nid)} alias={nid in self._alias} "
+                  f"unmet={unmet}", file=sys.stderr)
 
     # ── Helpers ─────────────────────────────────────────────────────────────────────────────
 
-    def _deps(self, nid: NodeId) -> frozenset[NodeId]:
-        """All dependency ids of a node, including closure-capture references.
+    def _raise_priority(self, nid: NodeId, priority: int) -> None:
+        """Propagate a priority bump to a node and its unfinished dependencies.
 
-        Node specs are immutable, so a node's dependency set is stable: compute
-        it once and memoise. This hot helper is called several times per node
-        (registration, completion, expansion, priority raising), and rebuilding
-        the set each time was pure scheduling overhead.
+        Walks only the incomplete frontier (already-finished nodes cannot be
+        reprioritised, not-yet-admitted ones inherit the raised priority when
+        they are scheduled), so the walk is bounded by the frontier size.
         """
-        cached = self._deps_cache.get(nid)
-        if cached is None:
-            cached = frozenset(Expander.dependencies(self.table.nodes[nid]))
-            self._deps_cache[nid] = cached
-        return cached
+        frontier = [nid]
+        seen: set[NodeId] = set()
+        while frontier:
+            current = frontier.pop()
+            if current in seen or current not in self.graph.incomplete:
+                continue
+            seen.add(current)
+            self._priority[current] = max(self._priority.get(current, 0), priority)
+            frontier.extend(self.graph.deps(current))
 
     def metrics(self) -> dict[str, Any]:
         """Scheduler/cache statistics for the run summary.
 
         ``recomputes`` should be ~0: a healthy run computes each node once, so a
-        large value signals eviction⇄recompute thrash. ``peak_live_bytes`` is the
-        high-water mark of the resident working set (what admission control bounds).
+        large value signals eviction⇄recompute thrash. ``peak_frontier`` is the
+        high-water mark of the open working set — bounded by the admission
+        window, *not* by plan size. ``peak_live_bytes`` is the resident
+        high-water mark (what admission control bounds).
         """
         m: dict[str, Any] = {
             "peak_live_mb": round(self.table.peak_live_bytes / 1024 ** 2, 1),
@@ -519,6 +523,8 @@ class ComputationEngine:
             "loop_window": self.config.loop_window,
             "kernels_executed": self._kernels_executed,
             "recomputes": self._recomputes,
+            "expanded_loops": self.admission.expanded_loops,
+            "expanded_bodies": self.admission.expanded_bodies,
         }
         backend = self.table._backend
         if backend is not None and hasattr(backend, "stats"):
@@ -529,158 +535,13 @@ class ComputationEngine:
             m["evicted_live"] = s.get("evicted_live", 0)
         return m
 
-    def _refresh_live_nodes(self) -> None:
-        """Periodically tell the cache which values are still live.
-
-        Eviction prefers dead values, but recomputing the live set is O(scheduled)
-        and disk-evicting a still-RAM-resident value is free anyway, so a slightly
-        stale set is harmless — refresh only every ``live_refresh_interval``
-        completions. (Doing it every completion was quadratic and starved the
-        event loop — the original single-core collapse.)
-        """
-        backend = self.table._backend
-        if backend is None:
-            return
-        self._live_refresh += 1
-        if self._live_refresh >= self.config.live_refresh_interval:
-            self._live_refresh = 0
-            backend.set_live_nodes(self._compute_live_values())
-
-    def _compute_live_values(self) -> set[NodeId]:
-        """Return nodes still needed by any active goal or incomplete work.
-
-        A value is "live" if there is any path from it to an active goal or any
-        node that is queued, running, or not yet completed. The storage backend
-        uses this to prioritize what to evict: dead values first, live only if
-        forced. This prevents evicting something that will be needed soon.
-        """
-        incomplete = set(self._incomplete)
-        for query in self._queries:
-            if query.node_id not in self.table.completed:
-                incomplete.add(query.node_id)
-        live = set()
-        frontier = list(incomplete)
-        while frontier:
-            nid = frontier.pop()
-            if nid in live:
-                continue
-            live.add(nid)
-            frontier.extend(self._deps(nid))
-        return live
-
-    def _enqueue(self, nid: NodeId) -> None:
-        """Offer a ready node to the workers at its current priority.
-
-        Equal-priority nodes are drained newest-first (LIFO, via the negated
-        sequence number). This makes evaluation depth-first: a freshly produced
-        value is consumed by its dependent before more siblings are produced, so
-        intermediates (e.g. a threshold image feeding a single ``volume``) are
-        evicted almost immediately instead of piling up breadth-first. This is
-        what keeps the live tier — and peak memory — small under wide fan-out.
-        """
-        entry = (-self._priority.get(nid, 0), -next(self._seq), nid)
-        if self._ready is None:
-            self._pre_ready.append(entry)
-        elif (self.table.live_bytes > self.config.max_live_bytes
-              and self._ready.qsize() >= self.max_concurrency):
-            # Live tier over budget and workers already have enough to do: hold
-            # this node back rather than widening the frontier. It is admitted
-            # again once completions free live bytes (or the queue would starve).
-            heapq.heappush(self._deferred, entry)
-        else:
-            self._ready.put_nowait(entry)
-
-    def _admit_bodies(self, seq_id: NodeId, count: int) -> None:
-        """Schedule up to ``count`` more of a loop's not-yet-admitted bodies.
-
-        Called with the window size at expansion, then with 1 each time a body of
-        this loop completes — so roughly ``_body_window`` bodies are in flight at
-        once, bounding how much of the DAG is live regardless of the loop's width.
-        """
-        bodies = self._loop_bodies.get(seq_id)
-        if bodies is None:
-            return
-        index = self._loop_next[seq_id]
-        priority = self._priority.get(seq_id, int(Priority.NORMAL))
-        admitted = 0
-        while index < len(bodies) and admitted < count:
-            # Memory-ADAPTIVE window: once the live tier is over budget, stop opening
-            # new loop bodies (unless the workers would otherwise starve — the progress
-            # floor). The effective window shrinks automatically under memory pressure
-            # and grows back as values drain (see _admit), so a wide loop over a large
-            # dataset never thrashes or OOMs — with no VOXLOGICA_LOOP_WINDOW tuning.
-            starving = self._ready is None or self._ready.qsize() < self.max_concurrency
-            if self.table.live_bytes > self.config.max_live_bytes and not starving:
-                break
-            body = bodies[index]
-            index += 1
-            admitted += 1
-            if body not in self._scheduled and body not in self.table.completed:
-                self._schedule_subgraph(body, priority)
-        self._loop_next[seq_id] = index
-        if index >= len(bodies):  # fully unrolled; drop the bookkeeping
-            self._loop_bodies.pop(seq_id, None)
-            self._loop_next.pop(seq_id, None)
-            # Every body is now registered as a consumer of the captures, so the
-            # loop-duration hold can be handed off (see _expand).
-            for dep in self._loop_captures.pop(seq_id, ()):
-                self._release(dep)
-
-    def _admit(self) -> None:
-        """Move held-back nodes into the ready queue as capacity frees up.
-
-        Admits while the live tier is under budget, and *always* admits when the
-        ready queue would otherwise starve workers — this is the progress floor
-        that guarantees forward progress (and prevents ``_ready.join()`` from
-        returning while work is still deferred), at the cost of briefly exceeding
-        the soft budget when a single step's inputs are unavoidably large.
-        """
-        if self._ready is None:
-            return
-        while self._deferred:
-            starving = self._ready.qsize() < self.max_concurrency
-            if self.table.live_bytes > self.config.max_live_bytes and not starving:
-                break
-            self._ready.put_nowait(heapq.heappop(self._deferred))
-        # Resume loop bodies that the memory-adaptive window held back, now that the
-        # live tier has drained — so a loop throttled under pressure never stalls.
-        if self._loop_bodies and (self.table.live_bytes <= self.config.max_live_bytes
-                                  or self._ready.qsize() < self.max_concurrency):
-            for seq_id in list(self._loop_bodies):
-                self._admit_bodies(seq_id, 1)
-
-    def _raise_priority(self, nid: NodeId, priority: int) -> None:
-        """Propagate a priority bump to a node and its unfinished dependencies.
-
-        Each node is enqueued exactly once, so we do not re-offer already-queued
-        nodes; raising the recorded priority lifts not-yet-enqueued descendants
-        when they become ready.
-        """
-        frontier = [nid]
-        seen: set[NodeId] = set()
-        while frontier:
-            current = frontier.pop()
-            if current in seen or current in self.table.completed:
-                continue
-            seen.add(current)
-            self._priority[current] = max(self._priority.get(current, 0), priority)
-            frontier.extend(self._deps(current))
-
-    def _dump_stuck(self) -> None:
-        """Diagnostic: report scheduled nodes that never completed."""
-        stuck = [n for n in self._scheduled if n not in self.table.completed]
-        print(f"[stuck] qsize={self._ready.qsize()} scheduled={len(self._scheduled)} "
-              f"completed={len(self.table.completed)} stuck={len(stuck)} alias={len(self._alias)}", file=sys.stderr)
-        for nid in stuck[:12]:
-            node = self.table.nodes[nid]
-            unmet = [d[:8] for d in self._deps(nid) if d in self._scheduled and d not in self.table.completed]
-            print(f"  {nid[:8]} op={node.operator} kind={node.kind} pending={self._pending.get(nid)} "
-                  f"alias={nid in self._alias} unmet={unmet}", file=sys.stderr)
-
     def _settle_node(self, nid: NodeId) -> None:
         """Resolve any queries whose goal node just materialized."""
-        for query in self._waiters.get(nid, ()):
-            query._settle(QueryStatus.DONE, value=self.table.values.get(nid))
+        waiters = self._waiters.get(nid)
+        if waiters:
+            self.liveness.unsettled_goals.discard(nid)
+            for query in waiters:
+                query._settle(QueryStatus.DONE, value=self.table.values.get(nid))
 
     def _fail_waiters(self, nid: NodeId, error: BaseException) -> None:
         """Mark queries on a failed node as failed."""
