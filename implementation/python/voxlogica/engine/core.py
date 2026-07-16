@@ -64,6 +64,16 @@ class ComputationEngine:
         self._pending: dict[NodeId, int] = {}                   # unmet deps before a node is ready
         self._priority: dict[NodeId, int] = {}
         self._scheduled: set[NodeId] = set()
+        # Nodes that are scheduled but not yet completed. Unlike `_scheduled`
+        # (which only ever grows — it is the full history of everything ever
+        # admitted, needed for the `in self._scheduled` membership checks),
+        # this set is maintained incrementally so `_compute_live_values` can
+        # read it in O(current incomplete) instead of rebuilding it by
+        # rescanning all of `_scheduled` — which, on a large plan (hundreds of
+        # thousands of nodes admitted from wide loop windows), made every
+        # periodic refresh cost more than the last and dominated the event
+        # loop, starving the executor thread pool of dispatches.
+        self._incomplete: set[NodeId] = set()
         self._alias: dict[NodeId, NodeId] = {}                  # a loop node -> its spliced sequence node
 
         # ── Queries / goals ──
@@ -223,6 +233,7 @@ class ComputationEngine:
             if nid not in self._goals and self.table.persisted(nid):
                 continue  # cached leaf: loaded on demand
             self._scheduled.add(nid)
+            self._incomplete.add(nid)
             discovered.append(nid)
             for dep in self._deps(nid):
                 frontier.append(dep)
@@ -255,6 +266,7 @@ class ComputationEngine:
         reads the closure's structure, never a computed closure value.
         """
         node = self.table.nodes[nid]
+        self._incomplete.discard(nid)
         if persist:
             self.table.complete(nid, value, compute_ms, critical=self._is_critical(nid, node))
             if node.operator in _SEQUENCE_OPERATORS:
@@ -349,6 +361,7 @@ class ComputationEngine:
             # keeps the set of incomplete (== "live") nodes small so the cache
             # always has dead values to evict instead of live ones.
             self._scheduled.add(seq_id)
+            self._incomplete.add(seq_id)
             self._priority[seq_id] = max(self._priority.get(seq_id, 0), priority)
             pending = []
             count = 0
@@ -541,7 +554,7 @@ class ComputationEngine:
         uses this to prioritize what to evict: dead values first, live only if
         forced. This prevents evicting something that will be needed soon.
         """
-        incomplete = set(nid for nid in self._scheduled if nid not in self.table.completed)
+        incomplete = set(self._incomplete)
         for query in self._queries:
             if query.node_id not in self.table.completed:
                 incomplete.add(query.node_id)
