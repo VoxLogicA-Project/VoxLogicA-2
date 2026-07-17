@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from voxlogica.arrays import PolyArray
 from voxlogica.engine.core import ComputationEngine
 from voxlogica.engine.priority import Priority
 from voxlogica.execution_strategy.results import ExecutionResult, PreparedPlan, SequenceValue
@@ -93,9 +94,20 @@ class EngineExecutionStrategy:
             raise ValueError(f"Unknown goal operation: {operation}")
 
     def _materialize(self, value: Any) -> Any:
-        """Expand a sequence artifact into a concrete list for output."""
+        """Turn an engine value into its user-facing form for print/save/return.
+
+        This is the sole boundary where values leave the engine to a non-kernel
+        consumer, and the mirror of ``executor._wrap``: image values live in the
+        node table as ``PolyArray`` (see engine/executor.py) but every caller
+        here — print formatting, goal save, the returned result dict — expects
+        the native ``sitk.Image`` the pre-fusion engine produced, so unwrap it.
+        Sequence artifacts are expanded to a concrete list as before.
+        """
+        if isinstance(value, PolyArray):
+            return value.sitk()
         if isinstance(value, SequenceValue):
-            return list(value.iter_values())
+            return [item.sitk() if isinstance(item, PolyArray) else item
+                    for item in value.iter_values()]
         return value
 
     def _save(self, filename: str, value: Any) -> None:
