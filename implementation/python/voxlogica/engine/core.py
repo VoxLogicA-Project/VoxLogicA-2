@@ -54,6 +54,14 @@ _SEQUENCE_OPERATORS = {"default.sequence", "sequence", "default.map", "map",
 
 _PROGRESS_BATCH = 64  # completions folded into one progress-bar refresh
 
+# Compact one-line bar: a small FIXED-width bar ({bar:12}) so it never balloons
+# to fill the terminal (which, with the goal count sitting at 0 for a long time,
+# pushed the useful counters onto a wrapped line). Everything informative — goal
+# count, elapsed<ETA, and the live node/rate readout — stays inline on one row.
+# The dynamic readout rides in {desc} (not {postfix}: tqdm hardcodes a ", "
+# prefix into {postfix}, which printed a stray comma before the operator).
+_PROGRESS_FORMAT = "goals: {n:>3}/{total} |{bar:12}| {elapsed}<{remaining} · {desc}"
+
 
 class ComputationEngine:
     """A persistent, content-addressed, priority-scheduled evaluator."""
@@ -70,8 +78,17 @@ class ComputationEngine:
         self._show_progress = progress
         self._debug = debug
         self._progress: tqdm | None = None
-        self._progress_pending = 0
-        self._progress_op = ""
+        # Progress is reported over GOALS (a fixed, monotonic denominator known at
+        # run start), not over nodes: the node total is data-dependent — loops
+        # unroll at runtime, so `registered_total` grows for the whole run and a
+        # node-fraction bar regresses on every refresh (the "dancing" bar). Goals
+        # are near-uniform work, so their count gives a stable bar and an honest
+        # ETA. Node throughput is surfaced in the postfix as the liveness signal
+        # between goal completions.
+        self._progress_pending = 0     # node completions since the last postfix refresh
+        self._progress_op = ""         # most recent operator, shown in the postfix
+        self._nodes_done = 0           # cumulative node completions (postfix counter)
+        self._progress_start = 0.0     # perf_counter at bar creation, for the node rate
 
         # ── The four parts (all event-loop owned; see module docstrings) ──
         self.graph = DependencyGraph(self.table)
@@ -153,9 +170,14 @@ class ComputationEngine:
             # disable=None auto-disables the bar when stderr is not a TTY
             # (redirected to a file/pipe), keeping logs clean; dynamic_ncols
             # re-reads the terminal width on every refresh so the bar reflows
-            # instead of garbling on resize.
-            self._progress = tqdm(total=self.graph.registered_total, desc="nodes", unit="node",
-                                  dynamic_ncols=True, disable=None, file=sys.stderr, leave=True)
+            # instead of garbling on resize. Total = goal count (fixed); `initial`
+            # accounts for any goal already satisfied by a warm cache at submit.
+            done_already = sum(1 for q in self._queries if q.status is QueryStatus.DONE)
+            self._progress_start = time.perf_counter()
+            self._progress = tqdm(total=len(self._queries), initial=done_already,
+                                  unit="goal", dynamic_ncols=True,
+                                  bar_format=_PROGRESS_FORMAT,
+                                  disable=None, file=sys.stderr, leave=True)
         workers = [asyncio.create_task(self._worker()) for _ in range(self.max_concurrency)]
         try:
             await self._join_with_watchdog()
@@ -344,15 +366,31 @@ class ComputationEngine:
             self._peak_frontier = frontier
         self._settle_node(nid)
         if self._progress is not None:
+            self._nodes_done += 1
             self._progress_pending += 1
             self._progress_op = node.operator
             if self._progress_pending >= _PROGRESS_BATCH:
                 self._flush_progress()
 
     def _flush_progress(self) -> None:
-        self._progress.total = self.graph.registered_total
-        self._progress.set_postfix_str(self._progress_op, refresh=False)
-        self._progress.update(self._progress_pending)
+        """Refresh the postfix (node counter + smoothed rate + current op).
+
+        The bar's position advances only on goal completion (see
+        ``_settle_node``); this call just repaints the postfix so the user sees
+        liveness between goals. It never touches ``total`` — that is what kept
+        the old node-total bar dancing as the plan expanded.
+        """
+        elapsed = max(1e-6, time.perf_counter() - self._progress_start)
+        rate = self._nodes_done / elapsed
+        # `known` = nodes discovered so far (graph.registered_total). It grows
+        # monotonically as loops unroll and stops growing once the plan is fully
+        # expanded — at which point it IS the true total node count. Shown as a
+        # plain counter (done / known), never as a fraction, so it never dances.
+        known = self.graph.registered_total
+        self._progress.set_description_str(
+            f"{self._progress_op} · {self._nodes_done:,}/{known:,} nodes · {rate:,.0f} node/s",
+            refresh=False)
+        self._progress.refresh()
         self._progress_pending = 0
 
     def _is_critical(self, nid: NodeId, node) -> bool:
@@ -540,8 +578,13 @@ class ComputationEngine:
         waiters = self._waiters.get(nid)
         if waiters:
             self.liveness.unsettled_goals.discard(nid)
+            newly = 0
             for query in waiters:
+                if query.status is not QueryStatus.DONE:
+                    newly += 1              # count RUNNING -> DONE transitions only
                 query._settle(QueryStatus.DONE, value=self.table.values.get(nid))
+            if self._progress is not None and newly:
+                self._progress.update(newly)  # the bar advances one step per goal
 
     def _fail_waiters(self, nid: NodeId, error: BaseException) -> None:
         """Mark queries on a failed node as failed."""
