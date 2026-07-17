@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, TYPE_CHECKING
+from voxlogica.analysis.types import TypeRule
 
 if TYPE_CHECKING:
     from voxlogica.lazy.ir import NodeSpec
@@ -65,7 +66,6 @@ class PrimitiveCall:
 PlannerFn = Callable[[PrimitiveCall], "NodeSpec"]
 KernelFn = Callable[..., Any]
 
-
 @dataclass(frozen=True)
 class PrimitiveSpec:
     """Primitive descriptor consumed by the planner and runtime."""
@@ -79,6 +79,7 @@ class PrimitiveSpec:
     namespace: str = "default"
     description: str = ""
     is_legacy_adapter: bool = False
+    type_rule: TypeRule | None = None
 
     @property
     def qualified_name(self) -> str:
