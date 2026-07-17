@@ -120,6 +120,26 @@ a win; a silent semantic change is a disaster.
 New module `voxlogica/engine/fusion.py`. Invoked from the worker-turn path in
 `core.py` at the point where a popped ready node is about to be dispatched.
 
+### 3.0 When fusion happens (no churn, by construction)
+
+Fusion runs **exactly once per dispatch unit, at pop time** — the last
+responsible moment before execution, when a worker has already taken the seed
+off the ready queue. It never runs earlier (queued entries are never
+inspected, regrouped, or rewritten) and a planned cone is never re-planned:
+claims are one-shot and the cone dispatches immediately. There is no
+"splitting" operation anywhere in the design, so the fuse/split/fuse
+oscillation a queue-resident rebalancer would suffer cannot occur.
+
+The heuristic for *what* to absorb is **ripeness**: a consumer is absorbable
+only if all of its other inputs are already complete — i.e. only nodes that
+would become ready purely as a consequence of the cone's own completions.
+Fusing a ripe chain therefore collapses scheduling steps that were already
+guaranteed to happen, in that order, with no new information arriving in
+between. A consumer that is not ripe now loses nothing: when its remaining
+inputs complete it will be popped normally and seed its own cone. The only
+cost of this laziness is potentially smaller cones than a clairvoyant
+scheduler could form — observable via `mean_cone_size`, and acceptable.
+
 ### 3.1 Cone growth
 
 ```
