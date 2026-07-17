@@ -43,8 +43,8 @@ Today each cheap node pays the full scheduler round trip while holding the
 GIL: ready-queue turn, `run_in_executor` submit, future wakeup, `_finish`
 bookkeeping — ~0.5–2 ms of GIL-held Python per node, vs ≪0.1 ms of actual
 work for `vox1.and` on a typical volume. Inside a fused cone the per-op cost
-is one kernel invocation (Stage A, ~50 µs) or amortized into a single numexpr
-call (Stage B, ~µs). With the sweep plans' cheap-op fraction (~70% of nodes)
+is one kernel invocation (Stage A, ~50 µs) or amortized into a single
+compiled-kernel call (Stage B, ~µs). With the sweep plans' cheap-op fraction (~70% of nodes)
 and realistic cone sizes (8–64), GIL-held time per cheap node drops ≥10×.
 Expected effect on fmt-5000: plateau lifts from ~12 busy cores toward
 SimpleITK-bound (~20+), wall-clock 2–3× on the full-369 sweep. These numbers
@@ -71,7 +71,7 @@ results.
                           ▼
               ┌───────────────────────────┐
               │ ConeRunner                │  Stage A: loop kernels in-thread
-              │                           │  Stage B: numexpr/cupy compiled
+              │                           │  Stage B: numba-compiled kernel
               └───────────┬───────────────┘
                           │ {nid: value | SUBSUMED}
                           ▼
@@ -90,10 +90,22 @@ elementwise: ElementwiseSpec | None = None
 
 @dataclass(frozen=True)
 class ElementwiseSpec:
-    expr: str            # numexpr fragment, inputs as {0}, {1}, ... placeholders
+    expr: str            # scalar expression fragment, inputs as {0}, {1}, ...
+                         # placeholders; feeds the numba codegen (§3.2b)
     out_dtype: str       # dtype of the unfused kernel's output ("uint8", ...)
     commutes_scalar: bool = True   # scalar operands may be inlined as literals
 ```
+
+**Inside a cone there is no SimpleITK.** sitk filters are opaque C++ — they
+cannot be fused into, and cannot write multiple outputs. The registry ops are
+*reimplemented* by the numba codegen from `expr`, and the property tests
+(§6.1) are what license each reimplementation as bit-identical to its sitk
+kernel. Consequently any op without an `elementwise` entry — all real sitk
+work: morphology, distance transforms, connected components, resampling — is
+a **cone boundary** and runs the normal single-node path unchanged. A sitk
+consumer of a cone output pays the one cached numpy→sitk copy via PolyArray
+(§5); that copy already exists today at every sitk call producing a fresh
+image, so the boundary is not a regression.
 
 Opt in conservatively, in `vox1/__init__.py` next to each kernel entry
 (`kernels.py:332-405, 433-478`):
@@ -178,41 +190,63 @@ Properties to preserve and assert in tests:
 
 ### 3.2 Interaction with dynamic expansion (the subtle case)
 
-The DAG is append-only *during* the run: a later `reduce_chunk` can hash-cons
-onto an existing node — i.e. **a new consumer can appear on a node after it
-was fused as interior** and its value was never materialized (Stage B).
-Sound handling, in order of preference:
+**Output selection.** Because cones form at schedule time, the planner
+already holds the consumer picture (`graph.consumers`, `_dependents`): the
+compiled kernel writes an output array for every **exit** and for every
+interior that has **any consumer outside the cone** (stable Merkle ids make
+each output land under its proper node id, with normal per-node completion
+and persist policy). Interiors consumed *only* inside the cone are elided —
+their values exist per-voxel in registers, never as arrays. Writing an extra
+output costs essentially nothing at compile time (one more store in the loop
+body) and linear memory bandwidth at run time; eliding is a pure bandwidth
+win. `VOXLOGICA_FUSION_OUTPUTS=all` forces write-everything (never worse
+than today's unfused execution, which materializes every node anyway) — the
+safe mode and the debugging baseline.
 
-1. Registration (`graph.register`) already treats "completed" as available
-   and prunes. When the new consumer later executes and the input value is
-   missing, the existing `_rematerialize` path runs. Extend it with a
-   **recompute fallback**: if the value is neither live nor on disk, and the
-   spec's inputs are recoverable, re-execute the node (it is elementwise ⇒
-   cheap by definition; recursion bottoms out at persisted/live values).
-2. Until the recompute fallback exists, Stage B must not subsume: run
-   Stage A semantics (materialize every member's value; interiors get normal
-   completion with values, released by refcount as usual). **Ship Stage A
-   first for exactly this reason.**
+**The residual hole.** The DAG is append-only *during* the run: a later
+`reduce_chunk` can hash-cons onto an existing node, so a consumer can appear
+on an *elided* interior after the fact. Handling, in order:
 
-Note this failure mode is *not* introduced by fusion — an evicted,
-never-persisted value hit by a late hash-consed consumer has the same hole
-today (`persist_min_compute_ms` skips cheap values). The recompute fallback
-closes both.
+1. Extend `_rematerialize` with a **recompute fallback**: value neither live
+   nor on disk → re-execute the spec (elementwise ⇒ cheap; recursion bottoms
+   out at persisted/live values). This hole is not introduced by fusion — an
+   evicted, never-persisted cheap value hit by a late hash-consed consumer
+   has the same gap today (`persist_min_compute_ms` skips cheap values); the
+   fallback closes both.
+2. Until the fallback exists, run with `FUSION_OUTPUTS=all` (or Stage A,
+   which materializes everything by construction). **Ship Stage A first for
+   exactly this reason.**
 
-### 3.2b Compile latency (Stage B) is amortized, not on the pop path
+### 3.2b Kernel preparation: numba, compiled in the background, never on the pop path
 
-Pop-time planning is dict lookups (µs). Stage B's numexpr compilation is the
-only real latency, and it keys on the cone's **shape** (canonical expression:
-ops, arity, dtypes — not inputs). Sweep plans are shape-repetitive by
-construction: one loop body reduced per element means thousands of cones with
-the identical canonical expression. So: an **expression cache** (canonical
-string → compiled callable, LRU) compiled on first occurrence *on the worker
-thread* (never the event loop) and hit thereafter. Expected steady-state
-compile cost ≈ one compile per distinct body shape per run. Metric:
-`expr_cache_hits/misses`. Optional pre-warm (only if the miss metric ever
-matters): loop-body specs exist at expansion time before values are ready, so
-canonical cone shapes can be compiled ahead, off-loop, from `reduce_chunk`
-output. Stage A compiles nothing — one more reason it ships first.
+Backend decision: **numba** (`@njit(nogil=True, cache=True)`), not numexpr —
+numexpr is single-output and cannot return intermediates; numba codegen emits
+one loop nest computing the whole cone and storing exactly the selected
+output set (§3.2), releases the GIL, persists compiled machine code on disk
+(`cache=True`, so a *warm run compiles nothing*), and the same generated
+source retargets `numba.cuda` for the GPU site (§4). No-numba fallback =
+Stage A.
+
+A kernel is keyed by the cone's **shape**: canonical expression (ops, arity,
+dtypes, inlined scalars as parameters not literals) **plus the output mask**.
+Sweep plans are shape-repetitive by construction — one loop body reduced per
+element yields thousands of cones with identical shape *and* identical mask —
+so steady state is one compile per distinct body shape per run, once ever
+across runs thanks to the disk cache.
+
+Compilation must never block a worker. Per-shape state machine:
+
+```
+UNCOMPILED ──first sight: submit async compile──▶ COMPILING ──▶ READY
+     (cones of this shape run Stage A meanwhile)      (fused kernel swaps in)
+```
+
+Pop-time planning stays dict lookups (µs). Optional pre-warm (only if the
+miss metric ever matters): loop-body specs exist at expansion time before any
+value is ready, so shapes can be extracted from `reduce_chunk` output and
+compiled ahead, off-loop. Metrics: `kernel_cache_hits/misses`,
+`stage_a_fallback_dispatches`. Stage A compiles nothing — one more reason it
+ships first.
 
 ### 3.3 Claiming
 
@@ -247,6 +281,8 @@ In `config.py`, following house style:
 - `VOXLOGICA_FUSION` = `0|1` (default 1) — planner returns None when off.
 - `VOXLOGICA_FUSION_CAP` (default 64) — max cone size.
 - `VOXLOGICA_FUSION_STAGE` = `a|b` (default `a` until Phase 2 lands).
+- `VOXLOGICA_FUSION_OUTPUTS` = `needed|all` (default `needed` once the
+  recompute fallback exists; `all` until then — see §3.2).
 
 ## 4. Execution sites and affinity
 
@@ -259,7 +295,7 @@ class Site(Protocol):
     def available(self) -> bool
 
 class CpuSite:   # wraps the existing ThreadPoolExecutor — today's behavior
-class GpuSite:   # one dedicated thread + CUDA stream; exists iff cupy imports
+class GpuSite:   # one dedicated thread + CUDA stream; exists iff CUDA present
 ```
 
 - **Placement** happens per dispatch unit (single node or cone), by a
@@ -272,17 +308,18 @@ class GpuSite:   # one dedicated thread + CUDA stream; exists iff cupy imports
   (§5) records which sites hold a buffer. Transfers are explicit
   (`poly.to(site)`), counted in metrics (`gpu_transfers`, `gpu_bytes_moved`),
   and visible in the memlog.
-- **GPU backend now**: CuPy elementwise evaluation of Stage B cones (the
-  expression tree maps 1:1 to cupy ufuncs; or `cupy.fuse` for the whole
-  cone). Optional dependency; `GpuSite.available()` is False on machines
+- **GPU backend now**: the Stage B codegen (§3.2b) retargets `numba.cuda` —
+  same generated source, one kernel per cone shape, same output-selection
+  logic. Optional dependency; `GpuSite.available()` is False on machines
   without CUDA (all Macs) and every code path degrades to cpu. CI must pass
-  with and without cupy installed.
+  with and without CUDA present.
 - **Multi-machine (future, design constraint only)**: a `RemoteSite` submits
   (cone spec + input node ids) and the content-addressed store is the
   transfer fabric — inputs are fetched by id, results written back by id.
   Nothing in the Site protocol may assume shared memory. This is a paper
   section, not a Phase 1–3 deliverable.
-- Oversubscription control: numexpr `set_num_threads(1)`; one GPU launch
+- Oversubscription control: numba kernels use `parallel=False` (a cone is one
+  worker's unit; outer parallelism is the scheduler's); one GPU launch
   thread per device. Outer parallelism belongs to the scheduler alone.
 
 ## 5. PolyArray: one value, many views
@@ -300,7 +337,7 @@ class Geometry:                    # sitk metadata, hashable
 class PolyArray:
     geometry: Geometry
     dtype, shape                   # canonical (numpy) description
-    _views: dict[str, Any]         # "np" | "sitk" | "cupy" — cached, lazily built
+    _views: dict[str, Any]         # "np" | "sitk" | "cuda" — cached, lazily built
     # constructors
     @classmethod from_sitk(img)    # zero-copy: GetArrayViewFromImage + geometry
     @classmethod from_numpy(arr, geometry)
@@ -308,7 +345,8 @@ class PolyArray:
     def np(self)  -> np.ndarray    # zero-copy when host-resident
     def sitk(self) -> sitk.Image   # built on first request (one copy — sitk
                                    #   cannot wrap foreign buffers), then cached
-    def cupy(self) -> cp.ndarray   # device view; triggers transfer if absent
+    def cuda(self)                 # device view (numba device array / DLPack);
+                                   #   triggers transfer if absent
     def __dlpack__(self)           # torch/tf/jax interop for free
     def to(self, site) / nbytes / release_site(site)
 ```
@@ -319,7 +357,7 @@ Honest constraints, stated in the module docstring:
   kernels must never write through it — outputs go to fresh/pooled buffers.
 - numpy→sitk **copies** (SimpleITK owns its buffers). The design minimizes
   crossings, it cannot eliminate them: a chain of fused cones stays in
-  numpy/cupy end-to-end; the sitk view is built only when a legacy sitk
+  numpy/device end-to-end; the sitk view is built only when a legacy sitk
   kernel actually consumes the value, then cached so it's paid once.
 - `nbytes` counts all resident views (host + device) — `node_table`
   accounting and the memlog must see the true footprint.
@@ -378,8 +416,8 @@ the same honesty rules as the existing sections.
 |---|---|---|---|
 | **0** | `PolyArray` + executor boundary adapters + accounting. No behavior change. | low | §6.7, full regression |
 | **1** | ElementwiseSpec registry + FusionPlanner + **Stage A** cone dispatch (loop existing kernels inside one worker turn, all values materialized). Kill switch, metrics. | medium | §6.1–4, §6.6, bench |
-| **2** | **Stage B**: numexpr-compiled cones, interior subsumption, recompute fallback in `_rematerialize`. | medium-high | §6.1, §6.5, bench |
-| **3** | Sites + affinity + CuPy GPU backend + residency/transfer metrics. | medium | §6.1 on gpu, CI without cupy |
+| **2** | **Stage B**: numba codegen + background compile state machine, `FUSION_OUTPUTS=all` first, then `needed` + recompute fallback in `_rematerialize`. | medium-high | §6.1, §6.5, bench |
+| **3** | Sites + affinity + `numba.cuda` retarget of the same codegen + residency/transfer metrics. | medium | §6.1 on gpu, CI without CUDA |
 | **4** | Buffer pool. Then doc + paper notes ("semantic queueing", affinity). | low | pool metrics, no leak under valgrind-style stress test |
 
 Phase 1 alone attacks the measured bottleneck (dispatch tax) and is
