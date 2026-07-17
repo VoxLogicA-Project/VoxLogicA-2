@@ -199,6 +199,21 @@ never-persisted value hit by a late hash-consed consumer has the same hole
 today (`persist_min_compute_ms` skips cheap values). The recompute fallback
 closes both.
 
+### 3.2b Compile latency (Stage B) is amortized, not on the pop path
+
+Pop-time planning is dict lookups (µs). Stage B's numexpr compilation is the
+only real latency, and it keys on the cone's **shape** (canonical expression:
+ops, arity, dtypes — not inputs). Sweep plans are shape-repetitive by
+construction: one loop body reduced per element means thousands of cones with
+the identical canonical expression. So: an **expression cache** (canonical
+string → compiled callable, LRU) compiled on first occurrence *on the worker
+thread* (never the event loop) and hit thereafter. Expected steady-state
+compile cost ≈ one compile per distinct body shape per run. Metric:
+`expr_cache_hits/misses`. Optional pre-warm (only if the miss metric ever
+matters): loop-body specs exist at expansion time before values are ready, so
+canonical cone shapes can be compiled ahead, off-loop, from `reduce_chunk`
+output. Stage A compiles nothing — one more reason it ships first.
+
 ### 3.3 Claiming
 
 `NodeTable.begin(nid)` already enforces compute-at-most-once. Cone membership
