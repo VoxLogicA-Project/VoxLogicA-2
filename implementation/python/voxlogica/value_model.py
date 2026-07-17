@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 import math
 
+from voxlogica.arrays import PolyArray
+
 
 VOX_FORMAT_VERSION = "voxpod/1"
 DEFAULT_PAGE_SIZE = 64
@@ -219,6 +221,10 @@ class VoxImageValue(VoxValue):
     vox_type = "image"
 
     def as_array(self) -> Any:
+        if isinstance(self.raw, PolyArray):
+            # np() may be a read-only zero-copy alias of the sitk buffer; the
+            # encoder only reads it (gzip-compresses the bytes), never writes.
+            return self.raw.np()
         sitk = _import_simpleitk()
         if sitk is not None and isinstance(self.raw, sitk.Image):
             return sitk.GetArrayFromImage(self.raw)
@@ -229,6 +235,15 @@ class VoxImageValue(VoxValue):
         raise UnsupportedVoxValueError(self.raw)
 
     def storage_metadata(self) -> dict[str, Any]:
+        if isinstance(self.raw, PolyArray):
+            geometry = self.raw.geometry
+            return {
+                "runtime": "simpleitk",
+                "spacing": [float(v) for v in geometry.spacing],
+                "origin": [float(v) for v in geometry.origin],
+                "direction": [float(v) for v in geometry.direction],
+                "components": int(geometry.components),
+            }
         sitk = _import_simpleitk()
         if sitk is not None and isinstance(self.raw, sitk.Image):
             return {
@@ -280,6 +295,8 @@ def restore_runtime_image(payload_json: dict[str, Any], array: Any) -> Any:
 def adapt_runtime_value(value: Any) -> VoxValue:
     np = _import_numpy()
     sitk = _import_simpleitk()
+    if isinstance(value, PolyArray):
+        return VoxImageValue(value)
     if value is None:
         return VoxScalarValue(value, "null")
     if isinstance(value, bool):

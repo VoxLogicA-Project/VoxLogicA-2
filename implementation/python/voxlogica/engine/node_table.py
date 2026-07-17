@@ -28,10 +28,21 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from voxlogica.arrays import PolyArray
 from voxlogica.engine.persist import AsyncPersister, approx_bytes
 from voxlogica.lazy.hash import hash_node, hash_sequence_item
 from voxlogica.lazy.ir import NodeId, NodeSpec
 from voxlogica.storage import NoCacheStorageBackend, StorageBackend
+
+_sitk = None
+
+
+def _simpleitk():
+    global _sitk
+    if _sitk is None:
+        import SimpleITK
+        _sitk = SimpleITK
+    return _sitk
 
 
 def _persist_backlog_budget() -> int:
@@ -130,14 +141,27 @@ class NodeTable:
         return self._backend is not None and self._backend.has(node_id)
 
     def load(self, node_id: NodeId) -> Any:
-        """Bring a persisted value back into the live tier, or return None."""
+        """Bring a persisted value back into the live tier, or return None.
+
+        This is the engine's single live-tier seam: a reloaded image is
+        wrapped into a ``PolyArray`` here so every volumetric value the
+        engine holds — fresh, reloaded, or later rematerialized — is
+        uniformly a ``PolyArray``, matching what a fresh kernel call
+        produces (see ``engine/executor.py``). Callers outside the engine
+        (serve/inspect) go through ``get_record`` directly and are
+        unaffected — this wrapping is scoped to the scheduler's own tier.
+        """
         if self._backend is None:
             return None
         record = self._backend.get_record(node_id)
         if record is None or record.value is None:
             return None
-        self.set_value(node_id, record.value)
-        return record.value
+        value = record.value
+        sitk = _simpleitk()
+        if sitk is not None and isinstance(value, sitk.Image):
+            value = PolyArray.from_sitk(value)
+        self.set_value(node_id, value)
+        return value
 
     def begin(self, node_id: NodeId) -> None:
         """Mark a node as under computation, enforcing single computation."""

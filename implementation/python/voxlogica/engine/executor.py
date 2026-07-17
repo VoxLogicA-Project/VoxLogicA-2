@@ -4,6 +4,17 @@ The executor knows nothing about scheduling, caching, or the language: it takes 
 single primitive node whose inputs are already materialized, invokes its kernel,
 and returns the value. ITK kernels release the GIL, so a thread pool gives real
 CPU parallelism while the event loop keeps coordinating.
+
+This is also the sole PolyArray adapter boundary (see ``voxlogica.arrays``):
+kernels are untouched and still speak plain ``sitk.Image``. Inputs that arrived
+as a ``PolyArray`` (produced by a prior kernel call, or reloaded from disk —
+see ``NodeTable.load``) are unwrapped to their ``.sitk()`` view before a kernel
+sees them; a kernel result that is a ``sitk.Image`` is wrapped into a
+``PolyArray`` before it re-enters the table. Every other value (scalars,
+sequences, closures) passes through unchanged. Keeping the adapter in this one
+place, rather than in every kernel, is what lets fused/numba execution
+(``engine/fusion.py``) later swap in a different array library without any
+kernel ever knowing.
 """
 
 from __future__ import annotations
@@ -13,9 +24,33 @@ import inspect
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from voxlogica.arrays import PolyArray
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.lazy.ir import NodeId
 from voxlogica.primitives.registry import PrimitiveRegistry
+
+_sitk = None
+
+
+def _simpleitk():
+    global _sitk
+    if _sitk is None:
+        import SimpleITK
+        _sitk = SimpleITK
+    return _sitk
+
+
+def _unwrap(value: Any) -> Any:
+    """PolyArray -> its sitk view; everything else passes through untouched."""
+    return value.sitk() if isinstance(value, PolyArray) else value
+
+
+def _wrap(value: Any) -> Any:
+    """A kernel's sitk.Image result -> PolyArray; everything else untouched."""
+    sitk = _simpleitk()
+    if sitk is not None and isinstance(value, sitk.Image):
+        return PolyArray.from_sitk(value)
+    return value
 
 
 class Executor:
@@ -41,11 +76,11 @@ class Executor:
             start = int(table.values[node.args[1]])
             stop = int(table.values[node.args[2]])
             kernel = self.registry.load_kernel("default.subsequence")
-            return self._invoke(kernel, [sequence, start, stop], {})
+            return _wrap(self._invoke(kernel, [sequence, start, stop], {}))
         kernel = self.registry.load_kernel(node.operator)
-        args = [table.values[arg_id] for arg_id in node.args]
-        kwargs = {key: table.values[arg_id] for key, arg_id in node.kwargs}
-        return self._invoke(kernel, args, kwargs, node.attrs)
+        args = [_unwrap(table.values[arg_id]) for arg_id in node.args]
+        kwargs = {key: _unwrap(table.values[arg_id]) for key, arg_id in node.kwargs}
+        return _wrap(self._invoke(kernel, args, kwargs, node.attrs))
 
     def _invoke(self, kernel, args: list[Any], kwargs: dict[str, Any], attrs: dict[str, Any] | None = None) -> Any:
         """Adapt engine arguments to the kernel's declared Python signature."""
