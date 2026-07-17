@@ -28,7 +28,7 @@ import itertools
 import os
 import sys
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Any
 
 from tqdm import tqdm
@@ -54,6 +54,9 @@ _SEQUENCE_OPERATORS = {"default.sequence", "sequence", "default.map", "map",
                        "default.for_loop", "for_loop", "default.filter", "filter"}
 
 _PROGRESS_BATCH = 64  # completions folded into one progress-bar refresh
+
+_EVICT_SWEEP = 256      # candidates examined per _reclaim_memory call (bounds the work)
+_EVICT_QUEUE_CAP = 200_000  # backstop on the candidate queue itself (bounds idle-run memory)
 
 # Compact one-line bar: a small FIXED-width bar ({bar:12}) so it never balloons
 # to fill the terminal (which, with the goal count sitting at 0 for a long time,
@@ -102,7 +105,6 @@ class ComputationEngine:
             window=self.config.loop_window,
             chunk=self.config.expansion_chunk or self.config.loop_window,
             workers=self.max_concurrency,
-            max_live_bytes=self.config.max_live_bytes,
             hard_live_bytes=self.config.hard_live_bytes,
             schedule=self._schedule_subgraph,
             available=self._available,
@@ -132,6 +134,20 @@ class ComputationEngine:
         self._kernels_executed = 0  # kernels run this session (cold high; warm ~0 = full reuse)
         self._recomputes = 0        # evicted values that had to be recomputed, not reloaded
         self._in_flight = 0         # kernels currently executing (watchdog: 0 + no progress = deadlock)
+
+        # ── Proactive reclaim: bounds the sequence-assembly floor ──
+        # A completed node with unrun consumers stays refcount-pinned until its
+        # LAST consumer runs (see graph.release) — for a wide loop whose
+        # sequence node needs every body, that means every completed body's
+        # value stays resident for the *entire* unroll, independent of the
+        # admission window: peak RSS ~ element count x body size, not bounded
+        # by concurrency. Once a value is durably persisted, that RAM copy is
+        # no longer the only copy, so under memory pressure it can be evicted
+        # early — its eventual consumer reloads it via `_rematerialize` (same
+        # path an ordinary evicted dependency already uses). See
+        # `_reclaim_memory`.
+        self._evict_candidates: deque[NodeId] = deque()
+        self._evicted_early = 0    # values evicted proactively (metrics)
 
     # ── Public API ──────────────────────────────────────────────────────────────────────────
 
@@ -347,6 +363,7 @@ class ComputationEngine:
         would otherwise starve — bounded by the same hard ceiling as loop bodies,
         with the true-wedge escape so it can never deadlock.
         """
+        self._reclaim_memory()
         if self.ready.parked_count:
             accounted = self.table.accounted_bytes
             over = accounted > self.config.max_live_bytes and self._first_error is None
@@ -354,6 +371,47 @@ class ComputationEngine:
             if over and accounted >= self.config.hard_live_bytes and not self._idle():
                 starving = False  # at the ceiling: hold parked work back, let memory drain
             self.ready.unpark(over_budget=over, starving=starving)
+
+    def _reclaim_memory(self) -> None:
+        """Evict durably-persisted-but-still-pending values under memory pressure.
+
+        THE VALVE FOR THE SEQUENCE-ASSEMBLY FLOOR: refcounting alone holds a
+        loop body's value resident from completion until its *last* consumer
+        runs (``graph.release``) — for a wide loop whose sequence node needs
+        every body, that means every completed body stays resident for the
+        whole unroll. Peak RSS then tracks element count x body size, and no
+        admission policy can fix this: admission only gates *new* work: it
+        cannot reclaim memory already committed to bodies that finished
+        computing and are simply waiting their turn to be assembled.
+
+        Once a value has a durable copy on disk it is no longer the only
+        copy, so it is safe to drop the RAM copy early under pressure — its
+        eventual consumer transparently reloads it via ``_rematerialize``
+        (the same path an ordinary evicted dependency already uses; a miss
+        costs one disk read, never a recompute, since we only evict confirmed
+        writes). Without a disk backend there is no reload path, so this is a
+        no-op — the floor is then a genuine, irreducible requirement of
+        materializing every element before combining them.
+
+        Bounded to ``_EVICT_SWEEP`` candidates per call (this runs on every
+        worker turn) so it is never an O(plan) scan; a candidate not yet
+        durable is requeued once for a later retry.
+        """
+        if self.table._persister is None or not self._evict_candidates:
+            return
+        scanned = 0
+        limit = min(len(self._evict_candidates), _EVICT_SWEEP)
+        while (scanned < limit
+               and self.table.accounted_bytes > self.config.max_live_bytes):
+            nid = self._evict_candidates.popleft()
+            scanned += 1
+            if nid not in self.table.values or self.graph.consumers.get(nid, 0) <= 0:
+                continue  # already naturally released since being queued
+            if self.table.persisted(nid):
+                self.table.evict(nid)
+                self._evicted_early += 1
+            else:
+                self._evict_candidates.append(nid)  # not yet durable; retry later
 
     def _on_spliced(self, loop_id: NodeId, seq_id: NodeId, priority: int) -> None:
         """A loop finished expanding: forward its value from the spliced sequence.
@@ -401,6 +459,12 @@ class ComputationEngine:
             self._enqueue(child)
         self._priority.pop(nid, None)
         self.admission.on_complete(nid)
+        if (self.table._persister is not None and nid not in self._goals
+                and self.graph.consumers.get(nid, 0) > 0):
+            # Still needed by a future consumer: a reclaim candidate once durable.
+            if len(self._evict_candidates) >= _EVICT_QUEUE_CAP:
+                self._evict_candidates.popleft()  # backstop: bound idle-run memory too
+            self._evict_candidates.append(nid)
         frontier = len(self.graph.incomplete)
         if frontier > self._peak_frontier:
             self._peak_frontier = frontier
@@ -482,7 +546,14 @@ class ComputationEngine:
                 node = self.table.nodes[nid]
                 if nid in self._alias:
                     seq_id = self._alias.pop(nid)
-                    self._finish(nid, self._rematerialize(seq_id))  # forward spliced result
+                    # persist=False: seq_id is itself a _SEQUENCE_OPERATORS node
+                    # and already owns the durable copy; re-persisting the same
+                    # value under the loop's id would write it to disk twice and
+                    # double-book it in the persist backlog for no reason (the
+                    # live tier still records two entries for the same shared
+                    # object across the two ids — a conservative overcount in
+                    # accounted_bytes, not a real second RAM copy).
+                    self._finish(nid, self._rematerialize(seq_id), persist=False)
                     self.graph.release(seq_id)                      # the forward's hold
                 elif nid in self.table.values:
                     # Materialized since this node was enqueued — a warm cache can
@@ -603,6 +674,7 @@ class ComputationEngine:
             "recomputes": self._recomputes,
             "expanded_loops": self.admission.expanded_loops,
             "expanded_bodies": self.admission.expanded_bodies,
+            "evicted_early": self._evicted_early,
         }
         backend = self.table._backend
         if backend is not None and hasattr(backend, "stats"):

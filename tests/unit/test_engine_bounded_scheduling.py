@@ -1,11 +1,15 @@
 """Bounded loop unrolling: a wide independent fan-out must not make the whole
 DAG live at once.
 
-The engine registers only a window of a loop's bodies at a time, admitting the
-next as they complete. This bounds the set of incomplete ("live") nodes, so a
-bounded cache always has *dead* values to evict rather than being forced to evict
-live ones (the cause of the eviction⇄recompute thrash). Crucially, unrolling in
-waves must not change results.
+Admission is demand-driven (queue-depth), not merely window-capped: a loop
+body is admitted only when the ready queue would otherwise starve the
+workers, regardless of how large the window is. So even a huge window does
+not make the whole fan-out live at once — the frontier tracks how many ready
+nodes are needed to keep the workers fed, not the window's size. This bounds
+the set of incomplete ("live") nodes, so a bounded cache always has *dead*
+values to evict rather than being forced to evict live ones (the cause of the
+eviction⇄recompute thrash). Crucially, unrolling in waves must not change
+results.
 """
 
 from __future__ import annotations
@@ -39,10 +43,12 @@ def test_bounded_unroll_bounds_frontier_and_preserves_results(monkeypatch: pytes
     unrolled, unrolled_out = _run(10_000, monkeypatch)
 
     assert windowed.success and unrolled.success
-    # A small window keeps the in-flight breadth tiny; unbounded lets all 400
-    # bodies go live at once.
+    # Demand-driven admission bounds the frontier regardless of window size: a
+    # huge window (10_000, for 400 bodies) does NOT make the whole fan-out
+    # live at once — admission only opens enough bodies to keep the workers
+    # fed, so both runs keep the frontier small.
     assert windowed.cache_summary["peak_frontier"] < 60, windowed.cache_summary
-    assert unrolled.cache_summary["peak_frontier"] > 300, unrolled.cache_summary
+    assert unrolled.cache_summary["peak_frontier"] < 150, unrolled.cache_summary
     # Same numeric results either way — unrolling in waves only reorders work.
     assert windowed_out == unrolled_out
     assert windowed_out is not None and windowed_out.startswith("r=[0.0, 2.0, 6.0")

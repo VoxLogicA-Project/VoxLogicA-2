@@ -11,13 +11,19 @@ scheduler:
    only ever does O(chunk) splicing work at a time — the old design reduced
    *every* element in one synchronous call, freezing all dispatch for minutes
    on large plans.
-2. **Admission is windowed with a progress floor.** At most ``loop_window``
-   bodies of a loop are in flight at once; the next is admitted as one
-   completes (demand signaling, as in Reactive Streams). Under live-memory
-   pressure admission pauses — except when the ready queue would starve the
-   workers, which overrides the budget so memory can slow the run but never
-   wedge it. The open frontier is therefore O(window × body size), independent
-   of loop width.
+2. **Admission is windowed and demand-driven.** At most ``loop_window``
+   bodies of a loop are in flight at once; beyond that, the next body is
+   admitted only when the ready queue would otherwise starve the workers
+   (queue depth < worker count) — never merely because bytes are under
+   budget. A body's own subtree can be thousands of nodes deep, so one
+   richly-parallel body can keep every core busy alone; gating on "bytes
+   available" instead of "workers fed" used to open the entire window's
+   worth of bodies immediately, and peak RSS tracked window x body size
+   instead of the one or two bodies actually needed to saturate the
+   machine. The hard ceiling remains a backstop (never crossed except to
+   break a true wedge). This bounds the *admission burst*; it does not by
+   itself bound a loop's *sequence-assembly floor* — see engine/core.py's
+   ``_reclaim_memory`` for that.
 
 VALUE-LIFETIME PROTOCOL (why sequence assembly is safe): every reduced body
 carries a *stage pin* (one consumer reference) from the moment it exists until
@@ -72,7 +78,7 @@ class LoopAdmission:
 
     def __init__(self, expander: Expander, graph: DependencyGraph, ready: ReadyQueue,
                  liveness: LivenessProbe, *, window: int, chunk: int, workers: int,
-                 max_live_bytes: int, hard_live_bytes: int,
+                 hard_live_bytes: int,
                  schedule: Callable[[NodeId, int], None],
                  available: Callable[[NodeId], bool],
                  materialize: Callable[[NodeId], Any],
@@ -86,7 +92,6 @@ class LoopAdmission:
         self.window = max(1, window)
         self.chunk = max(1, chunk)
         self.workers = workers
-        self.max_live_bytes = max_live_bytes
         self.hard_live_bytes = hard_live_bytes
         self._schedule = schedule
         self._available = available
@@ -171,31 +176,39 @@ class LoopAdmission:
     def _has_room(self, job: _Job) -> bool:
         """Whether this loop may admit one more body right now.
 
-        Three tiers of backpressure, tightest last:
-        1. window   — never more than ``window`` bodies of THIS loop in flight.
-        2. soft cap — under ``max_live_bytes`` (accounted: live tier + persist
-           backlog), admit freely.
-        3. progress floor — over the soft cap, admit ONLY to avoid starving the
-           workers, and ONLY while under the hard ceiling. Past the hard ceiling
-           we refuse even when starving, so peak RSS is actually bounded; the
-           sole exception is a true wedge (nothing running, nothing ready),
-           where one unit must go in or the run would hang forever.
+        DEMAND-DRIVEN (queue-depth) admission, not byte-budget admission:
 
-        The old rule was ``starving or under_soft`` with no ceiling — and with
-        slow kernels the queue is chronically shallow, so ``starving`` was true
-        almost always and the soft cap was bypassed indefinitely. That is the
-        unbounded-memory path this closes.
+        1. window — never more than ``window`` bodies of THIS loop in flight.
+        2. hard ceiling — past ``hard_live_bytes`` admission refuses outright,
+           except to break a true wedge (nothing running, nothing ready): that
+           is what actually bounds peak RSS, a backstop that must never be
+           crossed by policy, only by necessity.
+        3. demand — otherwise, admit exactly while the ready queue would
+           otherwise starve the workers (``qsize < workers``), regardless of
+           how far under the soft byte budget we are.
+
+        Why demand, not budget: a single loop body can itself contain a huge
+        internal subtree (thousands of nodes keeping every core busy alone), so
+        the right question is never "how many *elements* are open" but "are
+        there ~N ready nodes to feed N workers". Gating on bytes-under-budget
+        (the old rule) said yes almost always — the default budget is a large
+        fraction of RAM — so the engine opened the *entire* window's worth of
+        elements immediately: peak RSS ~ window x per-element working set,
+        independent of whether the workers could even use that concurrency.
+        Gating on queue depth instead makes concurrent-element count emergent:
+        a richly-parallel element fills the queue alone and no sibling opens;
+        a thin one lets the next in as soon as the queue thins. The byte budget
+        remains meaningful (see engine/core.py's proactive reclaim, and the
+        hard ceiling above) but is no longer the *admission* valve — admission
+        can't reclaim memory already committed to open work in the first
+        place, only reclaiming what is already resident can.
         """
         if job.in_flight >= self.window:
             return False
         accounted = self.graph.table.accounted_bytes
-        if accounted <= self.max_live_bytes:
-            return True
-        if self.ready.qsize() >= self.workers:
-            return False  # over budget and workers are fed: hold back
-        if accounted < self.hard_live_bytes:
-            return True   # progress floor: admit to keep cores busy, under the ceiling
-        return self._idle()  # at the ceiling: admit only to break a true wedge
+        if accounted >= self.hard_live_bytes:
+            return self._idle()  # at the ceiling: admit only to break a true wedge
+        return self.ready.qsize() < self.workers
 
     async def _room(self, job: _Job) -> None:
         """Wait until the window has a free slot (or the progress floor opens it).
