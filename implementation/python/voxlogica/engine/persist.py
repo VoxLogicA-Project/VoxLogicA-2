@@ -96,6 +96,19 @@ class AsyncPersister:
         """True while the unwritten backlog exceeds the in-flight budget."""
         return self._pending_bytes > self._max_pending_bytes
 
+    @property
+    def pending_bytes(self) -> int:
+        """Bytes of values queued for writing but not yet persisted.
+
+        These objects are resident in RAM (the queue holds a reference) yet are
+        NOT in the live tier's ``live_bytes`` — a value evicted from the live
+        tier stays alive here until written. The admission controller adds this
+        to the live tier to get the true resident total, so a slow disk applies
+        real backpressure instead of letting the backlog grow until OOM. Plain
+        int read; GIL-atomic, no lock needed.
+        """
+        return self._pending_bytes
+
     def flush(self, timeout_s: float = 30.0) -> None:
         """Block the caller (not the event loop) until the queue is fully written."""
         self._drained.wait(timeout_s)

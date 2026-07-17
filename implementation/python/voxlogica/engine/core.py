@@ -39,6 +39,7 @@ from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
 from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
+from voxlogica.engine.memlog import MemoryLogger
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.engine.priority import Priority
 from voxlogica.engine.query import Query, QueryStatus
@@ -78,6 +79,7 @@ class ComputationEngine:
         self._show_progress = progress
         self._debug = debug
         self._progress: tqdm | None = None
+        self._memlog: MemoryLogger | None = None
         # Progress is reported over GOALS (a fixed, monotonic denominator known at
         # run start), not over nodes: the node total is data-dependent — loops
         # unroll at runtime, so `registered_total` grows for the whole run and a
@@ -101,9 +103,11 @@ class ComputationEngine:
             chunk=self.config.expansion_chunk or self.config.loop_window,
             workers=self.max_concurrency,
             max_live_bytes=self.config.max_live_bytes,
+            hard_live_bytes=self.config.hard_live_bytes,
             schedule=self._schedule_subgraph,
             available=self._available,
             materialize=self._rematerialize,
+            idle=self._idle,
             on_spliced=self._on_spliced,
             fail_node=self._fail_node,
         )
@@ -178,6 +182,8 @@ class ComputationEngine:
                                   unit="goal", dynamic_ncols=True,
                                   bar_format=_PROGRESS_FORMAT,
                                   disable=None, file=sys.stderr, leave=True)
+        self._memlog = MemoryLogger(self._memory_snapshot)
+        self._memlog.start()
         workers = [asyncio.create_task(self._worker()) for _ in range(self.max_concurrency)]
         try:
             await self._join_with_watchdog()
@@ -187,6 +193,7 @@ class ComputationEngine:
             for worker in workers:
                 worker.cancel()
             self.admission.shutdown()
+            self._memlog.stop()
             if self._progress is not None:
                 self._flush_progress()
                 self._progress.close()
@@ -301,19 +308,52 @@ class ComputationEngine:
         admitted before the workers could ever starve.
         """
         priority = self._priority.get(nid, 0)
-        if (self.table.live_bytes > self.config.max_live_bytes
+        if (self.table.accounted_bytes > self.config.max_live_bytes
                 and self.ready.qsize() >= self.max_concurrency):
             self.ready.park(nid, priority)
         else:
             self.ready.push(nid, priority)
 
+    def _memory_snapshot(self) -> dict[str, Any]:
+        """One reading for the memory-forensics logger (see engine/memlog.py)."""
+        backlog = self.table._persister.pending_bytes if self.table._persister else 0
+        return {
+            "completed": len(self.table.completed),
+            "live_bytes": self.table.live_bytes,
+            "backlog_bytes": backlog,
+            "accounted_bytes": self.table.accounted_bytes,
+            "budget_bytes": self.config.max_live_bytes,
+            "hard_bytes": self.config.hard_live_bytes,
+            "in_flight": self._in_flight,
+            "ready": self.ready.qsize(),
+            "parked": self.ready.parked_count,
+        }
+
+    def _idle(self) -> bool:
+        """True when nothing is running and nothing is ready — a true wedge.
+
+        The admission hard-ceiling escape and the park floor both consult this:
+        it is the one condition under which admitting past the memory ceiling is
+        mandatory, because otherwise the run would hang forever.
+        """
+        return self._in_flight == 0 and self.ready.qsize() == 0
+
     def _maintain(self) -> None:
-        """Admit memory-parked work as budget frees (always when starving)."""
+        """Admit memory-parked work as budget frees, using the true resident total.
+
+        Uses ``accounted_bytes`` (live tier + persist backlog), so a growing
+        write backlog throttles admission instead of silently inflating RSS. The
+        progress floor still guarantees a parked node is admitted when the queue
+        would otherwise starve — bounded by the same hard ceiling as loop bodies,
+        with the true-wedge escape so it can never deadlock.
+        """
         if self.ready.parked_count:
-            over = self.table.live_bytes > self.config.max_live_bytes
+            accounted = self.table.accounted_bytes
+            over = accounted > self.config.max_live_bytes and self._first_error is None
             starving = self.ready.qsize() < self.max_concurrency
-            self.ready.unpark(over_budget=over and self._first_error is None,
-                              starving=starving)
+            if over and accounted >= self.config.hard_live_bytes and not self._idle():
+                starving = False  # at the ceiling: hold parked work back, let memory drain
+            self.ready.unpark(over_budget=over, starving=starving)
 
     def _on_spliced(self, loop_id: NodeId, seq_id: NodeId, priority: int) -> None:
         """A loop finished expanding: forward its value from the spliced sequence.

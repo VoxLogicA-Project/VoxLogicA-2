@@ -72,10 +72,11 @@ class LoopAdmission:
 
     def __init__(self, expander: Expander, graph: DependencyGraph, ready: ReadyQueue,
                  liveness: LivenessProbe, *, window: int, chunk: int, workers: int,
-                 max_live_bytes: int,
+                 max_live_bytes: int, hard_live_bytes: int,
                  schedule: Callable[[NodeId, int], None],
                  available: Callable[[NodeId], bool],
                  materialize: Callable[[NodeId], Any],
+                 idle: Callable[[], bool],
                  on_spliced: Callable[[NodeId, NodeId, int], None],
                  fail_node: Callable[[NodeId, BaseException], None]):
         self.expander = expander
@@ -86,9 +87,11 @@ class LoopAdmission:
         self.chunk = max(1, chunk)
         self.workers = workers
         self.max_live_bytes = max_live_bytes
+        self.hard_live_bytes = hard_live_bytes
         self._schedule = schedule
         self._available = available
         self._materialize = materialize
+        self._idle = idle
         self._on_spliced = on_spliced
         self._fail_node = fail_node
         self._jobs: dict[NodeId, _Job] = {}
@@ -166,10 +169,33 @@ class LoopAdmission:
     # ── Windowed admission ────────────────────────────────────────────────────
 
     def _has_room(self, job: _Job) -> bool:
+        """Whether this loop may admit one more body right now.
+
+        Three tiers of backpressure, tightest last:
+        1. window   — never more than ``window`` bodies of THIS loop in flight.
+        2. soft cap — under ``max_live_bytes`` (accounted: live tier + persist
+           backlog), admit freely.
+        3. progress floor — over the soft cap, admit ONLY to avoid starving the
+           workers, and ONLY while under the hard ceiling. Past the hard ceiling
+           we refuse even when starving, so peak RSS is actually bounded; the
+           sole exception is a true wedge (nothing running, nothing ready),
+           where one unit must go in or the run would hang forever.
+
+        The old rule was ``starving or under_soft`` with no ceiling — and with
+        slow kernels the queue is chronically shallow, so ``starving`` was true
+        almost always and the soft cap was bypassed indefinitely. That is the
+        unbounded-memory path this closes.
+        """
         if job.in_flight >= self.window:
             return False
-        starving = self.ready.qsize() < self.workers
-        return starving or self.graph.table.live_bytes <= self.max_live_bytes
+        accounted = self.graph.table.accounted_bytes
+        if accounted <= self.max_live_bytes:
+            return True
+        if self.ready.qsize() >= self.workers:
+            return False  # over budget and workers are fed: hold back
+        if accounted < self.hard_live_bytes:
+            return True   # progress floor: admit to keep cores busy, under the ceiling
+        return self._idle()  # at the ceiling: admit only to break a true wedge
 
     async def _room(self, job: _Job) -> None:
         """Wait until the window has a free slot (or the progress floor opens it).

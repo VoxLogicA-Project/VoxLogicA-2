@@ -108,6 +108,21 @@ class NodeTable:
         """True while the background writer's unwritten backlog is over budget."""
         return self._persister is not None and self._persister.over_budget
 
+    @property
+    def accounted_bytes(self) -> int:
+        """True resident total the admission controller must bound: the live
+        tier plus the unwritten persist backlog.
+
+        ``live_bytes`` alone under-reports RSS — a value evicted from the live
+        tier stays alive in the persist queue until written, so counting only
+        ``live_bytes`` let real memory (and OS RSS) climb far past the budget
+        while the engine believed its live tier was small. Folding the backlog
+        in here closes that gap and turns a slow disk into real backpressure.
+        """
+        if self._persister is None:
+            return self.live_bytes
+        return self.live_bytes + self._persister.pending_bytes
+
     def persisted(self, node_id: NodeId) -> bool:
         """Existence check against the disk tier — an in-memory set lookup."""
         if self._persisted_ids is not None:

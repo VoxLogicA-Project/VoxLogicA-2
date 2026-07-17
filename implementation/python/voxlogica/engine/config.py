@@ -44,8 +44,17 @@ def _env_int(name: str) -> int:
 class EngineConfig:
     """Tunables governing memory bounds, loop unrolling, and cache admission."""
 
-    #: Cap on resident (live-tier) bytes; admission control holds work back past it.
+    #: Soft cap on resident bytes (live tier + unwritten persist backlog);
+    #: admission holds new work back past it. "Accounted" bytes, not just the
+    #: live tier — see NodeTable.accounted_bytes.
     max_live_bytes: int
+    #: Hard ceiling on accounted bytes. The progress floor (admit-to-avoid-a-wedge)
+    #: may exceed max_live_bytes, but NEVER this — past it, admission refuses even
+    #: when workers would starve, letting memory drain first. The only exception is
+    #: a true wedge (nothing running, nothing ready), where one unit is admitted to
+    #: guarantee progress. This is what actually bounds peak RSS under sustained
+    #: pressure; the soft cap alone did not (the floor bypassed it indefinitely).
+    hard_live_bytes: int
     #: Independent loop bodies scheduled at once; bounds the live frontier.
     loop_window: int
     #: A result is guaranteed-persisted if at least this many consumers share it.
@@ -62,7 +71,12 @@ class EngineConfig:
     @classmethod
     def from_env(cls, max_concurrency: int, max_live_bytes: int = 0) -> "EngineConfig":
         """Build a config, letting an explicit ``max_live_bytes`` override the env."""
-        live = max_live_bytes or _env_gb_as_bytes("VOXLOGICA_MAX_LIVE_GB") or int(_system_ram_bytes() * 0.4)
+        ram = _system_ram_bytes()
+        live = max_live_bytes or _env_gb_as_bytes("VOXLOGICA_MAX_LIVE_GB") or int(ram * 0.4)
+        # Hard ceiling: room above the soft cap for the anti-wedge floor to breathe,
+        # but clamped well below total RAM so the OS OOM killer is never reached.
+        hard = _env_gb_as_bytes("VOXLOGICA_HARD_LIVE_GB") or min(int(live * 1.5), int(ram * 0.7))
+        hard = max(hard, live)  # never below the soft cap
         window = max(_env_int("VOXLOGICA_LOOP_WINDOW") or max_concurrency, max_concurrency)
         raw_min = os.environ.get("VOXLOGICA_PERSIST_MIN_MS")
         try:
@@ -71,6 +85,7 @@ class EngineConfig:
             persist_min = 1.0
         return cls(
             max_live_bytes=live,
+            hard_live_bytes=hard,
             loop_window=window,
             persist_fanout=_env_int("VOXLOGICA_PERSIST_FANOUT") or 8,
             expansion_chunk=_env_int("VOXLOGICA_EXPANSION_CHUNK") or window,
