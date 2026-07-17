@@ -173,14 +173,24 @@ eviction instead of materialize-all-then-combine) — a real architectural
 change to the `sequence`/`fold` kernel contract, out of scope here, and the
 next lever if the terminal spike itself becomes the binding constraint.
 
-A second, minor, safe-direction finding: forwarding a completed loop's value
-from its spliced sequence node used to persist the identical bytes to disk a
-second time under the loop's own node id, and double-book them in
-`live_bytes` (same shared object, two accounting entries). The double-write
-is now skipped (`persist=False` on the alias-forward); the live-tier
-double-count is a conservative overcount (pushes admission to throttle
-*earlier* than strictly needed) and is left as a known, safe artifact rather
-than a correctness bug.
+A second finding, examined and deliberately KEPT: forwarding a completed
+loop's value from its spliced sequence node persists the identical bytes a
+second time under the loop's own node id, and double-books them in
+`live_bytes` (same shared object, two accounting entries). Skipping that
+write was tried and reverted: the loop id is the *statically known* pruning
+point — a warm re-run prunes at it and skips re-expansion entirely (the
+spliced sequence id is only discoverable by re-expanding), and serve/inspect
+tooling addresses sequence items by the loop's id. The duplicated payload is
+one value per loop, its bytes are accounted (so admission absorbs the
+pressure), and the live-tier double-count is a conservative overcount
+(throttles *earlier* than strictly needed) — a safe artifact, not a bug.
+
+Admission's demand gate applies to *admission only*: chunk reduction runs up
+to one window ahead into the staging buffer, because reducing a chunk of
+large bodies is seconds of single-threaded Python — if it only started when
+the queue was already thinning, the workers would idle for the whole
+reduction on every chunk. Staged bodies carry no computed values (interned
+specs + a stage pin), so the lookahead costs no value memory.
 
 A related caution, also confirmed by profiling: under a *severely*
 disk-bottlenecked writer (writer throughput far below compute throughput),

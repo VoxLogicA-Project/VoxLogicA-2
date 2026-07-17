@@ -175,6 +175,29 @@ def test_reclaim_evicts_durably_persisted_pending_values_under_pressure(tmp_path
 
 
 @pytest.mark.unit
+def test_complete_reports_whether_value_will_be_durable(tmp_path) -> None:
+    """complete() returns True iff the value was handed to the writer — the
+    engine uses this to admit only genuinely reloadable values as proactive-
+    eviction candidates (a never-persisted value would churn the sweep forever)."""
+    backend = SQLiteResultsDatabase(db_path=str(tmp_path / "results.db"))
+    table = NodeTable(backend=backend)
+    try:
+        table.nodes["a"] = NodeSpec(kind="primitive", operator="test.blob")
+        table.begin("a")
+        assert table.complete("a", b"v", persist=True) is True
+        table.nodes["b"] = NodeSpec(kind="primitive", operator="test.blob")
+        table.begin("b")
+        assert table.complete("b", b"v", persist=False) is False, "not worth persisting: not durable"
+    finally:
+        table.flush()
+        backend.close()
+    no_disk = NodeTable(backend=None)
+    no_disk.nodes["c"] = NodeSpec(kind="primitive", operator="test.blob")
+    no_disk.begin("c")
+    assert no_disk.complete("c", b"v", persist=True) is False, "--no-cache: nothing is durable"
+
+
+@pytest.mark.unit
 def test_reclaim_is_a_noop_under_budget() -> None:
     """No pressure, no eviction — the mechanism must add zero overhead/risk
     when the run is comfortably under its memory budget."""

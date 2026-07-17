@@ -343,6 +343,8 @@ class ComputationEngine:
             "in_flight": self._in_flight,
             "ready": self.ready.qsize(),
             "parked": self.ready.parked_count,
+            "evicted_early": self._evicted_early,
+            "evict_candidates": len(self._evict_candidates),
         }
 
     def _idle(self) -> bool:
@@ -371,6 +373,13 @@ class ComputationEngine:
             if over and accounted >= self.config.hard_live_bytes and not self._idle():
                 starving = False  # at the ceiling: hold parked work back, let memory drain
             self.ready.unpark(over_budget=over, starving=starving)
+        # Paused unrolls are normally woken by completions, but a worker turn
+        # that skips a stale queue entry thins the queue while completing
+        # nothing — if only such turns remained, admission would never notice
+        # the emerging demand. This runs on every worker turn, so it closes
+        # that hole (see LoopAdmission.wake_jobs).
+        if self.admission.active_jobs and self.ready.qsize() < self.max_concurrency:
+            self.admission.wake_jobs()
 
     def _reclaim_memory(self) -> None:
         """Evict durably-persisted-but-still-pending values under memory pressure.
@@ -439,6 +448,7 @@ class ComputationEngine:
         reads the closure's structure, never a computed closure value.
         """
         node = self.table.nodes[nid]
+        will_be_durable = False
         if persist:
             critical = self._is_critical(nid, node)
             # Best-effort persistence is also *worth-it gated*: serializing a
@@ -446,7 +456,8 @@ class ComputationEngine:
             # recompute than to store would tax dispatch for nothing (and the
             # cache's cost-aware eviction would drop it first anyway).
             worth_it = critical or compute_ms >= self.config.persist_min_compute_ms
-            self.table.complete(nid, value, compute_ms, critical=critical, persist=worth_it)
+            will_be_durable = self.table.complete(nid, value, compute_ms,
+                                                  critical=critical, persist=worth_it)
             if node.operator in _SEQUENCE_OPERATORS:
                 for index, item in enumerate(value):
                     self.table.complete_item(nid, index, item)
@@ -459,9 +470,13 @@ class ComputationEngine:
             self._enqueue(child)
         self._priority.pop(nid, None)
         self.admission.on_complete(nid)
-        if (self.table._persister is not None and nid not in self._goals
-                and self.graph.consumers.get(nid, 0) > 0):
-            # Still needed by a future consumer: a reclaim candidate once durable.
+        # A reclaim candidate must have a durable copy coming (just submitted)
+        # or already on disk (e.g. a value forwarded after a warm load) —
+        # values the engine chose not to persist can never be evicted-and-
+        # reloaded and would only churn the sweep.
+        if (nid not in self._goals and self.graph.consumers.get(nid, 0) > 0
+                and (will_be_durable
+                     or (self.table._persister is not None and self.table.persisted(nid)))):
             if len(self._evict_candidates) >= _EVICT_QUEUE_CAP:
                 self._evict_candidates.popleft()  # backstop: bound idle-run memory too
             self._evict_candidates.append(nid)
@@ -546,14 +561,15 @@ class ComputationEngine:
                 node = self.table.nodes[nid]
                 if nid in self._alias:
                     seq_id = self._alias.pop(nid)
-                    # persist=False: seq_id is itself a _SEQUENCE_OPERATORS node
-                    # and already owns the durable copy; re-persisting the same
-                    # value under the loop's id would write it to disk twice and
-                    # double-book it in the persist backlog for no reason (the
-                    # live tier still records two entries for the same shared
-                    # object across the two ids — a conservative overcount in
-                    # accounted_bytes, not a real second RAM copy).
-                    self._finish(nid, self._rematerialize(seq_id), persist=False)
+                    # persist=True even though seq_id already holds the same
+                    # value durably: the loop id is the *statically known*
+                    # pruning point — a warm re-run prunes at it and skips
+                    # re-expansion entirely (the spliced sequence id is only
+                    # discoverable BY re-expanding), and serve/inspect tooling
+                    # addresses sequence items by the loop's id. The price is
+                    # one duplicated payload per loop in the persist backlog;
+                    # those bytes are accounted, so admission absorbs them.
+                    self._finish(nid, self._rematerialize(seq_id))  # forward spliced result
                     self.graph.release(seq_id)                      # the forward's hold
                 elif nid in self.table.values:
                     # Materialized since this node was enqueued — a warm cache can

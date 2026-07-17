@@ -11,18 +11,22 @@ scheduler:
    only ever does O(chunk) splicing work at a time — the old design reduced
    *every* element in one synchronous call, freezing all dispatch for minutes
    on large plans.
-2. **Admission is windowed and demand-driven.** At most ``loop_window``
-   bodies of a loop are in flight at once; beyond that, the next body is
-   admitted only when the ready queue would otherwise starve the workers
-   (queue depth < worker count) — never merely because bytes are under
-   budget. A body's own subtree can be thousands of nodes deep, so one
+2. **Admission is windowed and demand-driven; production runs ahead.** At
+   most ``loop_window`` bodies of a loop are in flight at once; beyond that,
+   the next body is admitted only when the ready queue would otherwise starve
+   the workers (queue depth < worker count) — never merely because bytes are
+   under budget. A body's own subtree can be thousands of nodes deep, so one
    richly-parallel body can keep every core busy alone; gating on "bytes
    available" instead of "workers fed" used to open the entire window's
    worth of bodies immediately, and peak RSS tracked window x body size
    instead of the one or two bodies actually needed to saturate the
-   machine. The hard ceiling remains a backstop (never crossed except to
-   break a true wedge). This bounds the *admission burst*; it does not by
-   itself bound a loop's *sequence-assembly floor* — see engine/core.py's
+   machine. Chunk *reduction*, by contrast, is NOT demand-gated: staged
+   bodies carry no computed values (only interned specs + a stage pin), so
+   reduction runs up to one window ahead of admission, hiding its
+   seconds-per-chunk latency behind compute instead of bubbling the workers.
+   The hard ceiling remains a backstop (never crossed except to break a true
+   wedge). This bounds the *admission burst*; it does not by itself bound a
+   loop's *sequence-assembly floor* — see engine/core.py's
    ``_reclaim_memory`` for that.
 
 VALUE-LIFETIME PROTOCOL (why sequence assembly is safe): every reduced body
@@ -131,20 +135,32 @@ class LoopAdmission:
                 raise RuntimeError(f"cannot expand loop node {nid[:12]} ({node.operator})")
             loop = asyncio.get_running_loop()
             cursor = 0
-            while cursor < expansion.total:
-                await self._room(job)
-                stop = min(cursor + self.chunk, expansion.total)
-                ids = await loop.run_in_executor(
-                    self._reducer, self.expander.reduce_chunk, expansion, cursor, stop)
-                cursor = stop
-                for body in ids:  # stage pin: value must survive until the sequence holds it
-                    self.graph.pin(body)
-                    self.liveness.staged.add(body)
-                    job.staged.append(body)
+            # PRODUCTION IS DECOUPLED FROM ADMISSION. Reducing a chunk of big
+            # bodies can take seconds (pure-Python, one thread); if reduction
+            # only started when the ready queue was already thinning, the
+            # workers would drain it and idle for the whole reduction — a
+            # bubble on every chunk. So chunks are reduced AHEAD of demand
+            # into ``job.staged``, bounded to one window of lookahead: staged
+            # bodies are just interned specs plus a stage pin — no computed
+            # values — so the buffer costs no value memory, and admission
+            # (which is what commits memory) stays strictly demand-driven.
+            while cursor < expansion.total or job.staged:
+                if self._aborted is not None:
+                    raise self._aborted
                 self._admit(job)
-            while job.staged:  # drain the tail under the same window pacing
-                await self._room(job)
-                self._admit(job)
+                if cursor < expansion.total and len(job.staged) < self.window:
+                    stop = min(cursor + self.chunk, expansion.total)
+                    ids = await loop.run_in_executor(
+                        self._reducer, self.expander.reduce_chunk, expansion, cursor, stop)
+                    cursor = stop
+                    for body in ids:  # stage pin: value must survive until the sequence holds it
+                        self.graph.pin(body)
+                        self.liveness.staged.add(body)
+                        job.staged.append(body)
+                    continue
+                if job.staged:  # buffer full or unroll done: wait for a slot/demand
+                    job.wake.clear()
+                    await job.wake.wait()
             self._splice(nid, expansion, priority)
         except Exception as exc:  # noqa: BLE001
             self._fail_node(nid, exc)
@@ -210,21 +226,6 @@ class LoopAdmission:
             return self._idle()  # at the ceiling: admit only to break a true wedge
         return self.ready.qsize() < self.workers
 
-    async def _room(self, job: _Job) -> None:
-        """Wait until the window has a free slot (or the progress floor opens it).
-
-        Guaranteed to resolve: a paused job either has bodies in flight (their
-        completions wake it) or is blocked purely on memory with a non-starving
-        queue (so workers are busy and completions are coming).
-        """
-        while not self._has_room(job):
-            if self._aborted is not None:
-                raise self._aborted
-            job.wake.clear()
-            await job.wake.wait()
-        if self._aborted is not None:
-            raise self._aborted
-
     def _admit(self, job: _Job) -> None:
         """Move staged bodies into the schedule while the window allows."""
         while job.staged and self._has_room(job):
@@ -250,6 +251,19 @@ class LoopAdmission:
         job = self._body_owner.pop(nid, None)
         if job is not None:
             job.in_flight -= 1
+        self.wake_jobs()
+
+    def wake_jobs(self) -> None:
+        """Nudge every paused unroll to re-evaluate demand.
+
+        Completions call this via ``on_complete``, but the queue can also thin
+        WITHOUT a completion — a worker turn that skips a stale/duplicate entry
+        pops the queue and finishes nothing. If every remaining entry were such
+        a skip, a paused job would never wake and the run would sit until the
+        hang backstop. ``_maintain`` (which runs on every worker turn,
+        including skip turns) calls this when the queue is below the demand
+        threshold, closing that hole. Setting an already-set event is cheap.
+        """
         for paused in self._jobs.values():
             paused.wake.set()
 

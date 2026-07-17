@@ -72,7 +72,8 @@ class MemoryLogger:
         try:
             self._file = open(self.path, "w", buffering=1)  # line-buffered
             self._file.write("elapsed_s\tcompleted\tlive_mb\tbacklog_mb\taccounted_mb"
-                             "\tbudget_mb\thard_mb\trss_mb\tin_flight\tready\tparked\n")
+                             "\tbudget_mb\thard_mb\trss_mb\tin_flight\tready\tparked"
+                             "\tevicted_early\tevict_cand\n")
         except OSError:
             self._file = None
             return
@@ -98,7 +99,8 @@ class MemoryLogger:
                 f"{s.get('live_bytes', 0) / mb:.1f}\t{s.get('backlog_bytes', 0) / mb:.1f}\t"
                 f"{s.get('accounted_bytes', 0) / mb:.1f}\t{s.get('budget_bytes', 0) / mb:.1f}\t"
                 f"{s.get('hard_bytes', 0) / mb:.1f}\t{rss / mb:.1f}\t"
-                f"{s.get('in_flight', 0)}\t{s.get('ready', 0)}\t{s.get('parked', 0)}\n")
+                f"{s.get('in_flight', 0)}\t{s.get('ready', 0)}\t{s.get('parked', 0)}\t"
+                f"{s.get('evicted_early', 0)}\t{s.get('evict_candidates', 0)}\n")
         except Exception:  # noqa: BLE001 — observ. must never break the run
             pass
 

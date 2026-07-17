@@ -148,7 +148,7 @@ class NodeTable:
         self._running.add(node_id)
 
     def complete(self, node_id: NodeId, value: Any, compute_ms: float = 0.0, critical: bool = False,
-                 persist: bool = True) -> None:
+                 persist: bool = True) -> bool:
         """Record a freshly computed value and hand it to the background writer.
 
         ``compute_ms`` is the kernel's measured wall-time; it feeds the cache's
@@ -159,6 +159,10 @@ class NodeTable:
         to store — ``persist=False``) but *guaranteed* for ``critical`` ones —
         expensive or widely-shared results, exactly what makes cross-run reuse
         pay off. Dropping those was why warm re-runs recomputed everything.
+
+        Returns True iff the value was handed to the writer — i.e. it will
+        (barring write failure) become durable, which is what makes it a valid
+        proactive-eviction candidate (see ComputationEngine._reclaim_memory).
         """
         self._running.discard(node_id)
         size = self.set_value(node_id, value)
@@ -167,6 +171,8 @@ class NodeTable:
             node = self.nodes[node_id]
             self._persister.submit(node_id, value, {"source": "runtime", "operator": node.operator},
                                    compute_ms, size=size)
+            return True
+        return False
 
     def complete_item(self, node_id: NodeId, index: int, value: Any) -> None:
         """Persist one element of a sequence-valued node under its derived key."""

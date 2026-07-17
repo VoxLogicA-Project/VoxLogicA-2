@@ -44,16 +44,18 @@ def _env_int(name: str) -> int:
 class EngineConfig:
     """Tunables governing memory bounds, loop unrolling, and cache admission."""
 
-    #: Soft cap on resident bytes (live tier + unwritten persist backlog);
-    #: admission holds new work back past it. "Accounted" bytes, not just the
-    #: live tier — see NodeTable.accounted_bytes.
+    #: Soft budget on resident bytes (live tier + unwritten persist backlog;
+    #: "accounted" bytes — see NodeTable.accounted_bytes). Past it, ready work
+    #: is parked and proactive reclaim starts evicting durably-persisted
+    #: values (ComputationEngine._reclaim_memory). Loop admission does NOT
+    #: consult it — admission is demand-driven (ready-queue depth) and reads
+    #: only the hard ceiling below.
     max_live_bytes: int
-    #: Hard ceiling on accounted bytes. The progress floor (admit-to-avoid-a-wedge)
-    #: may exceed max_live_bytes, but NEVER this — past it, admission refuses even
-    #: when workers would starve, letting memory drain first. The only exception is
-    #: a true wedge (nothing running, nothing ready), where one unit is admitted to
-    #: guarantee progress. This is what actually bounds peak RSS under sustained
-    #: pressure; the soft cap alone did not (the floor bypassed it indefinitely).
+    #: Hard ceiling on accounted bytes — past it, loop admission refuses even
+    #: when workers would starve, letting memory drain first. The only
+    #: exception is a true wedge (nothing running, nothing ready), where one
+    #: unit is admitted to guarantee progress. This is what actually bounds
+    #: peak RSS under sustained pressure.
     hard_live_bytes: int
     #: Independent loop bodies scheduled at once; bounds the live frontier.
     loop_window: int
