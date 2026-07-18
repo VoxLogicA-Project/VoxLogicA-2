@@ -83,7 +83,8 @@ class ComputationEngine:
         self.expander = Expander(self.table, self.registry)
         self.fusion = FusionPlanner(self.registry)
         self.numba_backend = (
-            NumbaFusionBackend(self.registry) if self.config.numba_fusion_enabled else None
+            NumbaFusionBackend(self.registry, min_members=self.config.numba_min_members)
+            if self.config.numba_fusion_enabled else None
         )
         self._show_progress = progress
         self._debug = debug

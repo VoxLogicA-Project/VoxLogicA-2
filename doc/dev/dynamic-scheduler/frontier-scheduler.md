@@ -349,6 +349,110 @@ in `Executor._invoke`, the sitk C++ call itself) — exactly numba codegen's
 territory (Phase 2 leg 2), now worth pursuing with a cleaner floor to
 measure against.
 
+## Phase 2 leg 2: numba-compiled cones (2026-07)
+
+Wires Stage B (`engine/numba_fusion.py`) into the scheduler: a cone whose
+shape has a compiled kernel runs one flat per-voxel loop instead of one
+Python/C++ kernel call per member. The Stage A/B decision (`shape_of` +
+`NumbaFusionBackend.try_get`) happens entirely inside the executor's pool
+thread, never the event loop — deciding it on the loop, as first wired,
+turned out to force a `PolyArray`'s first numpy view into existence
+(`shape_of`'s dtype/geometry probe) which raced a concurrently-running
+kernel on the same shared value from another pool thread, and crashed
+inside sitk's C++ reference-counted image code. Fixed by (a) adding a lock
+around `PolyArray`'s lazy view construction (`arrays.py`) and (b) moving the
+whole decision into `Executor.run_cone_auto`, which runs on the same pool
+thread as the dispatch it decides.
+
+A second bug, silent rather than crashing: numba's `cache=True` cannot
+reconstruct the "environment" (globals) of an `exec()`'d function on a cache
+hit — it needs to re-`import` the function's defining module, but a
+codegen'd kernel's module is a synthetic namespace with no real `__name__`.
+Every compile was silently marked failed and Stage B never actually ran.
+Fixed by disabling numba's disk cache (`cache=False`); the in-process
+`NumbaFusionBackend._compiled` dict already delivers the benefit that
+matters — one compile per shape, reused by every future cone of that shape
+for the rest of *this* run. There is no cross-process cache, and — because
+`EngineExecutionStrategy.run()` creates a fresh `ComputationEngine` (and
+hence a fresh, empty `NumbaFusionBackend`) per top-level query — no
+cross-query cache either, even within one long-running server process. The
+target scenario this still serves well is the one `numba_fusion.py`'s
+docstring names explicitly: "a runtime loop's thousands of structurally-
+identical per-element cones... all warm exactly one compile," which happens
+*within* a single query.
+
+### Measured (same local 18-core machine; `tests/perf/bench_numba_fusion.py`)
+
+Straight-line `leq_sv`/`geq_sv` → `and` → `not`×N chain, 128³ float32 image,
+150 loop iterations (cone shape repeats, threshold constant varies per
+iteration — the shape-sharing case the design targets). Cone size is N+1,
+not N+3: `leq_sv`/`geq_sv` complete as independent dispatches before `and`
+is ready, so the planner never retroactively absorbs them (same "diamond"
+effect as Phase 2 leg 1's table above).
+
+| cone size (N+1) | Stage A+B vs Stage A only |
+|---|---|
+| 5 | 0.60–1.02× (net LOSS at the small end) |
+| 9–12 (noisy boundary) | 0.90–1.61× |
+| 13 | 1.44–1.61× |
+| 21 | 1.92–2.52× |
+| 61 | 3.43–3.60× |
+
+At BraTS scale (240×240×155 float32, ~8.9M voxels — 4.5× the voxels, so
+kernel time grows while the fixed per-element floor doesn't): depth 20 →
+3.11×, depth 40 → **5.26×** (100 iterations, compile amortized in-run,
+97–90% of cones on Stage B).
+
+**Why small cones lose**: `PolyArray.from_numpy`'s output has no cached
+`sitk` view. The very next consumer that isn't itself elementwise (sequence
+assembly, a legacy kernel, a goal print) triggers `Executor._unwrap` →
+`PolyArray.sitk()` — a full numpy→sitk copy that Stage A's output never
+pays (its `PolyArray` is built FROM the real kernel's `sitk.Image`, `sitk`
+already cached; see `arrays.py`'s "HONEST CONSTRAINTS"). That fixed
+conversion cost is only amortized once the compiled loop is doing enough
+work to be worth it. Raw compiled-loop compute itself is not the bottleneck
+at any size — measured independently at ~300× faster per iteration than the
+six-kernel sitk chain it replaces (0.01ms vs 3.41ms/iter, 128³) — the
+crossover is entirely about the one-time exit conversion, not numba's own
+speed.
+
+**The fix, not just a finding**: `NumbaFusionBackend` gates on cone size
+before ever attempting a compile (`_MIN_MEMBERS_FOR_STAGE_B = 12`,
+`VOXLOGICA_NUMBA_MIN_MEMBERS` env override) — below it, Stage B is never
+even attempted and the cone runs Stage A exactly as before Phase 2 leg 2, so
+small-cone workloads (the common case for simple threshold/mask/combine
+programs) see no regression. 12 sits solidly past the noisy 9–12 boundary
+observed above, in the region where every measured run won.
+
+**Why end-to-end is 3–5× when the compiled loop itself is ~300× faster**
+(0.01ms vs 3.41ms/iter for a six-op chain at 128³, measured directly):
+Amdahl over three non-kernel costs the compiled loop cannot touch, per loop
+element — (a) the ~1ms scheduler floor (per-element body reduction +
+admission + completion bookkeeping; bounds Stage A identically), (b) the
+numpy→sitk exit copy — note `Executor._unwrap` converts EVERY `PolyArray`
+argument to sitk unconditionally, including for the sequence-assembly step
+that merely collects values into a list, so every exit pays an O(voxels)
+copy nothing consumes as an image, and (c) input view building + output
+wrapping. Levers to close the gap, in impact order:
+
+1. **Kernel-aware / lazy `_unwrap`** — stay numpy end-to-end across cone
+   boundaries and sequence assembly; convert only when a genuinely sitk
+   kernel consumes the value (`arrays.py`'s stated design intent: "a chain
+   of fused kernels should stay in numpy end-to-end and only pay this
+   once").
+2. **The per-element scheduler floor** — same tax previously measured as
+   "no wall-clock win on cheap-kernel sweeps" (see the incoming-branch
+   comparison); fusing kernels harder cannot beat a floor that isn't kernels.
+3. **Cross-element fusion for sweeps** — a threshold sweep runs the SAME
+   cone shape over the SAME image N times; one compiled kernel writing N
+   outputs in ONE pass over the image (instead of N passes) is where an
+   order-of-magnitude, not incremental, win lives for sweep workloads.
+   Beyond cone scope (cones are per-element) — a plan-level lever.
+
+All out of scope here (pure optimizations of an already-correct,
+already-gated path, per this module's own standing rule: never ship a
+behavior change on uncertain footing).
+
 ## Invariants preserved
 
 - Content-addressed dedup; a node is computed at most once per run (`begin`).

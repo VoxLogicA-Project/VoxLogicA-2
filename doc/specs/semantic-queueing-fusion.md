@@ -280,9 +280,22 @@ In `config.py`, following house style:
 
 - `VOXLOGICA_FUSION` = `0|1` (default 1) — planner returns None when off.
 - `VOXLOGICA_FUSION_CAP` (default 64) — max cone size.
-- `VOXLOGICA_FUSION_STAGE` = `a|b` (default `a` until Phase 2 lands).
-- `VOXLOGICA_FUSION_OUTPUTS` = `needed|all` (default `needed` once the
-  recompute fallback exists; `all` until then — see §3.2).
+- `VOXLOGICA_NUMBA_FUSION` = `0|1` (default 1) — Stage B kill switch;
+  independent of the one above, so Stage A-only can still be forced.
+- `VOXLOGICA_NUMBA_MIN_MEMBERS` (default 12) — minimum fused-member count
+  before Stage B is even attempted (see `engine/numba_fusion.py`'s
+  `_MIN_MEMBERS_FOR_STAGE_B` and the frontier-scheduler.md "Phase 2 leg 2"
+  measurements for why: below this, the cone's one-time numpy→sitk exit
+  conversion costs more than the compiled loop saves).
+
+As shipped, there is no separate `FUSION_OUTPUTS=needed|all` toggle: a
+Stage-B cone always writes only its exits (`cone.exits`, matching Stage A)
+— the recompute fallback this needed (§3.2's "residual hole") turned out to
+already be generic in `_rematerialize` (any node not in `table.values` is
+recomputed regardless of why it's missing, cone-elided or plain evicted),
+so it needed no cone-specific extension. `needed` mode was therefore already
+safe to ship unconditionally; there was nothing left for `all` to guard
+against.
 
 ## 4. Execution sites and affinity
 
@@ -414,9 +427,9 @@ the same honesty rules as the existing sections.
 
 | phase | deliverable | risk | gate |
 |---|---|---|---|
-| **0** | `PolyArray` + executor boundary adapters + accounting. No behavior change. | low | §6.7, full regression |
-| **1** | ElementwiseSpec registry + FusionPlanner + **Stage A** cone dispatch (loop existing kernels inside one worker turn, all values materialized). Kill switch, metrics. | medium | §6.1–4, §6.6, bench |
-| **2** | **Stage B**: numba codegen + background compile state machine, `FUSION_OUTPUTS=all` first, then `needed` + recompute fallback in `_rematerialize`. | medium-high | §6.1, §6.5, bench |
+| **0** | ✅ `PolyArray` + executor boundary adapters + accounting. No behavior change. | low | §6.7, full regression |
+| **1** | ✅ ElementwiseSpec registry + FusionPlanner + **Stage A** cone dispatch (loop existing kernels inside one worker turn, all values materialized). Kill switch, metrics. | medium | §6.1–4, §6.6, bench |
+| **2** | ✅ **Stage B**: numba codegen + background compile state machine + minimum-cone-size gate (`_MIN_MEMBERS_FOR_STAGE_B`, needed once real measurements showed short chains regress — see frontier-scheduler.md). `needed`-mode output selection shipped directly; `_rematerialize`'s recompute fallback was already generic, no cone-specific extension required. | medium-high | §6.1, §6.5, bench |
 | **3** | Sites + affinity + `numba.cuda` retarget of the same codegen + residency/transfer metrics. | medium | §6.1 on gpu, CI without CUDA |
 | **4** | Buffer pool. Then doc + paper notes ("semantic queueing", affinity). | low | pool metrics, no leak under valgrind-style stress test |
 

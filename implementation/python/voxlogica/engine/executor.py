@@ -155,7 +155,13 @@ class Executor:
 
     def _compute_cone_auto(self, table: NodeTable, cone: "Cone",
                             numba_backend: "NumbaFusionBackend | None") -> tuple[dict[NodeId, Any], bool]:
-        if numba_backend is not None:
+        # Size-gate BEFORE deriving the shape: shape_of walks every member and
+        # probes input dtypes/geometry, and small cones (mean size ~2-5 in
+        # typical programs) are the COMMON case — paying that walk on every
+        # dispatch just for try_get to reject the shape on the same size test
+        # (len(shape.ops) == len(cone)) would tax the majority path for the
+        # benefit of none.
+        if numba_backend is not None and len(cone) >= numba_backend.min_members:
             binding = shape_of(cone, table, self.registry)
             if binding is not None:
                 compiled_fn = numba_backend.try_get(binding.shape)

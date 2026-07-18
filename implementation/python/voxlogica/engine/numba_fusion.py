@@ -193,6 +193,12 @@ def shape_of(cone: "Cone", table: "NodeTable", registry: "PrimitiveRegistry") ->
             if info is None:
                 return None
             _dtype, geometry = info
+            if geometry.components != 1:
+                # Vector image: the real sitk comparison kernels REJECT these
+                # (the run fails under Stage A), while a flat per-voxel loop
+                # would silently "succeed" per-component. Bit-identical means
+                # identical failures too — refuse, let Stage A raise.
+                return None
             if reference_geometry is None:
                 reference_geometry = geometry
             elif geometry != reference_geometry:
@@ -287,11 +293,29 @@ def compile_shape(shape: ConeShape, registry: "PrimitiveRegistry") -> Callable:
     return numba.njit(nogil=True, cache=False)(raw_fn)
 
 
+#: Below this many fused members, Stage B is a measured net LOSS, not just a
+#: wash: PolyArray.from_numpy's output has no "sitk" view, so the very next
+#: consumer that isn't itself elementwise (a sequence assembly step, a legacy
+#: kernel, a goal print) pays a full numpy->sitk copy (Executor._unwrap ->
+#: PolyArray.sitk(), see arrays.py) that Stage A's output never pays (its
+#: PolyArray is built FROM the real kernel's sitk.Image, "sitk" already
+#: cached). That fixed conversion cost only gets amortized once the compiled
+#: loop is doing enough work to be worth it. Measured on a 128^3 float32
+#: image, straight-line leq_sv+geq_sv+and+not*N chain (bench_numba_fusion.py,
+#: cone size = 1 + N since the two comparisons complete as independent
+#: dispatches before "and" is ready — see FusionPlanner): cone size 5.2 ->
+#: Stage B 0.60x (SLOWER); 9.2 -> 0.90-1.17x (noisy, still marginal); 11.1 ->
+#: 1.35x; 21.2 -> 1.92-2.23x. 12 sits solidly past the noisy boundary, in the
+#: region where every measured run won.
+_MIN_MEMBERS_FOR_STAGE_B = 12
+
+
 class NumbaFusionBackend:
     """Shape-keyed compile cache with a background, non-blocking compile path."""
 
-    def __init__(self, registry: "PrimitiveRegistry"):
+    def __init__(self, registry: "PrimitiveRegistry", min_members: int = _MIN_MEMBERS_FOR_STAGE_B):
         self.registry = registry
+        self.min_members = min_members
         self._compiled: dict[ConeShape, Callable] = {}
         self._compiling: set[ConeShape] = set()
         self._lock = threading.Lock()  # touched from the event loop AND the compile-pool thread
@@ -305,7 +329,13 @@ class NumbaFusionBackend:
         compile (once per shape) and returns None — the caller falls back
         to Stage A for this dispatch, and every dispatch of this shape until
         it becomes READY.
+
+        A shape too small to be worth compiling (see ``_MIN_MEMBERS_FOR_STAGE_B``)
+        is never even submitted for compilation — it stays on Stage A forever,
+        by design, not because it failed.
         """
+        if len(shape.ops) < self.min_members:
+            return None
         with self._lock:
             fn = self._compiled.get(shape)
             if fn is not None:

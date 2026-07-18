@@ -82,6 +82,11 @@ class EngineConfig:
     #: path. Independent of fusion_enabled's own default so either can be
     #: toggled without the other.
     numba_fusion_enabled: bool = True
+    #: Minimum fused-member count before Stage B is even attempted (see
+    #: numba_fusion.py's ``_MIN_MEMBERS_FOR_STAGE_B``) — below this, the
+    #: mandatory numpy->sitk conversion at the cone's exit costs more than
+    #: the compiled loop saves; measured net LOSS, not just a wash.
+    numba_min_members: int = 12
 
     @classmethod
     def from_env(cls, max_concurrency: int, max_live_bytes: int = 0) -> "EngineConfig":
@@ -112,4 +117,5 @@ class EngineConfig:
             fusion_enabled=fusion_enabled,
             fusion_cap=_env_int("VOXLOGICA_FUSION_CAP") or 64,
             numba_fusion_enabled=numba_fusion_enabled,
+            numba_min_members=_env_int("VOXLOGICA_NUMBA_MIN_MEMBERS") or 12,
         )
