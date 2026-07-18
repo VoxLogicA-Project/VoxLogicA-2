@@ -67,6 +67,27 @@ KernelFn = Callable[..., Any]
 
 
 @dataclass(frozen=True)
+class ElementwiseSpec:
+    """Opt-in metadata marking a primitive as fusable into a schedule-time cone.
+
+    ``expr`` is a scalar expression fragment over positional placeholders
+    ``{0}, {1}, ...`` matching the node's ``args`` order (NOT necessarily
+    "image first" — e.g. ``vox1.leq_sv(value, image)`` puts the scalar at
+    ``{0}``). It feeds the Phase-2 numba codegen (see
+    ``doc/specs/semantic-queueing-fusion.md`` §3.2b); Phase 1 (Stage A) does
+    not evaluate it at all — Stage A batches dispatch of the real kernels
+    unchanged, so ``expr`` is declared here only so the fusable set is
+    defined in one place. It is UNVALIDATED until the Phase-2 property tests
+    check it bit-identical against the real kernel: do not trust it as
+    correct before then.
+    """
+
+    expr: str
+    out_dtype: str
+    commutes_scalar: bool = True
+
+
+@dataclass(frozen=True)
 class PrimitiveSpec:
     """Primitive descriptor consumed by the planner and runtime."""
 
@@ -79,6 +100,7 @@ class PrimitiveSpec:
     namespace: str = "default"
     description: str = ""
     is_legacy_adapter: bool = False
+    elementwise: ElementwiseSpec | None = None
 
     @property
     def qualified_name(self) -> str:

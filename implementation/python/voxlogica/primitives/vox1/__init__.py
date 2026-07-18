@@ -4,9 +4,25 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+from voxlogica.primitives.api import AritySpec, ElementwiseSpec, PrimitiveSpec, default_planner_factory
 from voxlogica.primitives.vox1 import kernels
 
+
+# Elementwise opt-in for schedule-time fusion (engine/fusion.py). ``expr``
+# placeholders match each kernel's real positional argument order — several
+# of these (leq_sv, geq_sv, between) put the scalar operand(s) BEFORE the
+# image, so {0} is not always "the image". UNVALIDATED until Phase 2's
+# bit-identical property tests run (see ElementwiseSpec docstring).
+_ELEMENTWISE: dict[str, ElementwiseSpec] = {
+    "not": ElementwiseSpec(expr="~({0} != 0)", out_dtype="uint8"),
+    "and": ElementwiseSpec(expr="{0} & {1}", out_dtype="uint8"),
+    "or": ElementwiseSpec(expr="{0} | {1}", out_dtype="uint8"),
+    # leq_sv(value, image) / geq_sv(value, image): scalar is {0}, image is {1}.
+    "leq_sv": ElementwiseSpec(expr="{1} <= {0}", out_dtype="uint8"),
+    "geq_sv": ElementwiseSpec(expr="{1} >= {0}", out_dtype="uint8"),
+    # between(value1, value2, image): image is {2}.
+    "between": ElementwiseSpec(expr="({0} <= {2}) & ({2} <= {1})", out_dtype="uint8"),
+}
 
 _PRIMITIVES: dict[str, tuple[Callable[..., Any], AritySpec]] = {
     "num_div": (kernels.num_div, AritySpec.fixed(2)),
@@ -106,6 +122,7 @@ def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
             planner=default_planner_factory(qualified, kind="scalar"),
             kernel_name=qualified,
             description=(kernel.__doc__ or "").strip(),
+            elementwise=_ELEMENTWISE.get(primitive_name),
         )
         specs[primitive_name] = (spec, kernel)
     return specs

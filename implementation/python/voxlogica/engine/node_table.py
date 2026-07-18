@@ -163,6 +163,17 @@ class NodeTable:
         self.set_value(node_id, value)
         return value
 
+    def is_claimable(self, node_id: NodeId) -> bool:
+        """True iff ``begin(node_id)`` would succeed right now.
+
+        Lets a caller that must claim several nodes together (the fusion
+        planner claiming a whole cone, ``engine/fusion.py``) verify every
+        member is claimable *before* calling ``begin`` on any of them — so a
+        mid-batch ``DoubleComputationError`` can never leave some members
+        claimed and others not, and no rollback path is needed.
+        """
+        return node_id not in self._running and node_id not in self.values
+
     def begin(self, node_id: NodeId) -> None:
         """Mark a node as under computation, enforcing single computation."""
         if node_id in self._running or node_id in self.values:

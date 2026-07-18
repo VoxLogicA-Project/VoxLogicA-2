@@ -39,6 +39,32 @@ def _simpleitk():
     return _sitk
 
 
+# GetPixelID() -> bytes per scalar component. Built lazily (needs the sitk
+# module) so a scalar/vector pixel type never needs GetArrayViewFromImage
+# just to learn its itemsize (see PolyArray.nbytes).
+_PIXEL_ITEMSIZE: dict[int, int] | None = None
+
+
+def _sitk_itemsize(image: Any) -> int:
+    global _PIXEL_ITEMSIZE
+    if _PIXEL_ITEMSIZE is None:
+        sitk = _simpleitk()
+        _PIXEL_ITEMSIZE = {
+            sitk.sitkInt8: 1, sitk.sitkUInt8: 1, sitk.sitkLabelUInt8: 1, sitk.sitkVectorInt8: 1, sitk.sitkVectorUInt8: 1,
+            sitk.sitkInt16: 2, sitk.sitkUInt16: 2, sitk.sitkLabelUInt16: 2, sitk.sitkVectorInt16: 2, sitk.sitkVectorUInt16: 2,
+            sitk.sitkInt32: 4, sitk.sitkUInt32: 4, sitk.sitkLabelUInt32: 4, sitk.sitkVectorInt32: 4, sitk.sitkVectorUInt32: 4,
+            sitk.sitkFloat32: 4, sitk.sitkVectorFloat32: 4, sitk.sitkComplexFloat32: 8,
+            sitk.sitkInt64: 8, sitk.sitkUInt64: 8, sitk.sitkLabelUInt64: 8, sitk.sitkVectorInt64: 8, sitk.sitkVectorUInt64: 8,
+            sitk.sitkFloat64: 8, sitk.sitkVectorFloat64: 8, sitk.sitkComplexFloat64: 16,
+        }
+    return _PIXEL_ITEMSIZE.get(image.GetPixelID(), 4)  # unknown type: 4-byte fallback, never crash accounting
+
+
+def _sitk_nbytes(image: Any) -> int:
+    """Byte footprint of a sitk image from pure metadata — no array view built."""
+    return image.GetNumberOfPixels() * image.GetNumberOfComponentsPerPixel() * _sitk_itemsize(image)
+
+
 @dataclass(frozen=True)
 class Geometry:
     """Spatial metadata carried alongside pixel data; hashable, sitk-shaped."""
@@ -168,17 +194,27 @@ class PolyArray:
     def nbytes(self) -> int:
         """Resident footprint across every cached view (host + device).
 
-        Touches ``.np()`` to size a sitk-only value — cheap (zero-copy: it
-        just aliases the sitk buffer) and populates a cache other callers
-        will reuse anyway. When the numpy view is that alias
-        (``is_readonly_np``), sitk and numpy are one buffer and count once.
-        When the numpy view was constructed independently and ``.sitk()``
-        was then built from it, ``GetImageFromArray`` copied it into a
-        second, same-sized, independent buffer — counted again (same byte
-        count as the numpy view, since sitk reinterprets the identical data).
+        Sized from whichever view is ALREADY cached — never by building a new
+        one. This runs on every node completion (``NodeTable.complete`` ->
+        ``approx_bytes`` -> here, for admission/eviction accounting), so
+        forcing ``.np()`` just to answer a byte count would replace a cheap
+        sitk metadata read with a real ``GetArrayViewFromImage`` call on every
+        single node in a run — measured ~9x more expensive, and it dominated
+        wall time in a fusion throughput benchmark before this was fixed
+        (see doc/dev/dynamic-scheduler/frontier-scheduler.md).
+
+        When only "sitk" is cached: pixels x components x itemsize from pure
+        metadata, no array view built. When "np" is cached (whether as the
+        sitk alias or a genuinely separate buffer), size from it directly —
+        it's already resident, nothing new to build. If both are cached and
+        NOT aliased (``.sitk()`` was built from an independently-owned numpy
+        array), they are two independent same-sized buffers and both count.
         """
-        one_buffer = self.np().nbytes
-        if "sitk" in self._views and not self._readonly_np:
+        if "np" in self._views:
+            one_buffer = self._views["np"].nbytes
+        else:
+            one_buffer = _sitk_nbytes(self._views["sitk"])
+        if "sitk" in self._views and "np" in self._views and not self._readonly_np:
             return one_buffer * 2
         return one_buffer
 

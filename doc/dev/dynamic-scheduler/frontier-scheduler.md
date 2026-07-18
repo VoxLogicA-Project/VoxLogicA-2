@@ -200,6 +200,80 @@ pre-existing backlog-budget admission throttle (which this change does not
 touch) is the valve that actually matters. Reclaim only helps when the disk
 can keep up well enough for early eviction to get ahead of pressure.
 
+## Semantic queueing: schedule-time kernel fusion (2026-07, Phase 1 — Stage A)
+
+Status: implemented (`engine/fusion.py`, `engine/executor.py::run_cone`). Full
+design: `doc/specs/semantic-queueing-fusion.md`. Motivation: a production run
+(fmt-5000, 24 cores) showed a healthy, non-starved ready queue
+(180–250 deep, `in_flight` pinned at capacity) yet CPU plateaued at ~half the
+cores — the queue had far more admissible work than workers could convert
+into running work, the signature of per-node Python dispatch overhead
+(holding the GIL) rather than a scheduling deficiency.
+
+The fix: **fuse at pop time, not at plan time.** A node's true consumers and
+completion state only exist once it is registered and its siblings have run
+— information a static plan-rewrite pass doesn't have. So fusion runs at the
+last responsible moment: when a worker pops a ready, elementwise node
+(`and`/`or`/`not`/`leq_sv`/`geq_sv`/`between` — the only ops with an opt-in
+`ElementwiseSpec`), `FusionPlanner.plan` grows a "cone" forward into
+consumers that are *ripe within the hypothetical cone* (every other
+dependency already completed or itself an unfinished cone member), claims
+them all (`NodeTable.begin`), and one thread-pool dispatch
+(`Executor.run_cone`) runs every member's **real, unmodified kernel** in
+topological order. This is Stage A: no numba, no semantic change — batching
+only the scheduling round trip. Because nothing about the math changes,
+results are bit-identical to the unfused path by construction (verified: a
+real `leq_sv`/`geq_sv`/`and`/`or`/`not` chain through the full engine,
+fused vs. unfused, per-voxel identical).
+
+A subtlety caught during implementation, not anticipated in the design: a
+cone member's completion (`_finish`) fires `graph.on_complete`, which can
+mark ANOTHER cone member ready and enqueue it — before this dispatch's own
+loop has `_finish`ed that member itself (it's still waiting its turn in
+topological order). Left unguarded, a second worker could pop that "ready"
+node and call `begin()` on something the planner already claimed, raising
+`DoubleComputationError`. Fixed by having `_finish` accept a `skip_enqueue`
+set; cone dispatch passes its own member set so intra-cone firings are
+suppressed (the loop finishes every member itself, in order — nothing is
+lost, nothing double-claimed).
+
+### Measured (local, 18-core dev machine; see `doc/specs/fusion-implementation-handover.md` for the bench scripts)
+
+A maximally-fusable synthetic case (one `leq_sv` feeding 8 sequential `not`s,
+3000 elements, tiny 8³-voxel images, `--no-cache`): **mean cone size 9.0**
+(every member of every chain fused, the ceiling case) yet only a **1.1–1.3×**
+wall-clock speedup — far below the order-of-magnitude the production
+symptom suggested. Profiling why: per-node cost in this engine is dominated
+not by the asyncio dispatch round trip Stage A removes, but by `_finish`'s
+own O(degree) bookkeeping (`graph.on_complete` → `release`, refcounting and
+possible eviction per dependency) — which still runs once per cone member,
+by design, since each member keeps its own Merkle id, persist decision, and
+progress accounting. Fusion does not and should not collapse that (it is
+what keeps every node independently addressable/cacheable); it only
+collapses the scheduling round trip, which turned out to be a smaller
+fraction of the total than hypothesized from the production signature alone.
+
+A second, independent finding from the same profiling pass: `PolyArray.nbytes`
+(Phase 0) was forcing `.np()` — a real `GetArrayViewFromImage` call — on
+every node completion just to answer a byte-count query for admission
+accounting, ~9× more expensive than the metadata-only sizing the pre-PolyArray
+`approx_bytes` path used. Fixed (`arrays.py::_sitk_nbytes`): size from
+whichever view is *already* cached, using pure sitk metadata
+(`GetNumberOfPixels`/`GetNumberOfComponentsPerPixel`/pixel-type itemsize) when
+only "sitk" is cached, never building a new view just to measure one. This is
+a general throughput fix independent of fusion (it helped the unfused
+baseline too), not a fusion-specific win.
+
+**Open question, not yet resolved:** whether the fmt-5000 production
+bottleneck is this same per-node bookkeeping floor (in which case Phase 2's
+numba codegen — which speeds up kernel *math*, already cheap here — would
+show a similarly modest win, and the more effective next lever would be
+batching `_finish`'s non-value bookkeeping across a cone) or whether
+production's larger images / longer chains change the ratio enough that
+Stage A's win is substantially larger there. Phase 1 is complete, correct,
+and kill-switched (`VOXLOGICA_FUSION=0`); recommend measuring on the actual
+production workload before investing in Phase 2 numba codegen.
+
 ## Invariants preserved
 
 - Content-addressed dedup; a node is computed at most once per run (`begin`).

@@ -37,6 +37,7 @@ from voxlogica.engine.admission import LoopAdmission
 from voxlogica.engine.config import EngineConfig
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
+from voxlogica.engine.fusion import FusionPlanner
 from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.memlog import MemoryLogger
@@ -79,6 +80,7 @@ class ComputationEngine:
         self.config = EngineConfig.from_env(self.max_concurrency, max_live_bytes)
         self.executor = Executor(self.registry, self.max_concurrency)
         self.expander = Expander(self.table, self.registry)
+        self.fusion = FusionPlanner(self.registry)
         self._show_progress = progress
         self._debug = debug
         self._progress: tqdm | None = None
@@ -134,6 +136,10 @@ class ComputationEngine:
         self._kernels_executed = 0  # kernels run this session (cold high; warm ~0 = full reuse)
         self._recomputes = 0        # evicted values that had to be recomputed, not reloaded
         self._in_flight = 0         # kernels currently executing (watchdog: 0 + no progress = deadlock)
+
+        # ── Schedule-time fusion (engine/fusion.py) ──
+        self._cones_dispatched = 0  # number of cone dispatches (>=2 members each)
+        self._ops_fused = 0         # total nodes absorbed into a cone beyond its seed
 
         # ── Proactive reclaim: bounds the sequence-assembly floor ──
         # A completed node with unrun consumers stays refcount-pinned until its
@@ -440,12 +446,23 @@ class ComputationEngine:
 
     # ── Completion ──────────────────────────────────────────────────────────────────────────
 
-    def _finish(self, nid: NodeId, value: Any, persist: bool = True, compute_ms: float = 0.0) -> None:
+    def _finish(self, nid: NodeId, value: Any, persist: bool = True, compute_ms: float = 0.0,
+                skip_enqueue: frozenset[NodeId] = frozenset()) -> None:
         """Record a value, fire dependents, release inputs. O(node degree).
 
         Constants and closures are trivial and not persisted: a closure exists
         only to force its captures to materialize and to gate its loop; the loop
         reads the closure's structure, never a computed closure value.
+
+        ``skip_enqueue`` exists for fusion cone dispatch only (see
+        ``_worker``): a cone member's completion can fire another member of
+        the SAME cone that this call's loop has not yet ``_finish``ed itself
+        (it is still awaiting its turn in the cone's topological order) — if
+        that fired member were pushed onto the ready queue here, another
+        worker could pop it and call ``table.begin`` on a node the fusion
+        planner already claimed, raising ``DoubleComputationError``. Passing
+        the cone's own member set suppresses exactly those enqueues; the
+        caller finishes every member itself, in order, so nothing is lost.
         """
         node = self.table.nodes[nid]
         will_be_durable = False
@@ -467,7 +484,8 @@ class ComputationEngine:
         # Closures never release their captures here — the loop's expansion job
         # owns that hold (see LoopAdmission.hold_captures).
         for child in self.graph.on_complete(nid, release_inputs=node.kind != "closure"):
-            self._enqueue(child)
+            if child not in skip_enqueue:
+                self._enqueue(child)
         self._priority.pop(nid, None)
         self.admission.on_complete(nid)
         # A reclaim candidate must have a durable copy coming (just submitted)
@@ -607,6 +625,40 @@ class ComputationEngine:
                     for dep in self.graph.deps(nid):
                         if dep not in self.table.values:
                             self._rematerialize(dep)  # recompute deps evicted under pressure
+
+                    # Schedule-time fusion (engine/fusion.py): try to grow a cone
+                    # of elementwise consumers seeded at this ready node, so one
+                    # thread-pool dispatch replaces several scheduling round trips.
+                    # A no-op (returns None) for non-elementwise nodes, when
+                    # fusion is disabled, or when no ripe partner is found — the
+                    # single-node path below is unchanged in every such case.
+                    cone = (self.fusion.plan(nid, graph=self.graph, table=self.table,
+                                             goals=self._goals, cap=self.config.fusion_cap)
+                            if self.config.fusion_enabled else None)
+                    if cone is not None:
+                        # Cone inputs may have been evicted since planning looked
+                        # at them — the same reload-before-dispatch guarantee the
+                        # single-node path gives its own deps, just over the
+                        # cone's aggregate external inputs.
+                        for dep in cone.inputs:
+                            if dep not in self.table.values:
+                                self._rematerialize(dep)
+                        self._kernels_executed += len(cone)
+                        self._cones_dispatched += 1
+                        self._ops_fused += len(cone) - 1
+                        started = time.perf_counter()
+                        self._in_flight += 1
+                        try:
+                            results = await self.executor.run_cone(self.table, cone)
+                        finally:
+                            self._in_flight -= 1
+                        per_member_ms = (time.perf_counter() - started) * 1000.0 / len(cone)
+                        cone_set = frozenset(cone.members_topo)
+                        for member_id in cone.members_topo:
+                            self._finish(member_id, results[member_id],
+                                        compute_ms=per_member_ms, skip_enqueue=cone_set)
+                        continue
+
                     self.table.begin(nid)  # enforces the no-double-computation invariant
                     self._kernels_executed += 1
                     started = time.perf_counter()
@@ -691,6 +743,11 @@ class ComputationEngine:
             "expanded_loops": self.admission.expanded_loops,
             "expanded_bodies": self.admission.expanded_bodies,
             "evicted_early": self._evicted_early,
+            "cones_dispatched": self._cones_dispatched,
+            "ops_fused": self._ops_fused,
+            "mean_cone_size": round(
+                1 + self._ops_fused / self._cones_dispatched, 2
+            ) if self._cones_dispatched else 0.0,
         }
         backend = self.table._backend
         if backend is not None and hasattr(backend, "stats"):

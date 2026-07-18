@@ -22,12 +22,15 @@ from __future__ import annotations
 import asyncio
 import inspect
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, Callable, TYPE_CHECKING
 
 from voxlogica.arrays import PolyArray
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.lazy.ir import NodeId
 from voxlogica.primitives.registry import PrimitiveRegistry
+
+if TYPE_CHECKING:
+    from voxlogica.engine.fusion import Cone
 
 _sitk = None
 
@@ -68,18 +71,57 @@ class Executor:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._pool, self._compute, table, node_id)
 
+    async def run_cone(self, table: NodeTable, cone: "Cone") -> dict[NodeId, Any]:
+        """Materialize every member of a fusion cone in ONE pool dispatch.
+
+        This is Stage A (see doc/specs/semantic-queueing-fusion.md §3): each
+        member still runs its real, unmodified kernel — only the scheduling
+        round trip is batched, one thread-pool task instead of one per node.
+        Results are bit-identical to running each member individually because
+        the math never changes, only where the values are looked up from
+        between members (a local scratch dict standing in for the node table
+        while the cone is in flight — the same PolyArray wrap/unwrap contract
+        as ``_compute`` applies at every step).
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._pool, self._compute_cone, table, cone)
+
+    def _compute_cone(self, table: NodeTable, cone: "Cone") -> dict[NodeId, Any]:
+        """Run every cone member in topological order, in this pool thread."""
+        scratch: dict[NodeId, Any] = {}
+
+        def lookup(dep_id: NodeId) -> Any:
+            return scratch[dep_id] if dep_id in scratch else table.values[dep_id]
+
+        results: dict[NodeId, Any] = {}
+        for member_id in cone.members_topo:
+            value = self._compute_node(table.nodes[member_id], lookup)
+            scratch[member_id] = value
+            results[member_id] = value
+        return results
+
     def _compute(self, table: NodeTable, node_id: NodeId) -> Any:
         """Gather already-materialized inputs and invoke the kernel."""
-        node = table.nodes[node_id]
+        return self._compute_node(table.nodes[node_id], lambda dep_id: table.values[dep_id])
+
+    def _compute_node(self, node, lookup: Callable[[NodeId], Any]) -> Any:
+        """Gather one node's inputs via ``lookup`` and invoke its kernel.
+
+        Shared by single-node dispatch (``_compute``, looks up ``table.values``
+        directly) and cone execution (``_compute_cone``, looks up a scratch
+        dict first) — the only difference between the two paths is where an
+        input's value comes from, never how a kernel is invoked or how its
+        result is adapted, so the two paths cannot semantically diverge.
+        """
         if node.operator == "default.subsequence":
-            sequence = table.values[node.args[0]]
-            start = int(table.values[node.args[1]])
-            stop = int(table.values[node.args[2]])
+            sequence = lookup(node.args[0])
+            start = int(lookup(node.args[1]))
+            stop = int(lookup(node.args[2]))
             kernel = self.registry.load_kernel("default.subsequence")
             return _wrap(self._invoke(kernel, [sequence, start, stop], {}))
         kernel = self.registry.load_kernel(node.operator)
-        args = [_unwrap(table.values[arg_id]) for arg_id in node.args]
-        kwargs = {key: _unwrap(table.values[arg_id]) for key, arg_id in node.kwargs}
+        args = [_unwrap(lookup(arg_id)) for arg_id in node.args]
+        kwargs = {key: _unwrap(lookup(arg_id)) for key, arg_id in node.kwargs}
         return _wrap(self._invoke(kernel, args, kwargs, node.attrs))
 
     def _invoke(self, kernel, args: list[Any], kwargs: dict[str, Any], attrs: dict[str, Any] | None = None) -> Any:

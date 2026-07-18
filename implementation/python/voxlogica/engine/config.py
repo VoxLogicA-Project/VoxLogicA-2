@@ -69,6 +69,13 @@ class EngineConfig:
     #: ever would, and GreedyDual-Size would evict it first anyway. Critical
     #: values (the warm-run reuse cut) are always persisted regardless.
     persist_min_compute_ms: float = 1.0
+    #: Schedule-time kernel fusion (engine/fusion.py, Stage A). Off is a pure
+    #: no-op — the planner is never consulted and every node dispatches
+    #: exactly as before Phase 1. See doc/specs/semantic-queueing-fusion.md.
+    fusion_enabled: bool = True
+    #: Max nodes absorbed into one fusion cone (a hard cap on planner growth,
+    #: independent of the loop/admission window).
+    fusion_cap: int = 64
 
     @classmethod
     def from_env(cls, max_concurrency: int, max_live_bytes: int = 0) -> "EngineConfig":
@@ -85,6 +92,8 @@ class EngineConfig:
             persist_min = float(raw_min) if raw_min else 1.0
         except ValueError:
             persist_min = 1.0
+        fusion_raw = os.environ.get("VOXLOGICA_FUSION")
+        fusion_enabled = fusion_raw != "0" if fusion_raw is not None else True
         return cls(
             max_live_bytes=live,
             hard_live_bytes=hard,
@@ -92,4 +101,6 @@ class EngineConfig:
             persist_fanout=_env_int("VOXLOGICA_PERSIST_FANOUT") or 8,
             expansion_chunk=_env_int("VOXLOGICA_EXPANSION_CHUNK") or window,
             persist_min_compute_ms=persist_min,
+            fusion_enabled=fusion_enabled,
+            fusion_cap=_env_int("VOXLOGICA_FUSION_CAP") or 64,
         )
