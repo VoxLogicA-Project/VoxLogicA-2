@@ -192,9 +192,59 @@ Commit: `engine: Phase 1 — schedule-time cone fusion (Stage A)`.
 
 ---
 
-## Phase 2 — Stage B: numba codegen + background compile + output selection
+## Phase 2 — Stage B: numba codegen + CONE-LEVEL COMPLETION + output selection
 
-Spec §3.2, §3.2b. Only after Phase 1's numbers are recorded.
+REVISED after Phase 1's measurement (see frontier-scheduler.md "Semantic
+queueing"): mean cone size 9.0 bought only 1.1–1.3× because the per-node
+floor is `_finish`'s bookkeeping (`on_complete`→`release` per member), which
+Stage A deliberately kept per-member. Numba alone would NOT fix that — the
+kernels are already cheap. Phase 2 therefore has TWO legs, and the second is
+the one that removes the floor:
+
+### 2-leg-1: cone-level batched completion (`graph.complete_cone`)
+
+New method on `DependencyGraph`, called once per cone instead of k
+`_finish`/`on_complete` rounds. For a cone with members M, interiors I,
+exits E, external inputs D:
+
+- **Batched input release**: for each d ∈ D, decrement `consumers[d]` by the
+  number of cone members consuming d — ONE dict update per distinct input,
+  not one per (member, input) edge. Evict on zero as `release` does.
+- **Interiors** (all consumers in-cone, not goals): mark
+  `table.completed.add(i)`, drop `incomplete/pending/_dependents/_deps_memo`
+  entries. NO `set_value`, NO persist decision, NO evict-candidate queueing,
+  NO per-node progress tick (add len(I) to the progress counter in one add).
+  In-cone consumer refcounts between members are never even created — the
+  cone claims its members before any of them registers a hold... they were
+  already registered (consumers counts exist) — so decrement them in the
+  same batch, symmetric with D.
+- **Exits**: full normal `_finish` each (value, persist policy, candidates,
+  settle, fired-dependent enqueue — minus in-cone members, as Phase 1's
+  `skip_enqueue` already does).
+- Fired external dependents are collected across the whole batch and
+  enqueued once at the end.
+
+Invariants to test: after a fused run, `pending/incomplete/_dependents/
+consumers` are exactly as empty as after an unfused run; progress totals
+identical; an interior is never persisted (consistent with today's
+`persist_min_compute_ms` skipping cheap values); `registered_total`
+accounting unchanged.
+
+This leg lands FIRST and is measurable with Stage A execution alone
+(interior values still computed in scratch, just never `set_value`d): the
+tiny-image bench (`fusion_bench_tiny.py`, scratchpad) should move well past
+1.3× if the diagnosis is right. If it doesn't, STOP and reprofile before
+touching numba.
+
+**Correctness prerequisite (unchanged from spec §3.2):** an elided interior
+can later be demanded by a hash-consed consumer from a future expansion
+chunk. Implement the recompute fallback in `_rematerialize` (value neither
+live nor on disk → re-execute the spec, recursing on its deps) BEFORE
+enabling elision; gate with the late-consumer test.
+
+### 2-leg-2: numba codegen (as originally specced)
+
+Spec §3.2b. Only after leg 1's numbers are recorded.
 
 - **Backend: numba** `@njit(nogil=True, cache=True, parallel=False)`. Generate
   one kernel per cone **shape** from the `ElementwiseSpec.expr` fragments,
