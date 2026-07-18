@@ -80,8 +80,18 @@ class Executor:
         Results are bit-identical to running each member individually because
         the math never changes, only where the values are looked up from
         between members (a local scratch dict standing in for the node table
-        while the cone is in flight — the same PolyArray wrap/unwrap contract
-        as ``_compute`` applies at every step).
+        while the cone is in flight).
+
+        Interior members (``cone.interiors`` — never enter ``table.values``,
+        see ``DependencyGraph.complete_cone``) are kept RAW (whatever a kernel
+        naturally returns, e.g. ``sitk.Image``) in scratch, never wrapped into
+        ``PolyArray``: a cone-internal edge immediately unwraps whatever it
+        wrapped one line later, so wrapping it at all was pure waste —
+        profiling found ``PolyArray.from_sitk``'s eager ``Geometry`` read
+        (3 sitk metadata calls) dominating a fused run's wall time once
+        interior completion bookkeeping was already batched (see
+        doc/dev/dynamic-scheduler/frontier-scheduler.md). Only exits, which
+        must become uniform table-resident values, get wrapped.
         """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._pool, self._compute_cone, table, cone)
@@ -95,34 +105,39 @@ class Executor:
 
         results: dict[NodeId, Any] = {}
         for member_id in cone.members_topo:
-            value = self._compute_node(table.nodes[member_id], lookup)
-            scratch[member_id] = value
-            results[member_id] = value
+            raw = self._compute_node(table.nodes[member_id], lookup)
+            if member_id in cone.exits:
+                wrapped = _wrap(raw)
+                scratch[member_id] = wrapped
+                results[member_id] = wrapped
+            else:
+                scratch[member_id] = raw  # interior: stays raw, never wrapped
         return results
 
     def _compute(self, table: NodeTable, node_id: NodeId) -> Any:
         """Gather already-materialized inputs and invoke the kernel."""
-        return self._compute_node(table.nodes[node_id], lambda dep_id: table.values[dep_id])
+        return _wrap(self._compute_node(table.nodes[node_id], lambda dep_id: table.values[dep_id]))
 
     def _compute_node(self, node, lookup: Callable[[NodeId], Any]) -> Any:
         """Gather one node's inputs via ``lookup`` and invoke its kernel.
 
-        Shared by single-node dispatch (``_compute``, looks up ``table.values``
-        directly) and cone execution (``_compute_cone``, looks up a scratch
-        dict first) — the only difference between the two paths is where an
-        input's value comes from, never how a kernel is invoked or how its
-        result is adapted, so the two paths cannot semantically diverge.
+        Returns the RAW kernel result — wrapping is the caller's decision
+        (``_compute`` always wraps, since a single-node value always enters
+        ``table.values``; ``_compute_cone`` wraps only exits). Shared by both
+        paths so kernel invocation and argument adaptation cannot diverge
+        between them; only where an input's value comes from differs
+        (``table.values`` directly vs. a cone's in-flight scratch dict).
         """
         if node.operator == "default.subsequence":
             sequence = lookup(node.args[0])
             start = int(lookup(node.args[1]))
             stop = int(lookup(node.args[2]))
             kernel = self.registry.load_kernel("default.subsequence")
-            return _wrap(self._invoke(kernel, [sequence, start, stop], {}))
+            return self._invoke(kernel, [sequence, start, stop], {})
         kernel = self.registry.load_kernel(node.operator)
         args = [_unwrap(lookup(arg_id)) for arg_id in node.args]
         kwargs = {key: _unwrap(lookup(arg_id)) for key, arg_id in node.kwargs}
-        return _wrap(self._invoke(kernel, args, kwargs, node.attrs))
+        return self._invoke(kernel, args, kwargs, node.attrs)
 
     def _invoke(self, kernel, args: list[Any], kwargs: dict[str, Any], attrs: dict[str, Any] | None = None) -> Any:
         """Adapt engine arguments to the kernel's declared Python signature."""

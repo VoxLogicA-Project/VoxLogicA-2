@@ -140,6 +140,7 @@ class ComputationEngine:
         # ── Schedule-time fusion (engine/fusion.py) ──
         self._cones_dispatched = 0  # number of cone dispatches (>=2 members each)
         self._ops_fused = 0         # total nodes absorbed into a cone beyond its seed
+        self._interiors_elided = 0  # cone members whose value/persist/progress bookkeeping was skipped
 
         # ── Proactive reclaim: bounds the sequence-assembly floor ──
         # A completed node with unrun consumers stays refcount-pinned until its
@@ -654,9 +655,40 @@ class ComputationEngine:
                             self._in_flight -= 1
                         per_member_ms = (time.perf_counter() - started) * 1000.0 / len(cone)
                         cone_set = frozenset(cone.members_topo)
+                        # Interiors (every consumer in-cone, not a goal) are
+                        # batch-completed with NO value/persist/progress
+                        # bookkeeping — that per-node cost, not the dispatch
+                        # round trip Stage A already batched, turned out to
+                        # dominate (see frontier-scheduler.md "Semantic
+                        # queueing"). Only the graph-level scheduling state
+                        # (pending/consumers/incomplete) needs dropping; a
+                        # later consumer that genuinely needs an elided
+                        # interior's value rematerializes it on demand,
+                        # exactly like any other evicted value.
+                        if cone.interiors:
+                            self.graph.complete_cone(cone.members_topo, cone_set, cone.interiors)
+                            self._interiors_elided += len(cone.interiors)
+                            for member_id in cone.interiors:
+                                self.table.complete_without_value(member_id)
+                                self._priority.pop(member_id, None)
+                                self.admission.on_complete(member_id)
+                            if self._progress is not None:
+                                self._nodes_done += len(cone.interiors)
+                                self._progress_pending += len(cone.interiors)
+                                if self._progress_pending >= _PROGRESS_BATCH:
+                                    self._flush_progress()
+                            frontier = len(self.graph.incomplete)
+                            if frontier > self._peak_frontier:
+                                self._peak_frontier = frontier
+                        # Exits get the full normal path: value, persist
+                        # decision, evict-candidate tracking, settle_node
+                        # (goals may be exits), progress. Its own
+                        # release-my-deps loop harmlessly no-ops on any
+                        # interior it depends on (already dropped above).
                         for member_id in cone.members_topo:
-                            self._finish(member_id, results[member_id],
-                                        compute_ms=per_member_ms, skip_enqueue=cone_set)
+                            if member_id in cone.exits:
+                                self._finish(member_id, results[member_id],
+                                            compute_ms=per_member_ms, skip_enqueue=cone_set)
                         continue
 
                     self.table.begin(nid)  # enforces the no-double-computation invariant
@@ -748,6 +780,7 @@ class ComputationEngine:
             "mean_cone_size": round(
                 1 + self._ops_fused / self._cones_dispatched, 2
             ) if self._cones_dispatched else 0.0,
+            "interiors_elided": self._interiors_elided,
         }
         backend = self.table._backend
         if backend is not None and hasattr(backend, "stats"):

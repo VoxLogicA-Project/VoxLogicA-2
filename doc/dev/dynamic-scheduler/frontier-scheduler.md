@@ -264,15 +264,90 @@ only "sitk" is cached, never building a new view just to measure one. This is
 a general throughput fix independent of fusion (it helped the unfused
 baseline too), not a fusion-specific win.
 
-**Open question, not yet resolved:** whether the fmt-5000 production
-bottleneck is this same per-node bookkeeping floor (in which case Phase 2's
-numba codegen — which speeds up kernel *math*, already cheap here — would
-show a similarly modest win, and the more effective next lever would be
-batching `_finish`'s non-value bookkeeping across a cone) or whether
-production's larger images / longer chains change the ratio enough that
-Stage A's win is substantially larger there. Phase 1 is complete, correct,
-and kill-switched (`VOXLOGICA_FUSION=0`); recommend measuring on the actual
-production workload before investing in Phase 2 numba codegen.
+**Open question at the time:** whether the fmt-5000 production bottleneck was
+this same per-node bookkeeping floor, in which case the next lever should be
+batching `_finish`'s non-value bookkeeping across a cone rather than numba.
+The follow-up below acted on that.
+
+## Phase 2 leg 1: cone-level batched completion (2026-07)
+
+Status: implemented (`DependencyGraph.complete_cone`, `NodeTable.
+complete_without_value`; wired in `ComputationEngine._worker`). Acts on
+Phase 1's finding directly: an interior member (all its consumers are
+themselves cone members, resolving in the same batch — see `FusionPlanner`)
+never needs a value in `table.values` at all, so it never needs `_finish`'s
+per-value bookkeeping (persist decision, evict-candidate tracking, progress
+tick) or even `on_complete`'s per-edge refcount dance for its cone-internal
+edges (both ends of such an edge resolve in this same synchronous batch, so
+"does this reach zero, should it be evicted" is moot). `complete_cone`
+drops an interior's scheduling state in one pass; its own consumers-dict
+entry is popped unconditionally rather than decremented-and-checked (it is
+guaranteed to reach exactly zero, by the definition of "interior"). Exits
+are unchanged — full `_finish`, including a release-my-deps loop that
+harmlessly no-ops on any interior it depends on (already dropped).
+
+**A second, larger win surfaced by the same profiling pass:** every kernel
+result — including a cone-internal one immediately consumed by the very
+next member and never touched again — was being wrapped into a `PolyArray`
+(`executor.py::_wrap`), which eagerly reads `Geometry` off the image
+(`GetSpacing`/`GetOrigin`/`GetDirection`/`GetNumberOfComponentsPerPixel`,
+four sitk calls) only to be unwrapped right back to `sitk.Image` by the next
+member's `_unwrap`. `_compute_node` now returns the raw kernel value;
+`_compute_cone` wraps only members in `cone.exits` (the only ones that ever
+enter `table.values`), leaving interior-to-interior and interior-to-exit
+edges to pass the *raw* sitk.Image straight through with no wrap/unwrap at
+all.
+
+**A real correctness bug, not just a slowdown, was caught while measuring
+this:** a runtime loop body's root carries a "stage pin"
+(`LoopAdmission._run_job`: `graph.pin(body)`) that protects its value until
+the loop's sequence node registers as its real consumer — an event that
+happens only once *every* body in the loop has been admitted, which can be
+well after any *one* body's own cone has already been planned (planning
+happens at ready-queue pop time, per-body, independent of the loop's own
+progress). `pin()` bumps `consumers` without adding a `_dependents` entry,
+so the original classification rule ("interior iff every `_dependents` entry
+is in-cone") saw a stage-pinned body root as having *zero* consumers and
+elided it — permanently discarding a value the sequence would later wait for
+forever. Reproduced with a tiny (8³-voxel) image, a 9-op chain, and enough
+elements to outrun the single-threaded reducer; manifested as a genuine hang
+(the scheduler's own stuck-frontier dump showed the sequence node stuck at
+`pending=10, unmet=[]` — its dependency count never reached zero because
+the bodies that should have decremented it were never finished). Fixed by
+classifying conservatively: a member is only interior if `consumers` exactly
+equals its registered dependent count (`extra_holds == 0`); any unaccounted
+hold — a stage pin, a closure-capture pin, or anything else that isn't a
+registered dependent edge — forces exit classification. Guarded by a
+deterministic unit test (`test_stage_pinned_node_is_never_classified_interior`)
+that constructs the exact `pin()`-without-`_dependents` shape directly (a
+timing-dependent end-to-end repro was also written but is not a reliable
+guard on its own — the race needs a large admission window racing a fast
+reducer, which a small, deterministic test window doesn't reproduce).
+
+### Measured (same local 18-core machine, same bench scripts)
+
+| case | Phase 1 (Stage A alone) | + leg 1 (batched completion, no wrap/unwrap) |
+|---|---|---|
+| maximally-fusable, tiny 8³ images, chain=9, N=3000 | 1.29× | **1.65×** |
+| same shape, chain=13, N=2000 | — | **1.76×** |
+| linear chain, larger image, N=300 | 1.13× | 1.41× |
+| diamond (2 independent thresholds → 1 `and`), N=300 | 1.04× | 1.07× (unchanged — small cones, see below) |
+
+The diamond case is unaffected because it isn't fusing more: two independent
+`leq_sv`/`geq_sv` calls can only be absorbed into the *same* cone if the one
+popped later happens to complete after the one popped first (mean cone size
+stays ~2.4, same as Phase 1) — leg 1 only changes the *cost per elided
+member*, not how many members get elided in the first place. A wider or
+different fusion-growth strategy (absorbing both independent branches into
+one cone proactively) is a separate, unexplored lever.
+
+Both real findings here (batched completion, wrap/unwrap elision) are
+general per-cone-member cost reductions, not changes to *what* fuses — so
+the numbers above are a fair like-for-like comparison against Phase 1. The
+remaining cost is real kernel-invocation overhead (signature introspection
+in `Executor._invoke`, the sitk C++ call itself) — exactly numba codegen's
+territory (Phase 2 leg 2), now worth pursuing with a cleaner floor to
+measure against.
 
 ## Invariants preserved
 

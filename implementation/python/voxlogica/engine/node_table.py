@@ -182,6 +182,30 @@ class NodeTable:
             )
         self._running.add(node_id)
 
+    def complete_without_value(self, node_id: NodeId) -> None:
+        """Mark a claimed node completed with no materialized value.
+
+        For a fusion cone's elided interior (``engine/fusion.py``,
+        ``DependencyGraph.complete_cone``): the value was computed (in the
+        cone's execution scratch, ``Executor._compute_cone``) but
+        deliberately never entered ``values`` — every one of its consumers
+        is itself a cone member resolving in the same batch, so there is
+        nothing to size, persist, or evict. This leaves exactly the two
+        invariants any claimed (``begin``-called) node must leave behind:
+        the claim is released, and ``node_id in completed`` reads true
+        everywhere that checks it (``_schedule_subgraph``'s pruning,
+        ``_available``) — a later goal/query sharing this hash-consed id
+        must see it as done, not try to re-register or re-dispatch it.
+
+        A later consumer that genuinely needs the value (never in
+        ``values``) finds it missing and rematerializes it on demand through
+        the existing ``_rematerialize``/dep-check path — the same mechanism
+        an ordinary evicted value already uses; no special-casing needed
+        there for an elided one.
+        """
+        self._running.discard(node_id)
+        self.completed.add(node_id)
+
     def complete(self, node_id: NodeId, value: Any, compute_ms: float = 0.0, critical: bool = False,
                  persist: bool = True) -> bool:
         """Record a freshly computed value and hand it to the background writer.

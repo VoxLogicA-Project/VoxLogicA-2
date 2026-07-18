@@ -144,8 +144,23 @@ class FusionPlanner:
         exits: set[NodeId] = set()
         interiors: set[NodeId] = set()
         for member in cone_members:
-            consumers = graph._dependents.get(member, ())
-            if member in goals or any(c not in cone_set for c in consumers):
+            dependents = graph._dependents.get(member, ())
+            # A hold NOT accounted for by a registered dependent edge means
+            # something else pinned this value directly (graph.pin) without
+            # going through register() — e.g. a runtime loop's "stage pin"
+            # on a body root (LoopAdmission._run_job), held until the
+            # loop's sequence node is registered, which can happen AFTER
+            # this cone is planned (the sequence only registers once every
+            # body has been admitted — independent of, and possibly later
+            # than, any one body's own cone finishing). Elsewhere: closure
+            # capture holds (LoopAdmission.hold_captures). Either way, an
+            # extra hold means a future external consumer may still be
+            # coming that this planning snapshot cannot see — treat as an
+            # exit, never elide. (Caught by a real hang: a loop whose body
+            # was fused elided its own root, so the loop's sequence waited
+            # forever for a value that was computed but never materialized.)
+            extra_holds = graph.consumers.get(member, 0) - len(dependents)
+            if member in goals or extra_holds > 0 or any(c not in cone_set for c in dependents):
                 exits.add(member)
             else:
                 interiors.add(member)

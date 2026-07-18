@@ -203,6 +203,44 @@ def test_plan_respects_the_cap() -> None:
 
 
 @pytest.mark.unit
+def test_stage_pinned_node_is_never_classified_interior() -> None:
+    """Regression for a real deadlock found while implementing Phase 2 leg 1.
+
+    ``graph.pin()`` (used by ``LoopAdmission._run_job`` for a runtime loop
+    body's "stage pin", held until the loop's sequence node registers as its
+    real consumer) bumps ``consumers`` WITHOUT adding a ``_dependents``
+    entry. A classification rule that only inspects ``_dependents`` sees a
+    stage-pinned node as having zero consumers and elides it as interior —
+    but the sequence node the pin exists to protect has not registered yet
+    (it can't: the sequence only registers once every body in the loop has
+    been admitted, which may be long after this one body's cone is planned).
+    The eventual sequence then waits forever for a value that was computed
+    but never materialized: a real hang, not merely a wrong result. A node
+    with ANY hold unaccounted for by a registered dependent edge must always
+    be treated as an exit.
+    """
+    table = NodeTable(backend=None)
+    graph = DependencyGraph(table)
+    registry = _registry()
+    _complete(table, graph, "a", NodeSpec(kind="constant", operator="constant"), _mask((2, 2, 2), 1))
+    table.nodes["not_a"] = NodeSpec(kind="primitive", operator="vox1.not", args=("a",))
+    graph.register("not_a")
+    table.nodes["body_root"] = NodeSpec(kind="primitive", operator="vox1.not", args=("not_a",))
+    graph.register("body_root")
+    # The stage pin: a hold with no _dependents entry (graph.pin() only
+    # bumps consumers — exactly what LoopAdmission does before the loop's
+    # sequence node exists to be a real registered dependent).
+    graph.pin("body_root")
+
+    planner = FusionPlanner(registry)
+    cone = planner.plan("not_a", graph=graph, table=table, goals=set(), cap=64)
+
+    assert cone is not None
+    assert "body_root" in cone.exits, "a stage-pinned node must never be interior"
+    assert "body_root" not in cone.interiors
+
+
+@pytest.mark.unit
 def test_claimed_members_never_have_pending_zero() -> None:
     """Cone members must never be nodes the live scheduler has already fired
     onto the ready queue (pending == 0) — growth only reaches nodes ripe

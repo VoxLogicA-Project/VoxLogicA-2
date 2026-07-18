@@ -130,6 +130,49 @@ class DependencyGraph:
         self._deps_memo.pop(nid, None)
         return fired
 
+    def complete_cone(self, members_topo, member_set: frozenset[NodeId],
+                       interiors: frozenset[NodeId]) -> None:
+        """Batch-drop scheduling/refcount state for a fusion cone's INTERIOR
+        members (``engine/fusion.py``) — those whose value is deliberately
+        never materialized because every one of their consumers is itself a
+        cone member, resolving in this same synchronous batch.
+
+        Exits are NOT touched here: the caller finishes each exit through
+        the normal ``on_complete``/``_finish`` path, whose own
+        release-my-deps loop already correctly releases any interior it
+        depends on (see below — by the time it runs, that release is a
+        harmless no-op).
+
+        An interior's dependency on ANOTHER cone member needs no per-edge
+        release/eviction check: both ends of that edge resolve in this same
+        batch, so "does this drop to zero, should the value be evicted" is
+        moot (the value never entered the live tier). Only a dependency on
+        something OUTSIDE the cone still needs the normal ``release()`` —
+        that value's lifetime is not otherwise accounted for here.
+
+        An interior's OWN ``consumers`` entry is dropped unconditionally —
+        never decremented-and-checked per edge. By the definition of
+        "interior" (``FusionPlanner.plan``), every one of its registered
+        consumers is itself a cone member completing in this batch, so the
+        count is guaranteed to reach exactly zero regardless of how many
+        internal edges point to it: one dict pop replaces what would
+        otherwise be one ``release()`` call per incoming edge — this is the
+        actual saving over calling ``on_complete`` once per interior member
+        (measured to dominate per-node cost; see
+        doc/dev/dynamic-scheduler/frontier-scheduler.md, "Semantic queueing").
+        """
+        for member in members_topo:
+            if member not in interiors:
+                continue
+            self.incomplete.discard(member)
+            for dep in self.deps(member):
+                if dep not in member_set:
+                    self.release(dep)
+            self.pending.pop(member, None)
+            self._dependents.pop(member, None)
+            self._deps_memo.pop(member, None)
+            self.consumers.pop(member, None)
+
     # ── Value lifetime ────────────────────────────────────────────────────────
 
     def pin(self, nid: NodeId) -> None:

@@ -132,6 +132,65 @@ def test_fusion_cap_of_one_disables_fusion_without_changing_output(tmp_path) -> 
 
 
 @pytest.mark.unit
+def test_fused_loop_body_root_never_elided_even_when_sequence_registers_late(tmp_path) -> None:
+    """Regression test for a real deadlock found while implementing Phase 2
+    leg 1 (batched interior completion).
+
+    A runtime loop's body root carries a "stage pin" (LoopAdmission._run_job:
+    graph.pin(body)) that protects its value until the loop's sequence node
+    registers as its real consumer — an event that happens only once EVERY
+    body has been admitted, independent of and possibly LATER than any one
+    body's own fusion cone finishing (cone planning happens at ready-queue
+    pop time). A body root's stage pin is invisible to a check that only
+    looks at graph._dependents (pin() bumps the consumers refcount without
+    adding a dependent entry) — so a naive "no dependents yet -> interior"
+    rule wrongly elided the body root's value. The sequence node then waited
+    forever for a value that had been computed but never materialized: a
+    real hang, not merely a wrong result. Forcing a tiny admission window
+    with more elements than the window guarantees some bodies finish their
+    cone while others are still being admitted, reproducing the race
+    deterministically regardless of machine core count.
+    """
+    img_path = tmp_path / "in.nii.gz"
+    _write_test_image(img_path)
+    nots = "combo"
+    for _ in range(4):
+        nots = f"not({nots})"
+    escaped_path = str(img_path).replace("\\", "/")
+    program = f'''
+import "simpleitk"
+import "vox1"
+img = ReadImage("{escaped_path}")
+idxs = range(0, 40)
+let elementwise_chain(i) =
+  let combo = leq_sv(1.0 + i*0.001, img) in
+  {nots}
+result = for i in idxs do elementwise_chain(i)
+print "result" result
+'''
+    plan = reduce_program(parse_program_content(program)).to_symbolic_plan()
+    from dataclasses import replace
+    engine = ComputationEngine(max_concurrency=2)
+    engine.config = replace(engine.config, fusion_enabled=True, loop_window=2)
+    engine.adopt_plan(plan)
+
+    async def _drive():
+        queries = [(g, engine.submit(g.id, g.operation, g.name, Priority.NORMAL)) for g in plan.goals]
+        await asyncio.wait_for(engine.run(), timeout=20.0)
+        return {g.name: await q.result() for g, q in queries}
+
+    values = asyncio.run(_drive())
+    metrics = engine.metrics()
+    assert metrics["cones_dispatched"] > 0
+    assert metrics["interiors_elided"] > 0, "test must exercise the elision path or it proves nothing"
+
+    result_seq = values["result"]
+    items = list(result_seq.iter_values()) if hasattr(result_seq, "iter_values") else list(result_seq)
+    assert len(items) == 40, "every body's value must have reached the sequence, none silently missing"
+    assert all(item is not None for item in items)
+
+
+@pytest.mark.unit
 def test_warm_run_reuses_after_a_fused_cold_run(tmp_path) -> None:
     """A fused cold run persists normally; a subsequent warm run (fusion on
     or off) must reuse the cache, not recompute."""
