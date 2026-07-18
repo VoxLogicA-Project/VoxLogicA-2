@@ -42,6 +42,7 @@ from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.memlog import MemoryLogger
 from voxlogica.engine.node_table import NodeTable
+from voxlogica.engine.numba_fusion import NumbaFusionBackend
 from voxlogica.engine.priority import Priority
 from voxlogica.engine.query import Query, QueryStatus
 from voxlogica.engine.ready import ReadyQueue
@@ -81,6 +82,9 @@ class ComputationEngine:
         self.executor = Executor(self.registry, self.max_concurrency)
         self.expander = Expander(self.table, self.registry)
         self.fusion = FusionPlanner(self.registry)
+        self.numba_backend = (
+            NumbaFusionBackend(self.registry) if self.config.numba_fusion_enabled else None
+        )
         self._show_progress = progress
         self._debug = debug
         self._progress: tqdm | None = None
@@ -141,6 +145,7 @@ class ComputationEngine:
         self._cones_dispatched = 0  # number of cone dispatches (>=2 members each)
         self._ops_fused = 0         # total nodes absorbed into a cone beyond its seed
         self._interiors_elided = 0  # cone members whose value/persist/progress bookkeeping was skipped
+        self._cones_numba = 0       # cone dispatches that ran the Stage B compiled kernel
 
         # ── Proactive reclaim: bounds the sequence-assembly floor ──
         # A completed node with unrun consumers stays refcount-pinned until its
@@ -216,6 +221,8 @@ class ComputationEngine:
             for worker in workers:
                 worker.cancel()
             self.admission.shutdown()
+            if self.numba_backend is not None:
+                self.numba_backend.shutdown()
             self._memlog.stop()
             if self._progress is not None:
                 self._flush_progress()
@@ -650,7 +657,14 @@ class ComputationEngine:
                         started = time.perf_counter()
                         self._in_flight += 1
                         try:
-                            results = await self.executor.run_cone(self.table, cone)
+                            # Stage A vs Stage B (engine/numba_fusion.py) is
+                            # decided inside the executor, on the pool thread
+                            # that runs it — never here on the event loop
+                            # (see Executor.run_cone_auto's docstring).
+                            results, used_numba = await self.executor.run_cone_auto(
+                                self.table, cone, self.numba_backend)
+                            if used_numba:
+                                self._cones_numba += 1
                         finally:
                             self._in_flight -= 1
                         per_member_ms = (time.perf_counter() - started) * 1000.0 / len(cone)
@@ -781,7 +795,12 @@ class ComputationEngine:
                 1 + self._ops_fused / self._cones_dispatched, 2
             ) if self._cones_dispatched else 0.0,
             "interiors_elided": self._interiors_elided,
+            "cones_numba": self._cones_numba,
         }
+        if self.numba_backend is not None:
+            m["numba_compiles_started"] = self.numba_backend.compiles_started
+            m["numba_compiles_finished"] = self.numba_backend.compiles_finished
+            m["numba_compiles_failed"] = self.numba_backend.compiles_failed
         backend = self.table._backend
         if backend is not None and hasattr(backend, "stats"):
             s = backend.stats()

@@ -24,13 +24,17 @@ import inspect
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, TYPE_CHECKING
 
+import numpy as np
+
 from voxlogica.arrays import PolyArray
 from voxlogica.engine.node_table import NodeTable
+from voxlogica.engine.numba_fusion import shape_of
 from voxlogica.lazy.ir import NodeId
 from voxlogica.primitives.registry import PrimitiveRegistry
 
 if TYPE_CHECKING:
     from voxlogica.engine.fusion import Cone
+    from voxlogica.engine.numba_fusion import NumbaFusionBackend, ShapeBinding
 
 _sitk = None
 
@@ -112,6 +116,78 @@ class Executor:
                 results[member_id] = wrapped
             else:
                 scratch[member_id] = raw  # interior: stays raw, never wrapped
+        return results
+
+    async def run_cone_numba(self, table: NodeTable, cone: "Cone", compiled_fn: Callable,
+                             binding: "ShapeBinding") -> dict[NodeId, Any]:
+        """Materialize a cone via its compiled Stage-B kernel (one flat loop,
+        one pool dispatch, zero per-member kernel calls or intermediate
+        array allocations — see ``engine/numba_fusion.py``).
+
+        Falls back to nothing: the caller (``ComputationEngine._worker``)
+        only reaches this once ``NumbaFusionBackend.try_get`` has returned a
+        compiled callable for this exact cone shape; every other case still
+        runs ``run_cone`` (Stage A), unchanged.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._pool, self._compute_cone_numba, table, cone, compiled_fn, binding)
+
+    async def run_cone_auto(self, table: NodeTable, cone: "Cone",
+                             numba_backend: "NumbaFusionBackend | None") -> tuple[dict[NodeId, Any], bool]:
+        """Materialize a cone, deciding Stage A vs Stage B on the SAME pool
+        thread that runs it — never on the event loop.
+
+        This matters for more than the throughput contract (nothing on the
+        event loop blocks on I/O, see ``engine/core.py``'s module docstring):
+        ``shape_of``'s dtype/geometry probe can force a table-resident
+        ``PolyArray``'s first numpy view into existence (``.np()``), which
+        internally calls into sitk's own C++ reference-counted image
+        machinery. That must never race a concurrently-running kernel on
+        another pool thread touching the SAME shared value (any node with
+        more than one consumer) — ``PolyArray`` guards its own view cache
+        (see ``arrays.py``) against races between two callers, but only
+        keeping every caller of ``.np()``/``.sitk()`` on already-serialized
+        pool threads keeps this cheap and simple.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._pool, self._compute_cone_auto, table, cone, numba_backend)
+
+    def _compute_cone_auto(self, table: NodeTable, cone: "Cone",
+                            numba_backend: "NumbaFusionBackend | None") -> tuple[dict[NodeId, Any], bool]:
+        if numba_backend is not None:
+            binding = shape_of(cone, table, self.registry)
+            if binding is not None:
+                compiled_fn = numba_backend.try_get(binding.shape)
+                if compiled_fn is not None:
+                    return self._compute_cone_numba(table, cone, compiled_fn, binding), True
+        return self._compute_cone(table, cone), False
+
+    def _compute_cone_numba(self, table: NodeTable, cone: "Cone", compiled_fn: Callable,
+                             binding: "ShapeBinding") -> dict[NodeId, Any]:
+        arrays: list[Any] = []
+        ref_shape: tuple[int, ...] | None = None
+        ref_geometry = None
+        for dep_id in binding.array_input_ids:
+            value = table.values[dep_id]
+            arr = value.np()
+            if ref_shape is None:
+                ref_shape = arr.shape
+                ref_geometry = value.geometry
+            arrays.append(np.ascontiguousarray(arr).reshape(-1))
+        scalars = [float(table.values[dep_id]) for dep_id in binding.scalar_input_ids]
+
+        n = arrays[0].shape[0]
+        outputs = []
+        for exit_id in binding.exit_ids_topo:
+            out_dtype_name = self.registry.get_spec(table.nodes[exit_id].operator).elementwise.out_dtype
+            outputs.append(np.empty(n, dtype=np.dtype(out_dtype_name)))
+
+        compiled_fn(*arrays, *scalars, *outputs)
+
+        results: dict[NodeId, Any] = {}
+        for exit_id, flat_out in zip(binding.exit_ids_topo, outputs):
+            results[exit_id] = PolyArray.from_numpy(flat_out.reshape(ref_shape), ref_geometry)
         return results
 
     def _compute(self, table: NodeTable, node_id: NodeId) -> Any:

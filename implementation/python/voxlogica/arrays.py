@@ -25,6 +25,7 @@ HONEST CONSTRAINTS (do not paper over these):
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -103,7 +104,7 @@ class PolyArray:
     ``_views``.
     """
 
-    __slots__ = ("geometry", "dtype", "shape", "_views", "_readonly_np")
+    __slots__ = ("geometry", "dtype", "shape", "_views", "_readonly_np", "_view_lock")
 
     def __init__(self, geometry: Geometry, dtype: Any, shape: tuple[int, ...]):
         self.geometry = geometry
@@ -113,6 +114,14 @@ class PolyArray:
         # True iff the cached "np" view is a read-only zero-copy alias of a
         # sitk-owned buffer — writing through it would corrupt the source image.
         self._readonly_np = False
+        # A table-resident value is read by many concurrent consumers (every
+        # node that depends on it, each on its own pool thread — or the event
+        # loop thread, e.g. Stage B's shape_of). Building the FIRST view of a
+        # kind is not just a Python dict write: it can call into sitk's own
+        # C++ reference-counted image machinery (GetArrayViewFromImage), which
+        # is not safe to enter concurrently for the same image from two
+        # threads. Reentrant because .sitk() calls .np() on the same object.
+        self._view_lock = threading.RLock()
 
     # ── Constructors ──────────────────────────────────────────────────────────
 
@@ -149,16 +158,20 @@ class PolyArray:
         cached = self._views.get("np")
         if cached is not None:
             return cached
-        sitk_image = self._views.get("sitk")
-        if sitk_image is None:
-            raise RuntimeError("PolyArray has no cached view to build numpy from")
-        sitk = _simpleitk()
-        arr = sitk.GetArrayViewFromImage(sitk_image)
-        self._views["np"] = arr
-        self._readonly_np = True
-        self.dtype = arr.dtype
-        self.shape = tuple(arr.shape)
-        return arr
+        with self._view_lock:
+            cached = self._views.get("np")
+            if cached is not None:
+                return cached
+            sitk_image = self._views.get("sitk")
+            if sitk_image is None:
+                raise RuntimeError("PolyArray has no cached view to build numpy from")
+            sitk = _simpleitk()
+            arr = sitk.GetArrayViewFromImage(sitk_image)
+            self._views["np"] = arr
+            self._readonly_np = True
+            self.dtype = arr.dtype
+            self.shape = tuple(arr.shape)
+            return arr
 
     def sitk(self):
         """SimpleITK image view. Built (copied from the numpy view) on first
@@ -166,14 +179,18 @@ class PolyArray:
         cached = self._views.get("sitk")
         if cached is not None:
             return cached
-        sitk = _simpleitk()
-        arr = self.np()
-        image = sitk.GetImageFromArray(arr, isVector=self.geometry.components > 1)
-        image.SetSpacing(self.geometry.spacing)
-        image.SetOrigin(self.geometry.origin)
-        image.SetDirection(self.geometry.direction)
-        self._views["sitk"] = image
-        return image
+        with self._view_lock:
+            cached = self._views.get("sitk")
+            if cached is not None:
+                return cached
+            sitk = _simpleitk()
+            arr = self.np()
+            image = sitk.GetImageFromArray(arr, isVector=self.geometry.components > 1)
+            image.SetSpacing(self.geometry.spacing)
+            image.SetOrigin(self.geometry.origin)
+            image.SetDirection(self.geometry.direction)
+            self._views["sitk"] = image
+            return image
 
     def __dlpack__(self, stream=None):
         """DLPack export via the numpy view — free interop with torch/tf/jax."""

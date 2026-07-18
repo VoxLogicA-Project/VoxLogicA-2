@@ -76,6 +76,12 @@ class EngineConfig:
     #: Max nodes absorbed into one fusion cone (a hard cap on planner growth,
     #: independent of the loop/admission window).
     fusion_cap: int = 64
+    #: Stage B (engine/numba_fusion.py): compile fusion cones into flat
+    #: per-voxel loops. Off is a pure no-op on top of Stage A — cones still
+    #: batch-dispatch their real kernels, they just never try the compiled
+    #: path. Independent of fusion_enabled's own default so either can be
+    #: toggled without the other.
+    numba_fusion_enabled: bool = True
 
     @classmethod
     def from_env(cls, max_concurrency: int, max_live_bytes: int = 0) -> "EngineConfig":
@@ -94,6 +100,8 @@ class EngineConfig:
             persist_min = 1.0
         fusion_raw = os.environ.get("VOXLOGICA_FUSION")
         fusion_enabled = fusion_raw != "0" if fusion_raw is not None else True
+        numba_raw = os.environ.get("VOXLOGICA_NUMBA_FUSION")
+        numba_fusion_enabled = numba_raw != "0" if numba_raw is not None else True
         return cls(
             max_live_bytes=live,
             hard_live_bytes=hard,
@@ -103,4 +111,5 @@ class EngineConfig:
             persist_min_compute_ms=persist_min,
             fusion_enabled=fusion_enabled,
             fusion_cap=_env_int("VOXLOGICA_FUSION_CAP") or 64,
+            numba_fusion_enabled=numba_fusion_enabled,
         )
