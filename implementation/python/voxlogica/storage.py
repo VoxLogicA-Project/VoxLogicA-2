@@ -191,7 +191,14 @@ class SQLiteResultsDatabase:
         self._live_node_ids: set[str] = set()  # legacy push-style live set (see set_live_nodes)
         self._live_probe = None                # preferred: O(1) predicate from the engine
         self._id_index: set[str] | None = None # engine's persisted-id index; kept truthful on evict
-        self._connection = sqlite3.connect(str(self.db_path), check_same_thread=False, isolation_level=None, timeout=5.0)
+        # timeout=30s (not sqlite3's 5s default): WAL allows one writer at a
+        # time ACROSS PROCESSES, not just across threads — auto-sharding
+        # (voxlogica/sharding.py) runs several engine processes against this
+        # same db file concurrently, and a large payload write can hold the
+        # lock past 5s under that contention. A busy retry is always cheaper
+        # than the alternative (best-effort persistence just drops the write
+        # and the value gets recomputed instead of reloaded next time).
+        self._connection = sqlite3.connect(str(self.db_path), check_same_thread=False, isolation_level=None, timeout=30.0)
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA synchronous=NORMAL")
         self._initialize_schema()
@@ -264,7 +271,7 @@ class SQLiteResultsDatabase:
         """A per-thread read-only connection (WAL: concurrent with the writer)."""
         conn = getattr(self._reader_local, "conn", None)
         if conn is None:
-            conn = sqlite3.connect(str(self.db_path), check_same_thread=False, isolation_level=None, timeout=5.0)
+            conn = sqlite3.connect(str(self.db_path), check_same_thread=False, isolation_level=None, timeout=30.0)
             conn.execute("PRAGMA query_only=1")
             self._reader_local.conn = conn
         return conn

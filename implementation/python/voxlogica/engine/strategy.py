@@ -43,8 +43,13 @@ class EngineExecutionStrategy:
         return PreparedPlan(plan=plan, strategy_name=self.name)
 
     def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None,
-            profile: str | None = None) -> ExecutionResult:
+            apply_side_effects: bool = False, profile: str | None = None) -> ExecutionResult:
         """Submit goals, evaluate in parallel, then run their side effects.
+
+        See ``ExecutionStrategy.run``'s docstring for ``apply_side_effects``
+        (default False: a goal subset is assumed to be programmatic
+        inspection, not a run wanting print/save effects — pass True to fire
+        them for exactly the goals actually run; used by auto-sharding).
 
         ``profile``: ``None`` (default) profiles nothing. Any other string
         wraps the whole run in ``cProfile`` — empty string prints top-30
@@ -100,7 +105,7 @@ class EngineExecutionStrategy:
                 print("\n== profile: tottime, top 30 ==", file=_sys.stderr)
                 stats.print_stats(30)
 
-        if goals is None:
+        if goals is None or apply_side_effects:
             for goal in target:
                 if goal.id in values:
                     self._side_effect(goal.operation, goal.name, values[goal.id])

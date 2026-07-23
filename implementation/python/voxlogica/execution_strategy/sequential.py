@@ -90,7 +90,8 @@ class SequentialExecutionStrategy(ExecutionStrategy):
             strategy_name=self.name,
         )
 
-    def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None) -> ExecutionResult:
+    def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None,
+            apply_side_effects: bool = False) -> ExecutionResult:
         started = time.time()
         failures: dict[NodeId, str] = {}
         self._cache_summary = {"computed": 0, "cached_local": 0, "cached_store": 0, "failed": 0}
@@ -144,7 +145,7 @@ class SequentialExecutionStrategy(ExecutionStrategy):
                         f"{prepared.failures[node_id]}"
     )
 
-        if goals is None:
+        if goals is None or apply_side_effects:
             for goal in prepared.plan.goals:
                 if goal.id not in target_goal_set:
                     continue

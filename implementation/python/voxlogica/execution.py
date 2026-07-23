@@ -123,12 +123,13 @@ class ExecutionEngine:
         dask_dashboard: bool = False,
         strategy: str | None = None,
         goals: list[NodeId] | None = None,
+        apply_side_effects: bool = False,
         profile: str | None = None,
     ) -> ExecutionResult:
         """Compile and immediately execute a work plan in one step."""
         del execution_id, dask_dashboard, strategy
         prepared = self.compile_plan(workplan)
-        return self.run_prepared(prepared, goals=goals, profile=profile)
+        return self.run_prepared(prepared, goals=goals, apply_side_effects=apply_side_effects, profile=profile)
 
     def compile_plan(self, workplan, strategy: str | None = None) -> PreparedPlan:
         """Compile reducer output into a prepared execution object."""
@@ -143,10 +144,17 @@ class ExecutionEngine:
         prepared: PreparedPlan,
         *,
         goals: list[NodeId] | None = None,
+        apply_side_effects: bool = False,
         strategy: str | None = None,
         profile: str | None = None,
     ) -> ExecutionResult:
         """Execute an already-prepared plan, optionally restricting the goals.
+
+        ``apply_side_effects``: when ``goals`` restricts to a subset, side
+        effects (print/save) are suppressed by default — pass True to fire
+        them for exactly the goals run (see ``ExecutionStrategy.run``'s
+        docstring). Irrelevant when ``goals`` is None (side effects always
+        fire for a full run).
 
         ``profile`` is honored by ``EngineExecutionStrategy`` only (see its
         ``run()`` docstring); ``LazyExecutionStrategy`` ignores it.
@@ -155,7 +163,7 @@ class ExecutionEngine:
         del strategy
         self._last_prepared = prepared
         # print(prepared)
-        return self._strategy.run(prepared, goals=goals, profile=profile)
+        return self._strategy.run(prepared, goals=goals, apply_side_effects=apply_side_effects, profile=profile)
 
     def stream(
         self,

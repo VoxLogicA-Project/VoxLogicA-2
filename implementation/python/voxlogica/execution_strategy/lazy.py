@@ -142,7 +142,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
         )
 
     def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None,
-            profile: str | None = None) -> ExecutionResult:
+            apply_side_effects: bool = False, profile: str | None = None) -> ExecutionResult:
         del profile  # not supported on this strategy — see EngineExecutionStrategy.run's docstring
         started = time.time()
         failures: dict[NodeId, str] = {}
@@ -163,7 +163,7 @@ class LazyExecutionStrategy(ExecutionStrategy):
             self._progress.close()
             self._progress = None
 
-        if goals is None:
+        if goals is None or apply_side_effects:
             for goal in prepared.plan.goals:
                 if goal.id not in target_goal_set:
                     continue
