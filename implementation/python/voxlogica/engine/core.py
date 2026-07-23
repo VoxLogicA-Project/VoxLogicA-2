@@ -161,6 +161,23 @@ class ComputationEngine:
         # `_reclaim_memory`.
         self._evict_candidates: deque[NodeId] = deque()
         self._evicted_early = 0    # values evicted proactively (metrics)
+        # In-flight read guard: `_reclaim_memory` evicts a value that still has
+        # an unmet consumer (that consumer just hasn't *run* yet) as long as
+        # it's durably persisted — correct when the eventual read is still in
+        # the future, but a live race when a pool thread is reading that exact
+        # value RIGHT NOW: rematerialize (event loop) happens-before dispatch,
+        # but the pool thread's actual `table.values[dep_id]` lookup can land
+        # at any point during the `await`, on a different OS thread, with no
+        # lock between it and this coroutine's own eviction sweep. A dep can
+        # be rematerialized, then evicted again by another worker's turn,
+        # before the dispatch that just rematerialized it ever reads it —
+        # `KeyError` in the executor. Pinning a node's resident deps for the
+        # exact span of one dispatch (set right after rematerializing, cleared
+        # in the dispatch's `finally`) closes the window without touching the
+        # refcount-based release path, which is race-free by construction
+        # (`graph.release` only fires after the consumer has *finished*, i.e.
+        # strictly after its read).
+        self._dispatch_pins: dict[NodeId, int] = defaultdict(int)
 
     # ── Public API ──────────────────────────────────────────────────────────────────────────
 
@@ -420,6 +437,12 @@ class ComputationEngine:
         Bounded to ``_EVICT_SWEEP`` candidates per call (this runs on every
         worker turn) so it is never an O(plan) scan; a candidate not yet
         durable is requeued once for a later retry.
+
+        Skips anything in ``_dispatch_pins`` (see its definition): a value a
+        pool thread is actively reading right now must never be pulled out
+        from under it, no matter how much memory pressure there is — pressure
+        can wait a few milliseconds for the in-flight read to finish; a
+        `KeyError` mid-kernel cannot be undone.
         """
         if self.table._persister is None or not self._evict_candidates:
             return
@@ -429,13 +452,34 @@ class ComputationEngine:
                and self.table.accounted_bytes > self.config.max_live_bytes):
             nid = self._evict_candidates.popleft()
             scanned += 1
-            if nid not in self.table.values or self.graph.consumers.get(nid, 0) <= 0:
-                continue  # already naturally released since being queued
+            if (nid not in self.table.values or self.graph.consumers.get(nid, 0) <= 0
+                    or self._dispatch_pins.get(nid, 0) > 0):
+                continue  # already naturally released, or a dispatch is reading it right now
             if self.table.persisted(nid):
                 self.table.evict(nid)
                 self._evicted_early += 1
             else:
                 self._evict_candidates.append(nid)  # not yet durable; retry later
+
+    def _pin_dispatch(self, deps) -> None:
+        """Protect ``deps`` from proactive eviction for the span of one dispatch.
+
+        Call right after rematerializing a dispatch's dependencies (so the
+        values just made resident cannot be evicted again before the pool
+        thread that is about to read them actually does); pair with
+        ``_unpin_dispatch`` in that dispatch's ``finally``.
+        """
+        for dep in deps:
+            self._dispatch_pins[dep] += 1
+
+    def _unpin_dispatch(self, deps) -> None:
+        """Release the hold ``_pin_dispatch`` placed, once the dispatch returns."""
+        for dep in deps:
+            remaining = self._dispatch_pins[dep] - 1
+            if remaining <= 0:
+                del self._dispatch_pins[dep]
+            else:
+                self._dispatch_pins[dep] = remaining
 
     def _on_spliced(self, loop_id: NodeId, seq_id: NodeId, priority: int) -> None:
         """A loop finished expanding: forward its value from the spliced sequence.
@@ -657,6 +701,13 @@ class ComputationEngine:
                         self._ops_fused += len(cone) - 1
                         started = time.perf_counter()
                         self._in_flight += 1
+                        # Pin cone.inputs for the span of this dispatch: they were
+                        # just rematerialized above, but the pool thread that reads
+                        # them runs concurrently with every other worker's turn —
+                        # including one that proactively evicts under pressure
+                        # (_reclaim_memory). Without this, a dep can be evicted
+                        # again before the cone ever reads it. See _pin_dispatch.
+                        self._pin_dispatch(cone.inputs)
                         try:
                             # Stage A vs Stage B (engine/numba_fusion.py) is
                             # decided inside the executor, on the pool thread
@@ -668,6 +719,7 @@ class ComputationEngine:
                                 self._cones_numba += 1
                         finally:
                             self._in_flight -= 1
+                            self._unpin_dispatch(cone.inputs)
                         per_member_ms = (time.perf_counter() - started) * 1000.0 / len(cone)
                         cone_set = frozenset(cone.members_topo)
                         # Interiors (every consumer in-cone, not a goal) are
@@ -710,10 +762,13 @@ class ComputationEngine:
                     self._kernels_executed += 1
                     started = time.perf_counter()
                     self._in_flight += 1
+                    deps = self.graph.deps(nid)
+                    self._pin_dispatch(deps)  # see _pin_dispatch: protects the rematerialize above
                     try:
                         value = await self.executor.run(self.table, nid)
                     finally:
                         self._in_flight -= 1
+                        self._unpin_dispatch(deps)
                     # measured recompute cost feeds the cache's cost-aware eviction
                     self._finish(nid, value, compute_ms=(time.perf_counter() - started) * 1000.0)
             except Exception as exc:  # noqa: BLE001

@@ -143,6 +143,7 @@ def _engine_stub(table: NodeTable, *, max_live_bytes: int) -> ComputationEngine:
     engine.config = types.SimpleNamespace(max_live_bytes=max_live_bytes)
     engine._evict_candidates = deque()
     engine._evicted_early = 0
+    engine._dispatch_pins = {}
     return engine
 
 
@@ -170,6 +171,43 @@ def test_reclaim_evicts_durably_persisted_pending_values_under_pressure(tmp_path
         # dropped; a later _rematerialize/load call still finds it on disk.
         assert engine.graph.consumers["n1"] == 1
         assert table.load("n1") == b"x" * 1000
+    finally:
+        backend.close()
+
+
+@pytest.mark.unit
+def test_reclaim_never_evicts_a_value_a_dispatch_is_actively_reading(tmp_path) -> None:
+    """Regression for the fusion-branch KeyError: a pool thread mid-dispatch
+    reads `table.values[dep_id]` on its own thread, concurrently with any other
+    worker's turn calling `_reclaim_memory` on the event loop. The previous
+    eviction check only asked "does this still have an unmet consumer, and is
+    it durable?" — both true for a dep that was JUST rematerialized for a
+    dispatch that hasn't read it yet, so it could be evicted again before that
+    read happens (KeyError in executor.py). `_dispatch_pins` closes exactly
+    this window: while any dispatch holds a pin on a node, `_reclaim_memory`
+    must skip it even if it is otherwise a textbook eviction candidate."""
+    backend = SQLiteResultsDatabase(db_path=str(tmp_path / "results.db"))
+    table = NodeTable(backend=backend)
+    try:
+        _completed_node(table, "n1", b"x" * 1000)
+        assert table.persisted("n1")
+
+        engine = _engine_stub(table, max_live_bytes=1)
+        engine.graph.consumers["n1"] = 1
+        engine._evict_candidates.append("n1")
+        engine._dispatch_pins["n1"] = 1  # simulates: a dispatch just rematerialized "n1"
+
+        engine._reclaim_memory()
+
+        assert "n1" in table.values, "a value pinned for an in-flight dispatch must survive reclaim"
+        assert engine._evicted_early == 0
+        # Once the (simulated) dispatch returns and unpins it, reclaim may
+        # evict it again — pinning is a transient hold, not a permanent one.
+        engine._unpin_dispatch(["n1"])
+        engine._evict_candidates.append("n1")
+        engine._reclaim_memory()
+        assert "n1" not in table.values
+        assert engine._evicted_early == 1
     finally:
         backend.close()
 
