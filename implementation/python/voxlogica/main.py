@@ -120,6 +120,8 @@ def run_command(args: argparse.Namespace) -> int:
 
     execution_result = None
     if args.execute:
+        if args.profile is not None and not args.engine:
+            logger.warning("--profile has no effect with --no-engine (lazy strategy doesn't support it)")
         storage = NoCacheStorageBackend() if args.no_cache else SQLiteResultsDatabase(
             db_path=args.store_db, max_bytes=int(args.cache_max_gb * 1024 ** 3))
         execution_result = ExecutionEngine(
@@ -129,7 +131,7 @@ def run_command(args: argparse.Namespace) -> int:
             threads=args.threads,
             engine_debug=args.engine_debug,
             dynamic_expansion=args.dynamic_expansion,
-        ).execute_workplan(workplan)
+        ).execute_workplan(workplan, profile=args.profile)
         print(json.dumps(_summary_payload(workplan, execution_result), indent=2))
         print(f"Execution time: {execution_result.execution_time:.2f} seconds")
         if not execution_result.success:
@@ -188,6 +190,11 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Unroll runtime-valued for-loops into parallel nodes (lazy strategy)")
     run_parser.add_argument("--for-expansion-cap", type=int, default=4096, metavar="N",
                             help="Max constant-loop static unroll length (0 disables)")
+    run_parser.add_argument("--profile", nargs="?", const="", default=None, metavar="PATH",
+                            help="Profile the run with cProfile (engine strategy only). "
+                                 "Bare --profile prints top-30 cumulative+tottime to stderr; "
+                                 "--profile=PATH dumps raw .pstats to PATH (open with "
+                                 "pstats.Stats(PATH) or snakeviz).")
     run_parser.set_defaults(handler=run_command)
 
     list_parser = subparsers.add_parser("list-primitives", help="List primitive kernels.")

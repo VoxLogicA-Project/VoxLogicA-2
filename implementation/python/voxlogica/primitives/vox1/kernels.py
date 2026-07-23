@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from threading import RLock
 import os
@@ -819,21 +820,46 @@ def maxvol(image: object) -> sitk.Image:
     return _make_image_from_flat(result, shape, labels_image, np.uint8)
 
 
-@njit(cache=True)
-def _percentiles_numba(
-    img_values: np.ndarray,
-    mask_values: np.ndarray,
-    correction: float,
-) -> np.ndarray:
-    result_values = np.full(img_values.shape[0], np.float32(-1.0), dtype=np.float32)
+# ── Parallel sort for large populations ─────────────────────────────────────
+#
+# percentiles() (below) is dominated by ONE step: np.argsort over the
+# whole population (measured: ~93% of percentiles' wall time on a BraTS-size
+# case — see doc/dev/dynamic-scheduler/frontier-scheduler.md). Unlike the
+# elementwise fusion work in engine/numba_fusion.py, this is NOT
+# memory-bandwidth-bound on a single pass — sorting has real computational
+# density and DOES scale with cores (measured: ~4x with 4 threads on 8.9M
+# elements). The fix: split the population into chunks, argsort each chunk
+# in its own thread (np.argsort releases the GIL), then merge the sorted
+# chunks back into one globally sorted sequence.
+#
+# CORRECTNESS: the merge only needs to produce a validly SORTED sequence —
+# tie order among equal values doesn't matter, because the grouping step
+# below assigns the SAME output value to an entire run of equal values
+# regardless of which physical voxel index appears first within that run.
+# So a merge that doesn't replicate np.argsort's exact tie-breaking is still
+# bit-identical in RESULT (only which physical index came "first" among
+# ties differs internally, and nothing downstream observes that ordering).
+#
+# _merge_sorted_pairs is the vectorized two-array merge trick: for value v
+# with counts t1 in `values1`/t2 in `values2`, searchsorted(...,'right') on
+# the other array's count-up-to-and-including plus a 'left' pairing places
+# v's t1+t2 occurrences into t1+t2 CONSECUTIVE, non-overlapping output slots
+# (proof: pos2's range for v is [L1+L2, L1+L2+t2-1], pos1's is
+# [L1+L2+t2, L1+L2+t2+t1-1] where L1/L2 are counts strictly less than v in
+# each array — adjacent, no gap, no overlap). O(n log m) vectorized C calls,
+# not a Python loop, so merging is cheap even for millions of elements.
 
+_PARALLEL_SORT_MIN_POPULATION = 200_000  # below this, thread/merge overhead isn't worth it
+_PARALLEL_SORT_CHUNKS = min(os.cpu_count() or 4, 8)
+
+
+@njit(cache=True)
+def _extract_population(img_values: np.ndarray, mask_values: np.ndarray):
+    """(population flat-indices, population values) where mask_values > 0."""
     population_size = 0
     for i in range(mask_values.shape[0]):
         if mask_values[i] > 0:
             population_size += 1
-    if population_size == 0:
-        return result_values
-
     population = np.empty(population_size, dtype=np.int64)
     population_values = np.empty(population_size, dtype=np.float32)
     cursor = 0
@@ -842,12 +868,24 @@ def _percentiles_numba(
             population[cursor] = i
             population_values[cursor] = img_values[i]
             cursor += 1
+    return population, population_values
 
-    sorted_order = np.argsort(population_values)
-    sorted_indices = population[sorted_order]
-    sorted_values = population_values[sorted_order]
 
-    vol = float(population_size)
+@njit(cache=True)
+def _group_and_write(
+    sorted_values: np.ndarray,
+    sorted_indices: np.ndarray,
+    total_voxels: int,
+    correction: float,
+) -> np.ndarray:
+    """Tie-grouped percentile rank, given an ALREADY fully-sorted population
+    (any tie order — see module notes above). Shared by both the plain and
+    parallel-sort paths in ``percentiles()`` so the grouping algorithm is
+    never duplicated."""
+    result_values = np.full(total_voxels, np.float32(-1.0), dtype=np.float32)
+    vol = float(sorted_values.shape[0])
+    if vol == 0.0:
+        return result_values
     curvol = 0.0
     group_start = 0
     while group_start < sorted_values.shape[0]:
@@ -864,6 +902,77 @@ def _percentiles_numba(
     return result_values
 
 
+@njit(cache=True)
+def _merge_sorted_pairs(values1: np.ndarray, idx1: np.ndarray,
+                         values2: np.ndarray, idx2: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Merge two ALREADY-sorted (values, original-index) sequences into one
+    sorted sequence — the standard two-pointer merge, O(n1+n2). (An earlier
+    version used a vectorized ``np.searchsorted`` trick instead of a loop;
+    profiling showed that degenerates to O(n log m) for two comparably-sized
+    arrays — the SAME order as sorting — which showed up as the merge step
+    now dominating wall time instead of the sort. This numba loop is
+    genuinely linear.) See the correctness note above the parallel-sort
+    section for why tie order across the two inputs is irrelevant here."""
+    n1, n2 = values1.shape[0], values2.shape[0]
+    merged_values = np.empty(n1 + n2, dtype=values1.dtype)
+    merged_idx = np.empty(n1 + n2, dtype=idx1.dtype)
+    i, j, k = 0, 0, 0
+    while i < n1 and j < n2:
+        if values1[i] <= values2[j]:
+            merged_values[k] = values1[i]
+            merged_idx[k] = idx1[i]
+            i += 1
+        else:
+            merged_values[k] = values2[j]
+            merged_idx[k] = idx2[j]
+            j += 1
+        k += 1
+    while i < n1:
+        merged_values[k] = values1[i]
+        merged_idx[k] = idx1[i]
+        i += 1
+        k += 1
+    while j < n2:
+        merged_values[k] = values2[j]
+        merged_idx[k] = idx2[j]
+        j += 1
+        k += 1
+    return merged_values, merged_idx
+
+
+def _parallel_sorted_population(population: np.ndarray, population_values: np.ndarray,
+                                 n_chunks: int) -> tuple[np.ndarray, np.ndarray]:
+    """(sorted_values, sorted_indices) for the whole population, sorted by
+    argsort-ing ``n_chunks`` contiguous chunks in parallel threads (each
+    ``np.argsort`` releases the GIL — real parallelism, not cooperative
+    scheduling), then merging the sorted chunks back together in a BALANCED
+    binary tree (O(N log2 K) total merge work, vs. O(N*K) for a linear fold
+    over K chunks — matters here since K can be up to 8)."""
+    if population_values.shape[0] == 0:
+        return population_values, population
+    chunk_bounds = np.linspace(0, population_values.shape[0], n_chunks + 1, dtype=np.int64)
+
+    def _sort_chunk(k: int) -> tuple[np.ndarray, np.ndarray]:
+        lo, hi = chunk_bounds[k], chunk_bounds[k + 1]
+        chunk_values = population_values[lo:hi]
+        order = np.argsort(chunk_values)
+        return chunk_values[order], population[lo:hi][order]
+
+    real_chunks = [k for k in range(n_chunks) if chunk_bounds[k] < chunk_bounds[k + 1]]
+    with ThreadPoolExecutor(max_workers=len(real_chunks)) as pool:
+        sequences = list(pool.map(_sort_chunk, real_chunks))
+
+    while len(sequences) > 1:
+        next_round = [
+            _merge_sorted_pairs(*sequences[i], *sequences[i + 1])
+            for i in range(0, len(sequences) - 1, 2)
+        ]
+        if len(sequences) % 2 == 1:
+            next_round.append(sequences[-1])
+        sequences = next_round
+    return sequences[0]
+
+
 def percentiles(image: object, mask_image: object, correction: float) -> sitk.Image:
     """Percentile rank image within a mask, with tie-breaking correction factor."""
     img = _as_image(image, "image")
@@ -876,11 +985,17 @@ def percentiles(image: object, mask_image: object, correction: float) -> sitk.Im
         raise ValueError("percentiles requires images with the same number of voxels")
 
     if _HAS_NUMBA:
-        result_values = _percentiles_numba(
-            np.asarray(img_values, dtype=np.float32),
-            np.asarray(mask_values, dtype=np.uint8),
-            float(correction),
-        )
+        img_arr = np.asarray(img_values, dtype=np.float32)
+        mask_arr = np.asarray(mask_values, dtype=np.uint8)
+        population, population_values = _extract_population(img_arr, mask_arr)
+        if population.shape[0] >= _PARALLEL_SORT_MIN_POPULATION and _PARALLEL_SORT_CHUNKS > 1:
+            sorted_values, sorted_indices = _parallel_sorted_population(
+                population, population_values, _PARALLEL_SORT_CHUNKS)
+        else:
+            order = np.argsort(population_values)
+            sorted_values, sorted_indices = population_values[order], population[order]
+        result_values = _group_and_write(
+            sorted_values, sorted_indices, img_arr.shape[0], float(correction))
     else:
         result_values = np.full(img_values.shape, -1.0, dtype=np.float32)
         population = np.flatnonzero(mask_values > 0)

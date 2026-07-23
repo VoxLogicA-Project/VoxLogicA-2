@@ -123,11 +123,12 @@ class ExecutionEngine:
         dask_dashboard: bool = False,
         strategy: str | None = None,
         goals: list[NodeId] | None = None,
+        profile: str | None = None,
     ) -> ExecutionResult:
         """Compile and immediately execute a work plan in one step."""
         del execution_id, dask_dashboard, strategy
         prepared = self.compile_plan(workplan)
-        return self.run_prepared(prepared, goals=goals)
+        return self.run_prepared(prepared, goals=goals, profile=profile)
 
     def compile_plan(self, workplan, strategy: str | None = None) -> PreparedPlan:
         """Compile reducer output into a prepared execution object."""
@@ -143,13 +144,18 @@ class ExecutionEngine:
         *,
         goals: list[NodeId] | None = None,
         strategy: str | None = None,
+        profile: str | None = None,
     ) -> ExecutionResult:
-        """Execute an already-prepared plan, optionally restricting the goals."""
+        """Execute an already-prepared plan, optionally restricting the goals.
+
+        ``profile`` is honored by ``EngineExecutionStrategy`` only (see its
+        ``run()`` docstring); ``LazyExecutionStrategy`` ignores it.
+        """
         # print(self.storage)
         del strategy
         self._last_prepared = prepared
         # print(prepared)
-        return self._strategy.run(prepared, goals=goals)
+        return self._strategy.run(prepared, goals=goals, profile=profile)
 
     def stream(
         self,

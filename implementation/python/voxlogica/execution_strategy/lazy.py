@@ -141,7 +141,9 @@ class LazyExecutionStrategy(ExecutionStrategy):
             strategy_name=self.name,
         )
 
-    def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None) -> ExecutionResult:
+    def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None,
+            profile: str | None = None) -> ExecutionResult:
+        del profile  # not supported on this strategy — see EngineExecutionStrategy.run's docstring
         started = time.time()
         failures: dict[NodeId, str] = {}
         self._cache_summary = {"computed": 0, "cached_local": 0, "cached_store": 0, "failed": 0}

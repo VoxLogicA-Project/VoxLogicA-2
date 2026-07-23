@@ -42,8 +42,21 @@ class EngineExecutionStrategy:
         self.registry.reset_runtime_state()
         return PreparedPlan(plan=plan, strategy_name=self.name)
 
-    def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None) -> ExecutionResult:
-        """Submit goals, evaluate in parallel, then run their side effects."""
+    def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None,
+            profile: str | None = None) -> ExecutionResult:
+        """Submit goals, evaluate in parallel, then run their side effects.
+
+        ``profile``: ``None`` (default) profiles nothing. Any other string
+        wraps the whole run in ``cProfile`` — empty string prints top-30
+        cumulative + top-30 tottime to stderr; a non-empty string is a path
+        to dump raw ``.pstats`` to (load with ``pstats.Stats(path)`` or
+        ``snakeviz path``). This is a real profile of a REAL program, not a
+        synthetic benchmark — see ``tests/perf/bench_scheduler.py --profile``
+        for that. Added after profiling a real TACAS'19 BraTS case by hand
+        found the actual bottleneck (percentiles' sort, not fusion/scheduler
+        overhead — see HANDOVER.md §0b/§0c) revealed there was no standard,
+        repeatable way to do this against a real .imgql program.
+        """
         started = time.time()
         plan = prepared.plan
         engine = ComputationEngine(registry=self.registry, backend=self.results_database,
@@ -64,7 +77,28 @@ class EngineExecutionStrategy:
                     failures[goal.id] = repr(exc)
             return values
 
-        values = asyncio.run(evaluate())
+        if profile is None:
+            values = asyncio.run(evaluate())
+        else:
+            import cProfile
+            import pstats
+            import sys as _sys
+            prof = cProfile.Profile()
+            prof.enable()
+            values = asyncio.run(evaluate())
+            prof.disable()
+            if profile:
+                prof.dump_stats(profile)
+                print(f"[profile] wrote {profile} — load with pstats.Stats(path) or snakeviz",
+                      file=_sys.stderr)
+            else:
+                stats = pstats.Stats(prof, stream=_sys.stderr)
+                stats.sort_stats("cumulative")
+                print("\n== profile: cumulative, top 30 ==", file=_sys.stderr)
+                stats.print_stats(30)
+                stats.sort_stats("tottime")
+                print("\n== profile: tottime, top 30 ==", file=_sys.stderr)
+                stats.print_stats(30)
 
         if goals is None:
             for goal in target:
