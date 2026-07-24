@@ -91,9 +91,12 @@ class EngineExecutionStrategy:
             finally:
                 prof.disable()
                 # Always dump stats (even if interrupted), to a temp path if profile is stdout-mode.
-                dump_path = profile if profile else "/tmp/voxlogica_profile_last.pstats"
-                prof.dump_stats(dump_path)
-                if profile:
+                dump_path = profile if profile and profile != "" else "/tmp/voxlogica_profile_last.pstats"
+                try:
+                    prof.dump_stats(dump_path)
+                except Exception as e:
+                    print(f"[profile] dump_stats failed: {e}", file=sys.stderr)
+                if profile and profile != "":
                     print(f"[profile] wrote {profile} — load with pstats.Stats(path) or snakeviz",
                           file=sys.stderr)
                 else:
