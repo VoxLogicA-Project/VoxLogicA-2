@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import json
 import pickle
+import signal
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -82,23 +84,26 @@ class EngineExecutionStrategy:
         else:
             import cProfile
             import pstats
-            import sys as _sys
             prof = cProfile.Profile()
             prof.enable()
-            values = asyncio.run(evaluate())
-            prof.disable()
-            if profile:
-                prof.dump_stats(profile)
-                print(f"[profile] wrote {profile} — load with pstats.Stats(path) or snakeviz",
-                      file=_sys.stderr)
-            else:
-                stats = pstats.Stats(prof, stream=_sys.stderr)
-                stats.sort_stats("cumulative")
-                print("\n== profile: cumulative, top 30 ==", file=_sys.stderr)
-                stats.print_stats(30)
-                stats.sort_stats("tottime")
-                print("\n== profile: tottime, top 30 ==", file=_sys.stderr)
-                stats.print_stats(30)
+            try:
+                values = asyncio.run(evaluate())
+            finally:
+                prof.disable()
+                # Always dump stats (even if interrupted), to a temp path if profile is stdout-mode.
+                dump_path = profile if profile else "/tmp/voxlogica_profile_last.pstats"
+                prof.dump_stats(dump_path)
+                if profile:
+                    print(f"[profile] wrote {profile} — load with pstats.Stats(path) or snakeviz",
+                          file=sys.stderr)
+                else:
+                    stats = pstats.Stats(prof, stream=sys.stderr)
+                    stats.sort_stats("cumulative")
+                    print("\n== profile: cumulative, top 30 ==", file=sys.stderr)
+                    stats.print_stats(30)
+                    stats.sort_stats("tottime")
+                    print("\n== profile: tottime, top 30 ==", file=sys.stderr)
+                    stats.print_stats(30)
 
         if goals is None:
             for goal in target:
