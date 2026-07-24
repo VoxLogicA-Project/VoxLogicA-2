@@ -66,7 +66,7 @@ _EVICT_QUEUE_CAP = 200_000  # backstop on the candidate queue itself (bounds idl
 # count, elapsed<ETA, and the live node/rate readout — stays inline on one row.
 # The dynamic readout rides in {desc} (not {postfix}: tqdm hardcodes a ", "
 # prefix into {postfix}, which printed a stray comma before the operator).
-_PROGRESS_FORMAT = "goals: {n:>3}/{total} |{bar:12}| {elapsed}<{remaining} · {desc}"
+_PROGRESS_FORMAT = "goals: {n:>3}/{total} |{bar:12}| {elapsed} · {desc}"
 
 
 class ComputationEngine:
@@ -563,12 +563,22 @@ class ComputationEngine:
                 self._flush_progress()
 
     def _flush_progress(self) -> None:
-        """Refresh the postfix (node counter + smoothed rate + current op).
+        """Refresh the postfix (node counter + smoothed rate + current op + ETA).
 
         The bar's position advances only on goal completion (see
         ``_settle_node``); this call just repaints the postfix so the user sees
         liveness between goals. It never touches ``total`` — that is what kept
         the old node-total bar dancing as the plan expanded.
+
+        tqdm's own ``{remaining}`` token is driven by the bar's ``n`` (goal
+        count), which for programs whose goals only settle in a late burst
+        (e.g. a per-case sweep whose prints all depend on a shared prefix)
+        stays at 0 for most of the run — tqdm then has no rate to extrapolate
+        from and prints "<?" for the entire run, even though real progress
+        (node throughput) is steady the whole time. Compute the ETA from node
+        completion rate instead — always available once any nodes have
+        completed — and show it here; ``_PROGRESS_FORMAT`` no longer renders
+        tqdm's own ``{remaining}``.
         """
         elapsed = max(1e-6, time.perf_counter() - self._progress_start)
         rate = self._nodes_done / elapsed
@@ -577,8 +587,10 @@ class ComputationEngine:
         # expanded — at which point it IS the true total node count. Shown as a
         # plain counter (done / known), never as a fraction, so it never dances.
         known = self.graph.registered_total
+        remaining_nodes = known - self._nodes_done
+        eta = tqdm.format_interval(remaining_nodes / rate) if rate > 1e-9 and remaining_nodes > 0 else "?"
         self._progress.set_description_str(
-            f"{self._progress_op} · {self._nodes_done:,}/{known:,} nodes · {rate:,.0f} node/s",
+            f"{self._progress_op} · {self._nodes_done:,}/{known:,} nodes · {rate:,.0f} node/s · ETA {eta}",
             refresh=False)
         self._progress.refresh()
         self._progress_pending = 0
