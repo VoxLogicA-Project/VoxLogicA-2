@@ -28,6 +28,7 @@ except Exception:  # pragma: no cover - optional acceleration
     def get_num_threads() -> int:  # type: ignore[misc]
         return os.cpu_count() or 1
 
+from voxlogica.arrays import pinned_view
 from voxlogica.primitives.default._sequence_math import apply_binary_op
 
 # ITK's legacy "Platform" threader spawns and destroys native threads on every
@@ -117,18 +118,30 @@ def _filled_image_like(reference: sitk.Image, pixel_id: int, value: float | int)
 
 
 def _as_bool_image(image: sitk.Image) -> sitk.Image:
+    # Casting to a type the image already has is a full buffer copy for no
+    # gain (~10ms on a BraTS volume, ~17000x the cost of this guard).
+    if image.GetPixelID() == sitk.sitkUInt8:
+        return image
     return sitk.Cast(image, sitk.sitkUInt8)
 
 
 def _as_float_image(image: sitk.Image) -> sitk.Image:
+    if image.GetPixelID() == sitk.sitkFloat32:
+        return image
     return sitk.Cast(image, sitk.sitkFloat32)
 
 
 def _flatten_image(image: sitk.Image, dtype: Any = None) -> np.ndarray:
-    data = sitk.GetArrayFromImage(image).reshape(-1)
-    if dtype is None:
-        return np.asarray(data)
-    return np.asarray(data, dtype=dtype)
+    """Flat view of ``image``'s voxels — zero-copy unless a dtype conversion
+    is genuinely required, in which case the conversion IS the copy.
+
+    The result is read-only (it aliases sitk-owned memory); callers that need
+    to write must allocate their own buffer.
+    """
+    view = pinned_view(image).reshape(-1)
+    if dtype is None or view.dtype == dtype:
+        return view
+    return view.astype(dtype)
 
 
 def _make_image_from_flat(
@@ -583,7 +596,7 @@ def lcc(image: object) -> sitk.Image:
     img = _as_image(image, "image")
     _remember_base(img)
     labels, _ = _label_connected_components(img)
-    return sitk.Cast(labels, sitk.sitkFloat32)
+    return _as_float_image(labels)
 
 
 def Lcc(image: object) -> sitk.Image:
@@ -759,16 +772,19 @@ def _surface_distances(a_obj: object, b_obj: object):
     """
     A = _as_bool_image(_as_image(a_obj, "a"))
     B = _as_bool_image(_as_image(b_obj, "b"))
-    an = sitk.GetArrayFromImage(A).astype(bool)
-    bn = sitk.GetArrayFromImage(B).astype(bool)
+    # GetArrayView + astype/abs is ONE copy (the conversion itself); the old
+    # GetArrayFromImage + astype was two. Each view here is consumed within
+    # the expression that builds it, so its source image is still referenced.
+    an = sitk.GetArrayViewFromImage(A).astype(bool)
+    bn = sitk.GetArrayViewFromImage(B).astype(bool)
     if not an.any() or not bn.any():
         return None
-    dist_to_a = np.abs(sitk.GetArrayFromImage(
+    dist_to_a = np.abs(sitk.GetArrayViewFromImage(
         sitk.SignedMaurerDistanceMap(A, squaredDistance=False, useImageSpacing=True)))
-    dist_to_b = np.abs(sitk.GetArrayFromImage(
+    dist_to_b = np.abs(sitk.GetArrayViewFromImage(
         sitk.SignedMaurerDistanceMap(B, squaredDistance=False, useImageSpacing=True)))
-    a_surf = an & ~sitk.GetArrayFromImage(sitk.BinaryErode(A, [1, 1, 1])).astype(bool)
-    b_surf = bn & ~sitk.GetArrayFromImage(sitk.BinaryErode(B, [1, 1, 1])).astype(bool)
+    a_surf = an & ~sitk.GetArrayViewFromImage(sitk.BinaryErode(A, [1, 1, 1])).astype(bool)
+    b_surf = bn & ~sitk.GetArrayViewFromImage(sitk.BinaryErode(B, [1, 1, 1])).astype(bool)
     return dist_to_b[a_surf], dist_to_a[b_surf]
 
 
@@ -1047,7 +1063,7 @@ def intensity(model: object) -> sitk.Image:
 def _component(model: object, index: int) -> sitk.Image:
     img = _as_image(model, "model")
     _remember_base(img)
-    return sitk.Cast(sitk.VectorIndexSelectionCast(img, int(index)), sitk.sitkFloat32)
+    return _as_float_image(sitk.VectorIndexSelectionCast(img, int(index)))
 
 
 def red(model: object) -> sitk.Image:

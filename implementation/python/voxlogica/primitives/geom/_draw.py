@@ -37,7 +37,10 @@ def as_float(value: Any, name: str) -> float:
 
 
 def copy_array(image: sitk.Image) -> np.ndarray:
-    return np.asarray(sitk.GetArrayFromImage(image)).copy()
+    # ONE copy: GetArrayFromImage already returns a fresh writable buffer, so
+    # the old GetArrayFromImage(...).copy() copied the volume twice. Drawing
+    # mutates the result, so an owned buffer is genuinely required here.
+    return sitk.GetArrayViewFromImage(image).copy()
 
 
 def image_from_array(array: np.ndarray, reference: sitk.Image) -> sitk.Image:

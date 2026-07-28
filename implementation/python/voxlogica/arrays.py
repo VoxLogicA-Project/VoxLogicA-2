@@ -66,6 +66,50 @@ def _sitk_nbytes(image: Any) -> int:
     return image.GetNumberOfPixels() * image.GetNumberOfComponentsPerPixel() * _sitk_itemsize(image)
 
 
+# ── Zero-copy sitk -> numpy, without the use-after-free ──────────────────────
+#
+# ``GetArrayViewFromImage`` aliases the image's buffer but does NOT hold a
+# reference to the image: the returned array's ``.base`` is an intermediate
+# ndarray, so when the last Python reference to the image drops — typically a
+# temporary produced by a cast or a filter — the buffer is freed and the view
+# dangles. Verified on SimpleITK 2.5.5: reading such a view after the source
+# is collected yields garbage (NaN) rather than raising. Pinning the image
+# onto the view closes that hole and makes a returned view safe.
+
+_PINNED_CLS: Any = None
+
+
+def _pinned_cls() -> Any:
+    """The ndarray subclass used for pinned views (built lazily: defining it
+    requires numpy, and this module keeps its heavy imports lazy)."""
+    global _PINNED_CLS
+    if _PINNED_CLS is None:
+        import numpy as np
+
+        class PinnedArray(np.ndarray):
+            """A view that keeps the object owning its buffer alive."""
+
+            def __array_finalize__(self, obj):
+                if obj is not None:
+                    self._src = getattr(obj, "_src", None)
+
+        _PINNED_CLS = PinnedArray
+    return _PINNED_CLS
+
+
+def pinned_view(image: Any) -> Any:
+    """Zero-copy, read-only numpy view of ``image`` that pins it alive.
+
+    Prefer this over a bare ``GetArrayViewFromImage`` whenever the view may
+    outlive the expression that produced the image. Read-only: writing through
+    it would corrupt the sitk-owned buffer, so a writer must take a copy.
+    """
+    sitk = _simpleitk()
+    view = sitk.GetArrayViewFromImage(image).view(_pinned_cls())
+    view._src = image
+    return view
+
+
 @dataclass(frozen=True)
 class Geometry:
     """Spatial metadata carried alongside pixel data; hashable, sitk-shaped."""

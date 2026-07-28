@@ -227,7 +227,10 @@ class VoxImageValue(VoxValue):
             return self.raw.np()
         sitk = _import_simpleitk()
         if sitk is not None and isinstance(self.raw, sitk.Image):
-            return sitk.GetArrayFromImage(self.raw)
+            # Zero-copy: as above, the encoder only reads these bytes. Pinned
+            # so the view stays valid even if this value is dropped first.
+            from voxlogica.arrays import pinned_view
+            return pinned_view(self.raw)
         if hasattr(self.raw, "__array__"):
             np = _import_numpy()
             if np is not None:
