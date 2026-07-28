@@ -82,6 +82,16 @@ class EngineExecutionStrategy:
         if profile is None:
             values = asyncio.run(evaluate())
         else:
+            print(
+                "[profile] WARNING: cProfile's single global call-stack has no "
+                "representation for the engine's genuinely concurrent worker "
+                "threads (--threads > 1) -- ncalls/cumtime/tottime can be "
+                "arbitrarily wrong (e.g. cumtime exceeding wall-clock time) "
+                "rather than merely imprecise. Treat this profile as a lead to "
+                "investigate, not a measurement to trust. See "
+                "https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/34",
+                file=sys.stderr,
+            )
             import cProfile
             import pstats
             prof = cProfile.Profile()
