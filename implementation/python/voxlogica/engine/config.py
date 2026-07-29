@@ -97,7 +97,22 @@ class EngineConfig:
         # but clamped well below total RAM so the OS OOM killer is never reached.
         hard = _env_gb_as_bytes("VOXLOGICA_HARD_LIVE_GB") or min(int(live * 1.5), int(ram * 0.7))
         hard = max(hard, live)  # never below the soft cap
-        window = max(_env_int("VOXLOGICA_LOOP_WINDOW") or max_concurrency, max_concurrency)
+        # An EXPLICIT VOXLOGICA_LOOP_WINDOW is authoritative, including below
+        # max_concurrency; only the default is floored at the worker count.
+        # Rationale: the window bounds how many loop bodies are open at once,
+        # so flooring it at the worker count ties the live working set to the
+        # thread count -- measured on the TACAS19 BraTS benchmark, peak RSS
+        # goes 1.96/3.12/4.68 GB at 8/16/24 threads against a 36MB L3, and
+        # wall-clock turns UP past 16 threads even though the machine has 24
+        # cores. Decoupling the two is the only way to test whether that
+        # working-set growth (rather than the E-cores themselves) is what
+        # caps useful concurrency. A window below the worker count can
+        # under-feed workers if the per-body DAG exposes too little internal
+        # parallelism -- it cannot deadlock (admission's _idle() wedge-breaker
+        # still guarantees progress), it just idles cores, so this is a
+        # measure-it-yourself knob, not a default.
+        explicit_window = _env_int("VOXLOGICA_LOOP_WINDOW")
+        window = explicit_window if explicit_window else max_concurrency
         raw_min = os.environ.get("VOXLOGICA_PERSIST_MIN_MS")
         try:
             persist_min = float(raw_min) if raw_min else 1.0

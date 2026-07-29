@@ -32,7 +32,7 @@ class EngineExecutionStrategy:
     name = "engine"
 
     def __init__(self, registry: PrimitiveRegistry | None = None, results_database: StorageBackend | None = None,
-                 threads: int = 0, debug: bool = False, threads_auto: str = "p-cores"):
+                 threads: int = 0, debug: bool = False, threads_auto: str = "balanced"):
         self.registry = registry or PrimitiveRegistry()
         self.results_database = results_database
         self.threads = threads

@@ -76,7 +76,7 @@ class ComputationEngine:
     def __init__(self, registry: PrimitiveRegistry | None = None,
                  backend: StorageBackend | None = None, max_concurrency: int = 0,
                  progress: bool = False, debug: bool = False, max_live_bytes: int = 0,
-                 threads_auto: str = "p-cores"):
+                 threads_auto: str = "balanced"):
         self.registry = registry or PrimitiveRegistry()
         self.table = NodeTable(backend=backend)
         # See engine/topology.py: os.cpu_count() overcounts on a hybrid P/E

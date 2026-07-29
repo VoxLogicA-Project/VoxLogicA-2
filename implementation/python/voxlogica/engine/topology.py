@@ -3,21 +3,20 @@
 ``os.cpu_count()`` treats every logical CPU as equal. On a hybrid Intel
 chip (P-cores + E-cores) it isn't: measured directly on fmt-5000 (8 P-cores
 @5.8GHz + 16 E-cores @4.6GHz, no SMT), an E-core delivers ~0.70x a P-core's
-throughput on the same ITK kernels this engine dispatches, and the box's
-actual DRAM bandwidth ceiling (STREAM triad) is reached at 8 threads and
-DECLINES past it. Consequently the real TACAS'19 BraTS benchmark run at
---threads=24 (this host's logical CPU count) is both slower AND ~2x the
-CPU-seconds of --threads=16 -- more threads made it worse, not just
-wasteful. See doc/dev/free-threaded-handover.md's bandwidth section for the
-full measurement (STREAM sweep, perf stat cache-miss/IPC breakdown, thread
-sweep on the real benchmark at both 40-case and full 259-case scale).
+throughput on the same ITK kernels this engine dispatches. Neither extreme
+is right, and both were tried before this settled: using every logical CPU
+(24) is 14% slower than the optimum because useful concurrency saturates in
+the memory system first, while using only P-cores (8) is 33% slower --
+E-cores contribute real throughput, just not free throughput. The measured
+optimum is P-cores plus half the E-cores; see ``default_concurrency``'s
+docstring for the sweep, and doc/dev/free-threaded-handover.md for the
+supporting STREAM ceiling, per-core-type pinning, and perf-stat breakdown.
 
-The default this module picks -- P-core count, when the kernel exposes the
-split -- is a heuristic informed by ONE host and ONE workload's bandwidth
+Every mode here is a heuristic informed by ONE host and ONE workload's
 saturation point, not a general law: a memory-light workload, a box with
-more DRAM channels, or a non-hybrid CPU may saturate at a different point
-or not at all. --threads N (engine/strategy.py's existing flag) always
-wins outright; --threads-auto is the escape hatch for the heuristic itself.
+more DRAM channels, or a non-hybrid CPU may saturate somewhere else or not
+at all. --threads N (engine/strategy.py's existing flag) always wins
+outright; --threads-auto is the escape hatch for the heuristic itself.
 """
 
 from __future__ import annotations
@@ -49,19 +48,53 @@ def _count_cpu_list(path: str) -> int | None:
     return total or None
 
 
-def default_concurrency(mode: str = "p-cores") -> int:
+def default_concurrency(mode: str = "balanced") -> int:
     """Pick a default worker-pool size.
 
     ``mode``:
-    - ``"p-cores"`` (default): on a Linux host that exposes the Intel hybrid
-      P/E split (``/sys/devices/cpu_core/cpus``), return the P-core count.
-      Anywhere else (macOS, non-hybrid CPU, cgroup without that sysfs path),
-      silently fall back to ``os.cpu_count()`` -- this mode never raises and
-      never returns something worse than the plain logical count.
-    - ``"logical"``: always ``os.cpu_count()``, the pre-existing behavior.
-      Use this to disable the heuristic outright (also settable via the
-      ``VOXLOGICA_THREADS_AUTO`` env var, for contexts that construct the
-      engine directly without going through the CLI's ``--threads-auto``).
+    - ``"balanced"`` (default): P-cores plus HALF the E-cores. E-cores do
+      contribute real throughput (see the sweep below) but at rising cost,
+      and useful concurrency for an ITK volume workload saturates well before
+      every logical CPU is busy; half the E-cores lands in the flat bottom of
+      the measured curve.
+    - ``"p-cores"``: P-cores only. Minimises CPU-seconds and RSS at a real
+      wall-clock cost -- the right choice on a shared box, the wrong one on a
+      dedicated machine where latency is what matters.
+    - ``"logical"``: always ``os.cpu_count()``, the pre-existing behaviour.
+
+    Measured, TACAS'19 BraTS benchmark, 40 cases, fmt-5000 (8 P + 16 E):
+
+    ======= ======== ========= =======
+    threads wall (s) CPU-sec   RSS
+    ======= ======== ========= =======
+    8       9.12     58.7      1.96 GB   <- "p-cores"
+    12      7.50     69.0      2.61 GB
+    14      6.90     75.5      2.89 GB
+    16      6.85     84.4      3.12 GB   <- "balanced", the optimum
+    18      7.06     98.0      3.28 GB
+    20      7.26     112.5     3.69 GB
+    24      7.84     144.9     4.38 GB   <- "logical"
+    ======= ======== ========= =======
+
+    Same ordering at full 259-case scale (16 threads 38.61s/542 CPU-s vs.
+    24 threads 47.67s/1010 CPU-s vs. 8 threads 52.45s/368 CPU-s). The curve
+    is flat between 14 and 18 (within 3%), so the exact split matters less
+    than not landing at either extreme.
+
+    Why not simply "all cores": past ~16 the memory system, not the
+    scheduler, is the limit -- confirmed by decoupling the loop-admission
+    window from the worker count (``VOXLOGICA_LOOP_WINDOW``, which the engine
+    now honours below the worker count for exactly this experiment). Running
+    24 workers with an 8-body window cuts the working set and recovers some
+    of the loss (8.10s -> 7.37s) but under-feeds the pool (1250% CPU: the
+    open bodies don't expose enough ready nodes for 24 workers) and never
+    reaches the 16-thread number. Adding workers past the saturation point
+    costs CPU and memory without buying wall-clock, whatever the window.
+
+    HEURISTIC, NOT A LAW: fitted to one host's saturation point on one
+    workload's memory-access pattern. A memory-light workload, more DRAM
+    channels, or a non-hybrid CPU will saturate somewhere else. ``--threads N``
+    remains the correct answer for anyone who has measured their own case.
     """
     logical = os.cpu_count() or 8
     env_override = os.environ.get("VOXLOGICA_THREADS_AUTO", "").strip().lower()
@@ -69,4 +102,9 @@ def default_concurrency(mode: str = "p-cores") -> int:
     if effective_mode == "logical":
         return logical
     p_cores = _count_cpu_list(_CPU_CORE_LIST_PATH)
-    return p_cores or logical
+    if not p_cores:
+        return logical  # no hybrid split exposed: nothing to be clever about
+    if effective_mode == "p-cores":
+        return p_cores
+    e_cores = max(0, logical - p_cores)
+    return p_cores + e_cores // 2

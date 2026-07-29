@@ -185,14 +185,18 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Use the live computation engine (default); --no-engine selects the lazy strategy")
     run_parser.add_argument("--threads", type=int, default=0, metavar="N",
                             help="Concurrent kernels (default: 0 = auto-detect, see --threads-auto)")
-    run_parser.add_argument("--threads-auto", choices=["p-cores", "logical"], default="p-cores",
+    run_parser.add_argument("--threads-auto", choices=["balanced", "p-cores", "logical"],
+                            default="balanced",
                             help="Auto-detection heuristic used when --threads is 0 (engine strategy "
-                                 "only): 'p-cores' (default) counts only performance cores on a hybrid "
-                                 "Intel P/E CPU, since os.cpu_count() overcounts them there -- measured "
-                                 "on one such host, adding E-cores past the P-core count made a real "
-                                 "workload both slower and ~2x the CPU-cost (memory-bandwidth "
-                                 "saturation, see doc/dev/free-threaded-handover.md). 'logical' restores "
-                                 "the plain CPU-count default. Ignored when --threads is nonzero.")
+                                 "only), on a hybrid Intel P/E CPU: 'balanced' (default) uses every "
+                                 "P-core plus half the E-cores -- measured optimum on the TACAS19 BraTS "
+                                 "benchmark (16 threads: 6.85s, vs 9.12s for p-cores-only and 7.84s for "
+                                 "all 24), since useful concurrency saturates in the memory system well "
+                                 "before every logical CPU is busy. 'p-cores' uses only performance "
+                                 "cores: ~33%% slower here but ~2.5x less CPU and RAM, the right choice "
+                                 "on a shared box. 'logical' is the plain CPU count. All three collapse "
+                                 "to the plain CPU count on a non-hybrid CPU or non-Linux host. Ignored "
+                                 "when --threads is nonzero. See doc/dev/free-threaded-handover.md.")
     run_parser.add_argument("--engine-debug", action="store_true",
                             help="On engine failure, dump the stuck node frontier")
     run_parser.add_argument("--dynamic-expansion", action=argparse.BooleanOptionalAction, default=True,

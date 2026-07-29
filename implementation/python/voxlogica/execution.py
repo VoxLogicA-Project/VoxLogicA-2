@@ -93,7 +93,7 @@ class ExecutionEngine:
         threads: int = 0,
         engine_debug: bool = False,
         dynamic_expansion: bool = True,
-        threads_auto: str = "p-cores",
+        threads_auto: str = "balanced",
     ):
         """Create an engine bound to one primitive registry and one strategy.
 
