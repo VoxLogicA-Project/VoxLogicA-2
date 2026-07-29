@@ -22,8 +22,10 @@ outright; --threads-auto is the escape hatch for the heuristic itself.
 from __future__ import annotations
 
 import os
+import sys
 
 _CPU_CORE_LIST_PATH = "/sys/devices/cpu_core/cpus"
+_hint_printed = False  # module-level: print the calibrate hint at most once per process
 
 
 def _count_cpu_list(path: str) -> int | None:
@@ -95,7 +97,20 @@ def default_concurrency(mode: str = "balanced") -> int:
     workload's memory-access pattern. A memory-light workload, more DRAM
     channels, or a non-hybrid CPU will saturate somewhere else. ``--threads N``
     remains the correct answer for anyone who has measured their own case.
+
+    A per-machine measurement beats this heuristic when one exists: if
+    ``voxlogica calibrate`` (``engine/calibration.py``) has run on this exact
+    host before, its cached result is used instead of the table above --
+    checked first, before any of the modes below. That cache lookup is cheap
+    (one small JSON file, no SimpleITK import) so it costs nothing on the
+    common path where no calibration exists yet; in that case a one-line
+    hint pointing at the subcommand is printed once per process, not on
+    every engine construction.
     """
+    cached = _cached_threads()
+    if cached is not None:
+        return cached
+
     logical = os.cpu_count() or 8
     env_override = os.environ.get("VOXLOGICA_THREADS_AUTO", "").strip().lower()
     effective_mode = env_override or mode
@@ -104,7 +119,35 @@ def default_concurrency(mode: str = "balanced") -> int:
     p_cores = _count_cpu_list(_CPU_CORE_LIST_PATH)
     if not p_cores:
         return logical  # no hybrid split exposed: nothing to be clever about
+
+    _print_calibrate_hint()
     if effective_mode == "p-cores":
         return p_cores
     e_cores = max(0, logical - p_cores)
     return p_cores + e_cores // 2
+
+
+def _cached_threads() -> int | None:
+    """Cheap lookup only -- never imports calibration's heavier SimpleITK
+    dependency, which is only needed to RUN a sweep, not to read its cache."""
+    try:
+        from voxlogica.engine.calibration import load_cached_threads
+        return load_cached_threads()
+    except Exception:
+        # A corrupt cache file, a missing cache dir, or any other calibration
+        # -side surprise must never break the (already-working) heuristic
+        # fallback -- this lookup is a pure optimization.
+        return None
+
+
+def _print_calibrate_hint() -> None:
+    global _hint_printed
+    if _hint_printed:
+        return
+    _hint_printed = True
+    print(
+        "[voxlogica] using a heuristic thread-count default for this hybrid "
+        "P/E CPU -- run 'voxlogica calibrate' once to measure the actual "
+        "optimum for this machine instead of guessing.",
+        file=sys.stderr,
+    )

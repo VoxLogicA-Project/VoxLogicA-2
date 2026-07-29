@@ -10,6 +10,7 @@ import argparse
 from pathlib import Path
 import json
 import logging
+import sys
 from typing import Any
 
 from voxlogica.converters.dot_converter import to_dot
@@ -159,6 +160,33 @@ def shell_command(args: argparse.Namespace) -> int:
     start_repl()
     return 0
 
+
+def calibrate_command(args: argparse.Namespace) -> int:
+    """Implement the ``calibrate`` subcommand: measure this host's actual
+    optimal thread count instead of relying on engine/topology.py's
+    heuristic. See engine/calibration.py's module docstring for the full
+    rationale (idle-gated, min-of-N interleaved sweep, machine-fingerprinted
+    cache)."""
+    from voxlogica.engine.calibration import run_calibration
+
+    try:
+        result = run_calibration(
+            n_cases=args.n_cases, reps=args.reps, force_ignore_idle=args.force,
+            progress=lambda msg: print(msg, file=sys.stderr),
+        )
+    except RuntimeError as exc:
+        logger.error(str(exc))
+        return 1
+
+    print(json.dumps({
+        "chosen_threads": result["chosen_threads"],
+        "candidates_wall_seconds": {str(k): round(v, 3) for k, v in result["candidates_wall_seconds"].items()},
+    }, indent=2))
+    print(f"\nCalibration saved for this machine. Future runs with --threads 0 "
+          f"(the default) will use {result['chosen_threads']} threads automatically.",
+          file=sys.stderr)
+    return 0
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the CLI parser and register all supported subcommands."""
     parser = argparse.ArgumentParser(prog="voxlogica", description="Build and execute VoxLogicA DAGs.")
@@ -215,6 +243,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     shell_parser = subparsers.add_parser("repl", help="Start an interactive REPL session")
     shell_parser.set_defaults(handler=shell_command)
+
+    calibrate_parser = subparsers.add_parser(
+        "calibrate",
+        help="Measure this machine's actual optimal thread count (engine strategy, hybrid P/E CPUs)")
+    calibrate_parser.add_argument("--n-cases", type=int, default=16, metavar="N",
+                                   help="Synthetic cases per candidate thread count (default: 16 -- "
+                                        "needs to be large enough that each candidate's run takes "
+                                        "several seconds, or the bandwidth-saturation signal this is "
+                                        "measuring is smaller than run-to-run noise; see "
+                                        "engine/calibration.py's module docstring)")
+    calibrate_parser.add_argument("--reps", type=int, default=3, metavar="N",
+                                   help="Repetitions per candidate, interleaved, min taken (default: 3)")
+    calibrate_parser.add_argument("--force", action="store_true",
+                                   help="Skip the idle check and calibrate even if the machine looks busy "
+                                        "(results will be less trustworthy)")
+    calibrate_parser.set_defaults(handler=calibrate_command)
     return parser
 
 
