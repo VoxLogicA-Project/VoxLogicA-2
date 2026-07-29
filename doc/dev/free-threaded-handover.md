@@ -198,11 +198,14 @@ and fmt-5000 (Linux, 24-core, RTX PRO 5000 Blackwell 48GB — a different host
 than §2 Phase 4 names; that section is superseded by this one). All passed:
 
 - **Phase 0**: `.venv-ft` built on both hosts from cp314t wheels — numpy 2.4.6,
-  numba 0.66.0/llvmlite 0.48.0, SimpleITK 2.5.5, dask 2025.5.1 (pure-Python,
-  pulled in transitively by `execution_strategy/__init__.py`, harmless to
-  install). No source builds needed anywhere. SimpleITK and numba both
-  auto-re-enable the GIL on import unless overridden with `PYTHON_GIL=0`;
-  confirmed genuinely disabled under the override on both hosts.
+  numba 0.66.0/llvmlite 0.48.0, SimpleITK 2.5.5, dask 2025.5.1 (pure-Python;
+  at the time, pulled in transitively by `execution_strategy/__init__.py` via
+  the now-removed dead `ParallelExecutionStrategy` — see §5c — dask itself is
+  still a real dependency of `dask_map`/sequence-slicing, just no longer
+  imported at package-import time for a strategy nothing selected). No source
+  builds needed anywhere. SimpleITK and numba both auto-re-enable the GIL on
+  import unless overridden with `PYTHON_GIL=0`; confirmed genuinely disabled
+  under the override on both hosts.
 - **Phase 1**: 63-66/66 comparable unit tests pass identically GIL vs no-GIL
   (delta is only tests skipped for missing optional deps — torch/nibabel —
   in the minimal `.venv-ft`, not real failures).
@@ -285,3 +288,201 @@ None of 1-3 above have been implemented. fmt-5000's `looping_experiment`
 `_scratch/` has throwaway smoke-test artifacts (`brats017_smoke{4,8,30,60}.imgql`
 and matching `.db`/`.db.files`) from this validation work — safe to delete,
 not meant to be kept.
+
+### 5c. The `main` vs `incoming` A/B benchmark (2026-07-28)
+
+A separate, simpler benchmark than the oracle sweep above: run the *same*
+TACAS'19-style FLAIR threshold+grow procedure to completion on the *full*
+`BraTS_2019_HGG` set (259 cases) on both branches, and compare wall-clock and
+Dice. Unlike §5's sweep (6 cases × a 75-combo grid), this exercises one pass
+per case — closer to a real end-to-end run than a parameter search.
+
+**Location (untracked by design — `looping_experiment/` is excluded via
+`.git/info/exclude`, not `.gitignore`; it is fmt-5000-only working state, not
+part of this repo's history):**
+`fmt-5000:~/data/local/repos/VoxLogicA-2/looping_experiment/ab_compare.sh`
+
+**How to run it** (one command; safe to re-run, cleans its own state):
+```
+ssh fmt-5000 'cd ~/data/local/repos/VoxLogicA-2/looping_experiment && ./ab_compare.sh'
+```
+It builds a `main` worktree at `/tmp/vl2_main_baseline` on first run, generates
+two bench `.imgql` files (see gotcha below), runs `main` single-arm then
+`incoming` with `--threads 24`, and writes a summary to
+`_scratch/ab_compare_results.txt`.
+
+**Gotcha that cost a full debugging cycle: `border` is not one primitive.**
+`main` has a 0-arg `border` (implicit image); `incoming` requires
+`border(img)` explicitly (commit 5c26781). A single shared `.imgql` cannot
+satisfy both arities, so the script generates *two* bench files
+(`bench_tacas19_full_main.imgql`, `bench_tacas19_full_incoming.imgql`),
+identical except for that one call. The first run of this benchmark silently
+mis-set this up (one shared file, incoming's arm crashing instantly with
+`StaticAnalysisError: Invalid arity for 'border'`); fixed by generating both.
+
+**Results — three states of the same benchmark:**
+
+| state | main | incoming | ratio | Dice |
+|---|---|---|---|---|
+| shared bench file (bug) | 180s, exit 0 | **crash**, exit 1 | — | 0.82485 (main only) |
+| fixed (per-arm bench files), pre zero-copy | 179s / 742% CPU (7.4 cores) | 54.6s / 2209% CPU (22.1 cores) | 3.37x | 0.82485 (both, identical) |
+| post zero-copy audit (this session) | 179s / 742% CPU | **20.8s** / 2220% CPU | **8.61x** | 0.82485 (both, identical) |
+
+Dice is bit-identical (`0.8248473289639666`) across every state that
+completed — the engine and the zero-copy changes are both purely
+performance-affecting, never correctness-affecting, on this benchmark.
+
+**Why 3.37x, not ~24x, was the first (wrong) alarm, and what it actually was.**
+The naive read — "24 threads should give ~24x" — is wrong on two counts, one
+a measurement bug on our side and one a real property of `main`:
+
+1. `main` was never a true single-core baseline: `/usr/bin/time -v` showed
+   742% CPU (7.4 cores) — ITK's *own* internal filter threading, uncapped,
+   already parallelizing `main`'s "single-threaded lazy evaluator." Against a
+   genuine 1-core baseline, `incoming` (pre-zero-copy) was already ~24.8x;
+   3.37x is the ratio of two *already-parallel* numbers
+   (22.1/7.4 × the ~11% work reduction from fusion ≈ 3.35x, matching the
+   observed 3.37x to within 1%).
+2. A first attempt to blame ITK itself for the shortfall (a threaded
+   microbenchmark claiming 24 threads were *slower* than 1) was a **self-made
+   measurement bug**: unequal total work between arms, image generation
+   inside the timed region, and `np.random.rand`'s global lock being
+   mistaken for an ITK lock. A corrected version (equal work, pre-generated
+   images, per-thread RNGs) showed ITK ops scale 9-13x at 24 threads
+   (`SignedMaurerDistanceMap` 10.1x, `ConnectedComponent` 11.9x, `Not` 13.3x)
+   — ITK is not the bottleneck, and the earlier "0.31x" conclusion was
+   retracted in the same session it was reported.
+
+**`--profile`'s own numbers were, separately, not trustworthy** — see the
+tracking issue [voxlogica-project/voxlogica-2#34](https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/34)
+and the warning now printed by `EngineExecutionStrategy.run()`. The tell was
+`asyncio.base_events._run_once` cumtime of 1389s inside a 52s wall-clock run,
+and aggregate `tottime` across all 2236 functions summing to ~51.8s — deceptively
+close to the 52s wall time, which briefly and *wrongly* read as evidence of
+serialization. `/usr/bin/time -v`'s single `%CPU` number was what actually
+answered the question; a per-thread-aware profiler would be needed to trust
+the full trace.
+
+**What zero-copy actually fixed** (2.63x wall-clock on top of the above,
+20.8s vs 54.6s, at unchanged `kernels_executed=11143` and unchanged CPU%):
+the `vox1`/`arrays`/`geom` kernels called `sitk.GetArrayFromImage` (always
+copies) and unconditional `sitk.Cast` (copies even when the pixel type
+already matched) throughout, instead of `arrays.py`'s existing zero-copy
+`PolyArray` machinery. Type-guarding the casts alone cut a no-op `Cast` from
+10.65ms to 0.6µs (~17,000x) on a BraTS-sized volume. Along the way, a real
+correctness hazard surfaced and was fixed: `GetArrayViewFromImage` does
+**not** keep its source image alive — reading a zero-copy view after its
+source image is garbage-collected silently returns garbage (verified: NaN),
+not an exception. `arrays.pinned_view()` closes that hole by keeping the
+source referenced from the view. See the commits on `incoming`:
+`primitives: make sitk/numpy conversions zero-copy by default` and the
+preceding dead-code removal (`remove orphaned Svelte UI and dead
+ParallelExecutionStrategy (dask)`, unrelated to zero-copy but surfaced by the
+same audit).
+
+**Combined effect vs `main`: 8.61x** (179s → 20.8s), all of it now genuine
+parallelism plus reduced work — no further headroom from more threads at
+92%+ core utilization; the only remaining lever is further work reduction.
+
+**Correction (2026-07-28, later the same day): the 20.8s figure above does
+not reproduce.** Three independent re-runs of the identical 259-case
+benchmark, same code, same host, idle box, gave 47.83s / 48.03s / 49.16s —
+consistent with each other, inconsistent with the single 20.79s
+measurement this section's "8.61x" was built on. The 20.79s run was an
+outlier (cause unconfirmed — thermal state, scheduler luck, transient load
+are candidates, not verified); **the true post-zero-copy number for this
+benchmark at `--threads 24` is ≈48s, not 20.8s, so "8.61x vs `main`" should
+be read as ≈3.7x** until re-verified with multiple runs. The zero-copy work
+itself is not in question (bit-identical Dice, real code-level improvement,
+independently reasoned) — only this one aggregate multiplier. See §5d
+below for why 24 threads was the wrong number to measure against in the
+first place.
+
+### 5d. The thread-count ceiling is memory bandwidth, not the scheduler — and is now auto-detected
+
+Chasing the discrepancy against a reference implementation (a from-scratch
+VoxLogicA1 A/B/C comparison, out of scope for this doc) turned up something
+with a direct, immediately-actionable consequence for every benchmark number
+in this file: **the engine's own default thread count (`os.cpu_count()`,
+i.e. 24 on fmt-5000) is the worst of the operating points tested**, and the
+reason is memory bandwidth, confirmed three independent ways rather than
+assumed.
+
+**The host is hybrid, not 24 uniform cores.** `lscpu`/sysfs: 8 P-cores
+(Intel Core Ultra 9 285K, up to 5.8\,GHz) + 16 E-cores (up to 4.6\,GHz), one
+thread per core, no SMT. Pinning identical single-threaded ITK kernel calls
+to a P-core vs.\ an E-core via `taskset` measured the E-core penalty
+directly: 0.55–0.78x a P-core's throughput across `Cast`, `GreaterEqual`,
+`Not`, `Mask`, `SignedMaurerDistanceMap`, `BinaryDilate`,
+`ConnectedComponent` — mean ≈0.70x. Real capacity is
+$8 + 16\times0.70 \approx 19.2$ P-core-equivalents, not 24. Every
+"parallel efficiency" percentage computed anywhere earlier in this
+investigation (including §5a) used a 24-equal-core denominator and is
+wrong by this factor.
+
+**STREAM (copy/triad, swept 1–24 OpenMP threads) found the actual DRAM
+bandwidth ceiling: 69.5\,GB/s at 8 threads, declining to 65.7\,GB/s at 24.**
+Bandwidth scales only 1.39x from 1→8 threads — nothing on this box can
+exceed that ratio if genuinely bandwidth-bound.
+
+**The real benchmark, swept over `--threads` (40-case subset), gives the
+actual curve rather than an assumption:**
+
+| threads | wall (s) | CPU% | CPU-sec | speedup |
+|---|---|---|---|---|
+| 1  | 54.03 | 106%  | 49.7  | 1.00x |
+| 8  | 8.97  | 754%  | 58.7  | 6.02x |
+| 16 | **6.80**  | 1397% | 85.1  | **7.95x (best wall-clock)** |
+| 24 | 8.01  | 2020% | 149.4 | 6.75x (worse than 16, 2.5x the CPU) |
+
+Confirmed at full scale (259 cases, unrestricted): 16 threads = 38.61s /
+542 CPU-s; 24 threads = 47.67s / 1010 CPU-s. **24 is strictly dominated by
+16: 19% slower and 46% more CPU, bit-identical Dice at every thread count
+tested.**
+
+**`perf stat` isolates the mechanism as memory stalls, not lock
+contention:** sys time rises only 1.38x from 8→24 threads (contention would
+spike sharply); P-core IPC collapses 2.80→1.66; cache-miss rate rises
+42%→64%. Converting misses to DRAM traffic: ≈26\,GB/s demand at 8 threads
+(37% of the 69.5\,GB/s ceiling — headroom) vs.\ ≈75\,GB/s at 24 (114% of
+the 65.7\,GB/s ceiling at that thread count — oversubscribed). A DSO-level
+`perf report` breakdown at both thread counts shows `_SimpleITK.so`'s share
+of self-time is unchanged (≈90%) at 8 vs.\ 24 — the extra cost at high
+thread count is the same C++ compute taking longer per call, not a shift
+toward Python glue.
+
+**Retraction of an earlier reading in this same investigation:** a small
+(160³-voxel) microbenchmark of individual ITK ops showed 9–15x scaling at
+24 threads and was read as "these ops are compute-bound with headroom."
+That's inconsistent with the measured 1.39x bandwidth ceiling — the
+microbenchmark's small working set fit comfortably in cache and never
+exercised the DRAM pressure that 40–259 concurrent full BraTS volumes do.
+Ranking transferred; magnitude did not. Caught only by re-measuring on the
+real workload rather than trusting the synthetic proxy — see §5a-§5c above
+for the earlier instances of the same lesson.
+
+**Fix shipped:** `engine/topology.py` (new file) detects the P-core count
+via `/sys/devices/cpu_core/cpus` on Linux hybrid hosts and uses it as the
+default `--threads` value (`0` still means "auto"), falling back to plain
+`os.cpu_count()` anywhere that sysfs path doesn't exist (macOS, non-hybrid
+CPUs, cgroups without it) — never worse than the old default, verified to
+raise nothing on a host without the hybrid split. `--threads N` (existing
+flag) always wins outright. New `--threads-auto {p-cores,logical}` flag
+(default `p-cores`) selects the heuristic itself when `--threads` is `0`;
+`logical` restores the old plain-CPU-count behavior for hosts/workloads
+where the heuristic is wrong. Also settable via `VOXLOGICA_THREADS_AUTO`
+env var for callers that construct `ComputationEngine` directly. The
+resolved `max_concurrency` is now always in the run's JSON summary
+(`cache_summary.max_concurrency`) so the auto-picked value is never silent.
+Verified end-to-end on fmt-5000 with no `--threads` flag at all: auto-picks
+8, matches the manually-swept 8-thread datapoint above (8.95s wall, 58.66
+CPU-s vs.\ 8.97s/58.7 measured manually).
+
+**Caveat, stated as plainly as the fix:** this is a heuristic informed by
+one host's bandwidth saturation point on one workload's memory-access
+pattern, not a general law. A memory-light workload, a box with more DRAM
+channels, or a non-hybrid CPU may saturate at a different thread count or
+not at all — `--threads N` remains the correct answer for anyone who has
+actually measured their own case, exactly as `--threads-auto logical`
+remains the correct escape hatch if the heuristic is wrong for a given
+host.

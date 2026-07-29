@@ -32,11 +32,12 @@ class EngineExecutionStrategy:
     name = "engine"
 
     def __init__(self, registry: PrimitiveRegistry | None = None, results_database: StorageBackend | None = None,
-                 threads: int = 0, debug: bool = False):
+                 threads: int = 0, debug: bool = False, threads_auto: str = "p-cores"):
         self.registry = registry or PrimitiveRegistry()
         self.results_database = results_database
         self.threads = threads
         self.debug = debug
+        self.threads_auto = threads_auto
 
     def compile(self, plan: SymbolicPlan) -> PreparedPlan:
         """Prepare a plan; the engine owns its own node table at run time."""
@@ -62,7 +63,8 @@ class EngineExecutionStrategy:
         started = time.time()
         plan = prepared.plan
         engine = ComputationEngine(registry=self.registry, backend=self.results_database,
-                                   max_concurrency=self.threads, progress=True, debug=self.debug)
+                                   max_concurrency=self.threads, progress=True, debug=self.debug,
+                                   threads_auto=self.threads_auto)
         engine.adopt_plan(plan)
 
         target = plan.goals if goals is None else [g for g in plan.goals if g.id in set(goals)]

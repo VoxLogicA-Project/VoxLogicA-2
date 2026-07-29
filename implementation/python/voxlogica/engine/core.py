@@ -43,6 +43,7 @@ from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.memlog import MemoryLogger
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.engine.numba_fusion import NumbaFusionBackend
+from voxlogica.engine.topology import default_concurrency
 from voxlogica.engine.priority import Priority
 from voxlogica.engine.query import Query, QueryStatus
 from voxlogica.engine.ready import ReadyQueue
@@ -74,10 +75,18 @@ class ComputationEngine:
 
     def __init__(self, registry: PrimitiveRegistry | None = None,
                  backend: StorageBackend | None = None, max_concurrency: int = 0,
-                 progress: bool = False, debug: bool = False, max_live_bytes: int = 0):
+                 progress: bool = False, debug: bool = False, max_live_bytes: int = 0,
+                 threads_auto: str = "p-cores"):
         self.registry = registry or PrimitiveRegistry()
         self.table = NodeTable(backend=backend)
-        self.max_concurrency = max_concurrency or (os.cpu_count() or 8)
+        # See engine/topology.py: os.cpu_count() overcounts on a hybrid P/E
+        # CPU (measured: E-cores ~0.70x a P-core here, and this workload's
+        # memory bandwidth ceiling saturates well before all logical CPUs are
+        # busy -- 24 threads is measurably slower AND ~2x the CPU-seconds of
+        # 16 on the box this was found on). threads_auto="logical" restores
+        # the plain os.cpu_count() default; max_concurrency (--threads N)
+        # always overrides both.
+        self.max_concurrency = max_concurrency or default_concurrency(threads_auto)
         self.config = EngineConfig.from_env(self.max_concurrency, max_live_bytes)
         self.executor = Executor(self.registry, self.max_concurrency)
         self.expander = Expander(self.table, self.registry)
@@ -882,6 +891,7 @@ class ComputationEngine:
         high-water mark (what admission control bounds).
         """
         m: dict[str, Any] = {
+            "max_concurrency": self.max_concurrency,
             "peak_live_mb": round(self.table.peak_live_bytes / 1024 ** 2, 1),
             "live_budget_mb": round(self.config.max_live_bytes / 1024 ** 2, 1),
             "peak_frontier": self._peak_frontier,

@@ -129,6 +129,7 @@ def run_command(args: argparse.Namespace) -> int:
             no_cache=args.no_cache,
             use_engine=args.engine,
             threads=args.threads,
+            threads_auto=args.threads_auto,
             engine_debug=args.engine_debug,
             dynamic_expansion=args.dynamic_expansion,
         ).execute_workplan(workplan, profile=args.profile)
@@ -183,7 +184,15 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--engine", action=argparse.BooleanOptionalAction, default=True,
                             help="Use the live computation engine (default); --no-engine selects the lazy strategy")
     run_parser.add_argument("--threads", type=int, default=0, metavar="N",
-                            help="Concurrent kernels (default: CPU count)")
+                            help="Concurrent kernels (default: 0 = auto-detect, see --threads-auto)")
+    run_parser.add_argument("--threads-auto", choices=["p-cores", "logical"], default="p-cores",
+                            help="Auto-detection heuristic used when --threads is 0 (engine strategy "
+                                 "only): 'p-cores' (default) counts only performance cores on a hybrid "
+                                 "Intel P/E CPU, since os.cpu_count() overcounts them there -- measured "
+                                 "on one such host, adding E-cores past the P-core count made a real "
+                                 "workload both slower and ~2x the CPU-cost (memory-bandwidth "
+                                 "saturation, see doc/dev/free-threaded-handover.md). 'logical' restores "
+                                 "the plain CPU-count default. Ignored when --threads is nonzero.")
     run_parser.add_argument("--engine-debug", action="store_true",
                             help="On engine failure, dump the stuck node frontier")
     run_parser.add_argument("--dynamic-expansion", action=argparse.BooleanOptionalAction, default=True,

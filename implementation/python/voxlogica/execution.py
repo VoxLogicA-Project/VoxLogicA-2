@@ -93,6 +93,7 @@ class ExecutionEngine:
         threads: int = 0,
         engine_debug: bool = False,
         dynamic_expansion: bool = True,
+        threads_auto: str = "p-cores",
     ):
         """Create an engine bound to one primitive registry and one strategy.
 
@@ -101,7 +102,14 @@ class ExecutionEngine:
         eagerly evicts intermediates, so — unlike lazy — it does not retain every
         binding's value in ``prepared.values`` after a run; read a value through a
         ``print``/``save`` goal instead. ``threads`` caps concurrent kernels for
-        either. See doc/dev/unified-computation-engine.md.
+        either (0 = auto-detect, see ``threads_auto``). See
+        doc/dev/unified-computation-engine.md.
+
+        ``threads_auto`` picks the auto-detection heuristic used when
+        ``threads=0`` (engine strategy only): ``"p-cores"`` (default) corrects
+        for hybrid P/E CPUs, where os.cpu_count() overcounts (see
+        engine/topology.py and doc/dev/free-threaded-handover.md's bandwidth
+        section); ``"logical"`` restores the plain os.cpu_count() default.
         """
         self.primitives = primitives_loader or PrimitivesLoader()
         self.registry = self.primitives.registry
@@ -109,7 +117,8 @@ class ExecutionEngine:
         if use_engine:
             from voxlogica.engine.strategy import EngineExecutionStrategy
             self._strategy = EngineExecutionStrategy(
-                self.registry, self.storage, threads=threads, debug=engine_debug)
+                self.registry, self.storage, threads=threads, debug=engine_debug,
+                threads_auto=threads_auto)
         else:
             self._strategy = LazyExecutionStrategy(
                 self.registry, self.storage, threads=threads, dynamic_expansion=dynamic_expansion)
