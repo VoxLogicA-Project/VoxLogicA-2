@@ -428,17 +428,31 @@ exceed that ratio if genuinely bandwidth-bound.
 **The real benchmark, swept over `--threads` (40-case subset), gives the
 actual curve rather than an assumption:**
 
-| threads | wall (s) | CPU% | CPU-sec | speedup |
-|---|---|---|---|---|
-| 1  | 54.03 | 106%  | 49.7  | 1.00x |
-| 8  | 8.97  | 754%  | 58.7  | 6.02x |
-| 16 | **6.80**  | 1397% | 85.1  | **7.95x (best wall-clock)** |
-| 24 | 8.01  | 2020% | 149.4 | 6.75x (worse than 16, 2.5x the CPU) |
+| threads | wall (s) | CPU% | CPU-sec | RSS | speedup |
+|---|---|---|---|---|---|
+| 1  | 54.03 | 106%  | 49.7  | —       | 1.00x |
+| 8  | 9.12  | 742%  | 58.7  | 1.96 GB | 5.92x |
+| 10 | 7.95  | 909%  | 63.1  | 2.20 GB | 6.80x |
+| 12 | 7.50  | 1046% | 69.0  | 2.61 GB | 7.20x |
+| 14 | 6.90  | 1236% | 75.5  | 2.89 GB | 7.83x |
+| 16 | **6.85**  | 1384% | 84.4  | 3.12 GB | **7.89x — optimum** |
+| 18 | 7.06  | 1543% | 98.0  | 3.28 GB | 7.65x |
+| 20 | 7.26  | 1712% | 112.5 | 3.69 GB | 7.44x |
+| 24 | 7.84  | 2011% | 144.9 | 4.38 GB | 6.89x |
 
 Confirmed at full scale (259 cases, unrestricted): 16 threads = 38.61s /
-542 CPU-s; 24 threads = 47.67s / 1010 CPU-s. **24 is strictly dominated by
-16: 19% slower and 46% more CPU, bit-identical Dice at every thread count
-tested.**
+542 CPU-s; 24 threads = 47.67s / 1010 CPU-s; 8 threads = 52.45s / 368
+CPU-s. Dice bit-identical at every thread count tested.
+
+**Read the whole curve, not its endpoints.** A first pass swept only
+1/2/4/8/16/24, read "24 is bad" as "only P-cores are good", and shipped a
+P-cores-only default (commit 9eef749) — which is **33% slower than the
+optimum and 16% slower than the `os.cpu_count()` default it replaced**. The
+finer sweep above shows both extremes are wrong: E-cores contribute real
+throughput (8→16 threads buys 25% wall-clock for 44% more CPU), they are
+simply not free. Fixed in 49b630a. Note also that peak RSS scales linearly
+with thread count (1.96→4.38 GB) — see the decoupling experiment below for
+why that is, and why it is not the binding constraint.
 
 **`perf stat` isolates the mechanism as memory stalls, not lock
 contention:** sys time rises only 1.38x from 8→24 threads (contention would
@@ -461,28 +475,87 @@ Ranking transferred; magnitude did not. Caught only by re-measuring on the
 real workload rather than trusting the synthetic proxy — see §5a-§5c above
 for the earlier instances of the same lesson.
 
-**Fix shipped:** `engine/topology.py` (new file) detects the P-core count
-via `/sys/devices/cpu_core/cpus` on Linux hybrid hosts and uses it as the
-default `--threads` value (`0` still means "auto"), falling back to plain
-`os.cpu_count()` anywhere that sysfs path doesn't exist (macOS, non-hybrid
-CPUs, cgroups without it) — never worse than the old default, verified to
-raise nothing on a host without the hybrid split. `--threads N` (existing
-flag) always wins outright. New `--threads-auto {p-cores,logical}` flag
-(default `p-cores`) selects the heuristic itself when `--threads` is `0`;
-`logical` restores the old plain-CPU-count behavior for hosts/workloads
-where the heuristic is wrong. Also settable via `VOXLOGICA_THREADS_AUTO`
-env var for callers that construct `ComputationEngine` directly. The
-resolved `max_concurrency` is now always in the run's JSON summary
-(`cache_summary.max_concurrency`) so the auto-picked value is never silent.
-Verified end-to-end on fmt-5000 with no `--threads` flag at all: auto-picks
-8, matches the manually-swept 8-thread datapoint above (8.95s wall, 58.66
-CPU-s vs.\ 8.97s/58.7 measured manually).
+**Is the working set the real limit? No — tested, and it isn't.** Peak RSS
+scales linearly with thread count because `engine/config.py` floored the
+loop-admission window at `max_concurrency`: every added worker opens another
+concurrent loop body (another whole BraTS case, several 36MB volumes),
+against a 36MB L3. To test whether *that*, rather than the E-cores, capped
+useful concurrency, `VOXLOGICA_LOOP_WINDOW` is now honoured **below** the
+worker count (previously it was silently floored, so the experiment was
+impossible to run):
 
-**Caveat, stated as plainly as the fix:** this is a heuristic informed by
-one host's bandwidth saturation point on one workload's memory-access
+| config | wall | CPU% | CPU-sec | RSS |
+|---|---|---|---|---|
+| threads=16, window=16 (default) | **6.94s** | 1370% | 85.0 | 3.25 GB |
+| threads=24, window=8  | 7.37s | 1250% | 81.7 | 3.43 GB |
+| threads=24, window=12 | 7.60s | 1750% | 121.1 | 4.23 GB |
+| threads=24, window=16 | 8.10s | 1941% | 144.8 | 4.40 GB |
+
+Decoupling **does** recover part of the 24-thread loss (8.10s → 7.37s, CPU
+145→82) but **under-feeds the pool** — 1250% means only ~12.5 of 24 cores
+busy, because 8 open bodies don't expose enough ready nodes for 24 workers
+— and never reaches the 16-thread number. So the coupling is a real effect,
+not the binding constraint: **useful concurrency for this workload tops out
+at ~14–16 simultaneous kernels however it is configured.** Past that it is
+the memory system, not the scheduler and not the admission window.
+
+**Fix shipped** (9eef749, corrected by 49b630a): `engine/topology.py` reads
+the kernel's P/E split from `/sys/devices/cpu_core/cpus` and defaults to
+**P-cores + half the E-cores** ("balanced" — 16 here, the measured
+optimum). Falls back to plain `os.cpu_count()` anywhere that sysfs path
+doesn't exist (macOS, non-hybrid CPUs, cgroups without it), so the change
+is never worse than the prior default and never raises. `--threads N`
+always wins outright. `--threads-auto {balanced,p-cores,logical}` selects
+the heuristic when `--threads` is `0`: `p-cores` is retained as a real
+choice (2.5x less CPU and RSS for ~33% more wall-clock — correct on a
+*shared* box, wrong on a dedicated one), `logical` restores the plain
+count. Also settable via `VOXLOGICA_THREADS_AUTO`. The resolved
+`max_concurrency` is now always in the run's JSON summary
+(`cache_summary.max_concurrency`), so the auto-picked value is never
+silent. Verified end-to-end with no `--threads` flag: auto-picks 16,
+**6.81s** — matching the swept optimum (6.85s).
+
+**Net result vs VoxLogicA1** (same 40 cases, same host): VL1 8.17s,
+`incoming` 6.81s — **17% faster**, having previously been 9% slower with
+the P-cores-only default. Note that all 24 cores (7.84s) also still beats
+VL1; the point of "balanced" is that it beats VL1 by more.
+
+**Caveat, stated as plainly as the fix:** every mode here is a heuristic
+fitted to one host's saturation point on one workload's memory-access
 pattern, not a general law. A memory-light workload, a box with more DRAM
-channels, or a non-hybrid CPU may saturate at a different thread count or
-not at all — `--threads N` remains the correct answer for anyone who has
-actually measured their own case, exactly as `--threads-auto logical`
-remains the correct escape hatch if the heuristic is wrong for a given
-host.
+channels, or a non-hybrid CPU will saturate somewhere else. `--threads N`
+remains the correct answer for anyone who has measured their own case. The
+curve is flat between 14 and 18 (within 3%), so the cost of being *roughly*
+right is small — the cost of landing at either extreme is 14–33%.
+
+### 5e. Should thread count be tuned dynamically? (open, not done)
+
+The optimum is set by DRAM bandwidth saturation, which is a property of the
+*host* and the *workload's* access pattern — so a static heuristic fitted
+to fmt-5000 is portable only by luck. Three approaches, in rising order of
+cost and risk; **none implemented**:
+
+1. **Offline calibration, cached.** A `voxlogica calibrate` subcommand runs
+   the thread sweep once per host, writes the winner to a config file, and
+   the default reads it. Honest, zero runtime overhead, no scheduler risk,
+   and it produces exactly the evidence a user needs to trust the number.
+   Cost: minutes, once. **This is the recommended next step if portability
+   matters.**
+2. **Startup probe.** Run a STREAM-like bandwidth probe at process start
+   and derive the thread count. ~1–2s of overhead on every run — acceptable
+   for a 259-case sweep, absurd for a 7-second one. Only sensible if gated
+   on expected run length, which is not known up front.
+3. **Runtime adaptation.** Gate dispatch with a semaphore (the pool itself
+   can't resize) and tune its permits from observed node-completion rate.
+   Principled and portable, but it touches the scheduling contract §1
+   describes as single-writer and delicate — and `admission._has_room`
+   already uses `ready.qsize() < workers` as its demand signal, so the
+   gate and the admission logic would have to stay consistent or admission
+   will over-open loop bodies for workers that are being held back. Real
+   oscillation risk. **The measured upside is small** — the curve is flat
+   within 3% across 14–18 — so this buys portability, not peak speed, and
+   should not be attempted for the latter.
+
+The honest summary: dynamic tuning is worth it for *not being wrong on an
+unknown machine*, not for squeezing this one. Option 1 gets most of that
+benefit for a fraction of the risk.
