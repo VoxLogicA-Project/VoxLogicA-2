@@ -118,6 +118,14 @@ class EngineExecutionStrategy:
                     print("\n== profile: tottime, top 30 ==", file=sys.stderr)
                     stats.print_stats(30)
 
+        # This engine was constructed fresh above and is not shared with any
+        # other engine instance (the one supported reuse pattern —
+        # ``engine.numba_backend = other_engines_backend`` — has no caller in
+        # this codebase), so it's always safe and correct to shut its numba
+        # compile pool down here, once, now that run() itself no longer does
+        # this implicitly (see ComputationEngine.shutdown()'s docstring).
+        engine.shutdown()
+
         if goals is None:
             for goal in target:
                 if goal.id in values:

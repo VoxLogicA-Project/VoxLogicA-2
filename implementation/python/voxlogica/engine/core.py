@@ -86,6 +86,15 @@ class ComputationEngine:
             NumbaFusionBackend(self.registry, min_members=self.config.numba_min_members)
             if self.config.numba_fusion_enabled else None
         )
+        # Identity, not a bool: callers (tests, and any warm-reuse-across-runs
+        # caller) legitimately replace ``self.numba_backend`` post-construction
+        # with one SHARED across several engine instances/run() calls, to reuse
+        # its compiled-shape cache. Shutting down a borrowed backend at the end
+        # of THIS run() would pull it out from under the other instance(s) still
+        # using it -- comparing identity against what THIS engine actually
+        # constructed is what tells "mine, shut it down" apart from "borrowed,
+        # leave it running" without adding a second public attribute to track.
+        self._own_numba_backend = self.numba_backend
         self._show_progress = progress
         self._debug = debug
         self._progress: tqdm | None = None
@@ -239,8 +248,6 @@ class ComputationEngine:
             for worker in workers:
                 worker.cancel()
             self.admission.shutdown()
-            if self.numba_backend is not None:
-                self.numba_backend.shutdown()
             self._memlog.stop()
             if self._progress is not None:
                 self._flush_progress()
@@ -249,6 +256,33 @@ class ComputationEngine:
         self.table.flush()
         if self._first_error is not None:
             raise self._first_error
+
+    def shutdown(self) -> None:
+        """Release this engine's own background resources (currently just its
+        numba compile pool, if it has one).
+
+        NOT called automatically at the end of ``run()``: a ``NumbaFusionBackend``
+        is explicitly designed to be reused across multiple ``run()`` calls and
+        even multiple ``ComputationEngine`` instances (its whole point is a
+        compiled-shape cache that survives past any one run — see
+        ``numba_fusion.py``'s module docstring). Tying its shutdown to a single
+        ``run()``'s ``finally`` block broke exactly that: a caller building a
+        second engine on a borrowed backend (``engine.numba_backend = other``)
+        would find it shut down and unable to accept new compiles the moment
+        the FIRST engine's ``run()`` returned, even though the second engine
+        was still actively using it (``RuntimeError: cannot schedule new
+        futures after shutdown``).
+
+        Call this once truly done with the engine (e.g. once per CLI
+        invocation, after its one-and-only ``run()``) — never call it on a
+        backend you didn't construct yourself; it will not be re-created.
+        Only shuts down a backend this engine itself constructed (identity
+        against ``self._own_numba_backend``, set once in ``__init__``): a
+        borrowed/injected backend is never touched here, its shutdown is the
+        constructing owner's responsibility.
+        """
+        if self._own_numba_backend is not None and self.numba_backend is self._own_numba_backend:
+            self.numba_backend.shutdown()
 
     async def _join_with_watchdog(self) -> None:
         """Wait for all work to finish, but NEVER hang silently.

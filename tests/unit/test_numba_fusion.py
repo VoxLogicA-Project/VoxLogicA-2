@@ -61,7 +61,27 @@ def _plan(tmp_path) -> SymbolicPlan:
 
 
 def _run(plan: SymbolicPlan, *, numba_backend=None):
-    engine = ComputationEngine()
+    # max_concurrency=1 is LOAD-BEARING, not incidental: a cone's membership
+    # depends on which of its producers have already completed when the seed
+    # is popped (FusionPlanner only grows FORWARD, never retroactively
+    # absorbing a finished producer -- see the module-level comment on
+    # _NOT_DEPTH). Under parallelism that is a race, so the same plan yields
+    # DIFFERENT ConeShapes run to run -- measured on a 24-core box: member
+    # counts of 14,14,15,14 across four runs, vs a stable 15 every time at
+    # concurrency 1. Since the compile cache is keyed by shape, a warm run
+    # that happens to form a different shape than the cold run compiled asks
+    # for a key that was never compiled, silently falls back to Stage A, and
+    # this test's "cones_numba > 0" assertion fails -- ~50-70% of runs.
+    # Pinning to 1 makes cone formation deterministic so the test measures
+    # what it claims (Stage A vs Stage B equivalence) instead of scheduler
+    # luck. The sibling _run_loop pins concurrency for the same reason.
+    #
+    # NB the underlying nondeterminism is NOT a production problem and is not
+    # worth "fixing" in the planner: shapes recur constantly across a real
+    # workload, so the cache converges -- a 259-case BraTS run measured
+    # cones_numba 773 / cones_dispatched 777 (99.5% Stage B). It only bites a
+    # 2-run test, where there is no second chance for a shape to recur.
+    engine = ComputationEngine(max_concurrency=1)
     engine.config = replace(engine.config, fusion_enabled=True)
     if numba_backend is not None:
         engine.numba_backend = numba_backend
@@ -268,3 +288,114 @@ def test_numba_fusion_disabled_never_dispatches_stage_b(tmp_path) -> None:
     metrics = engine.metrics()
     assert metrics["cones_dispatched"] > 0
     assert metrics["cones_numba"] == 0
+
+
+# Isolated from PROGRAM/_run/_plan above on purpose: entangling these into
+# the shared "neg"/"combo" cones (tried first) made cone-formation timing
+# nondeterministic between the cold and warm engine instances — the warm run
+# would occasionally see a genuinely different ConeShape than the cold run
+# compiled, triggering a fresh compile submit() against the cold engine's
+# already-shut-down backend pool ("cannot schedule new futures after
+# shutdown"). A self-contained program/engine pair per test sidesteps that
+# entirely and is easier to reason about besides.
+#
+# Exercises the generic image-vs-image/image-vs-scalar comparison ops added
+# alongside leq_sv/geq_sv/between: imgVsScalar is "array OP scalar" (the
+# common case, e.g. dt(x) > 0); scalarVsImg is "scalar OP array" (kernels.py
+# flips the underlying sitk call for this direction — e.g. "5.0 > img"
+# dispatches Less(img, 5.0) — so this specifically checks the plain
+# positional expr fragment is still correct despite that internal flip);
+# imgVsImg is a genuine two-array comparison (dt(x) <= img), the actual new
+# case this pass targets (distgeq/distleq's "x <= pdt(y)" in the real
+# TACAS19 procedure).
+_CMP_PROGRAM = """
+import "simpleitk"
+import "vox1"
+img = ReadImage("{path}")
+dtimg = dt(geq_sv(2.0, img))
+imgVsScalar = %s
+scalarVsImg = %s
+imgVsImg = %s
+print "imgVsScalar" imgVsScalar
+print "scalarVsImg" scalarVsImg
+print "imgVsImg" imgVsImg
+""" % (
+    "not(" * _NOT_DEPTH + "(dtimg < 5.0)" + ")" * _NOT_DEPTH,
+    "not(" * _NOT_DEPTH + "(5.0 > dtimg)" + ")" * _NOT_DEPTH,
+    "not(" * _NOT_DEPTH + "(img <= dtimg)" + ")" * _NOT_DEPTH,
+)
+
+
+def _cmp_plan(tmp_path) -> SymbolicPlan:
+    img_path = tmp_path / "in.nii.gz"
+    _write_test_image(img_path)
+    program = _CMP_PROGRAM.format(path=str(img_path).replace("\\", "/"))
+    return reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_for_generic_comparisons(tmp_path) -> None:
+    """Bit-identical Stage A vs Stage B for the newly-added '<','<=','>','>=',
+    '==','!=' ElementwiseSpec entries (see primitives/vox1/__init__.py)."""
+    plan = _cmp_plan(tmp_path)
+
+    cold_engine, cold_values, cold_metrics = _run(plan)
+    assert cold_metrics["cones_dispatched"] > 0
+    assert cold_metrics["cones_numba"] == 0, \
+        "first-ever run of a shape must never block on its own compile"
+
+    backend = cold_engine.numba_backend
+    deadline = time.monotonic() + 10.0
+    while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+        if time.monotonic() > deadline:
+            pytest.fail("background numba compile(s) never finished")
+        time.sleep(0.05)
+    assert backend.compiles_failed == 0, "no cone shape in this program should fail to compile"
+    assert backend.compiles_finished > 0
+
+    warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+    assert warm_metrics["cones_numba"] > 0, \
+        "test must actually exercise Stage B, or it proves nothing"
+
+    for name in ("imgVsScalar", "scalarVsImg", "imgVsImg"):
+        a = np.asarray(cold_values[name].np())
+        b = np.asarray(warm_values[name].np())
+        assert np.array_equal(a, b), \
+            f"goal {name!r} diverged between Stage A and Stage B"
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_for_generic_comparisons_on_nan_and_boundary_values(tmp_path) -> None:
+    """Same as above, on the NaN/boundary-value image (see
+    ``_write_edge_case_image``): the actual bit-identical CONTRACT, not just
+    the happy-path arithmetic the sibling test exercises."""
+    img_path = tmp_path / "in.mha"
+    _write_edge_case_image(img_path)
+    program = _CMP_PROGRAM.format(path=str(img_path).replace("\\", "/"))
+    plan = reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+    cold_engine, cold_values, _ = _run(plan)
+    backend = cold_engine.numba_backend
+    deadline = time.monotonic() + 10.0
+    while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+        if time.monotonic() > deadline:
+            pytest.fail("background numba compile(s) never finished")
+        time.sleep(0.05)
+    assert backend.compiles_failed == 0
+
+    warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+    assert warm_metrics["cones_numba"] > 0, \
+        "test must actually exercise Stage B, or it proves nothing"
+
+    for name in ("imgVsScalar", "scalarVsImg", "imgVsImg"):
+        a = np.asarray(cold_values[name].np())
+        b = np.asarray(warm_values[name].np())
+        assert np.array_equal(a, b), \
+            f"goal {name!r} diverged on NaN/boundary input between Stage A and Stage B"
+
+    # imgVsImg = not^13(img <= dtimg): img contains NaN, dtimg (a distance
+    # transform) never does — the genuine NaN-vs-finite comparison this pass
+    # targets. NaN <= anything is False in IEEE754; wrapped in an ODD number
+    # (13) of nots, False negates to True.
+    flat = np.asarray(warm_values["imgVsImg"].np()).reshape(-1)
+    assert flat[0] == 1, "NaN <= finite must be False, negated odd number of times to True"

@@ -22,6 +22,22 @@ _ELEMENTWISE: dict[str, ElementwiseSpec] = {
     "geq_sv": ElementwiseSpec(expr="{1} >= {0}", out_dtype="uint8"),
     # between(value1, value2, image): image is {2}.
     "between": ElementwiseSpec(expr="({0} <= {2}) & ({2} <= {1})", out_dtype="uint8"),
+    # Generic image-vs-image (or image-vs-scalar) comparisons: kernels.py's
+    # less/less_equal/etc. flip the underlying sitk op when the SCALAR is on
+    # the left (e.g. "3 < img" dispatches Greater(img, 3)) so that the
+    # *logical* meaning stays "left OP right" regardless of which side is the
+    # array — meaning a plain positional expr is correct unconditionally,
+    # with no need to replicate that flip here. Output is always a 0/1 mask
+    # (ITK's own comparison-filter convention), so out_dtype="uint8" is safe
+    # regardless of the operand dtype(s) — unlike e.g. mask(), whose output
+    # dtype tracks its image argument and is therefore NOT safely declarable
+    # this way (see doc/dev/free-threaded-handover.md's fusion-coverage note).
+    "==": ElementwiseSpec(expr="{0} == {1}", out_dtype="uint8"),
+    "!=": ElementwiseSpec(expr="{0} != {1}", out_dtype="uint8"),
+    "<":  ElementwiseSpec(expr="{0} < {1}", out_dtype="uint8"),
+    "<=": ElementwiseSpec(expr="{0} <= {1}", out_dtype="uint8"),
+    ">":  ElementwiseSpec(expr="{0} > {1}", out_dtype="uint8"),
+    ">=": ElementwiseSpec(expr="{0} >= {1}", out_dtype="uint8"),
 }
 
 _PRIMITIVES: dict[str, tuple[Callable[..., Any], AritySpec]] = {
