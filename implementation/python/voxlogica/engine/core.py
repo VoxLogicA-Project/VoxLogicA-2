@@ -34,6 +34,7 @@ from typing import Any
 from tqdm import tqdm
 
 from voxlogica.engine.admission import LoopAdmission
+from voxlogica.engine.concurrency_probe import ConcurrencyProbe
 from voxlogica.engine.config import EngineConfig
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
@@ -165,6 +166,7 @@ class ComputationEngine:
         self._kernels_executed = 0  # kernels run this session (cold high; warm ~0 = full reuse)
         self._recomputes = 0        # evicted values that had to be recomputed, not reloaded
         self._in_flight = 0         # kernels currently executing (watchdog: 0 + no progress = deadlock)
+        self._probe: ConcurrencyProbe | None = None  # set for the duration of run()
 
         # ── Schedule-time fusion (engine/fusion.py) ──
         self._cones_dispatched = 0  # number of cone dispatches (>=2 members each)
@@ -254,6 +256,10 @@ class ComputationEngine:
                                   disable=None, file=sys.stderr, leave=True)
         self._memlog = MemoryLogger(self._memory_snapshot)
         self._memlog.start()
+        # Records whether the engine actually kept max_concurrency kernels busy;
+        # see engine/concurrency_probe.py for why wall-clock alone is not enough.
+        self._probe = ConcurrencyProbe(lambda: self._in_flight)
+        self._probe.start()
         workers = [asyncio.create_task(self._worker()) for _ in range(self.max_concurrency)]
         try:
             await self._join_with_watchdog()
@@ -264,6 +270,8 @@ class ComputationEngine:
                 worker.cancel()
             self.admission.shutdown()
             self._memlog.stop()
+            if self._probe is not None:
+                self._probe.stop()
             if self._progress is not None:
                 self._flush_progress()
                 self._progress.close()
@@ -909,6 +917,18 @@ class ComputationEngine:
         """
         m: dict[str, Any] = {
             "max_concurrency": self.max_concurrency,
+            # ACHIEVED vs requested concurrency. `saturation` well below 1.0 means
+            # the engine was starving (scheduler/dependency bound) and tuning
+            # kernels or threads cannot help; near 1.0 means the scheduler did its
+            # job and any disappointing wall-clock lies in the kernels or the
+            # memory system. Reporting wall-clock without this is what made four
+            # separate scaling conclusions unfalsifiable -- see
+            # doc/dev/scaling-test-design.md.
+            "mean_concurrency": round(
+                self._probe.mean_concurrency, 2) if self._probe else 0.0,
+            "peak_concurrency": self._probe.peak_concurrency if self._probe else 0,
+            "saturation": round(
+                self._probe.saturation(self.max_concurrency), 3) if self._probe else 0.0,
             "peak_live_mb": round(self.table.peak_live_bytes / 1024 ** 2, 1),
             "live_budget_mb": round(self.config.max_live_bytes / 1024 ** 2, 1),
             "peak_frontier": self._peak_frontier,
