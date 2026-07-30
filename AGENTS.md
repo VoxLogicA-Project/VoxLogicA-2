@@ -30,6 +30,24 @@ tail -f _scratch/brats017.out.progress   # human-readable snapshots every 20s
 tr '\r' '\n' < _scratch/brats017.out.raw | grep -a 'nodes:' | tail -1
 ```
 
+## Syncing code between machines (Mac ↔ fmt-5000, or any two clones)
+
+**CRITICAL: manual sync of code in a git repo is FORBIDDEN.** Never `scp`,
+`rsync`, `cat`-over-ssh, or otherwise hand-copy a tracked file to update a
+remote checkout — that's a silent, unreviewable, un-diffable edit that
+bypasses history and will drift the two checkouts out of sync in ways
+`git status` on either side won't reveal.
+
+Always: commit locally → `git push` → on the remote, `git pull` (or `git
+fetch` + `git checkout`/`git merge` if the branch diverged). If the remote
+checkout has uncommitted local changes blocking the pull, stop and resolve
+that (stash, commit, or ask the user) rather than routing around it with a
+file copy.
+
+This applies to source files, `.imgql` files, and any other tracked content
+— not just Python. Untracked/generated artifacts (caches, datasets, `.db`
+files) are not code and are not covered by this rule.
+
 ## Profiling Commands
 
 Profiling (`--profile wall`) adds ~2-3x overhead. When profiling is needed:

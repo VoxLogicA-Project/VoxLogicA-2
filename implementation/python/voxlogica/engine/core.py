@@ -622,6 +622,13 @@ class ComputationEngine:
         completion rate instead — always available once any nodes have
         completed — and show it here; ``_PROGRESS_FORMAT`` no longer renders
         tqdm's own ``{remaining}``.
+
+        The current operator name is last and unpadded (its length is
+        unbounded — namespaced primitive names vary a lot, e.g. "not" vs
+        "vox1.n4"). Every field before it — the nodes counter and the rate —
+        has reserved, fixed width, so a long/short op name never shifts them:
+        without this, the op name used to sit mid-line and made the ETA/rate
+        dance left and right as it changed length every refresh.
         """
         elapsed = max(1e-6, time.perf_counter() - self._progress_start)
         rate = self._nodes_done / elapsed
@@ -632,8 +639,12 @@ class ComputationEngine:
         known = self.graph.registered_total
         remaining_nodes = known - self._nodes_done
         eta = tqdm.format_interval(remaining_nodes / rate) if rate > 1e-9 and remaining_nodes > 0 else "?"
+        known_str = f"{known:,}"
+        done_str = f"{self._nodes_done:,}"
+        w = len(known_str)
+        rate_str = f"{rate:,.0f}"
         self._progress.set_description_str(
-            f"{self._progress_op} · {self._nodes_done:,}/{known:,} nodes · {rate:,.0f} node/s · ETA {eta}",
+            f"{done_str:>{w}}/{known_str} nodes · {rate_str:>7} node/s · ETA {eta:>9} · {self._progress_op}",
             refresh=False)
         self._progress.refresh()
         self._progress_pending = 0
