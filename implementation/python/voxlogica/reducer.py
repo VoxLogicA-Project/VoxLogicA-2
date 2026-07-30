@@ -11,6 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Sequence
 import logging
+import sys
+import threading
+import time
+
+from tqdm import tqdm
 
 from voxlogica.lazy import GoalSpec, NodeId, NodeSpec, SymbolicPlan
 from voxlogica.lazy.ir import OutputKind
@@ -1110,6 +1115,65 @@ def reduce_command(
     raise RuntimeError("Reducer internal error: unknown command type")
 
 
+_PLANNING_FORMAT = "planning: {elapsed} · {desc}"
+_PLANNING_SAMPLE_S = 0.25
+# Only announce planning once it has visibly stalled: a small program reduces in
+# milliseconds and should stay silent, but a large sweep spends minutes here
+# (measured: 129 s to build 1.46 M nodes for a 30-case oracle grid) with no
+# output at all, which reads as a hang. See doc/dev/free-threaded-handover.md.
+_PLANNING_ANNOUNCE_AFTER_S = 1.0
+
+
+class _PlanningProgress:
+    """Live 'still working' readout for the silent plan-construction phase.
+
+    Reduction is a single long synchronous call: loop expansion materialises
+    the whole DAG before the executor (and its own bar) ever starts. Rather
+    than instrument the recursive reducer, a daemon thread samples the node
+    count every ``_PLANNING_SAMPLE_S``. That keeps the readout smooth even
+    though top-level commands complete very unevenly, and costs nothing but a
+    dict length read per tick.
+    """
+
+    def __init__(self, work_plan: WorkPlan) -> None:
+        self._work_plan = work_plan
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._bar: tqdm | None = None
+
+    def __enter__(self) -> "_PlanningProgress":
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="voxlogica-planning-progress")
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        # Stay silent for short reductions: waiting out the announce delay here
+        # means a fast program never creates a bar at all, so nothing has to be
+        # torn down and no stray line lands in the log.
+        if self._stop.wait(_PLANNING_ANNOUNCE_AFTER_S):
+            return
+        self._bar = tqdm(bar_format=_PLANNING_FORMAT, dynamic_ncols=True,
+                         disable=None, file=sys.stderr, leave=False)
+        while not self._stop.is_set():
+            if self._bar is not None:
+                self._bar.set_description_str(
+                    f"{len(self._work_plan.nodes):,} nodes built", refresh=True)
+            self._stop.wait(_PLANNING_SAMPLE_S)
+
+    def __exit__(self, *exc_info) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        if self._bar is not None:
+            # Leave a permanent one-line record of what planning produced; the
+            # transient bar itself is cleared (leave=False) so it does not
+            # collide with the executor bar that starts immediately after.
+            self._bar.close()
+            print(f"planning: {len(self._work_plan.nodes):,} nodes built in "
+                  f"{self._bar.format_dict['elapsed']:.1f}s", file=sys.stderr, flush=True)
+
+
 def _reduce_program_internal(
     program: Program,
     environment: Environment | None = None,
@@ -1136,28 +1200,28 @@ def _reduce_program_internal(
         if isinstance(binding, OperationVal):
             declaration_bindings[command.identifier] = binding
 
-    stdlib_path = Path(__file__).parent / "stdlib" / "stdlib.imgql"
-    if stdlib_path.exists():
-        try:
-            stdlib_program = parse_program_content(stdlib_path.read_text(encoding="utf-8"))
-            commands = list(stdlib_program.commands)
-            while commands:
-                command = commands.pop(0)
-                env, imports = reduce_command(env, work_plan, parsed_imports, command)
-                _track_binding(command, env)
-                commands = imports + commands
-        except Exception as exc:
-            logger.warning("Failed to load stdlib: %s", exc)
+    with _PlanningProgress(work_plan):
+        stdlib_path = Path(__file__).parent / "stdlib" / "stdlib.imgql"
+        if stdlib_path.exists():
+            try:
+                stdlib_program = parse_program_content(stdlib_path.read_text(encoding="utf-8"))
+                commands = list(stdlib_program.commands)
+                while commands:
+                    command = commands.pop(0)
+                    env, imports = reduce_command(env, work_plan, parsed_imports, command)
+                    _track_binding(command, env)
+                    commands = imports + commands
+            except Exception as exc:
+                logger.warning("Failed to load stdlib: %s", exc)
 
-    # Imported commands are pushed to the front of the queue so the reducer sees
-    # them in a deterministic, source-like order.
-    commands = list(program.commands)
-    # print(commands)
-    while commands:
-        command = commands.pop(0)
-        env, imports = reduce_command(env, work_plan, parsed_imports, command)
-        _track_binding(command, env)
-        commands = imports + commands
+        # Imported commands are pushed to the front of the queue so the reducer sees
+        # them in a deterministic, source-like order.
+        commands = list(program.commands)
+        while commands:
+            command = commands.pop(0)
+            env, imports = reduce_command(env, work_plan, parsed_imports, command)
+            _track_binding(command, env)
+            commands = imports + commands
 
     return work_plan, declaration_bindings
 
