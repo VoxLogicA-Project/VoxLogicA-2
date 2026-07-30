@@ -39,7 +39,6 @@ from voxlogica.engine.config import EngineConfig
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
 from voxlogica.engine.fusion import FusionPlanner
-from voxlogica.engine.itk_threads import configure_itk_threads
 from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.memlog import MemoryLogger
@@ -89,11 +88,14 @@ class ComputationEngine:
         # the plain os.cpu_count() default; max_concurrency (--threads N)
         # always overrides both.
         self.max_concurrency = max_concurrency or default_concurrency(threads_auto)
-        # Each SimpleITK filter call otherwise spreads over EVERY logical CPU,
-        # independently of this pool, so W workers put W x C native threads on
-        # C cores. Must happen here, once the worker count is known and before
-        # any kernel runs. See engine/itk_threads.py for the measurements.
-        self.itk_threads = configure_itk_threads(self.max_concurrency)
+        # NOTE: ITK's own global thread count is deliberately NOT set here.
+        # A `cores // max_concurrency` cap was tried and reverted: measured on
+        # fmt-5000 it is up to 3.1x SLOWER than leaving ITK alone, because this
+        # system tolerates oversubscription cheaply but not fine-grained
+        # subdivision, and the optimum interacts with max_concurrency with a
+        # crossover (itk=24 wins at 8 workers, itk=1 wins at 18). No constant is
+        # right; it belongs in engine/calibration.py's swept, fingerprinted
+        # space. Full data: manuscripts/engine-scaling-2026-07.md sec 4-5.
         self.config = EngineConfig.from_env(self.max_concurrency, max_live_bytes)
         self.executor = Executor(self.registry, self.max_concurrency)
         self.expander = Expander(self.table, self.registry)
