@@ -38,7 +38,9 @@ from voxlogica.engine.concurrency_probe import ConcurrencyProbe
 from voxlogica.engine.config import EngineConfig
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
+from voxlogica.engine.calibration import load_cached_itk_threads
 from voxlogica.engine.fusion import FusionPlanner
+from voxlogica.engine.itk_threads import apply_itk_threads
 from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.memlog import MemoryLogger
@@ -88,14 +90,25 @@ class ComputationEngine:
         # the plain os.cpu_count() default; max_concurrency (--threads N)
         # always overrides both.
         self.max_concurrency = max_concurrency or default_concurrency(threads_auto)
-        # NOTE: ITK's own global thread count is deliberately NOT set here.
-        # A `cores // max_concurrency` cap was tried and reverted: measured on
-        # fmt-5000 it is up to 3.1x SLOWER than leaving ITK alone, because this
-        # system tolerates oversubscription cheaply but not fine-grained
-        # subdivision, and the optimum interacts with max_concurrency with a
-        # crossover (itk=24 wins at 8 workers, itk=1 wins at 18). No constant is
-        # right; it belongs in engine/calibration.py's swept, fingerprinted
-        # space. Full data: manuscripts/engine-scaling-2026-07.md sec 4-5.
+        # A `cores // max_concurrency` FORMULA for ITK's own thread count was
+        # tried and reverted: measured on fmt-5000 it was up to 3.1x SLOWER
+        # than leaving ITK alone (this system tolerates oversubscription
+        # cheaply but not fine-grained subdivision, and the optimum crosses
+        # over with worker count -- itk=24 wins at 8 workers, itk=1 wins at
+        # 18). No formula is right; see manuscripts/engine-scaling-2026-07.md
+        # Part I sec 4-5 and Part II sec 10-11 for why it can't be one.
+        # calibration.py now MEASURES it instead, at whatever worker count it
+        # settles on, and caches it fingerprinted the same way as the worker
+        # count itself. Only apply the cached value when max_concurrency is
+        # EXACTLY the worker count it was measured at -- a value calibrated at
+        # one worker count is not known-good at another (that crossover is the
+        # whole reason a formula failed), so any other worker count (e.g. an
+        # explicit --threads N calibration never swept) leaves ITK at its own
+        # default: the measured-safe fallback, never the worst option across
+        # any worker count in Part I's sweep, just not always the best.
+        itk_threads = load_cached_itk_threads(self.max_concurrency)
+        if itk_threads is not None:
+            apply_itk_threads(itk_threads)
         self.config = EngineConfig.from_env(self.max_concurrency, max_live_bytes)
         self.executor = Executor(self.registry, self.max_concurrency)
         self.expander = Expander(self.table, self.registry)

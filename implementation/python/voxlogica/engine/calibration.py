@@ -201,18 +201,57 @@ def load_cached_threads(fingerprint: MachineFingerprint | None = None) -> int | 
     return entry.get("threads")
 
 
-def _save_calibration(fingerprint: MachineFingerprint, threads: int, candidates: dict[int, float]) -> None:
+def load_cached_itk_threads(threads: int, fingerprint: MachineFingerprint | None = None
+                             ) -> int | None:
+    """Return the calibrated ITK thread count for THIS machine at exactly
+    ``threads`` engine workers, or None if nothing was calibrated for that
+    pairing.
+
+    Deliberately keyed on ``threads`` too, not just the fingerprint: the
+    manuscript's Part I sec 5 measured the ITK-thread optimum crossing over
+    with worker count (itk=24 best at 8 workers, itk=1 best at 18), so a value
+    calibrated at one worker count is not known-good at another. If the caller
+    is running at a worker count calibration never swept (e.g. an explicit
+    --threads N different from the calibrated winner), returning None leaves
+    ITK at its own default -- the measured-safe fallback (Part I sec 4: never
+    the worst option across any worker count, just not always the best).
+    """
+    fp = fingerprint or MachineFingerprint.detect()
+    path = _cache_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    entry = data.get(fp.key())
+    if not entry:
+        return None
+    itk_by_threads = entry.get("itk_threads_by_workers") or {}
+    return itk_by_threads.get(str(threads))
+
+
+def _save_calibration(fingerprint: MachineFingerprint, threads: int, candidates: dict[int, float],
+                       itk_threads_by_workers: dict[int, int] | None = None,
+                       itk_candidates_wall_seconds: dict[int, float] | None = None) -> None:
     path = _cache_path()
     try:
         data = json.loads(path.read_text()) if path.exists() else {}
     except (OSError, json.JSONDecodeError):
         data = {}
-    data[fingerprint.key()] = {
+    entry = {
         "threads": threads,
         "fingerprint": asdict(fingerprint),
         "candidates_wall_seconds": {str(k): v for k, v in candidates.items()},
         "calibrated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
+    if itk_threads_by_workers:
+        entry["itk_threads_by_workers"] = {str(k): v for k, v in itk_threads_by_workers.items()}
+    if itk_candidates_wall_seconds:
+        entry["itk_candidates_wall_seconds"] = {
+            str(k): v for k, v in itk_candidates_wall_seconds.items()
+        }
+    data[fingerprint.key()] = entry
     path.write_text(json.dumps(data, indent=2))
 
 
@@ -304,12 +343,39 @@ def _candidate_thread_counts(fingerprint: MachineFingerprint) -> list[int]:
     return sorted({t for t in raw if t > 0})
 
 
-def _time_one_run(program_text: str, threads: int) -> float:
-    """Run the calibration workload once at a given thread count; return wall seconds."""
+def _candidate_itk_threads(winner_threads: int, fingerprint: MachineFingerprint) -> list[int]:
+    """ITK thread-count candidates to try AT the winning engine worker count.
+
+    Small and bounded on purpose: manuscripts/engine-scaling-2026-07.md Part I
+    sec 5 measured that the optimum is not a formula (it crosses over with
+    worker count) but IS well-approximated by a small handful of shapes: ITK
+    inline (1, so the engine alone supplies parallelism), ITK filling whatever
+    the engine leaves idle (logical_cpus // winner_threads, the "one native
+    thread per otherwise-idle core" point), and ITK using everything (the
+    as-shipped default, included so calibration can confirm "leave it alone"
+    is still the winner rather than assuming it never is).
+    """
+    logical = fingerprint.logical_cpus
+    raw = [1, max(1, logical // max(1, winner_threads)), logical]
+    return sorted({t for t in raw if t > 0})
+
+
+def _time_one_run(program_text: str, threads: int, itk_threads: int | None = None) -> float:
+    """Run the calibration workload once at a given thread count; return wall seconds.
+
+    ``itk_threads``, if given, is applied via ``engine.itk_threads.apply_itk_threads``
+    before the run -- this is how the ITK-thread sub-sweep (see
+    ``_candidate_itk_threads``) tests each candidate. Left ``None`` for the
+    worker-count sweep, which measures ITK left at its own default.
+    """
     from voxlogica.execution import ExecutionEngine
     from voxlogica.parser import parse_program_content
     from voxlogica.reducer import reduce_program
     from voxlogica.storage import NoCacheStorageBackend
+
+    if itk_threads is not None:
+        from voxlogica.engine.itk_threads import apply_itk_threads
+        apply_itk_threads(itk_threads)
 
     syntax = parse_program_content(program_text)
     workplan = reduce_program(syntax)
@@ -374,11 +440,37 @@ def run_calibration(*, n_cases: int = 16, reps: int = 3, force_ignore_idle: bool
                     _report(f"  rep {rep + 1}/{reps}  threads={c:3d}  wall={wall:.2f}s "
                             f"(best so far: {best[c]:.2f}s)")
 
-        winner = min(best, key=best.get)
-        _save_calibration(fingerprint, winner, best)
-        _report(f"chosen: {winner} threads (best wall time {best[winner]:.2f}s)")
+            winner = min(best, key=best.get)
+            _report(f"chosen: {winner} threads (best wall time {best[winner]:.2f}s)")
+
+            # Second, small sweep: AT the winning worker count, is there an ITK
+            # thread count that beats leaving ITK at its own default? Bounded to
+            # a handful of candidates (_candidate_itk_threads) and run only at
+            # the winner, not the full cross product -- see that function's
+            # docstring and manuscripts/engine-scaling-2026-07.md Part I sec 5
+            # for why a fixed formula was tried, reverted, and replaced with
+            # this measurement instead.
+            itk_candidates = _candidate_itk_threads(winner, fingerprint)
+            _report(f"itk-thread candidates at {winner} workers: {itk_candidates} "
+                     f"(reps={reps}, interleaved, min-of-N)")
+            itk_best: dict[int, float] = {c: float("inf") for c in itk_candidates}
+            for rep in range(reps):
+                for c in itk_candidates:
+                    wall = _time_one_run(program_text, winner, itk_threads=c)
+                    itk_best[c] = min(itk_best[c], wall)
+                    _report(f"  rep {rep + 1}/{reps}  itk_threads={c:3d}  wall={wall:.2f}s "
+                             f"(best so far: {itk_best[c]:.2f}s)")
+            itk_winner = min(itk_best, key=itk_best.get)
+            _report(f"chosen: itk_threads={itk_winner} at {winner} workers "
+                     f"(best wall time {itk_best[itk_winner]:.2f}s)")
+
+        _save_calibration(fingerprint, winner, best,
+                           itk_threads_by_workers={winner: itk_winner},
+                           itk_candidates_wall_seconds=itk_best)
         return {
             "fingerprint": asdict(fingerprint),
             "candidates_wall_seconds": best,
             "chosen_threads": winner,
+            "itk_candidates_wall_seconds": itk_best,
+            "chosen_itk_threads": itk_winner,
         }

@@ -164,9 +164,12 @@ def shell_command(args: argparse.Namespace) -> int:
 def calibrate_command(args: argparse.Namespace) -> int:
     """Implement the ``calibrate`` subcommand: measure this host's actual
     optimal thread count instead of relying on engine/topology.py's
-    heuristic. See engine/calibration.py's module docstring for the full
-    rationale (idle-gated, min-of-N interleaved sweep, machine-fingerprinted
-    cache)."""
+    heuristic, AND (at that worker count) the ITK internal thread count that
+    works best alongside it -- no fixed formula for that second value survives
+    across hosts/worker-counts, per manuscripts/engine-scaling-2026-07.md Part
+    I sec 5 and Part II sec 10-11, so it is measured the same way. See
+    engine/calibration.py's module docstring for the full rationale
+    (idle-gated, min-of-N interleaved sweep, machine-fingerprinted cache)."""
     from voxlogica.engine.calibration import run_calibration
 
     try:
@@ -181,9 +184,14 @@ def calibrate_command(args: argparse.Namespace) -> int:
     print(json.dumps({
         "chosen_threads": result["chosen_threads"],
         "candidates_wall_seconds": {str(k): round(v, 3) for k, v in result["candidates_wall_seconds"].items()},
+        "chosen_itk_threads": result["chosen_itk_threads"],
+        "itk_candidates_wall_seconds": {
+            str(k): round(v, 3) for k, v in result["itk_candidates_wall_seconds"].items()
+        },
     }, indent=2))
     print(f"\nCalibration saved for this machine. Future runs with --threads 0 "
-          f"(the default) will use {result['chosen_threads']} threads automatically.",
+          f"(the default) will use {result['chosen_threads']} threads and "
+          f"{result['chosen_itk_threads']} ITK-internal threads automatically.",
           file=sys.stderr)
     return 0
 
