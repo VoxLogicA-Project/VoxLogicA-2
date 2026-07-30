@@ -1,0 +1,80 @@
+// Engine scaling benchmark -- self-contained, no external dataset required.
+// Companion to manuscripts/engine-scaling-2026-07.md; generate the volumes
+// this file reads with generate_synthetic_cases.py first (see README.md in
+// this directory for the exact commands).
+//
+// Reproduces the REAL oracle-sweep pipeline's operator graph faithfully: the
+// brain_mask/preprocess_flair/tumor_gt/dice_mask definitions below are copied
+// verbatim from the (untracked, dataset-dependent) experiment.imgql used for
+// the actual study, calling the same vox1 primitives on synthetic volumes of
+// the same shape (240x240x155) instead of real BraTS scans. The parameter
+// grid (hgrid/fgrid/Rgrid/Ogrid) and case count (4) are unchanged from the
+// original _bench_scaling.imgql, so this produces the same node count/shape
+// class (~26k nodes, work/span ~= 274, per
+// doc/dev/scaling-test-design.md sec 6's "WIDE" class) without the dataset.
+//
+// Not a validation benchmark: the printed avg_oracle_best number depends on
+// this file's synthetic geometry and means nothing clinically. Only the
+// PERFORMANCE characteristics (node count, operator mix, memory traffic) are
+// meant to match the real study.
+
+import "simpleitk"
+import "vox1"
+
+dataset_dir = "_synthetic_data"
+n_cases = 4
+
+flair_paths = dir(dataset_dir, "*_flair.nii.gz", true, true)
+seg_paths = dir(dataset_dir, "*_seg.nii.gz", true, true)
+
+// --- verbatim from experiment.imgql / utils.imgql (thin wrappers) ---
+read_image(path) = ReadImage(path)
+fill_holes(region) = not(touch(not(region), border(region)))
+best(seq) = index(seq, argmax(seq))
+
+brain_mask(flair) =
+  let background = touch(leq_sv(0.1, flair), border(flair)) in
+  not(background)
+
+preprocess_flair(flair) =
+  percentiles(flair, brain_mask(flair), 0)
+
+tumor_gt(seg_img) = geq_sv(1, intensity(seg_img))
+
+dice_mask(pred, gt) =
+  let inter = and(pred, gt) in
+  /(*(2.0, volume(inter)), +(volume(pred), volume(gt)))
+
+// --- per-case accessors, synthetic-data versions of experiment.imgql's global_* ---
+pf(g) = preprocess_flair(intensity(read_image(index(flair_paths, g))))
+br(g) = brain_mask(intensity(read_image(index(flair_paths, g))))
+gt(g) = tumor_gt(read_image(index(seg_paths, g)))
+
+// --- verbatim from _bench_scaling.imgql (the actual sweep under study) ---
+bounded(h, f, r, g) =
+  let hs = smoothen(geq_sv(h, pf(g)), 5.0) in
+  let vs = smoothen(geq_sv(f, pf(g)), 2.0) in
+  let rg = grow(imclose(grow(hs, vs), 3.0), vs) in
+  and(imclose(and(rg, dilate(hs, r)), 2.0), br(g))
+
+segM(h, f, r, g)    = fill_holes(maxvol(bounded(h, f, r, g)))
+segO(h, f, r, o, g) = fill_holes(imopen(bounded(h, f, r, g), o))
+
+dM(h, f, r, g)    = dice_mask(segM(h, f, r, g), gt(g))
+dO(h, f, r, o, g) = dice_mask(segO(h, f, r, o, g), gt(g))
+
+hgrid = [0.93, 0.95, 0.97]
+fgrid = [0.72, 0.78, 0.83, 0.88, 0.92]
+Rgrid = [12.0, 18.0, 28.0, 45.0, 999.0]
+Ogrid = [3.0, 5.0]
+
+bench_cases = [0, 1, 2, 3]
+
+orcM(g) = best(for h in hgrid do best(for f in fgrid do best(for r in Rgrid do dM(h,f,r,g))))
+orcO(g) = best(for h in hgrid do best(for f in fgrid do best(for r in Rgrid do best(for o in Ogrid do dO(h,f,r,o,g)))))
+orcB(g) = best([orcM(g), orcO(g)])
+
+oB = for g in bench_cases do orcB(g)
+
+avgN(oseq) = /(fold + 0 oseq, 4.0)
+print "avg_oracle_best" avgN(oB)

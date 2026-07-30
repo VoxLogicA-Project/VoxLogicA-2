@@ -212,3 +212,184 @@ here are what make these findings falsifiable, and were added
 (`engine/concurrency_probe.py`, `engine/parallelism.py`) precisely because their
 absence made the earlier claims unfalsifiable. Wall-clock tables without them
 should not be trusted, including any produced by me earlier today.
+
+**Correction, added in Part II below:** §2's "efficiency" column (speedup / W)
+divides by raw worker count, which silently assumes every worker is a P-core.
+On this hybrid CPU it is not — §9-10 measure the P/E asymmetry directly and
+supersede that column. §1's "memory bandwidth" framing is retained but is now
+the *confirmed*, not inferred, cause — §9 attributes it to specific stalled
+pipeline slots via four independent methods, and separately rules out disk I/O.
+
+---
+
+# Part II — cause, isolation, and reproducibility (2026-07-30, later)
+
+Part I established *that* efficiency degrades and *that* CPU-seconds inflate
+with worker count. It did not establish *why*, and one of its own numbers (the
+§2 "efficiency" column) turned out to conflate two different things on this
+hybrid CPU. This part closes both gaps: identifies the cause with instrument-
+level evidence, isolates the P-core/E-core asymmetry from actual stalling, and
+ships a dataset-free reproduction package so the whole study can be re-run
+without BraTS2020.
+
+## 9. Is it actually memory, or could it be disk?
+
+Before trusting any "memory-bound" claim, the alternative that a real dataset
+invites was checked directly rather than assumed: **is the 43% backend-bound
+figure secretly disk I/O** (the BraTS files being re-read each run) rather than
+DRAM/cache latency?
+
+```
+$ iostat -x 1 3 -d /dev/nvme0n1      # sampled DURING a live sweep run
+Device    r/s  rkB/s   w/s   wkB/s  ...  %util
+nvme0n1  0.00   0.00  0.00    0.00  ...   0.00   <- every sample but one
+nvme0n1 20.32 1745.65 80.02 8763.13 ...   0.41   <- the ONE exception
+```
+
+The one non-zero sample coincides with the *previous* run's `--store-db`
+result flush, not a read for the current run — confirmed by checking `vmstat`
+`bi` against wall-clock position, and by the dataset size: 369 BraTS cases at
+~7.4 MB each is ~2.7 GB, trivially smaller than the 38 GB already resident in
+page cache. **Every other sample across every sweep is 0.00 r/s, 0.00 w/s,
+0.00% util.** Disk is ruled out with a direct block-device measurement, not an
+assumption.
+
+## 10. What the stalls actually are (four independent methods)
+
+Instruction counting alone (Part I §4) already showed instructions flat
+(±0.3%) while CPU-seconds rose with worker count — ruling out lock spinning,
+since a spin loop retires instructions and this one is not retiring more of
+them. Three further methods confirm and localize the cause:
+
+**Topdown (P-cores only, one active PMU, no multiplexing):**
+
+| workers | retiring | backend-bound | bad speculation | frontend-bound |
+|---|---|---|---|---|
+| 1 (serial) | 40.0% | **43.4%** | 8.6% | 8.0% |
+| 8 | 37.4% | **49.3%** | 7.7% | 5.6% |
+
+**The workload is 43% backend-bound even running serially, on one core, before
+any parallelism exists.** Parallelism adds only 5.9 more points on top of an
+already-dominant baseline cost. This reframes the whole study: memory latency
+is not something concurrency introduces here — it is this workload's
+intrinsic character, and parallelism is fighting it, not causing it.
+
+**`perf record` symbol attribution (P-cores, 8 workers, 199 Hz sampling):**
+top self-time is entirely `_SimpleITK.abi3.so` (19.5% across the top entries)
+and one small kernel symbol (1.7%). **No `futex`, `lock`, `spin`, or atomic
+symbol appears anywhere in the profile.** This directly corroborates the flat
+instruction count: whatever the cores are doing, it is not contested locking.
+
+**Sanity check on the measurement itself:** an earlier attempt summed
+`cpu_atom` and `cpu_core` PMU counters together and implied a 9.9 GHz clock —
+physically impossible, and the tell that caught it. Root cause: hybrid Intel
+CPUs multiplex the two core-type PMUs even when only one event is requested,
+so a naive sum double-counts. Fix: `taskset -c <P-core-list>` (or E-core-list)
+restricts execution to one core type, leaving a single PMU active and giving
+exact (not multiplexed) counts — confirmed by an implied clock of 5.54 GHz on
+P-cores and 4.52-4.60 GHz on E-cores, both physically sensible.
+
+## 11. P-core vs E-core: measured in isolation, not inferred from mixed runs
+
+Part I estimated E-cores return "0.13 P-core-equivalents at the margin" from
+wall-clock arithmetic on runs where P-cores and E-cores worked *simultaneously*
+— a real number, but one that conflates E-core weakness with P/E contention.
+Pinning each pool separately (`taskset -c 0-7` / `taskset -c 8-23`) isolates
+them:
+
+| pool | workers | wall | P-core-equivalents | per-core |
+|---|---|---|---|---|
+| P | 1 | 611.66 | 1.000 | 1.000 |
+| P | 2 | 316.31 | 1.934 | 0.967 |
+| P | 4 | 173.64 | 3.523 | 0.881 |
+| P | 8 | 93.27 | 6.558 | 0.820 |
+| E | 1 | 810.74 | 0.754 | **0.754** |
+| E | 4 | 218.49 | 2.799 | 0.700 |
+| E | 8 | 125.16 | 4.887 | 0.611 |
+| E | 16 | 111.87 | 5.468 | 0.342 |
+
+**Intrinsic E-core throughput is 0.754 of a P-core** — close to this CPU's
+published spec ratio, and far better than the earlier 0.13 estimate. But E-core
+per-core value *also* degrades with E-core count, and much faster than P-cores
+do: 0.754 -> 0.700 -> 0.611 -> 0.342 (16 cores) versus P's gentler 1.000 ->
+0.967 -> 0.881 -> 0.820 (8 cores). Sixteen E-cores sharing a memory system feel
+the same backend-bound pressure §10 measured, only more of them piling onto it
+at once.
+
+**The bigger effect is cross-pool contention, not E-core weakness itself:**
+
+```
+P alone (8 cores):            6.558 P-core-equivalents
+E alone (16 cores):           5.468 P-core-equivalents
+Sum, if independent:         12.026 P-core-equivalents
+Actually achieved together
+  (W=24, both pools, unpinned): 8.688 P-core-equivalents
+Lost to running both pools simultaneously:      27.8%
+```
+
+Running P-cores and E-cores at once loses more capacity to shared-memory
+contention between the two pools than either pool loses internally. This is a
+genuinely new finding, not a restatement of Part I's efficiency numbers, and it
+changes the engineering recommendation:
+
+**A naive "route boolean ops to E-cores, ITK-heavy ops to P-cores" scheduler
+would not obviously fix this.** Both pools read the same DRAM controller; if
+the workload is backend-bound (§10), moving *which* core stalls does not
+reduce the total memory traffic causing the stall. Per-operator P/E placement
+is still worth doing — it can reduce *unnecessary* contention (e.g. keeping
+latency-critical critical-path nodes, identified via `engine/parallelism.py`'s
+span computation, off the weaker/more contended E-cores) and is directionally
+supported by the steeper E-core degradation curve — but it is not a substitute
+for reducing memory traffic. §7's bit-packing proposal, which cuts DRAM traffic
+by up to 8x on 62% of boolean nodes, is the higher-confidence lever precisely
+*because* §10 shows the stalls are real and §11 shows adding smarter core
+placement cannot make the shared memory system move any less data.
+
+## 12. Reproducibility
+
+The measurements above depend on the BraTS2020 dataset, which is not part of
+this repository. `tests/perf/scaling/` provides a dataset-free reproduction:
+
+- `generate_synthetic_cases.py` — deterministic (no RNG/seed) synthetic volumes,
+  same shape (240x240x155) and same per-case variation structure as the real
+  data.
+- `bench_scaling.imgql` — the identical sweep (same hgrid/fgrid/Rgrid/Ogrid,
+  same operator chain) reading the synthetic volumes; verified to produce
+  26,477 nodes against the original's 26,297 (0.7% drift from synthetic masks
+  taking slightly different `maxvol`/`fill_holes` paths — expected, immaterial
+  to the performance characteristics).
+- `run_scaling_suite.sh` — the full protocol: idle gate (rejects a loaded host
+  or a detected local LLM server — see Part I's own §0 failure #2), portable
+  wall-clock/saturation sweep, and (where `perf`/`taskset`/a hybrid CPU are
+  available) the P-core/E-core isolation and topdown/`perf record` stages of
+  §9-11.
+- `analyze_results.py` — turns the harness's raw log into speedup/cpu-wall
+  tables.
+
+See `tests/perf/scaling/README.md` for exact commands and for what this package
+can and cannot reproduce (engine/hardware behaviour: yes; the real study's
+absolute Dice numbers: no — the synthetic volumes are Gaussian blobs, not
+brain scans).
+
+## 13. Updated ranked next steps
+
+Supersedes Part I §7 item ordering given §11's contention finding:
+
+1. **Bit-pack boolean images** (Part I §7, now strengthened by §11's finding
+   that core placement cannot substitute for reduced traffic). 62% of boolean
+   nodes never reach an ITK call (measured via a dependency-graph query over
+   the reduced plan); those get an 8x memory-traffic cut and a ~64x
+   instruction-count cut (`and`/`or`/`not` as `uint64` word ops) with no
+   unpacking needed at all. The remaining 38% cross into `dt`/`mask`/`through`/
+   `border`/`maxvol` and need unpacking — a precomputed byte->word LUT keeps
+   that branch-free and memcpy-speed.
+2. **Extend `engine/calibration.py` to a 2D sweep**: worker count x ITK thread
+   count. Part I §5 showed no fixed ITK-thread constant is right (the optimum
+   crosses over with worker count); §10-11 now show *why* a constant cannot
+   generalize either (the right split depends on how memory-bound the specific
+   workload is, which calibration can measure but a formula cannot guess).
+3. **Reduction/planning time** (Part I §6) — still entirely unmeasured, and
+   plausibly larger than everything else combined for realistic sweep sizes.
+4. **Per-operator P/E placement**, keeping critical-path nodes (identified via
+   `engine/parallelism.py`) off E-cores. Real but secondary to #1 per §11.
+5. Fusion-widening and GPU residency (Part I §7 items 2-3) unchanged.
