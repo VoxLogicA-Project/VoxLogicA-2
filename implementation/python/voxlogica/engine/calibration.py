@@ -53,6 +53,7 @@ import hashlib
 import json
 import os
 import platform
+import sysconfig
 import tempfile
 import time
 from dataclasses import dataclass, asdict
@@ -118,6 +119,16 @@ class MachineFingerprint:
     logical_cpus: int
     total_ram_bytes: int
     kernel_release: str
+    # NOT hardware, but part of the identity anyway: the optimum thread count
+    # is a property of (machine, interpreter), not of the machine alone. Under
+    # the GIL, useful concurrency stalls around half the cores regardless of
+    # what the memory system could sustain; free-threaded, it does not. Every
+    # other field here is identical across the two builds, so without this the
+    # cache key is unchanged by the switch and a GIL-era measurement is
+    # silently reused on a free-threaded interpreter -- reintroducing the exact
+    # ceiling the switch removes. Adding the field also invalidates all
+    # pre-cutover cached calibrations, which is intended.
+    freethreaded: bool
 
     @classmethod
     def detect(cls) -> "MachineFingerprint":
@@ -128,6 +139,7 @@ class MachineFingerprint:
             logical_cpus=os.cpu_count() or 0,
             total_ram_bytes=_total_ram_bytes(),
             kernel_release=platform.release(),
+            freethreaded=bool(sysconfig.get_config_var("Py_GIL_DISABLED")),
         )
 
     def key(self) -> str:

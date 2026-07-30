@@ -30,22 +30,35 @@ def test_fingerprint_is_deterministic():
 
 @pytest.mark.unit
 def test_fingerprint_key_changes_with_any_field():
-    a = MachineFingerprint("Model A", 8, 24, 1000, "6.1")
-    b = MachineFingerprint("Model B", 8, 24, 1000, "6.1")
+    a = MachineFingerprint("Model A", 8, 24, 1000, "6.1", freethreaded=False)
+    b = MachineFingerprint("Model B", 8, 24, 1000, "6.1", freethreaded=False)
     assert a.key() != b.key()
+
+
+@pytest.mark.unit
+def test_fingerprint_key_distinguishes_gil_from_freethreaded():
+    """A calibrated thread count measured under the GIL must NOT be reused on a
+    free-threaded interpreter: the GIL caps useful concurrency near half the
+    cores regardless of what the memory system could sustain, so the optimum is
+    a property of (machine, interpreter). Every other fingerprint field is
+    byte-identical across the two builds, so this field is the only thing
+    keeping a stale pre-cutover measurement from being silently reused."""
+    gil = MachineFingerprint("Same CPU", 8, 24, 1000, "6.1", freethreaded=False)
+    ft = MachineFingerprint("Same CPU", 8, 24, 1000, "6.1", freethreaded=True)
+    assert gil.key() != ft.key()
 
 
 @pytest.mark.unit
 def test_cache_round_trip(tmp_path, monkeypatch):
     monkeypatch.setenv("VOXLOGICA_CACHE_DIR", str(tmp_path))
-    fp = MachineFingerprint("Test CPU", 8, 24, 1000, "6.1")
+    fp = MachineFingerprint("Test CPU", 8, 24, 1000, "6.1", freethreaded=False)
     assert load_cached_threads(fp) is None  # nothing cached yet
 
     _save_calibration(fp, 16, {8: 2.0, 16: 1.0, 24: 1.5})
     assert load_cached_threads(fp) == 16
 
     # a different fingerprint must not see this machine's cached value
-    other = MachineFingerprint("Other CPU", 4, 8, 500, "5.0")
+    other = MachineFingerprint("Other CPU", 4, 8, 500, "5.0", freethreaded=False)
     assert load_cached_threads(other) is None
 
 
@@ -55,8 +68,8 @@ def test_cache_survives_multiple_machines(tmp_path, monkeypatch):
     calibrating on a second host (or after a CPU swap) must not clobber the
     first machine's saved result."""
     monkeypatch.setenv("VOXLOGICA_CACHE_DIR", str(tmp_path))
-    fp1 = MachineFingerprint("CPU One", 8, 24, 1000, "6.1")
-    fp2 = MachineFingerprint("CPU Two", 4, 16, 2000, "6.2")
+    fp1 = MachineFingerprint("CPU One", 8, 24, 1000, "6.1", freethreaded=False)
+    fp2 = MachineFingerprint("CPU Two", 4, 16, 2000, "6.2", freethreaded=False)
     _save_calibration(fp1, 16, {16: 1.0})
     _save_calibration(fp2, 8, {8: 1.0})
     assert load_cached_threads(fp1) == 16
@@ -79,7 +92,7 @@ def test_idle_check_returns_a_verdict():
 
 @pytest.mark.unit
 def test_candidate_thread_counts_span_p_to_p_plus_e():
-    fp = MachineFingerprint("Hybrid", p_cores=8, logical_cpus=24, total_ram_bytes=0, kernel_release="")
+    fp = MachineFingerprint("Hybrid", p_cores=8, logical_cpus=24, total_ram_bytes=0, kernel_release="", freethreaded=False)
     candidates = _candidate_thread_counts(fp)
     assert candidates[0] == 8          # P-cores alone is always a candidate
     assert candidates[-1] == 24        # every logical CPU is always a candidate
@@ -89,7 +102,7 @@ def test_candidate_thread_counts_span_p_to_p_plus_e():
 
 @pytest.mark.unit
 def test_candidate_thread_counts_non_hybrid_falls_back():
-    fp = MachineFingerprint("Uniform", p_cores=0, logical_cpus=8, total_ram_bytes=0, kernel_release="")
+    fp = MachineFingerprint("Uniform", p_cores=0, logical_cpus=8, total_ram_bytes=0, kernel_release="", freethreaded=False)
     candidates = _candidate_thread_counts(fp)
     assert candidates and all(c > 0 for c in candidates)
 

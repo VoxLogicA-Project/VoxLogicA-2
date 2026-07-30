@@ -9,8 +9,13 @@ canonicaljson==2.0.0
 watchdog==6.0.0
 dask[complete]==2025.5.1
 numpy==2.3.2
-numba==0.64.0
-SimpleITK==2.5.2
+# numba/SimpleITK: first versions shipping free-threaded (cp314t) wheels.
+# The engine runs on a free-threaded interpreter only -- see
+# doc/dev/gil-free-default-plan.md. Do not pin these back below these floors
+# without also reverting that cutover; older releases have no cp314t wheel and
+# bootstrap will fail to resolve.
+numba>=0.66.0
+SimpleITK>=2.5.5
 nnunetv2==2.6.2
 torch==2.8.0; python_version < "3.13"
 torch==2.10.0; python_version >= "3.13"
