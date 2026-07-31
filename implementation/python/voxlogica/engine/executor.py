@@ -5,20 +5,16 @@ single primitive node whose inputs are already materialized, invokes its kernel,
 and returns the value. ITK kernels release the GIL, so a thread pool gives real
 CPU parallelism while the event loop keeps coordinating.
 
-This is also the sole PolyArray adapter boundary (see ``voxlogica.arrays``).
-Most kernels are untouched and still speak plain ``sitk.Image``: a
-``PolyArray`` input is unwrapped to its ``.sitk()`` view before such a kernel
-sees it, and a ``sitk.Image`` result is wrapped back into a ``PolyArray``.
-A primitive whose ``PrimitiveSpec.numpy_native`` is True instead gets its
-``PolyArray`` inputs unwrapped to their ``.np()`` view (a zero-copy cached
-alias when the source is sitk-backed — free to read, never write through),
-and a bare ``np.ndarray`` result is wrapped via ``PolyArray.from_numpy`` with
-geometry threaded through explicitly, since a numpy array carries none of its
-own. Every other value (scalars, sequences, closures) passes through
-unchanged either way. Keeping the adapter in this one place, rather than in
-every kernel, is what lets fused/numba execution (``engine/fusion.py``) and
-this numpy-native path coexist without any kernel needing to know which
-protocol the engine chose for its neighbors.
+This is also the sole PolyArray adapter boundary (see ``voxlogica.arrays``):
+kernels are untouched and still speak plain ``sitk.Image``. Inputs that arrived
+as a ``PolyArray`` (produced by a prior kernel call, or reloaded from disk —
+see ``NodeTable.load``) are unwrapped to their ``.sitk()`` view before a kernel
+sees them; a kernel result that is a ``sitk.Image`` is wrapped into a
+``PolyArray`` before it re-enters the table. Every other value (scalars,
+sequences, closures) passes through unchanged. Keeping the adapter in this one
+place, rather than in every kernel, is what lets fused/numba execution
+(``engine/fusion.py``) later swap in a different array library without any
+kernel ever knowing.
 """
 
 from __future__ import annotations
@@ -56,34 +52,11 @@ def _unwrap(value: Any) -> Any:
     return value.sitk() if isinstance(value, PolyArray) else value
 
 
-def _unwrap_np(value: Any) -> Any:
-    """PolyArray -> its numpy view; everything else passes through untouched.
-
-    The view may be a read-only zero-copy alias of a sitk-owned buffer (see
-    ``PolyArray.np()``): a numpy-native kernel must only READ its array
-    arguments and allocate a fresh array for its result, never write through
-    an input in place.
-    """
-    return value.np() if isinstance(value, PolyArray) else value
-
-
-def _wrap(value: Any, geometry: Any = None) -> Any:
-    """A kernel's result -> PolyArray; everything else untouched.
-
-    ``sitk.Image`` carries its own geometry (``PolyArray.from_sitk`` reads it
-    directly). A bare ``np.ndarray`` (a numpy-native kernel's result) carries
-    none, so ``geometry`` must be supplied by the caller — see
-    ``Executor._cone_reference_geometry`` / ``Executor._node_reference_geometry``
-    for how it's found. Passing ``None`` for an ndarray result falls back to
-    ``Geometry.identity`` (see ``PolyArray.from_numpy``), which is WRONG for
-    any real spatial data — every call site here must supply a real geometry
-    whenever the cone/node actually has an array-shaped external input.
-    """
+def _wrap(value: Any) -> Any:
+    """A kernel's sitk.Image result -> PolyArray; everything else untouched."""
     sitk = _simpleitk()
     if sitk is not None and isinstance(value, sitk.Image):
         return PolyArray.from_sitk(value)
-    if isinstance(value, np.ndarray):
-        return PolyArray.from_numpy(value, geometry)
     return value
 
 
@@ -127,33 +100,6 @@ class Executor:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._pool, self._compute_cone, table, cone)
 
-    def _cone_reference_geometry(self, table: NodeTable, cone: "Cone") -> Any:
-        """The Geometry to attach to a numpy-native exit's wrapped result.
-
-        Cone growth (fusion.py) already requires every array-shaped input to
-        the SAME cone to agree on ``.shape``; Stage B's numba path takes the
-        first array input's geometry unconditionally on that same basis (see
-        ``numba_fusion.py::_compute_cone_numba``). Mirrored here rather than
-        tracked per-member, so an interior numpy result (deliberately left
-        unwrapped, carrying no geometry of its own) never loses it: this scans
-        for the first EXTERNAL PolyArray feeding any member, once per cone, not
-        per exit.
-        """
-        member_set = set(cone.members_topo)
-        for member_id in cone.members_topo:
-            node = table.nodes[member_id]
-            for arg_id in node.args:
-                if arg_id not in member_set:
-                    value = table.values.get(arg_id)
-                    if isinstance(value, PolyArray):
-                        return value.geometry
-            for _, arg_id in node.kwargs:
-                if arg_id not in member_set:
-                    value = table.values.get(arg_id)
-                    if isinstance(value, PolyArray):
-                        return value.geometry
-        return None
-
     def _compute_cone(self, table: NodeTable, cone: "Cone") -> dict[NodeId, Any]:
         """Run every cone member in topological order, in this pool thread."""
         scratch: dict[NodeId, Any] = {}
@@ -161,12 +107,11 @@ class Executor:
         def lookup(dep_id: NodeId) -> Any:
             return scratch[dep_id] if dep_id in scratch else table.values[dep_id]
 
-        geometry = self._cone_reference_geometry(table, cone)
         results: dict[NodeId, Any] = {}
         for member_id in cone.members_topo:
             raw = self._compute_node(table.nodes[member_id], lookup)
             if member_id in cone.exits:
-                wrapped = _wrap(raw, geometry)
+                wrapped = _wrap(raw)
                 scratch[member_id] = wrapped
                 results[member_id] = wrapped
             else:
@@ -253,27 +198,7 @@ class Executor:
 
     def _compute(self, table: NodeTable, node_id: NodeId) -> Any:
         """Gather already-materialized inputs and invoke the kernel."""
-        node = table.nodes[node_id]
-        lookup = lambda dep_id: table.values[dep_id]  # noqa: E731
-        raw = self._compute_node(node, lookup)
-        geometry = None
-        if isinstance(raw, np.ndarray):
-            geometry = self._node_reference_geometry(node, lookup)
-        return _wrap(raw, geometry)
-
-    def _node_reference_geometry(self, node, lookup: Callable[[NodeId], Any]) -> Any:
-        """The Geometry to attach to a single (non-cone) numpy-native node's
-        wrapped result — the first PolyArray-typed argument's, matching
-        ``_cone_reference_geometry``'s convention for the cone case."""
-        for arg_id in node.args:
-            value = lookup(arg_id)
-            if isinstance(value, PolyArray):
-                return value.geometry
-        for _, arg_id in node.kwargs:
-            value = lookup(arg_id)
-            if isinstance(value, PolyArray):
-                return value.geometry
-        return None
+        return _wrap(self._compute_node(table.nodes[node_id], lambda dep_id: table.values[dep_id]))
 
     def _compute_node(self, node, lookup: Callable[[NodeId], Any]) -> Any:
         """Gather one node's inputs via ``lookup`` and invoke its kernel.
@@ -284,12 +209,6 @@ class Executor:
         paths so kernel invocation and argument adaptation cannot diverge
         between them; only where an input's value comes from differs
         (``table.values`` directly vs. a cone's in-flight scratch dict).
-
-        Argument unwrap protocol (sitk view vs numpy view) is decided per
-        NODE from its own ``PrimitiveSpec.numpy_native`` — see
-        ``engine/executor.py``'s module docstring — so a cone or a chain of
-        single-node dispatches can freely mix numpy-native and sitk-only
-        members; each node only ever sees the protocol it declared.
         """
         if node.operator == "default.subsequence":
             sequence = lookup(node.args[0])
@@ -298,10 +217,8 @@ class Executor:
             kernel = self.registry.load_kernel("default.subsequence")
             return self._invoke(kernel, [sequence, start, stop], {})
         kernel = self.registry.load_kernel(node.operator)
-        spec = self.registry.get_spec(node.operator)
-        unwrap = _unwrap_np if spec.numpy_native else _unwrap
-        args = [unwrap(lookup(arg_id)) for arg_id in node.args]
-        kwargs = {key: unwrap(lookup(arg_id)) for key, arg_id in node.kwargs}
+        args = [_unwrap(lookup(arg_id)) for arg_id in node.args]
+        kwargs = {key: _unwrap(lookup(arg_id)) for key, arg_id in node.kwargs}
         return self._invoke(kernel, args, kwargs, node.attrs)
 
     def _invoke(self, kernel, args: list[Any], kwargs: dict[str, Any], attrs: dict[str, Any] | None = None) -> Any:

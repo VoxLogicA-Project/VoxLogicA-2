@@ -114,22 +114,6 @@ class PrimitiveSpec:
     description: str = ""
     is_legacy_adapter: bool = False
     elementwise: ElementwiseSpec | None = None
-    # True iff this primitive's KERNEL (not just its Stage-B expr fragment)
-    # takes and returns numpy arrays directly, rather than sitk.Image. Set on
-    # single-pass, memory-bound ops (not/and/or/comparisons/mask) that
-    # measured 2-6x faster in numpy than the equivalent ITK filter call, with
-    # zero cost in the common case: sitk -> numpy is a zero-copy cached view
-    # (arrays.py's PolyArray.np()), so a numpy-native kernel reading
-    # ITK-produced data pays nothing for it; only numpy -> sitk (needed if
-    # the very next consumer is ITK-only) is a real copy. See
-    # engine/executor.py's module docstring for how this changes the
-    # PolyArray adapter boundary, and manuscripts/engine-scaling-2026-07.md
-    # Part IV for the measurements this was added to chase. Independent of
-    # ``elementwise``: Stage B's numba codegen never calls the kernel body at
-    # all (it generates its own scalar loop from ``ElementwiseSpec.expr``),
-    # so converting a kernel's Python implementation to numpy does not change
-    # Stage B's behavior in any way.
-    numpy_native: bool = False
 
     @property
     def qualified_name(self) -> str:
