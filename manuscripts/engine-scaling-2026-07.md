@@ -509,7 +509,96 @@ sec 13 item 1 (bit-packing, cutting the memory traffic causing the stalls)
 has a plausible path to moving the ceiling higher than ~10-12x on this
 machine -- and that is still unmeasured, not yet a promise.
 
-## 17. Status of every conjecture in this document, for a reader who only reads this table
+---
+
+# Part IV — kernel-level ITK-to-numpy conversion: one win kept, one reverted (2026-07-31)
+
+## 17. Individual-op microbenchmarks, and why they turned out to mislead
+
+Per-call, single-op measurements on fmt-5000 (real BraTS volume size,
+240x240x155, ITK at its actual runtime thread count) showed ITK's own per-call
+overhead dominating for single-pass ops -- not memory bandwidth:
+
+| op | sitk | numpy | speedup |
+|---|---|---|---|
+| `Not` | 2.22 ms | 0.35 ms | 6.3x |
+| `And` | 1.16 ms | 0.52 ms | 2.2x |
+| `Mask` | ~1.6 ms | ~0.4 ms | ~4x |
+
+These numbers are correct and reproduce reliably. The mistake was in what they
+were taken to imply: each was measured with NO adjacent ITK consumer. That
+premise does not hold in the real pipeline (sec 18).
+
+## 18. `mask()` registered for fusion (kept)
+
+`mask` was registered as an `ElementwiseSpec` (commit `4861951`) so a fusion
+cone could bridge past `dt`'s boundary (`pdt(x) = mask(dt(x), dt(x) > 0)` sits
+inside every `smoothen`/`dilate`/`erode` call). Measured effect: `mean_cone_size`
+2.0 -> 4.26, `cones_numba` stayed 0 (still below Stage B's 12-member
+breakeven), wall-clock roughly flat (63.5s vs the prior 62-64s range, within
+noise). Kept: bit-identical, doesn't regress, and is a genuine (if so far
+unrealized) step toward the 12-member threshold.
+
+## 19. Full kernel-level ITK-to-numpy conversion (reverted)
+
+Extending the same idea to the KERNEL bodies themselves -- not just the fusion
+`expr`, but making `not`/`and`/`or`/`eq_sv`/`geq_sv`/`leq_sv`/`between`/`mask`
+and the six generic comparisons execute on numpy arrays directly, bypassing
+ITK entirely -- was implemented (commit `fa9c11e`), tested (51 new tests, all
+bit-identical against real sitk output including NaN/boundary values, plus an
+engine-integration suite specifically checking geometry survives a numpy-native
+op into a spacing-sensitive `dt()` call), and measured on the real sweep.
+
+**Result: 20% SLOWER than the mask-only baseline** (76.36-77.43s vs
+63.54-64.01s, W=18/itk=1, min-of-3, reproducible within 1.5% across reps),
+25% slower than the original pre-fusion-work baseline. Bit-identical
+throughout; `saturation` unaffected (0.97+) -- this is purely an adapter-
+boundary cost, not a correctness or scheduling regression. **Reverted**
+(commit `3208b92`).
+
+**Root cause**: the per-op microbenchmarks in sec 17 measured each op in
+isolation. In the real pipeline, `and`/`or`/`not` sit immediately BEFORE
+structural, non-elementwise ITK ops (`grow`, `imclose`) constantly -- that is
+the actual reason cones stay short (`mean_cone_size` ~2-4; see Part I sec 4-5
+and this Part's sec 18). Before the conversion, `sitk.And(...)`'s `sitk.Image`
+result fed straight into `imclose` at zero cost -- sitk stays sitk, no
+adapter crossing. After it, a bare `ndarray` needs a real `numpy -> sitk` copy
+(0.569 ms, measured separately in this investigation) at EVERY one of those
+boundaries. ~14 converted ops across ~19,000+ calls in this sweep meant ~14
+new round-trip taxes that did not exist before, each larger in aggregate than
+the per-op saving that motivated converting that op.
+
+This is the identical failure mode `numba_fusion.py`'s own comment already
+documents for Stage B below its 12-member threshold (`PolyArray.from_numpy`
+has no cached `sitk` view, so the next non-elementwise consumer pays a full
+copy) -- read earlier in this same investigation (Part II sec 13) and still
+underweighted here, because it is easy to reason "these ops are faster in
+isolation, therefore converting them helps" without checking how often the
+adapter boundary is actually crossed in the specific pipeline shape at hand.
+Two structurally identical ideas (widen the elementwise/fusable set; make
+elementwise kernels run natively) failed and succeeded for the SAME reason:
+`mask()`'s registration only changes which ops CAN share a cone (correctness-
+neutral if the cone doesn't grow enough to help); the kernel-body conversion
+changes what EVERY call of that op does unconditionally, including the
+majority of calls that sit at a cone boundary rather than inside a long
+same-protocol run.
+
+**Revised recommendation.** Kernel-level ITK-to-numpy conversion is only a win
+when a run of numpy-native ops is long enough to amortize the boundary
+conversion on both ends -- which is a FUSION problem, not a per-kernel one.
+Concretely: either (a) make the conversion decision per-DISPATCH rather than
+per-primitive (use numpy only when at least one immediate neighbor is already
+numpy-resident, avoiding introducing a NEW crossing), which is a materially
+harder, more surgical change than the blanket flag tried here; or (b) return to
+widening the elementwise/fusable boundary itself (sec 18's approach, and Part
+II sec 13 item 1's original bit-packing proposal) until cones cross the
+12-member Stage-B threshold, where the adapter cost is paid once per cone
+rather than once per op. Do not re-attempt a blanket per-primitive
+numpy_native flag without first counting how often the specific pipeline
+under test crosses the sitk<->numpy boundary at that op -- the count, not the
+per-op microbenchmark, determines the sign of the result.
+
+## 20. Status of every conjecture in this document, for a reader who only reads this table
 
 | # | Claim | Status |
 |---|---|---|
@@ -520,7 +609,8 @@ machine -- and that is still unmeasured, not yet a promise.
 | Part I sec 6 | Reduction/planning time unmeasured | STANDS -- still unmeasured as of this writing |
 | Part I sec 7 | "Memory bandwidth saturation" (inferred from efficiency decay) | **CONFIRMED**, but by different, stronger evidence than originally given -- see Part II sec 9-10 (topdown, perf record, disk ruled out) |
 | Part II sec 9-11 | Disk ruled out; 43% backend-bound at W=1; P/E isolation; cross-pool contention 27.8% | STANDS -- the most rigorously checked claims in this document (four independent methods) |
-| Part II sec 13 item 1 | Bit-packing is the top-ranked next step | STANDS, UNIMPLEMENTED |
+| Part II sec 13 item 1 | Bit-packing is the top-ranked next step | STANDS, UNIMPLEMENTED -- sec 19 is a related but DIFFERENT idea (kernel-level conversion, not data-layout) that failed; bit-packing itself remains untried |
 | Part II sec 13 item 2 | Extend calibration to 2D | **DONE** -- see sec 15 |
 | *(chat, not previously written down)* | VL2 is 5.54x faster than VL1 on the 40-case recipe | **WRONG, RETRACTED** -- see sec 14. Corrected: 1.08x |
-| *(chat)* | "18x" is reachable with calibration + P/E scheduling | **NO** -- see sec 16; ceiling is ~10-12x on measured evidence, and only traffic reduction (bit-packing) can move it
+| *(chat)* | "18x" is reachable with calibration + P/E scheduling | **NO** -- see sec 16; ceiling is ~10-12x on measured evidence, and only traffic reduction (bit-packing) can move it |
+| *(chat)* | Convert easy ITK filters to numpy for a ~15-25% win | **WRONG, REVERTED** -- see sec 19. The per-op microbenchmark was real; the aggregate effect was a 20% REGRESSION because the adapter-boundary cost is paid far more often than the isolated benchmark could show |
