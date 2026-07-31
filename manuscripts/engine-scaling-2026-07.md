@@ -619,3 +619,43 @@ per-op microbenchmark, determines the sign of the result.
 | *(chat, not previously written down)* | VL2 is 5.54x faster than VL1 on the 40-case recipe | **WRONG, RETRACTED** -- see sec 14. Corrected: 1.08x |
 | *(chat)* | "18x" is reachable with calibration + P/E scheduling | **NO** -- see sec 16; ceiling is ~10-12x on measured evidence, and only traffic reduction (bit-packing) can move it |
 | *(chat)* | Convert easy ITK filters to numpy for a ~15-25% win | **WRONG, REVERTED** -- see sec 19. The per-op microbenchmark was real; the aggregate effect was a 20% REGRESSION because the adapter-boundary cost is paid far more often than the isolated benchmark could show |
+| *(chat)* | Widen the fusion boundary one op at a time (`eq_sv`, following mask's pattern) | **NULL RESULT** -- see sec 21. `mean_cone_size` went DOWN (4.26 -> 3.65-3.68), wall-clock flat. Two independent attempts (mask, eq_sv) both failed to move cones toward Stage B's 12-member threshold -- this line of attack is now considered exhausted, not just unlucky twice |
+
+## 21. `eq_sv` registered elementwise (kernel unchanged): a second null result
+
+Following sec 20's own recommendation -- widen the fusion boundary, don't
+convert kernel bodies -- `eq_sv` was registered as `ElementwiseSpec` (commit
+`4b6beb8`) with its sitk-based kernel left untouched (unlike `fa9c11e`'s
+mistake). Target was identified the same way `mask` was: a dependency-graph
+query over the real reduced plan found `mask -> eq_sv -> not` occurring 1632
+times, with `eq_sv` the one non-elementwise link.
+
+**Result: no improvement, and mildly counter to the hypothesis.**
+`mean_cone_size` went from 4.26 (mask-only) to 3.65-3.68 -- DOWN, not up --
+and `cones_dispatched` rose from ~2683 to ~3760-3790 (more, smaller cones).
+Wall-clock flat (63.9-64.6s vs 63.5-64.0s, within noise). Bit-identical
+throughout; kept (harmless), but not a win.
+
+**Likely mechanism**: cone growth is greedy and forward-only -- a cone only
+ever grows from its seed toward consumers, never retroactively absorbing an
+already-claimed producer (already documented in `test_numba_fusion.py`'s own
+`_NOT_DEPTH` comment on scheduler-order-dependent cone membership). Adding a
+new eligible node changes which nodes get claimed as seeds and in what order;
+in this pipeline that fragmented some runs into more, smaller cones rather
+than lengthening them. Boundary-widening is not monotonic in general, even
+when every individual registration is locally sound.
+
+**This is the second of two independent attempts at "register one more
+adjacent elementwise op" (`mask`, then `eq_sv`), and both failed to move
+cones meaningfully toward the 12-member threshold.** Combined with sec 20's
+observation that the actual elementwise-eligible neighborhoods around each
+`dt` call are small (measured directly: `not`/`and`/`or` feeding in,
+`mask`/`geq_sv`/`eq_sv` consuming, and nothing else recurs at meaningful
+volume), this is treated as a decisive signal, not a coincidence: this
+pipeline's chains are capped by the algorithm's own structure (2-4 genuinely
+pointwise ops between successive `dt`/`grow`/`imclose` calls), and no further
+one-op-at-a-time registration is expected to change that. **This line of
+attack is considered exhausted.** The live options remain sec 13's original
+two: bit-packing (attacks memory traffic directly, independent of cone
+length) and measuring reduction/planning time (cheap, still entirely
+unmeasured, possibly larger than anything touched in Part III or IV).
