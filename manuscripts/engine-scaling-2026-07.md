@@ -614,7 +614,7 @@ per-op microbenchmark, determines the sign of the result.
 | Part I sec 6 | Reduction/planning time unmeasured | STANDS -- still unmeasured as of this writing |
 | Part I sec 7 | "Memory bandwidth saturation" (inferred from efficiency decay) | **CONFIRMED**, but by different, stronger evidence than originally given -- see Part II sec 9-10 (topdown, perf record, disk ruled out) |
 | Part II sec 9-11 | Disk ruled out; 43% backend-bound at W=1; P/E isolation; cross-pool contention 27.8% | STANDS -- the most rigorously checked claims in this document (four independent methods) |
-| Part II sec 13 item 1 | Bit-packing is the top-ranked next step | STANDS, UNIMPLEMENTED -- sec 19 is a related but DIFFERENT idea (kernel-level conversion, not data-layout) that failed; bit-packing itself remains untried |
+| Part II sec 13 item 1 | Bit-packing is the top-ranked next step | **DOWNGRADED** -- see sec 22. Predicted (not measured) to fail the same way sec 19 did: its premise (long non-ITK-touching chains) is contradicted by sec 18/21's measured `mean_cone_size` of 2-4.3, and it would pay a LARGER boundary tax than sec 19's already-reverted 20% regression |
 | Part II sec 13 item 2 | Extend calibration to 2D | **DONE** -- see sec 15 |
 | *(chat, not previously written down)* | VL2 is 5.54x faster than VL1 on the 40-case recipe | **WRONG, RETRACTED** -- see sec 14. Corrected: 1.08x |
 | *(chat)* | "18x" is reachable with calibration + P/E scheduling | **NO** -- see sec 16; ceiling is ~10-12x on measured evidence, and only traffic reduction (bit-packing) can move it |
@@ -655,7 +655,44 @@ volume), this is treated as a decisive signal, not a coincidence: this
 pipeline's chains are capped by the algorithm's own structure (2-4 genuinely
 pointwise ops between successive `dt`/`grow`/`imclose` calls), and no further
 one-op-at-a-time registration is expected to change that. **This line of
-attack is considered exhausted.** The live options remain sec 13's original
-two: bit-packing (attacks memory traffic directly, independent of cone
-length) and measuring reduction/planning time (cheap, still entirely
-unmeasured, possibly larger than anything touched in Part III or IV).
+attack is considered exhausted.**
+
+## 22. Bit-packing's premise is now doubtful too -- by inference, not measurement
+
+Sec 13 item 1 ranked bit-packing top of the list on the strength of a
+"62% of boolean nodes never reach an ITK call" figure. That figure measured
+the wrong thing: whether a single EDGE's consumer is packable (`and`/`or`/
+`not`/`volume`), not whether a CHAIN of consecutive packable ops is long
+enough to amortize entering and leaving the packed representation. A node can
+satisfy "my consumer is elementwise" for exactly one hop and have THAT
+op's result feed straight into `imclose` the next hop -- fully consistent
+with the `mean_cone_size` of 2-4.3 measured in every configuration this Part
+tried (sec 18, 21). The 62% number was never evidence of long packed-domain
+runs; it was evidence of short ones, misread.
+
+Worse, bit-packing would pay a LARGER version of the exact tax that sank
+sec 19's reverted change, not a smaller one. That change paid one boundary
+crossing per direction (dense-sitk <-> dense-numpy, 0.569 ms, measured).
+Bit-packing needs the same sitk<->numpy crossing PLUS a pack/unpack step on
+top, because `geq_sv`/`leq_sv` still emit `sitk.Image` (their kernels were
+never converted -- sec 19's revert restored them) and ITK has no packed pixel
+type to hand data to or receive it from directly. Same short chains (sec 18,
+21), strictly more conversion steps per chain than the change already shown
+to lose by 20%.
+
+**This is inference from three separate measurements pointing the same
+direction (short chains: sec 18, 21; boundary tax dominates short chains:
+sec 19), not a fourth measurement of bit-packing itself, which remains
+unimplemented.** Stated plainly so the distinction isn't lost: sec 19's 20%
+regression and sec 21's null result are DATA. This section is a PREDICTION
+built from that data, and could be wrong if some other part of the program
+(outside `_bench_scaling.imgql`'s oracle-sweep shape) has genuinely long
+boolean-only runs. It has not been checked for one. Absent that check,
+bit-packing is downgraded from "top-ranked next step" to "expected to fail
+for the same reason sec 19 did, not recommended without first finding a
+workload shape with long non-ITK-touching chains."
+
+**What is NOT downgraded by this**: measuring reduction/planning time
+(Part I sec 6, still entirely unmeasured, no dependency on chain length or
+the adapter boundary at all) remains the one live, low-risk next step this
+Part has not yet touched.
