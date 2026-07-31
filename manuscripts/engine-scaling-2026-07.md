@@ -393,3 +393,117 @@ Supersedes Part I §7 item ordering given §11's contention finding:
 4. **Per-operator P/E placement**, keeping critical-path nodes (identified via
    `engine/parallelism.py`) off E-cores. Real but secondary to #1 per §11.
 5. Fusion-widening and GPU residency (Part I §7 items 2-3) unchanged.
+
+---
+
+# Part III — VL1 baseline (corrected), and calibration ships (2026-07-31)
+
+## 14. OBSOLETE: the first VL1 comparison in this document
+
+**A number reported earlier in this investigation — VL2 is 5.54x faster than
+VL1 on the 40-case TACAS'19 recipe — is WRONG and must not be cited or reused.
+Retracted here explicitly, not just superseded, because it was stated with
+confidence in chat before being written down.**
+
+What was wrong: VL1 was driven as 40 SEPARATE process launches (one dotnet
+process per case, matching how `/home/VoxLogicA/scripts/run_analysis.sh`
+happens to invoke it, and how this investigation first assumed VL1 had to be
+used). That charges VL1 for ~34 seconds of pure process-startup/JIT overhead
+that has nothing to do with the computation being measured, versus VL2 which
+amortizes one process across all 40 cases via its native `for`/`dir()` loop.
+This is not a subtle confound -- **34 of the 41.76 seconds measured were
+overhead, not compute.**
+
+**Corrected measurement**: VL1 has no `for`-loop construct, but it does not
+need one to avoid per-process overhead -- 40 `load`/`let`/`print` blocks can
+be mechanically unrolled into ONE `.imgql` file (each case's identifiers
+suffixed to avoid collisions) and submitted as a single VL1 invocation, same
+as any of VL1's own real multi-block scripts already do for parameter sweeps
+(`/home/VoxLogicA/scripts/gen_GBM_multi.sh`, sweeping thresholds, not cases,
+in exactly this style). Doing that:
+
+| | wall (40 cases) | per-case |
+|---|---|---|
+| VL1, WRONG (40 processes) | 41.76s | 1.044s |
+| **VL1, CORRECTED (1 process)** | **8.16s** | 0.204s |
+| VL2 (`incoming` @ `06bc147`, free-threaded, auto-calibrated 16 threads) | 7.54s | 0.189s |
+| **honest speedup** | | **1.08x** |
+
+Not 5.54x. **VL2 is about 8% faster than VL1** on this specific, simple
+(threshold + grow, no cross-correlation) recipe. All 40 corrected-run cases
+succeeded with Dice values identical to the flawed run (`dice_c1=0.8663`,
+`dice_c2=0.8250`, ...), confirming the fix changed only the overhead, not the
+computation.
+
+**This also resolves something that should have been caught earlier by
+cross-checking rather than trusted on first measurement**:
+`doc/dev/free-threaded-handover.md` already records a VL1 number for this
+exact recipe -- **8.17s**. Today's corrected, independent re-measurement gives
+**8.157s** -- a near-exact match, and strong evidence the historical number was
+already measured fairly (single-process) while this investigation's first
+attempt was not. The 17%-faster figure recorded there (VL1 8.17s vs `incoming`
+6.81s at the time) is a DIFFERENT, still-valid data point from a different
+commit and thread count -- it is not superseded, and the near-identical VL1
+side (8.17s vs 8.157s) is exactly what should be true of a historical binary
+that has not changed.
+
+**Standing lesson, stated once so it need not be relearned a fourth time in
+this document**: a benchmark result that has no comparison point to sanity-check
+against is not yet trustworthy, however carefully it was measured. The
+5.54x number passed every internal check available at the time (real binary,
+real dataset, plausible Dice, idle host) and was still wrong, because the
+methodology itself -- not the execution of it -- was flawed, and nothing
+internal to that run could have revealed that. Only a second, structurally
+different measurement (or, as happened here, a sharp-eyed reader) could.
+
+## 15. ITK thread count is now calibrated, not guessed (closes Part II sec 13 item 2)
+
+Implemented since Part II: `engine/calibration.py`'s existing worker-count
+sweep is followed by a second, small sweep (bounded to {1, `cores/workers`,
+`cores`} -- inline, "fill what's idle", "leave at default") AT the winning
+worker count only, not a full cross product. Cached keyed by BOTH fingerprint
+and worker count (`load_cached_itk_threads(workers, fingerprint)`), because
+Part I sec 5's crossover means a value measured at one worker count is not
+known-good at another -- a mismatch returns `None` and the engine leaves ITK
+at its own default, the measured-safe fallback. `engine/itk_threads.py` was
+recreated as a purely mechanical setter with no formula in it at all; the
+formula that was here before (`cores // workers`, sec 5) is the thing this
+replaces.
+
+Verified end-to-end (not just unit-tested): a calibration cache entry for
+W=4/itk=2 changes ITK's live global thread count from its own default (18) to
+2 when `ComputationEngine(max_concurrency=4)` is constructed, and correctly
+leaves it untouched when constructed with `max_concurrency=8` (no calibration
+for that count). 27 new/changed tests.
+
+## 16. What this changes about "can we reach 18x"
+
+Asked directly during this investigation: given calibration plus everything
+else measured, can the engine reach something like 18x on an 18-core sweep?
+
+**No, and sec 11's numbers say why precisely.** Even the unrealistic upper
+bound of P-cores and E-cores suffering ZERO cross-pool contention caps out
+at 12.03 P-core-equivalents (12.0x); what is actually achieved running both
+pools together is 8.69 (8.7x). Calibration's job is to reliably FIND the best
+already-measured operating point (today, empirically, ~9.86x at W=18/itk=1)
+automatically, on every host -- it does not and cannot move the ceiling itself,
+because the ceiling is set by shared-memory contention (sec 11) and intrinsic
+backend-bound stalling (sec 10), neither of which scheduling can touch. Only
+sec 13 item 1 (bit-packing, cutting the memory traffic causing the stalls)
+has a plausible path to moving the ceiling higher than ~10-12x on this
+machine -- and that is still unmeasured, not yet a promise.
+
+## 17. Status of every conjecture in this document, for a reader who only reads this table
+
+| # | Claim | Status |
+|---|---|---|
+| Part I sec 1-2 | Engine reaches 9.65x/24 cores; efficiency = speedup/W | **PARTLY OBSOLETE** -- speedup number stands, efficiency-by-worker-count column is invalid on this hybrid CPU (sec 11 divides by P-core-equivalents instead) |
+| Part I sec 3 | Free-threading ~0-8% gain, -13% at W=24 | STANDS, with the stated numba/SimpleITK-pin confound |
+| Part I sec 4-5 | `cores // workers` ITK formula | **DISPROVEN AND REVERTED** (commit `87f6f2b`); replaced by calibration (sec 15) |
+| Part I sec 6 | Reduction/planning time unmeasured | STANDS -- still unmeasured as of this writing |
+| Part I sec 7 | "Memory bandwidth saturation" (inferred from efficiency decay) | **CONFIRMED**, but by different, stronger evidence than originally given -- see Part II sec 9-10 (topdown, perf record, disk ruled out) |
+| Part II sec 9-11 | Disk ruled out; 43% backend-bound at W=1; P/E isolation; cross-pool contention 27.8% | STANDS -- the most rigorously checked claims in this document (four independent methods) |
+| Part II sec 13 item 1 | Bit-packing is the top-ranked next step | STANDS, UNIMPLEMENTED |
+| Part II sec 13 item 2 | Extend calibration to 2D | **DONE** -- see sec 15 |
+| *(chat, not previously written down)* | VL2 is 5.54x faster than VL1 on the 40-case recipe | **WRONG, RETRACTED** -- see sec 14. Corrected: 1.08x |
+| *(chat)* | "18x" is reachable with calibration + P/E scheduling | **NO** -- see sec 16; ceiling is ~10-12x on measured evidence, and only traffic reduction (bit-packing) can move it
