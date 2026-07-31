@@ -76,8 +76,24 @@ the GIL**: the GIL build reaches `cpu/wall` = 20.0 at 24 workers with
 `saturation` = 0.980 once ITK is configured sanely. The earlier 12.7-core
 observation is better explained by ITK thread-pool interaction (§4) than by
 interpreter locking. The cutover is not *harmful* — it is ~2-8% positive below
-18 workers — but its stated justification does not survive measurement, and it
-should be revisited rather than treated as settled.
+18 workers — but its stated justification does not survive measurement.
+
+**DECISION (2026-07-31), so this is not relitigated: free-threading STAYS the
+default, and `bootstrap.py` continues to require it.** The reasoning above
+retires the *performance* argument for the cutover, not the cutover. It is kept
+on different and explicitly non-performance grounds: `bootstrap.py` installs a
+pinned interpreter via `uv`, so the project controls which build every host
+gets — the flexibility a soft default would buy (tolerating a pre-existing GIL
+build) has no scenario to apply to. Targeting one interpreter instead of two
+halves the test matrix, and free-threading is the one with a future.
+
+The cost being accepted, stated plainly so a later reader can re-evaluate if it
+ever bites: the cp314t requirement pins floors of numba >= 0.66.0 and
+SimpleITK >= 2.5.5 (`implementation/python/requirements.txt`), and any future
+dependency without a free-threaded wheel becomes a hard blocker rather than a
+"use the GIL venv for now" inconvenience. That is a deliberate trade, not an
+oversight. Do not "fix" the hard requirement in `bootstrap.py` on the basis of
+§3's performance numbers alone — they were never the reason it is still there.
 
 **Caveat, unavoidable:** the GIL venv carries numba 0.64 / SimpleITK 2.5.2 and
 the free-threaded venv carries 0.66 / 2.5.5, because no earlier release ships
@@ -499,6 +515,7 @@ machine -- and that is still unmeasured, not yet a promise.
 |---|---|---|
 | Part I sec 1-2 | Engine reaches 9.65x/24 cores; efficiency = speedup/W | **PARTLY OBSOLETE** -- speedup number stands, efficiency-by-worker-count column is invalid on this hybrid CPU (sec 11 divides by P-core-equivalents instead) |
 | Part I sec 3 | Free-threading ~0-8% gain, -13% at W=24 | STANDS, with the stated numba/SimpleITK-pin confound |
+| Part I sec 3 | "the hard cutover should be revisited" | **SETTLED, KEPT** — free-threading stays the required default, on single-platform/controlled-interpreter grounds, not performance ones. See §3's DECISION note before changing `bootstrap.py`. |
 | Part I sec 4-5 | `cores // workers` ITK formula | **DISPROVEN AND REVERTED** (commit `87f6f2b`); replaced by calibration (sec 15) |
 | Part I sec 6 | Reduction/planning time unmeasured | STANDS -- still unmeasured as of this writing |
 | Part I sec 7 | "Memory bandwidth saturation" (inferred from efficiency decay) | **CONFIRMED**, but by different, stronger evidence than originally given -- see Part II sec 9-10 (topdown, perf record, disk ruled out) |
