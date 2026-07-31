@@ -513,3 +513,96 @@ print "pdtStyle" pdtStyle
         a = np.asarray(cold_values["pdtStyle"].np())
         b = np.asarray(warm_values["pdtStyle"].np())
         assert np.array_equal(a, b), "pdtStyle diverged on NaN/boundary input between Stage A and Stage B"
+
+
+# eq_sv mirrors the real adjacency found in the oracle sweep (dependency-graph
+# query over the reduced _bench_scaling.imgql plan, see manuscripts/engine-
+# scaling-2026-07.md Part IV sec 20): mask -> eq_sv -> not, 1632 occurrences,
+# with eq_sv previously the one non-elementwise link in that chain. UNLIKE the
+# reverted fa9c11e, eq_sv's KERNEL stays sitk-based here -- only the fusion
+# registration is new -- so this test's job is narrower than mask's: confirm
+# the expr fragment ("{1} == {0}", value {0} / image {1}) is bit-identical to
+# the real sitk.BinaryThreshold(img, v, v, 1, 0) call, not that a dtype
+# contract holds (eq_sv's out_dtype is a plain "uint8", no arg-tracking).
+_EQ_SV_PROGRAM = """
+import "simpleitk"
+import "vox1"
+img = ReadImage("{path}")
+dtimg = dt(geq_sv(2.0, img))
+cond = dtimg > 0.0
+masked = mask(dtimg, cond)
+thresholded = eq_sv(0.0, masked)
+chained = %s
+print "chained" chained
+""" % ("not(" * _NOT_DEPTH + "thresholded" + ")" * _NOT_DEPTH)
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_for_eq_sv() -> None:
+    """Bit-identical Stage A vs Stage B for the new 'eq_sv' ElementwiseSpec
+    entry, in its real mask(dt(x),...) -> eq_sv -> not shape."""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        img_path = Path(tmp) / "in.nii.gz"
+        _write_test_image(img_path)
+        program = _EQ_SV_PROGRAM.format(path=str(img_path).replace("\\", "/"))
+        plan = reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+        cold_engine, cold_values, cold_metrics = _run(plan)
+        assert cold_metrics["cones_numba"] == 0
+
+        backend = cold_engine.numba_backend
+        deadline = time.monotonic() + 10.0
+        while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+            if time.monotonic() > deadline:
+                pytest.fail("background numba compile(s) never finished")
+            time.sleep(0.05)
+        assert backend.compiles_failed == 0, "eq_sv's cone shape must not fail to compile"
+
+        warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+        assert warm_metrics["cones_numba"] > 0, \
+            "test must actually exercise Stage B for an eq_sv-containing cone, or it proves nothing"
+
+        a = np.asarray(cold_values["chained"].np())
+        b = np.asarray(warm_values["chained"].np())
+        assert np.array_equal(a, b), "chained diverged between Stage A and Stage B"
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_for_eq_sv_on_nan_and_boundary_values() -> None:
+    """Same, on the NaN/boundary image directly (no dt() in between, so
+    exact-zero and NaN reach eq_sv unmodified)."""
+    import tempfile
+    from pathlib import Path
+    program_tpl = """
+import "simpleitk"
+import "vox1"
+img = ReadImage("{path}")
+thresholded = eq_sv(0.0, img)
+chained = %s
+print "chained" chained
+""" % ("not(" * _NOT_DEPTH + "thresholded" + ")" * _NOT_DEPTH)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        img_path = Path(tmp) / "in.mha"
+        _write_edge_case_image(img_path)
+        program = program_tpl.format(path=str(img_path).replace("\\", "/"))
+        plan = reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+        cold_engine, cold_values, _ = _run(plan)
+        backend = cold_engine.numba_backend
+        deadline = time.monotonic() + 10.0
+        while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+            if time.monotonic() > deadline:
+                pytest.fail("background numba compile(s) never finished")
+            time.sleep(0.05)
+        assert backend.compiles_failed == 0
+
+        warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+        assert warm_metrics["cones_numba"] > 0, \
+            "test must actually exercise Stage B, or it proves nothing"
+
+        a = np.asarray(cold_values["chained"].np())
+        b = np.asarray(warm_values["chained"].np())
+        assert np.array_equal(a, b), "chained diverged on NaN/boundary input between Stage A and Stage B"

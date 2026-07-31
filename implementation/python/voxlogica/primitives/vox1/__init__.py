@@ -17,9 +17,20 @@ _ELEMENTWISE: dict[str, ElementwiseSpec] = {
     "not": ElementwiseSpec(expr="~({0} != 0)", out_dtype="uint8"),
     "and": ElementwiseSpec(expr="{0} & {1}", out_dtype="uint8"),
     "or": ElementwiseSpec(expr="{0} | {1}", out_dtype="uint8"),
-    # leq_sv(value, image) / geq_sv(value, image): scalar is {0}, image is {1}.
+    # leq_sv(value, image) / geq_sv(value, image) / eq_sv(value, image):
+    # scalar is {0}, image is {1}. eq_sv's KERNEL stays sitk-based (unlike the
+    # reverted commit fa9c11e, which changed the kernel body too and measured
+    # a 20% regression -- see manuscripts/engine-scaling-2026-07.md Part IV
+    # sec 19) -- only the fusion registration is added here, so eq_sv can
+    # join a cone but every dispatch still runs the real ITK filter. Sits
+    # directly between two already-elementwise ops in the real oracle sweep
+    # (mask -> eq_sv -> not, 1632 occurrences, measured via a dependency-graph
+    # query over the reduced plan) -- registering it lets a cone bridge past
+    # exactly the point that currently breaks it, per Part IV sec 20's
+    # revised recommendation (widen the fusion boundary, not the kernel set).
     "leq_sv": ElementwiseSpec(expr="{1} <= {0}", out_dtype="uint8"),
     "geq_sv": ElementwiseSpec(expr="{1} >= {0}", out_dtype="uint8"),
+    "eq_sv": ElementwiseSpec(expr="{1} == {0}", out_dtype="uint8"),
     # between(value1, value2, image): image is {2}.
     "between": ElementwiseSpec(expr="({0} <= {2}) & ({2} <= {1})", out_dtype="uint8"),
     # Generic image-vs-image (or image-vs-scalar) comparisons: kernels.py's
