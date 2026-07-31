@@ -399,3 +399,117 @@ def test_stage_b_matches_stage_a_for_generic_comparisons_on_nan_and_boundary_val
     # (13) of nots, False negates to True.
     flat = np.asarray(warm_values["imgVsImg"].np()).reshape(-1)
     assert flat[0] == 1, "NaN <= finite must be False, negated odd number of times to True"
+
+
+# pdtStyle mirrors the real usage this registration targets:
+# pdt(x) = mask(dt(x), dt(x) > 0), the shared innards of EVERY
+# smoothen/dilate/erode/imopen/imclose call — mask's arg0 (the image) is
+# dtimg, a float32 array_input EXTERNAL to the cone, exercising
+# resolve_out_dtype's leaf case through the real engine (the recursive
+# "member" case is covered directly and deterministically in
+# test_resolve_out_dtype.py, since cone membership itself is
+# scheduler-dependent — see this file's _NOT_DEPTH comment).
+_MASK_PROGRAM = """
+import "simpleitk"
+import "vox1"
+img = ReadImage("{path}")
+dtimg = dt(geq_sv(2.0, img))
+cond = dtimg > 0.0
+masked = mask(dtimg, cond)
+pdtStyle = %s
+print "pdtStyle" pdtStyle
+""" % ("not(" * _NOT_DEPTH + "(masked > 0.0)" + ")" * _NOT_DEPTH)
+# note: masked (mask's real float32 output) is collapsed to boolean via
+# "> 0.0" BEFORE the not^13 wrapper -- sitk's own NotImageFilter does not
+# support float32 in 3D (confirmed: this failed even Stage A, the reference
+# implementation, on first attempt), so wrapping a float image directly in
+# not() is not a valid VoxLogicA program regardless of fusion.
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_for_mask() -> None:
+    """Bit-identical Stage A vs Stage B for the new 'mask' ElementwiseSpec
+    entry, in its real pdt(x)=mask(dt(x), dt(x) > 0) shape (see
+    primitives/vox1/__init__.py) — the specific gap this closes: mask sits
+    immediately after dt (never itself elementwise) in every
+    smoothen/dilate/erode call, so registering it lets a cone bridge past
+    dt's boundary instead of breaking there."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        from pathlib import Path
+        img_path = Path(tmp) / "in.nii.gz"
+        _write_test_image(img_path)
+        program = _MASK_PROGRAM.format(path=str(img_path).replace("\\", "/"))
+        plan = reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+        cold_engine, cold_values, cold_metrics = _run(plan)
+        assert cold_metrics["cones_numba"] == 0
+
+        backend = cold_engine.numba_backend
+        deadline = time.monotonic() + 10.0
+        while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+            if time.monotonic() > deadline:
+                pytest.fail("background numba compile(s) never finished")
+            time.sleep(0.05)
+        assert backend.compiles_failed == 0, "mask's cone shape must not fail to compile"
+
+        warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+        assert warm_metrics["cones_numba"] > 0, \
+            "test must actually exercise Stage B for a mask-containing cone, or it proves nothing"
+
+        a = np.asarray(cold_values["pdtStyle"].np())
+        b = np.asarray(warm_values["pdtStyle"].np())
+        assert np.array_equal(a, b), "pdtStyle diverged between Stage A and Stage B"
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_for_mask_on_nan_and_boundary_values() -> None:
+    """Same as above, masking a NaN/boundary image directly (arg0 = img
+    itself, not dt(img)) — dt() never produces NaN (see the sibling
+    comparison test), so THIS is what stresses mask's own NaN passthrough and
+    the exact-zero boundary of its condition."""
+    import tempfile
+    from pathlib import Path
+    program_tpl = """
+import "simpleitk"
+import "vox1"
+img = ReadImage("{path}")
+cond = img > 0.0
+masked = mask(img, cond)
+pdtStyle = %s
+print "pdtStyle" pdtStyle
+""" % ("not(" * _NOT_DEPTH + "(masked > -999.0)" + ")" * _NOT_DEPTH)
+    # "> -999.0", not "> 0.0": img contains negative values (-1.0) that must
+    # compare true, and NaN must compare false either way (IEEE754) -- the
+    # point is exercising the collapse-to-boolean step on masked's actual
+    # NaN/zero/negative content, not picking a threshold that accidentally
+    # sidesteps it.
+
+    with tempfile.TemporaryDirectory() as tmp:
+        img_path = Path(tmp) / "in.mha"
+        _write_edge_case_image(img_path)
+        program = program_tpl.format(path=str(img_path).replace("\\", "/"))
+        plan = reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+        cold_engine, cold_values, _ = _run(plan)
+        backend = cold_engine.numba_backend
+        deadline = time.monotonic() + 10.0
+        while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+            if time.monotonic() > deadline:
+                pytest.fail("background numba compile(s) never finished")
+            time.sleep(0.05)
+        assert backend.compiles_failed == 0
+
+        warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+        assert warm_metrics["cones_numba"] > 0, \
+            "test must actually exercise Stage B, or it proves nothing"
+
+        # The outer not^13 collapses the result to uint8 (via `!= 0`, under
+        # which NaN != 0 is True per IEEE754) before it ever reaches the
+        # goal, so no NaN survives to compare here -- what this test actually
+        # stresses is whether Stage A and Stage B's mask() disagreed on any
+        # NaN/boundary voxel BEFORE that collapse, which shows up as a
+        # differing boolean after it.
+        a = np.asarray(cold_values["pdtStyle"].np())
+        b = np.asarray(warm_values["pdtStyle"].np())
+        assert np.array_equal(a, b), "pdtStyle diverged on NaN/boundary input between Stage A and Stage B"

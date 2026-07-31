@@ -86,6 +86,19 @@ class ElementwiseSpec:
     out_dtype: str
     commutes_scalar: bool = True
 
+    # ``out_dtype`` is usually a literal numpy dtype name ("uint8", "float32",
+    # ...): the safe default when the result type does not depend on which
+    # argument type flows in (e.g. every comparison here always yields a 0/1
+    # mask, regardless of the operand dtype(s) — ITK's own comparison-filter
+    # convention). Some primitives are NOT like that: ``mask(image, cond)``'s
+    # output dtype tracks ``image``, whatever it happens to be at that call
+    # site, so a single fixed string would be silently wrong at any call
+    # where ``image`` isn't the type the string names. For those, write
+    # ``"argN"`` (e.g. ``"arg0"``) to mean "the runtime dtype of positional
+    # argument N" — resolved per-dispatch in
+    # ``engine/numba_fusion.py::resolve_out_dtype``, recursively through
+    # intra-cone member references if arg N is itself a fused predecessor.
+
 
 @dataclass(frozen=True)
 class PrimitiveSpec:

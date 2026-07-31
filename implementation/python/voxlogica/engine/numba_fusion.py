@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -227,6 +228,36 @@ def shape_of(cone: "Cone", table: "NodeTable", registry: "PrimitiveRegistry") ->
 
 def _expr_for(registry: "PrimitiveRegistry", operator: str) -> str:
     return registry.get_spec(operator).elementwise.expr
+
+
+_ARG_DTYPE_RE = re.compile(r"^arg(\d+)$")
+
+
+def resolve_out_dtype(shape: ConeShape, member_idx: int,
+                       arrays: list["np.ndarray"], scalars: list[float],
+                       registry: "PrimitiveRegistry") -> "np.dtype":
+    """The concrete output dtype for ``shape.ops[member_idx]``, for THIS dispatch.
+
+    Most specs declare a literal dtype (safe: their result type never depends
+    on the operand's) — return it directly. A few (``mask``: see
+    ``ElementwiseSpec.out_dtype``'s docstring) declare ``"argN"``, meaning
+    "whatever positional argument N's runtime dtype is". N can itself be a
+    fused predecessor within the SAME cone (an ``ArgRef("member", ...)``), so
+    this recurses through the cone's own arg_refs rather than only handling
+    the leaf case — the recursion terminates because cone members are a DAG in
+    topological order, so a "member" ref always points strictly earlier.
+    """
+    out_dtype = registry.get_spec(shape.ops[member_idx]).elementwise.out_dtype
+    m = _ARG_DTYPE_RE.match(out_dtype)
+    if m is None:
+        return np.dtype(out_dtype)
+
+    ref = shape.arg_refs[member_idx][int(m.group(1))]
+    if ref.kind == "array_input":
+        return arrays[ref.index].dtype
+    if ref.kind == "scalar_input":
+        return np.dtype(np.float64)  # scalars are always widened to float(), see _compute_cone_numba
+    return resolve_out_dtype(shape, ref.index, arrays, scalars, registry)
 
 
 def _generate_source(shape: ConeShape, registry: "PrimitiveRegistry") -> str:

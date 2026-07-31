@@ -38,6 +38,14 @@ _ELEMENTWISE: dict[str, ElementwiseSpec] = {
     "<=": ElementwiseSpec(expr="{0} <= {1}", out_dtype="uint8"),
     ">":  ElementwiseSpec(expr="{0} > {1}", out_dtype="uint8"),
     ">=": ElementwiseSpec(expr="{0} >= {1}", out_dtype="uint8"),
+    # mask(image, mask_image): zero out voxels where mask_image is false.
+    # Genuinely pointwise, but its output dtype tracks {0} (the image), not a
+    # fixed type -- called via pdt(x)=mask(dt(x), dt(x) > 0) inside EVERY
+    # smoothen/dilate/erode/imopen/imclose, immediately after dt (never
+    # itself elementwise), so registering it lets a cone bridge past dt's
+    # boundary instead of breaking there -- see manuscripts/engine-scaling-
+    # 2026-07.md Part IV for the measurement this was added to chase.
+    "mask": ElementwiseSpec(expr="({0} if {1} != 0 else 0.0)", out_dtype="arg0"),
 }
 
 _PRIMITIVES: dict[str, tuple[Callable[..., Any], AritySpec]] = {
