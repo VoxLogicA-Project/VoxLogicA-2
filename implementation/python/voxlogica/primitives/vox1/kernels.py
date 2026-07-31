@@ -192,10 +192,16 @@ def bool_not_scalar(value: bool) -> bool:
 
 
 def not_compat(value: object) -> object:
-    """Boolean not dispatching over scalars and images."""
+    """Boolean not dispatching over scalars and images.
+
+    ``not_compat`` itself is not registered numpy_native (it dispatches on
+    scalar-vs-image at runtime, which the numpy_native protocol doesn't
+    express), so the executor still hands it a sitk.Image -- converted here
+    before delegating to the numpy-native ``logical_not``.
+    """
     if isinstance(value, (bool, int, float)):
         return bool_not_scalar(bool(value))
-    return logical_not(value)
+    return logical_not(sitk.GetArrayViewFromImage(value))
 
 
 def num_eq(left: float, right: float) -> bool:
@@ -228,102 +234,6 @@ def num_gt(left: float, right: float) -> bool:
     return float(left) > float(right)
 
 
-def _comparison_values(left: object, right: object, op_name: str) -> object:
-    if _is_image(left) and _is_image(right):
-        _remember_base_from_values(left, right)
-        return getattr(sitk, op_name)(left, right)
-    if _is_image(left):
-        _remember_base(left)
-        return getattr(sitk, op_name)(left, float(cast(SupportsFloat, right)))
-    if _is_image(right):
-        _remember_base(right)
-        flipped = {
-            "Equal": "Equal",
-            "NotEqual": "NotEqual",
-            "Less": "Greater",
-            "LessEqual": "GreaterEqual",
-            "Greater": "Less",
-            "GreaterEqual": "LessEqual",
-        }[op_name]
-        return getattr(sitk, flipped)(right, float(cast(SupportsFloat, left)))
-
-    left_value = float(cast(SupportsFloat, left))
-    right_value = float(cast(SupportsFloat, right))
-    if op_name == "Equal":
-        return left_value == right_value
-    if op_name == "NotEqual":
-        return left_value != right_value
-    if op_name == "Less":
-        return left_value < right_value
-    if op_name == "LessEqual":
-        return left_value <= right_value
-    if op_name == "Greater":
-        return left_value > right_value
-    if op_name == "GreaterEqual":
-        return left_value >= right_value
-    raise ValueError(f"Unsupported comparison operator: {op_name}")
-
-
-def equal(left: object, right: object) -> object:
-    """Scalar or voxel-wise equality."""
-    return apply_binary_op(
-        "Equal",
-        left,
-        right,
-        lambda a, b: _comparison_values(a, b, "Equal"),
-    )
-
-
-def not_equal(left: object, right: object) -> object:
-    """Scalar or voxel-wise inequality."""
-    return apply_binary_op(
-        "NotEqual",
-        left,
-        right,
-        lambda a, b: _comparison_values(a, b, "NotEqual"),
-    )
-
-
-def less(left: object, right: object) -> object:
-    """Scalar or voxel-wise less-than."""
-    return apply_binary_op(
-        "Less",
-        left,
-        right,
-        lambda a, b: _comparison_values(a, b, "Less"),
-    )
-
-
-def less_equal(left: object, right: object) -> object:
-    """Scalar or voxel-wise less-or-equal."""
-    return apply_binary_op(
-        "LessEqual",
-        left,
-        right,
-        lambda a, b: _comparison_values(a, b, "LessEqual"),
-    )
-
-
-def greater(left: object, right: object) -> object:
-    """Scalar or voxel-wise greater-than."""
-    return apply_binary_op(
-        "Greater",
-        left,
-        right,
-        lambda a, b: _comparison_values(a, b, "Greater"),
-    )
-
-
-def greater_equal(left: object, right: object) -> object:
-    """Scalar or voxel-wise greater-or-equal."""
-    return apply_binary_op(
-        "GreaterEqual",
-        left,
-        right,
-        lambda a, b: _comparison_values(a, b, "GreaterEqual"),
-    )
-
-
 def bconstant(value: bool) -> sitk.Image:
     """Boolean constant image filled with a given value."""
     if bool(value):
@@ -341,29 +251,6 @@ def ff() -> sitk.Image:
     """Boolean false image."""
     base = _require_base()
     return _filled_image_like(base, sitk.sitkUInt8, 0)
-
-
-def logical_not(image: object) -> sitk.Image:
-    """Voxel-wise boolean negation."""
-    img = _as_image(image, "image")
-    _remember_base(img)
-    return sitk.Not(img)
-
-
-def logical_and(left: object, right: object) -> object:
-    """Voxel-wise boolean and."""
-    if _is_image(left) or _is_image(right):
-        _remember_base_from_values(left, right)
-        return sitk.And(left, right)
-    return bool(left) and bool(right)
-
-
-def logical_or(left: object, right: object) -> object:
-    """Voxel-wise boolean or."""
-    if _is_image(left) or _is_image(right):
-        _remember_base_from_values(left, right)
-        return sitk.Or(left, right)
-    return bool(left) or bool(right)
 
 
 def dt(image: object) -> sitk.Image:
@@ -391,32 +278,6 @@ def constant(value: float) -> sitk.Image:
     return _filled_image_like(base, sitk.sitkFloat32, float(value))
 
 
-def eq_sv(value: float, image: object) -> sitk.Image:
-    """Mask of voxels equal to a scalar value."""
-    img = _as_image(image, "image")
-    _remember_base(img)
-    return sitk.BinaryThreshold(img, float(value), float(value), 1, 0)
-
-
-def geq_sv(value: float, image: object) -> sitk.Image:
-    """Mask of voxels greater than or equal to a scalar value."""
-    img = _as_image(image, "image")
-    _remember_base(img)
-    return sitk.GreaterEqual(img, float(value))
-
-
-def leq_sv(value: float, image: object) -> sitk.Image:
-    """Mask of voxels less than or equal to a scalar value."""
-    img = _as_image(image, "image")
-    _remember_base(img)
-    return sitk.LessEqual(img, float(value))
-
-
-def between(value1: float, value2: float, image: object) -> sitk.Image:
-    """Mask of voxels within an inclusive scalar range."""
-    img = _as_image(image, "image")
-    _remember_base(img)
-    return sitk.BinaryThreshold(img, float(value1), float(value2), 1, 0)
 
 
 def max_value(image: object) -> float:
@@ -490,14 +351,6 @@ def divide(left: object, right: object) -> object:
 def subtract(left: object, right: object) -> object:
     """Voxel-wise or scalar subtraction."""
     return apply_binary_op("Subtraction", left, right, _sub_values)
-
-
-def mask(image: object, mask_image: object) -> sitk.Image:
-    """Zero out voxels where a boolean mask is false."""
-    img = _as_image(image, "image")
-    msk = _as_image(mask_image, "mask_image")
-    _remember_base(img)
-    return sitk.Mask(img, _as_bool_image(msk), 0.0)
 
 
 def avg(image: object, mask_image: object) -> float:
@@ -1792,3 +1645,168 @@ def crossCorrelation(
         np.float32,
     )
     return sitk.Crop(temporary_image, ball_radius, ball_radius)
+
+
+# ── numpy-native elementwise kernels ────────────────────────────────────────
+#
+# Replace the sitk-filter-call kernels above for primitives registered
+# ``numpy_native=True`` in vox1/__init__.py: not/and/or/leq_sv/geq_sv/eq_sv/
+# between/mask and the six generic comparisons. Measured 2-6x faster than the
+# equivalent ITK filter call for these single-pass, memory-bound ops -- ITK's
+# own per-call overhead (filter construction, region negotiation, a fresh
+# allocation every time) dominates at this data size, not memory bandwidth
+# (both implementations run near the same GB/s once accounted for). See
+# manuscripts/engine-scaling-2026-07.md Part IV for the measurements.
+#
+# Executor.py unwraps a numpy_native primitive's PolyArray arguments via
+# ``.np()``, not ``.sitk()`` (see that module's docstring) -- these kernels
+# receive and must return plain ``np.ndarray`` (or, for and/or/comparisons
+# with two non-image operands, a plain Python bool, matching the sitk-based
+# kernels' own existing scalar-only branch exactly). NEVER a sitk.Image.
+#
+# Each translation below is the corresponding ``ElementwiseSpec.expr`` from
+# vox1/__init__.py, applied as a whole-array numpy expression instead of a
+# numba per-voxel scalar loop -- that string is the validated source of
+# truth (Stage B's own bit-identical tests already check it against the real
+# sitk kernel), and whole-array numpy evaluation of the same operators
+# (bitwise &, |, ~, comparisons) is elementwise-identical to the per-scalar
+# numba evaluation Stage B already does. Confirmed EMPIRICALLY against real
+# sitk output before trusting this, not just reasoned about -- see this
+# commit's test suite, and the module comment on ``and``/``or``/``not`` below
+# for one case where the naive assumption (all three are "the same kind of
+# bitwise op") was wrong and caught exactly this way.
+#
+# `xp` aliases the array module: numpy today, a drop-in cupy swap for GPU
+# residency later needs no rewrite of these bodies, only this alias -- see
+# manuscripts/engine-scaling-2026-07.md's GPU section for why cupy/cucim, not
+# numba.cuda or torch, is the intended GPU path (numba.cuda is a disjoint
+# programming model from the @njit above, sharing no code with it; torch has
+# no distance transform, forcing host<->device transfers around every dt()
+# call, which measured 4x WORSE than staying on the CPU entirely).
+xp = np
+
+
+def _as_bitwise_operand(value: object) -> object:
+    """and/or's non-image operand as a 0/1 uint8, matching sitk.And/Or's own
+    behavior on a bare Python bool/int (confirmed empirically: sitk.And(img,
+    True) == bitwise_and(img, 1), sitk.And(img, False) == bitwise_and(img, 0)
+    -- NOT a full-image broadcast of the raw int value)."""
+    return xp.uint8(1) if bool(value) else xp.uint8(0)
+
+
+def logical_not(image: object) -> np.ndarray:
+    """Voxel-wise boolean negation (numpy-native).
+
+    NOT raw bitwise complement (``~x``, which would give 254 for input 1) --
+    confirmed empirically that sitk.Not normalizes via "!= 0" first, exactly
+    as its ElementwiseSpec (``~({0} != 0)``) already declares: sitk.Not on
+    [0,1,2,5,255] gives [1,0,0,0,0], matching ``~(x != 0)`` and NOT ``~x``
+    ([255,254,253,250,0]). This is the one case in this section where a
+    sibling op's behavior (and/or ARE raw bitwise, confirmed separately) does
+    not generalize -- each op was checked against real sitk output
+    individually, not inferred from another.
+    """
+    arr = xp.asarray(image)
+    return xp.bitwise_not(arr != 0).astype(xp.uint8)
+
+
+def logical_and(left: object, right: object) -> object:
+    """Voxel-wise boolean and (numpy-native). Raw bitwise & on whatever pixel
+    values are present -- confirmed empirically no "!=0" normalization
+    happens (unlike ``not``): sitk.And on non-0/1 arrays matches
+    np.bitwise_and exactly."""
+    if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
+        a = left if isinstance(left, np.ndarray) else _as_bitwise_operand(left)
+        b = right if isinstance(right, np.ndarray) else _as_bitwise_operand(right)
+        return xp.bitwise_and(a, b)
+    return bool(left) and bool(right)
+
+
+def logical_or(left: object, right: object) -> object:
+    """Voxel-wise boolean or (numpy-native). Raw bitwise |, same convention
+    as ``logical_and_np``."""
+    if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
+        a = left if isinstance(left, np.ndarray) else _as_bitwise_operand(left)
+        b = right if isinstance(right, np.ndarray) else _as_bitwise_operand(right)
+        return xp.bitwise_or(a, b)
+    return bool(left) or bool(right)
+
+
+def eq_sv(value: float, image: object) -> np.ndarray:
+    """Mask of voxels equal to a scalar value (numpy-native)."""
+    return (xp.asarray(image) == float(value)).astype(xp.uint8)
+
+
+def geq_sv(value: float, image: object) -> np.ndarray:
+    """Mask of voxels >= a scalar value (numpy-native)."""
+    return (xp.asarray(image) >= float(value)).astype(xp.uint8)
+
+
+def leq_sv(value: float, image: object) -> np.ndarray:
+    """Mask of voxels <= a scalar value (numpy-native)."""
+    return (xp.asarray(image) <= float(value)).astype(xp.uint8)
+
+
+def between(value1: float, value2: float, image: object) -> np.ndarray:
+    """Mask of voxels within an inclusive scalar range (numpy-native).
+    Inclusive on BOTH ends, confirmed against sitk.BinaryThreshold(img, v1,
+    v2, 1, 0) directly (its own inclusive-range convention)."""
+    arr = xp.asarray(image)
+    return ((arr >= float(value1)) & (arr <= float(value2))).astype(xp.uint8)
+
+
+def mask(image: object, mask_image: object) -> np.ndarray:
+    """Zero out voxels where mask_image is false (numpy-native).
+
+    Output dtype tracks ``image`` (confirmed against sitk.Mask on a uint8
+    image: outside-value 0.0 casts to uint8 0, not to some wider type) --
+    ``np.where``'s own result dtype already does this correctly via normal
+    numpy type promotion between ``image`` and the Python int/float 0, so no
+    explicit ``.astype`` is needed here (unlike the boolean-output kernels
+    above, which must force uint8 to match ITK's comparison-filter
+    convention).
+    """
+    img = xp.asarray(image)
+    cond = xp.asarray(mask_image)
+    return xp.where(cond != 0, img, img.dtype.type(0))
+
+
+def _compare_np(left: object, right: object, op) -> object:
+    """Shared body for ==,!=,<,<=,>,>= (numpy-native).
+
+    Python's comparison operators already dispatch correctly regardless of
+    which side is the array (``5.0 > arr`` invokes ``arr.__lt__`` via
+    reflection, giving the same result as ``arr < 5.0``) -- unlike the
+    sitk-based kernels' _comparison_values, which needs an explicit
+    left/right "flip" table because ITK's procedural comparison functions are
+    not symmetric in argument position the way Python operators are. No flip
+    table is needed here; that asymmetry is specific to the ITK API, not to
+    the underlying comparison.
+    """
+    if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
+        return op(left, right).astype(xp.uint8)
+    return bool(op(left, right))
+
+
+def equal(left: object, right: object) -> object:
+    return apply_binary_op("Equal", left, right, lambda a, b: _compare_np(a, b, lambda x, y: x == y))
+
+
+def not_equal(left: object, right: object) -> object:
+    return apply_binary_op("NotEqual", left, right, lambda a, b: _compare_np(a, b, lambda x, y: x != y))
+
+
+def less(left: object, right: object) -> object:
+    return apply_binary_op("Less", left, right, lambda a, b: _compare_np(a, b, lambda x, y: x < y))
+
+
+def less_equal(left: object, right: object) -> object:
+    return apply_binary_op("LessEqual", left, right, lambda a, b: _compare_np(a, b, lambda x, y: x <= y))
+
+
+def greater(left: object, right: object) -> object:
+    return apply_binary_op("Greater", left, right, lambda a, b: _compare_np(a, b, lambda x, y: x > y))
+
+
+def greater_equal(left: object, right: object) -> object:
+    return apply_binary_op("GreaterEqual", left, right, lambda a, b: _compare_np(a, b, lambda x, y: x >= y))

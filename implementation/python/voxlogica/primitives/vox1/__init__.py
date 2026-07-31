@@ -20,6 +20,7 @@ _ELEMENTWISE: dict[str, ElementwiseSpec] = {
     # leq_sv(value, image) / geq_sv(value, image): scalar is {0}, image is {1}.
     "leq_sv": ElementwiseSpec(expr="{1} <= {0}", out_dtype="uint8"),
     "geq_sv": ElementwiseSpec(expr="{1} >= {0}", out_dtype="uint8"),
+    "eq_sv": ElementwiseSpec(expr="{1} == {0}", out_dtype="uint8"),
     # between(value1, value2, image): image is {2}.
     "between": ElementwiseSpec(expr="({0} <= {2}) & ({2} <= {1})", out_dtype="uint8"),
     # Generic image-vs-image (or image-vs-scalar) comparisons: kernels.py's
@@ -47,6 +48,31 @@ _ELEMENTWISE: dict[str, ElementwiseSpec] = {
     # 2026-07.md Part IV for the measurement this was added to chase.
     "mask": ElementwiseSpec(expr="({0} if {1} != 0 else 0.0)", out_dtype="arg0"),
 }
+
+# Kernels whose Python IMPLEMENTATION (not just their Stage-B expr fragment)
+# operates on numpy arrays rather than sitk.Image -- see PrimitiveSpec.
+# numpy_native's docstring and engine/executor.py's module docstring for the
+# adapter-boundary mechanics. Every one of these measured 2-6x faster than
+# the equivalent ITK filter call at real BraTS volume size (single-pass,
+# memory-bound ops -- ITK's per-call overhead dominates here, not bandwidth).
+# Independent of _ELEMENTWISE above: a kernel can be numpy_native without an
+# ElementwiseSpec (eq_sv/leq_sv/geq_sv/between/mask are both; the six generic
+# comparisons are both; not/and/or are both) -- the two flags answer
+# different questions (can Stage B fuse this? vs does Stage A's kernel call
+# avoid ITK?) and happen to coincide for every op converted so far only
+# because the easy, safe-to-convert set (single-pass, no real algorithm) is
+# the same set that was already worth registering for fusion. Connected
+# components, distance transforms, and other primitives with a genuine
+# neighborhood/global algorithm are deliberately NOT here -- ITK's C++ is
+# competitive for those, and reimplementing them is a separate, much larger
+# undertaking (see manuscripts/engine-scaling-2026-07.md's GPU section for
+# why cucim, not a from-scratch numpy/numba port, is the intended path if
+# that is ever revisited).
+_NUMPY_NATIVE: frozenset[str] = frozenset({
+    "not", "and", "or",
+    "eq_sv", "geq_sv", "leq_sv", "between", "mask",
+    "==", "!=", "<", "<=", ">", ">=",
+})
 
 _PRIMITIVES: dict[str, tuple[Callable[..., Any], AritySpec]] = {
     "num_div": (kernels.num_div, AritySpec.fixed(2)),
@@ -147,6 +173,7 @@ def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
             kernel_name=qualified,
             description=(kernel.__doc__ or "").strip(),
             elementwise=_ELEMENTWISE.get(primitive_name),
+            numpy_native=primitive_name in _NUMPY_NATIVE,
         )
         specs[primitive_name] = (spec, kernel)
     return specs
