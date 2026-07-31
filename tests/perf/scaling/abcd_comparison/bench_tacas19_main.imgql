@@ -1,0 +1,37 @@
+import "simpleitk"
+import "vox1"
+import "strings"
+
+dataset_root = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData"
+case_count = 40
+hi_thr = 0.93
+vi_thr = 0.88
+
+flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
+seg_paths = dir(dataset_root, "*_seg.nii.gz", true, true)
+
+preprocess(flair) =
+  let background = touch(leq_sv(0.1, flair), border) in
+  percentiles(flair, not(background), 0)
+
+segment(pflair) =
+  let hyper = smoothen(geq_sv(hi_thr, pflair), 5.0) in
+  let very = smoothen(geq_sv(vi_thr, pflair), 2.0) in
+  grow(hyper, very)
+
+dice(pred, gt) =
+  let inter = volume(and(pred, gt)) in
+  (2.0 * inter) / (volume(pred) + volume(gt))
+
+run_case(idx) =
+  let pred = segment(preprocess(intensity(ReadImage(index(flair_paths, idx))))) in
+  let gt = geq_sv(1, intensity(ReadImage(index(seg_paths, idx)))) in
+  dice(pred, gt)
+
+label(idx) = concat("case_", format_string("{:03.0f}", idx))
+case_prints = for idx in range(0, case_count) do print_primitive(label(idx), run_case(idx))
+per_case_dice = for idx in range(0, case_count) do run_case(idx)
+mean_dice = (fold + 0 per_case_dice) / (fold + 0 (for x in per_case_dice do 1))
+
+print "progress" case_prints
+print "mean_dice" mean_dice

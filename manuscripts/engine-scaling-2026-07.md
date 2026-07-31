@@ -696,3 +696,109 @@ workload shape with long non-ITK-touching chains."
 (Part I sec 6, still entirely unmeasured, no dependency on chain length or
 the adapter boundary at all) remains the one live, low-risk next step this
 Part has not yet touched.
+
+---
+
+# Part V — final comparison, and conclusion (2026-07-31)
+
+## 23. A/B/C/D: VL1, `main`, `incoming`, and plain Python
+
+Every measurement so far in this document compares configurations of ONE
+engine (`incoming`) against itself. The one external comparison (Part III,
+VL1) answered "is this engine competitive with its predecessor" but not "how
+much of its wall-clock is the orchestration layer actually worth". A fourth
+arm closes that gap: a straight-line, sequential Python script calling
+SimpleITK directly, no DAG, no scheduler, no fusion, no caching -- reusing
+exactly two VL2 kernels with real algorithmic content (`percentiles`,
+`through`) and hand-writing everything else as a single ITK filter call
+apiece. Full harness: `tests/perf/scaling/abcd_comparison/`.
+
+Same 40 BraTS2020 cases, same reduced TACAS'19 recipe (threshold + grow, no
+cross-correlation), same host (fmt-5000), same warmup convention (3 untimed
+cases, then a fresh 40-case timed run) for B/C/D; A uses its own protocol
+(Part III sec 14) since VL1 has no in-process warmup concept.
+
+| arm | what it is | wall (40 cases) | per-case | mean Dice |
+|---|---|---|---|---|
+| A | VL1 (real historical binary) | 8.16s | 0.204s | (different thresholds, not compared) |
+| B | `main` (pre-engine VL2) | 56.08s | 1.402s | 0.823801585942116 |
+| C | `incoming` (this engine) | 6.22s | 0.156s | 0.823801585942116 |
+| D | plain Python, no orchestration | 19.23s | 0.481s | 0.823834606712500 |
+
+**Correctness, checked before any of the timings are trusted**: B and C are
+bit-identical across all 40 cases, not just spot-checked (same `mean_dice` to
+15 significant figures) -- the engine rewrite from `main` to `incoming`
+changed performance, not semantics. D agrees with B/C to 4 decimal places;
+the residual ~3e-5 is floating-point call-sequence noise (confirmed, not
+assumed: a wrong operator direction or missing step would misplace the
+result far more than the 5th significant digit), and the `pdt`/`distgeq`/
+`distleq`/`smoothen` formulas D depends on were checked against the real VL1
+binary's own `.<=`/`.>=` operators on a synthetic array before being written
+into D at all, not derived from the compat.imgql formulas by hand alone.
+
+## 24. What this table says, plainly
+
+**`incoming` is the fastest of the four**, and by a wide margin against
+everything except VL1 (which it already beats, Part III sec 14: 1.08x).
+Against plain sequential Python -- the honest zero-orchestration floor --
+`incoming` is **3.09x faster**. That is the real, measured answer to "is the
+scheduling/fusion/calibration machinery worth its own existence": yes, on
+this recipe, by a factor of three over doing nothing clever at all.
+
+**`main` is slower than plain Python -- 2.9x slower.** This is the most
+important single number in this table, and it reframes everything else in
+this document. The FIRST engine (`main`, single-threaded lazy evaluation) was
+a regression against the naive baseline, not an improvement on it. Every
+measurement in Parts I-IV -- free-threading, calibration, fusion cones,
+the reverted numpy conversion, the two null fusion registrations -- is work
+done on TOP of a rewrite (`main` -> `incoming`) that already recovered 9.02x
+(56.08s -> 6.22s) before any of this document's own investigation began.
+That context matters for weighing this document's smaller, harder-won
+percentages (a 20% regression caught and reverted, two null results, one
+kept-but-flat fusion registration) against the scale of what already
+shipped: the hard, structural problem (an engine slower than not having one)
+was already solved. This document's job was optimizing an engine already
+past that bar, which is why its remaining wins were single-digit percentages
+rather than multiples.
+
+## 25. Conclusion
+
+This investigation is concluded. Summary, for a reader who reads only this
+section:
+
+- The engine's **scheduling layer is at its own measured ceiling**:
+  `saturation` 0.975-0.991 in every configuration tested, worker count and
+  ITK thread count both now calibrated rather than guessed (Part II sec 15).
+  Nothing further is expected from scheduling work.
+- The engine is **not at the state of the art** in any general sense --
+  that claim was never supported by evidence and was explicitly retracted
+  mid-investigation. It IS, on the one external comparison actually run,
+  competitive with its own predecessor lineage: 1.08x over VL1, 9.02x over
+  its own prior engine (`main`), 3.09x over a from-scratch naive
+  implementation (sec 24).
+- **Every attempted improvement at the kernel/fusion level during this
+  investigation either regressed or produced a null result**: a full
+  ITK-to-numpy kernel conversion (20% slower, reverted, Part IV sec 19), and
+  two independent fusion-boundary-widening attempts (`mask`, `eq_sv` -- flat
+  to mildly negative, Part IV sec 18/21). This is treated as decisive, not
+  as three unrelated failures: this pipeline's chains are capped at 2-4
+  members by the algorithm's own structure, and the adapter-boundary cost of
+  crossing between representations dominates at that length regardless of
+  which representation change is attempted.
+- **Bit-packing, the one lever this document never implemented, is now
+  predicted (not measured) to fail the same way**, by the same short-chain
+  mechanism (Part IV sec 22) -- downgraded from top-ranked to not
+  recommended without first finding a workload shape this pipeline does not
+  have.
+- **The one genuinely open, low-risk question this document never
+  answered**: reduction/planning time (Part I sec 6). It doesn't depend on
+  chain length, the adapter boundary, or anything else this Part ruled out --
+  it is simply unmeasured, and is the one place a future investigation
+  should look first, before any further kernel- or fusion-level work.
+- The single most consequential finding in the whole document is Part V's:
+  **the historical engine rewrite this document's optimizations sit on top
+  of was worth 9.02x, dwarfing every percentage-level result found since.**
+  Correctly weighting future effort means recognizing that the large,
+  structural win already happened, and what remains is optimization at the
+  margin -- valuable, but categorically smaller, and, per this document's own
+  repeated experience, easy to get backwards without measuring first.
