@@ -554,7 +554,12 @@ op into a spacing-sensitive `dt()` call), and measured on the real sweep.
 25% slower than the original pre-fusion-work baseline. Bit-identical
 throughout; `saturation` unaffected (0.97+) -- this is purely an adapter-
 boundary cost, not a correctness or scheduling regression. **Reverted**
-(commit `3208b92`).
+(commit `3208b92`); the implementation (kernels, `numpy_native` protocol, and
+all 51 tests) is preserved on branch `experiment/numpy-native-kernels`
+(commit `fa9c11e`) -- not mergeable as-is (it regresses this pipeline), but
+reusable if the fusion boundary is later widened enough to amortize the
+adapter cost, or as a reference for the per-dispatch protocol sec 19's
+revised recommendation describes.
 
 **Root cause**: the per-op microbenchmarks in sec 17 measured each op in
 isolation. In the real pipeline, `and`/`or`/`not` sit immediately BEFORE
