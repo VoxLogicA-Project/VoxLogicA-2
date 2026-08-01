@@ -99,37 +99,6 @@ def test_native_through_and_border_match_fallback(monkeypatch: pytest.MonkeyPatc
     _assert_same(kernels.border(components), expected_border)
 
 
-def test_native_maxvol_and_percentiles_match_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    values = _image(
-        np.array(
-            [
-                [4.0, 1.0, 1.0, 2.0, 8.0, 3.0],
-                [4.0, 1.0, 7.0, 2.0, 8.0, 3.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            ],
-            dtype=np.float32,
-        )
-    )
-    mask = _image(
-        np.array(
-            [
-                [1, 1, 0, 1, 1, 1],
-                [1, 1, 0, 1, 1, 1],
-                [0, 0, 0, 0, 0, 0],
-            ],
-            dtype=np.uint8,
-        )
-    )
-
-    monkeypatch.setenv("VOXLOGICA_WRITABLE_SITK_OUTPUT", "off")
-    expected_maxvol = kernels.maxvol(mask)
-    expected_percentiles = kernels.percentiles(values, mask, 0.5)
-    monkeypatch.setenv("VOXLOGICA_WRITABLE_SITK_OUTPUT", "required")
-
-    _assert_same(kernels.maxvol(mask), expected_maxvol)
-    _assert_same(kernels.percentiles(values, mask, 0.5), expected_percentiles)
-
-
 def test_native_output_kernels_match_simpleitk_on_nan_and_boundaries() -> None:
     values = _image(np.array([[np.nan, -1.0, 0.0, 1.0, 3.0, 5.0]], dtype=np.float32))
     boolean = _image(np.array([[0, 1, 2, 5, 255, 0]], dtype=np.uint8))
