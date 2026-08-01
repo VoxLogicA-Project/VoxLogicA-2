@@ -1,6 +1,7 @@
 # How well does the VoxLogicA engine use a 24-core machine?
 
 **Date:** 2026-07-30
+**Final update:** 2026-08-02
 **Host:** fmt-5000 — 24 logical CPUs, hybrid Intel P/E, Linux, idle and unloaded
 **Workload:** `_bench_scaling.imgql` — 4 BraTS cases x (3 hyper x 5 floor x 5 radius, plus 2 open radii), 26,297 nodes, 26,253 kernels, `recomputes: 0`
 **Protocol:** `doc/dev/scaling-test-design.md`; min-of-3, interleaved, idle-gated, `--no-cache`, every cell byte-identical (`avg_oracle_best=0.8723535372940219`)
@@ -603,7 +604,7 @@ numpy_native flag without first counting how often the specific pipeline
 under test crosses the sitk<->numpy boundary at that op -- the count, not the
 per-op microbenchmark, determines the sign of the result.
 
-### Addendum: native SimpleITK output buffers (implemented; aggregate benchmark pending)
+### Addendum: native SimpleITK output buffers (implemented and validated)
 
 The boundary tax can instead be removed without changing the engine's value
 protocol: allocate the result as a fresh `sitk.Image`, write a NumPy ufunc
@@ -625,7 +626,7 @@ such a write bypasses SimpleITK copy-on-write semantics.  Full 40-case timing
 and Dice parity remain required before this result is claimed as an aggregate
 engine win.
 
-**Aggregate validation (fmt-5000, 2026-08-01).** A controlled A/B used the
+**Initial aggregate validation (fmt-5000, 2026-08-01).** A controlled A/B used the
 same `incoming` commit and recipe, three-case warmup, then three fresh
 40-case `--no-cache` runs. `VOXLOGICA_WRITABLE_SITK_OUTPUT=off` took
 6.22/6.27/6.22 s (mean 6.24 s); `required` took 5.80/5.90/5.71 s (mean
@@ -637,6 +638,39 @@ total recipe is eligible, and allocating/filling the native output remains
 real work. This is a modest but reproducible aggregate win, not the multiple
 implied by the isolated `Not` microbenchmark.
 
+**Final extension and validation (fmt-5000, 2026-08-02).** The same ownership-
+safe output path was extended to `through` and `border`: both now write their
+result directly into a freshly allocated native UInt8 image, removing the last
+avoidable NumPy-to-SimpleITK result copies exercised by this recipe.  A fresh
+controlled A/B (three-case warmup, then three 40-case `--no-cache` runs per
+arm) measured 6.24/6.25/6.31 s with the path disabled (mean 6.27 s) and
+5.39/5.52/5.49 s with it required (mean 5.47 s): **12.8% lower mean wall
+time** (1.146x).  The canonical ordered per-case result vector and
+`mean_dice=0.823801585942116` were byte-identical.  Relative to the initial
+5.80 s implementation, eliminating the `through`/`border` copies removed a
+further 5.7%.
+
+`intensity`/`sitk.Cast(..., sitkFloat32)` was also tested and deliberately not
+ported.  On real-size inputs, direct NumPy conversion into a fresh native
+output was slower in all four measured cells: Int16 was 9.84 vs 12.33 ms at
+one ITK thread and 2.70 vs 12.40 ms at 16; UInt8 was 9.78 vs 12.03 ms at one
+thread and 2.69 vs 12.30 ms at 16 (SimpleITK vs direct output).  SimpleITK's
+parallel cast is already decisively better; replacing every operation merely
+because NumPy can express it would regress the workload.
+
+This closes the CPU pointwise pass for this recipe.  The remaining frequently
+executed image operations (`dt`, morphology, connected components,
+percentiles, and growth) are neighbourhood/global algorithms, not elementwise
+buffer fills; moving them to NumPy would add boundaries without supplying a
+better algorithm.  Initial parse/reduction was checked separately with three
+`--no-execute` process timings of 0.40/0.39/0.39 s, each including interpreter
+startup and imports.  A representative optimized end-to-end run was 6.11 s
+versus 5.58 s reported execution, so all non-execution overhead combined was
+0.53 s.  There is therefore no unmeasured CPU prerequisite of material scale
+left for this 40-case benchmark: the next meaningful performance experiment
+is device-resident GPU execution of the neighbourhood/global region, with
+transfers kept outside the parameter sweep.
+
 ## 20. Status of every conjecture in this document, for a reader who only reads this table
 
 | # | Claim | Status |
@@ -645,7 +679,7 @@ implied by the isolated `Not` microbenchmark.
 | Part I sec 3 | Free-threading ~0-8% gain, -13% at W=24 | STANDS, with the stated numba/SimpleITK-pin confound |
 | Part I sec 3 | "the hard cutover should be revisited" | **SETTLED, KEPT** — free-threading stays the required default, on single-platform/controlled-interpreter grounds, not performance ones. See §3's DECISION note before changing `bootstrap.py`. |
 | Part I sec 4-5 | `cores // workers` ITK formula | **DISPROVEN AND REVERTED** (commit `87f6f2b`); replaced by calibration (sec 15) |
-| Part I sec 6 | Reduction/planning time unmeasured | STANDS -- still unmeasured as of this writing |
+| Part I sec 6 | Reduction/planning time unmeasured | **RESOLVED FOR THE 40-CASE RECIPE** -- three whole-process `--no-execute` runs were 0.40/0.39/0.39 s including startup/imports; all non-execution overhead in an optimized end-to-end run was 0.53 s. The historic 1.46 M-node oracle-grid observation remains a different workload. |
 | Part I sec 7 | "Memory bandwidth saturation" (inferred from efficiency decay) | **CONFIRMED**, but by different, stronger evidence than originally given -- see Part II sec 9-10 (topdown, perf record, disk ruled out) |
 | Part II sec 9-11 | Disk ruled out; 43% backend-bound at W=1; P/E isolation; cross-pool contention 27.8% | STANDS -- the most rigorously checked claims in this document (four independent methods) |
 | Part II sec 13 item 1 | Bit-packing is the top-ranked next step | **DOWNGRADED** -- see sec 22. Predicted (not measured) to fail the same way sec 19 did: its premise (long non-ITK-touching chains) is contradicted by sec 18/21's measured `mean_cone_size` of 2-4.3, and it would pay a LARGER boundary tax than sec 19's already-reverted 20% regression |
@@ -653,6 +687,7 @@ implied by the isolated `Not` microbenchmark.
 | *(chat, not previously written down)* | VL2 is 5.54x faster than VL1 on the 40-case recipe | **WRONG, RETRACTED** -- see sec 14. Corrected: 1.08x |
 | *(chat)* | "18x" is reachable with calibration + P/E scheduling | **NO** -- see sec 16; ceiling is ~10-12x on measured evidence, and only traffic reduction (bit-packing) can move it |
 | *(chat)* | Convert easy ITK filters to numpy for a ~15-25% win | **WRONG, REVERTED** -- see sec 19. The per-op microbenchmark was real; the aggregate effect was a 20% REGRESSION because the adapter-boundary cost is paid far more often than the isolated benchmark could show |
+| *(chat)* | Write NumPy results directly into fresh native SimpleITK output buffers | **CONFIRMED, KEPT** -- 12.8% lower aggregate wall time (6.27 -> 5.47 s), byte-identical results; guarded implementation covers the eligible pointwise/label kernels and rejects or falls back for unsupported pixels. See the addendum above. |
 | *(chat)* | Widen the fusion boundary one op at a time (`eq_sv`, following mask's pattern) | **NULL RESULT** -- see sec 21. `mean_cone_size` went DOWN (4.26 -> 3.65-3.68), wall-clock flat. Two independent attempts (mask, eq_sv) both failed to move cones toward Stage B's 12-member threshold -- this line of attack is now considered exhausted, not just unlucky twice |
 
 ## 21. `eq_sv` registered elementwise (kernel unchanged): a second null result
@@ -810,25 +845,29 @@ section:
   competitive with its own predecessor lineage: 1.08x over VL1, 9.02x over
   its own prior engine (`main`), 3.09x over a from-scratch naive
   implementation (sec 24).
-- **Every attempted improvement at the kernel/fusion level during this
-  investigation either regressed or produced a null result**: a full
-  ITK-to-numpy kernel conversion (20% slower, reverted, Part IV sec 19), and
-  two independent fusion-boundary-widening attempts (`mask`, `eq_sv` -- flat
-  to mildly negative, Part IV sec 18/21). This is treated as decisive, not
-  as three unrelated failures: this pipeline's chains are capped at 2-4
-  members by the algorithm's own structure, and the adapter-boundary cost of
-  crossing between representations dominates at that length regardless of
-  which representation change is attempted.
+- **Blanket NumPy conversion and fusion widening failed, but native-output
+  kernels succeeded.** Returning bare arrays was 20% slower and two fusion-
+  boundary attempts were flat to mildly negative (Part IV sec 18/19/21).
+  Keeping the engine value native, allocating a fresh `sitk.Image`, and
+  filling its buffer directly instead lowered the 40-case mean from 6.27 to
+  5.47 s (**12.8%**, byte-identical). The distinction is the representation
+  boundary, not whether NumPy appears in the kernel body.
 - **Bit-packing, the one lever this document never implemented, is now
   predicted (not measured) to fail the same way**, by the same short-chain
   mechanism (Part IV sec 22) -- downgraded from top-ranked to not
   recommended without first finding a workload shape this pipeline does not
   have.
-- **The one genuinely open, low-risk question this document never
-  answered**: reduction/planning time (Part I sec 6). It doesn't depend on
-  chain length, the adapter boundary, or anything else this Part ruled out --
-  it is simply unmeasured, and is the one place a future investigation
-  should look first, before any further kernel- or fusion-level work.
+- **Reduction/planning is no longer an open prerequisite for this recipe.**
+  Three whole-process `--no-execute` runs were 0.40/0.39/0.39 s including
+  startup and imports; an optimized end-to-end run left only 0.53 s outside
+  reported execution. That bounds the entire non-execution opportunity rather
+  than merely estimating reducer self-time.
+- **The CPU pointwise pass is complete for this workload.** `intensity`/Cast
+  was measured and rejected (NumPy direct output was 1.25x slower with one ITK
+  thread and over 4.5x slower with 16), while the remaining hot image kernels
+  are neighbourhood/global algorithms. The next meaningful frontier is a
+  GPU-resident region spanning those kernels and the parameter sweep, not more
+  one-by-one NumPy substitutions.
 - The single most consequential finding in the whole document is Part V's:
   **the historical engine rewrite this document's optimizations sit on top
   of was worth 9.02x, dwarfing every percentage-level result found since.**
