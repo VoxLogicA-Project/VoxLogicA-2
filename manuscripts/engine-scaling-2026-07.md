@@ -641,7 +641,7 @@ implied by the isolated `Not` microbenchmark.
 **Final extension and validation (fmt-5000, 2026-08-02).** The same ownership-
 safe output path was extended to `through` and `border`: both now write their
 result directly into a freshly allocated native UInt8 image, removing the last
-avoidable NumPy-to-SimpleITK result copies exercised by this recipe.  A fresh
+high-frequency NumPy-to-SimpleITK result copies exercised by this recipe.  A fresh
 controlled A/B (three-case warmup, then three 40-case `--no-cache` runs per
 arm) measured 6.24/6.25/6.31 s with the path disabled (mean 6.27 s) and
 5.39/5.52/5.49 s with it required (mean 5.47 s): **12.8% lower mean wall
@@ -658,10 +658,17 @@ thread and 2.69 vs 12.30 ms at 16 (SimpleITK vs direct output).  SimpleITK's
 parallel cast is already decisively better; replacing every operation merely
 because NumPy can express it would regress the workload.
 
-This closes the CPU pointwise pass for this recipe.  The remaining frequently
-executed image operations (`dt`, morphology, connected components,
-percentiles, and growth) are neighbourhood/global algorithms, not elementwise
-buffer fills; moving them to NumPy would add boundaries without supplying a
+The same direct-output treatment was tested on the final mapping stages of
+`maxvol` and `percentiles`, then reverted as a measured null result.  Its A/B
+was 6.25/6.22/6.31 s disabled (mean 6.26 s) versus 5.47/5.53/5.39 s required
+(mean 5.46 s), indistinguishable from the retained implementation's 5.47 s
+mean at the benchmark's run-to-run noise.  This is the stopping criterion:
+removing smaller copies no longer moves aggregate wall time.
+
+This closes the CPU pointwise pass for this recipe.  The remaining dominant
+image work (`dt`, morphology, connected components, percentile sorting, and
+growth) is neighbourhood/global computation, not elementwise buffer filling;
+one-by-one NumPy substitutions would add boundaries without supplying a
 better algorithm.  Initial parse/reduction was checked separately with three
 `--no-execute` process timings of 0.40/0.39/0.39 s, each including interpreter
 startup and imports.  A representative optimized end-to-end run was 6.11 s
