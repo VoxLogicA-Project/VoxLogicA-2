@@ -68,6 +68,37 @@ def test_required_mode_fails_instead_of_silently_falling_back(
         kernels.geq_sv(1.0, image)
 
 
+def test_native_through_and_border_match_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    components = _image(
+        np.array(
+            [
+                [1, 1, 0, 0, 1, 1],
+                [1, 1, 0, 0, 1, 1],
+                [0, 0, 0, 0, 0, 0],
+            ],
+            dtype=np.uint8,
+        )
+    )
+    intersection = _image(
+        np.array(
+            [
+                [1, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0],
+            ],
+            dtype=np.uint8,
+        )
+    )
+
+    monkeypatch.setenv("VOXLOGICA_WRITABLE_SITK_OUTPUT", "off")
+    expected_through = kernels.through(intersection, components)
+    expected_border = kernels.border(components)
+    monkeypatch.setenv("VOXLOGICA_WRITABLE_SITK_OUTPUT", "required")
+
+    _assert_same(kernels.through(intersection, components), expected_through)
+    _assert_same(kernels.border(components), expected_border)
+
+
 def test_native_output_kernels_match_simpleitk_on_nan_and_boundaries() -> None:
     values = _image(np.array([[np.nan, -1.0, 0.0, 1.0, 3.0, 5.0]], dtype=np.float32))
     boolean = _image(np.array([[0, 1, 2, 5, 255, 0]], dtype=np.uint8))

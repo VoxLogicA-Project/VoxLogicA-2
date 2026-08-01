@@ -771,23 +771,24 @@ def Lcc(image: object) -> sitk.Image:
 
 
 @njit(cache=True)
-def _through_mask_components_numba(
-    masked_values: np.ndarray,
+def _through_mask_components_into_numba(
+    mask_values: np.ndarray,
     cc_values: np.ndarray,
     max_label: int,
-) -> np.ndarray:
+    result: np.ndarray,
+) -> None:
     flags = np.zeros(max_label + 1, dtype=np.uint8)
     n = cc_values.shape[0]
     for i in range(n):
-        cc = masked_values[i]
-        if cc > 0 and cc <= max_label:
+        cc = cc_values[i]
+        if mask_values[i] != 0 and cc > 0 and cc <= max_label:
             flags[cc] = np.uint8(1)
-    result = np.zeros(n, dtype=np.uint8)
     for i in range(n):
         cc = cc_values[i]
         if cc > 0 and cc <= max_label:
             result[i] = flags[cc]
-    return result
+        else:
+            result[i] = np.uint8(0)
 
 
 def through(image1: object, image2: object) -> sitk.Image:
@@ -796,24 +797,45 @@ def through(image1: object, image2: object) -> sitk.Image:
     img2 = _as_image(image2, "image2")
     _remember_base(img1)
 
-    cc_image, _ = _label_connected_components(img2)
-    masked = sitk.Mask(cc_image, _as_bool_image(img1), 0.0)
-
+    cc_image, max_label = _label_connected_components(img2)
     cc_values = _flatten_image(cc_image, np.uint32)
+    if img1.GetPixelID() == sitk.sitkUInt8 and _native_images_compatible(img1, cc_image):
+        output_pair = _try_native_output(cc_image, sitk.sitkUInt8)
+        if output_pair is not None:
+            output, out = output_pair
+            mask_values = _flatten_image(img1, np.uint8)
+            result_values = out.reshape(-1)
+            if _HAS_NUMBA:
+                _through_mask_components_into_numba(
+                    np.asarray(mask_values, dtype=np.uint8),
+                    np.asarray(cc_values, dtype=np.uint32),
+                    max_label,
+                    result_values,
+                )
+            else:
+                flags = np.zeros(max_label + 1, dtype=np.uint8)
+                selected = (mask_values != 0) & (cc_values > 0)
+                flags[cc_values[selected]] = 1
+                result_values.fill(0)
+                non_background = cc_values > 0
+                result_values[non_background] = flags[cc_values[non_background]]
+            return output
+
+    masked = sitk.Mask(cc_image, _as_bool_image(img1), 0.0)
     masked_values = _flatten_image(masked, np.uint32)
-    max_label = int(cc_values.max(initial=0))
+    result_values = np.zeros_like(cc_values, dtype=np.uint8)
     if _HAS_NUMBA:
-        result_values = _through_mask_components_numba(
+        _through_mask_components_into_numba(
             np.asarray(masked_values, dtype=np.uint32),
             np.asarray(cc_values, dtype=np.uint32),
             max_label,
+            result_values,
         )
     else:
         flags = np.zeros(max_label + 1, dtype=np.uint8)
         active = masked_values[masked_values > 0]
         if active.size > 0:
             flags[active] = 1
-        result_values = np.zeros_like(cc_values, dtype=np.uint8)
         non_background = cc_values > 0
         result_values[non_background] = flags[cc_values[non_background]]
 
@@ -1293,8 +1315,14 @@ def border(img: sitk.Image) -> sitk.Image:
     """True on image border voxels (geometry taken from img)."""
     size = list(img.GetSize())
     ndim = len(size)
-    shape = tuple(reversed(size))
-    result = np.zeros(shape, dtype=np.uint8)
+    output_pair = _try_native_output(img, sitk.sitkUInt8)
+    if output_pair is None:
+        shape = tuple(reversed(size))
+        result = np.zeros(shape, dtype=np.uint8)
+        image = None
+    else:
+        image, result = output_pair
+        result.fill(0)
     for axis in range(ndim):
         low_slice: list[slice | int] = [slice(None)] * ndim
         low_slice[axis] = 0
@@ -1303,9 +1331,9 @@ def border(img: sitk.Image) -> sitk.Image:
         high_slice: list[slice | int] = [slice(None)] * ndim
         high_slice[axis] = -1
         result[tuple(high_slice)] = 1
-
-    image = sitk.GetImageFromArray(result, isVector=False)
-    image.CopyInformation(img)
+    if image is None:
+        image = sitk.GetImageFromArray(result, isVector=False)
+        image.CopyInformation(img)
     return image
 
 
