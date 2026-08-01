@@ -625,6 +625,18 @@ such a write bypasses SimpleITK copy-on-write semantics.  Full 40-case timing
 and Dice parity remain required before this result is claimed as an aggregate
 engine win.
 
+**Aggregate validation (fmt-5000, 2026-08-01).** A controlled A/B used the
+same `incoming` commit and recipe, three-case warmup, then three fresh
+40-case `--no-cache` runs. `VOXLOGICA_WRITABLE_SITK_OUTPUT=off` took
+6.22/6.27/6.22 s (mean 6.24 s); `required` took 5.80/5.90/5.71 s (mean
+5.80 s): **6.9% lower mean wall time** (1.075x). Required mode completed,
+proving the fast path did not silently fall back. Every printed per-case Dice
+line and `mean_dice=0.823801585942116` were byte-identical between arms.
+The earlier 4.8--5.3 s prediction was too optimistic: only a subset of the
+total recipe is eligible, and allocating/filling the native output remains
+real work. This is a modest but reproducible aggregate win, not the multiple
+implied by the isolated `Not` microbenchmark.
+
 ## 20. Status of every conjecture in this document, for a reader who only reads this table
 
 | # | Claim | Status |
