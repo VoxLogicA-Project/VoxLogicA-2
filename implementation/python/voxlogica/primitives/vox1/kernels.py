@@ -1019,6 +1019,12 @@ def maxvol(image: object) -> sitk.Image:
         if best > 0:
             selected[1:] = (volumes[1:] == best).astype(np.uint8)
 
+    output_pair = _try_native_output(labels_image, sitk.sitkUInt8)
+    if output_pair is not None:
+        output, result_values = output_pair
+        np.take(selected, labels, out=result_values.reshape(-1))
+        return output
+
     result = selected[labels]
     shape = sitk.GetArrayViewFromImage(labels_image).shape
     return _make_image_from_flat(result, shape, labels_image, np.uint8)
@@ -1076,20 +1082,20 @@ def _extract_population(img_values: np.ndarray, mask_values: np.ndarray):
 
 
 @njit(cache=True)
-def _group_and_write(
+def _group_and_write_into(
     sorted_values: np.ndarray,
     sorted_indices: np.ndarray,
-    total_voxels: int,
     correction: float,
-) -> np.ndarray:
+    result_values: np.ndarray,
+) -> None:
     """Tie-grouped percentile rank, given an ALREADY fully-sorted population
     (any tie order — see module notes above). Shared by both the plain and
     parallel-sort paths in ``percentiles()`` so the grouping algorithm is
     never duplicated."""
-    result_values = np.full(total_voxels, np.float32(-1.0), dtype=np.float32)
+    result_values.fill(np.float32(-1.0))
     vol = float(sorted_values.shape[0])
     if vol == 0.0:
-        return result_values
+        return
     curvol = 0.0
     group_start = 0
     while group_start < sorted_values.shape[0]:
@@ -1103,6 +1109,17 @@ def _group_and_write(
             result_values[sorted_indices[idx]] = value32
         curvol += float(group_size)
         group_start = group_end
+
+
+@njit(cache=True)
+def _group_and_write(
+    sorted_values: np.ndarray,
+    sorted_indices: np.ndarray,
+    total_voxels: int,
+    correction: float,
+) -> np.ndarray:
+    result_values = np.empty(total_voxels, dtype=np.float32)
+    _group_and_write_into(sorted_values, sorted_indices, correction, result_values)
     return result_values
 
 
@@ -1188,6 +1205,14 @@ def percentiles(image: object, mask_image: object, correction: float) -> sitk.Im
     if img_values.shape[0] != mask_values.shape[0]:
         raise ValueError("percentiles requires images with the same number of voxels")
 
+    output_pair = _try_native_output(img, sitk.sitkFloat32)
+    if output_pair is None:
+        output = None
+        result_values = None
+    else:
+        output, output_view = output_pair
+        result_values = output_view.reshape(-1)
+
     if _HAS_NUMBA:
         img_arr = np.asarray(img_values, dtype=np.float32)
         mask_arr = np.asarray(mask_values, dtype=np.uint8)
@@ -1198,10 +1223,17 @@ def percentiles(image: object, mask_image: object, correction: float) -> sitk.Im
         else:
             order = np.argsort(population_values)
             sorted_values, sorted_indices = population_values[order], population[order]
-        result_values = _group_and_write(
-            sorted_values, sorted_indices, img_arr.shape[0], float(correction))
+        if result_values is None:
+            result_values = _group_and_write(
+                sorted_values, sorted_indices, img_arr.shape[0], float(correction))
+        else:
+            _group_and_write_into(
+                sorted_values, sorted_indices, float(correction), result_values)
     else:
-        result_values = np.full(img_values.shape, -1.0, dtype=np.float32)
+        if result_values is None:
+            result_values = np.full(img_values.shape, -1.0, dtype=np.float32)
+        else:
+            result_values.fill(np.float32(-1.0))
         population = np.flatnonzero(mask_values > 0)
         if population.size > 0:
             population_values = img_values[population]
@@ -1224,6 +1256,8 @@ def percentiles(image: object, mask_image: object, correction: float) -> sitk.Im
                 curvol += group_size
                 group_start = group_end
 
+    if output is not None:
+        return output
     shape = sitk.GetArrayViewFromImage(_as_float_image(img)).shape
     return _make_image_from_flat(result_values, shape, img, np.float32)
 
