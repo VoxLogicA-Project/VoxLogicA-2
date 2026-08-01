@@ -25,6 +25,7 @@ HONEST CONSTRAINTS (do not paper over these):
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -108,6 +109,149 @@ def pinned_view(image: Any) -> Any:
     view = sitk.GetArrayViewFromImage(image).view(_pinned_cls())
     view._src = image
     return view
+
+
+# ── Fresh SimpleITK output -> writable NumPy alias ──────────────────────────
+#
+# SimpleITK deliberately exposes Python array views as read-only.  Its C++
+# API has mutable buffer accessors, but they are not wrapped for Python.  The
+# small, tightly contained escape hatch below is used only for a *newly
+# allocated, exclusively-owned* output image: NumPy writes the result directly
+# into the output image's storage, so the next ITK primitive receives a native
+# sitk.Image without a numpy -> sitk copy.
+#
+# This is runtime-verified rather than assumed.  A future SimpleITK release
+# which changes its buffer protocol disables this fast path at the caller;
+# kernels then use their established SimpleITK implementation.  Do not call
+# writable_view on an input or otherwise shared image: external writes bypass
+# SimpleITK's copy-on-write bookkeeping.
+
+
+class WritableViewUnavailable(RuntimeError):
+    """The installed SimpleITK cannot safely support the native-output path."""
+
+
+_WRITABLE_PIXEL_DTYPES: dict[int, Any] | None = None
+_WRITABLE_PIXEL_VALIDATION: dict[int, bool | str] = {}
+_WRITABLE_PIXEL_VALIDATION_LOCK = threading.Lock()
+
+
+def writable_sitk_output_mode() -> str:
+    """Return ``auto``, ``off``, or ``required`` for the native-output path."""
+    raw = os.environ.get("VOXLOGICA_WRITABLE_SITK_OUTPUT", "auto").strip().lower()
+    aliases = {"0": "off", "false": "off", "1": "auto", "true": "auto", "on": "auto"}
+    mode = aliases.get(raw, raw)
+    if mode not in {"auto", "off", "required"}:
+        raise WritableViewUnavailable(
+            "VOXLOGICA_WRITABLE_SITK_OUTPUT must be auto, off, or required"
+        )
+    return mode
+
+
+def _writable_pixel_dtypes() -> dict[int, Any]:
+    """Explicit scalar pixel-id whitelist for writable output aliases."""
+    global _WRITABLE_PIXEL_DTYPES
+    if _WRITABLE_PIXEL_DTYPES is None:
+        import numpy as np
+
+        sitk = _simpleitk()
+        _WRITABLE_PIXEL_DTYPES = {
+            sitk.sitkInt8: np.dtype(np.int8),
+            sitk.sitkUInt8: np.dtype(np.uint8),
+            sitk.sitkInt16: np.dtype(np.int16),
+            sitk.sitkUInt16: np.dtype(np.uint16),
+            sitk.sitkInt32: np.dtype(np.int32),
+            sitk.sitkUInt32: np.dtype(np.uint32),
+            sitk.sitkInt64: np.dtype(np.int64),
+            sitk.sitkUInt64: np.dtype(np.uint64),
+            sitk.sitkFloat32: np.dtype(np.float32),
+            sitk.sitkFloat64: np.dtype(np.float64),
+        }
+    return _WRITABLE_PIXEL_DTYPES
+
+
+def _raw_writable_view(image: Any) -> Any:
+    """Build a pinned writable alias after all safety checks have passed."""
+    import numpy as np
+
+    ro = _simpleitk().GetArrayViewFromImage(image)
+    expected_dtype = _writable_pixel_dtypes().get(image.GetPixelID())
+    if expected_dtype is None or ro.dtype != expected_dtype:
+        raise WritableViewUnavailable(f"Unsupported SimpleITK pixel type: {image.GetPixelIDTypeAsString()}")
+    if not ro.flags.c_contiguous:
+        raise WritableViewUnavailable("SimpleITK array view is not C-contiguous")
+    if ro.nbytes != image.GetNumberOfPixels() * expected_dtype.itemsize:
+        raise WritableViewUnavailable("SimpleITK array view has an unexpected byte size")
+    try:
+        address, _readonly = ro.__array_interface__["data"]
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise WritableViewUnavailable("SimpleITK array view has no usable data pointer") from exc
+    if not address:
+        raise WritableViewUnavailable("SimpleITK array view has a null data pointer")
+    try:
+        ctype = np.ctypeslib.as_ctypes_type(expected_dtype)
+        raw = np.ctypeslib.as_array((ctype * ro.size).from_address(address)).reshape(ro.shape)
+    except (NotImplementedError, TypeError, ValueError) as exc:
+        raise WritableViewUnavailable("Cannot construct writable NumPy alias") from exc
+    view = raw.view(_pinned_cls())
+    view._src = image
+    return view
+
+
+def _validate_writable_pixel_type(pixel_id: int) -> None:
+    """Prove write-through for one fresh image of ``pixel_id`` exactly once."""
+    with _WRITABLE_PIXEL_VALIDATION_LOCK:
+        prior = _WRITABLE_PIXEL_VALIDATION.get(pixel_id)
+        if prior is True:
+            return
+        if isinstance(prior, str):
+            raise WritableViewUnavailable(prior)
+        sitk = _simpleitk()
+        dtype = _writable_pixel_dtypes().get(pixel_id)
+        if dtype is None:
+            raise WritableViewUnavailable(f"Unsupported SimpleITK pixel type: {pixel_id}")
+        try:
+            probe = sitk.Image([2, 2], pixel_id)
+            view = _raw_writable_view(probe)
+            sentinel = dtype.type(7.5 if dtype.kind == "f" else 7)
+            view.fill(sentinel)
+            observed = sitk.GetArrayViewFromImage(probe)
+            if not (observed == sentinel).all():
+                raise WritableViewUnavailable("SimpleITK did not observe a writable alias write")
+        except Exception as exc:
+            message = f"SimpleITK writable-buffer validation failed for pixel type {pixel_id}: {exc}"
+            _WRITABLE_PIXEL_VALIDATION[pixel_id] = message
+            raise WritableViewUnavailable(message) from exc
+        _WRITABLE_PIXEL_VALIDATION[pixel_id] = True
+
+
+def writable_view(image: Any) -> Any:
+    """Pinned writable alias of a fresh, exclusive scalar ``sitk.Image``.
+
+    This is intentionally not a general mutation API.  Callers should use
+    :func:`allocate_writable_like`, which creates the required fresh image.
+    """
+    if image.GetNumberOfComponentsPerPixel() != 1:
+        raise WritableViewUnavailable("Writable aliases do not support vector images")
+    _validate_writable_pixel_type(image.GetPixelID())
+    return _raw_writable_view(image)
+
+
+def allocate_writable_like(reference: Any, pixel_id: int) -> tuple[Any, Any]:
+    """Allocate a native SimpleITK output and its private writable alias.
+
+    The returned image has the reference geometry and has no prior consumers;
+    retaining or mutating the alias after the kernel returns is forbidden.
+    """
+    if writable_sitk_output_mode() == "off":
+        raise WritableViewUnavailable("Writable SimpleITK outputs are disabled")
+    if reference.GetNumberOfComponentsPerPixel() != 1:
+        raise WritableViewUnavailable("Writable aliases do not support vector images")
+    if pixel_id not in _writable_pixel_dtypes():
+        raise WritableViewUnavailable(f"Unsupported SimpleITK output pixel type: {pixel_id}")
+    image = _simpleitk().Image(reference.GetSize(), pixel_id)
+    image.CopyInformation(reference)
+    return image, writable_view(image)
 
 
 @dataclass(frozen=True)

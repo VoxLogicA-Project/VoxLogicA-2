@@ -28,7 +28,12 @@ except Exception:  # pragma: no cover - optional acceleration
     def get_num_threads() -> int:  # type: ignore[misc]
         return os.cpu_count() or 1
 
-from voxlogica.arrays import pinned_view
+from voxlogica.arrays import (
+    WritableViewUnavailable,
+    allocate_writable_like,
+    pinned_view,
+    writable_sitk_output_mode,
+)
 from voxlogica.primitives.default._sequence_math import apply_binary_op
 
 # ITK's legacy "Platform" threader spawns and destroys native threads on every
@@ -46,6 +51,9 @@ except Exception as e:  # pragma: no cover - older SimpleITK without the setter
 _BASE_IMAGE: sitk.Image | None = None
 _BASE_IMAGE_LOCK = RLock()
 _CROSSCORR_BACKEND_ENV = "VOXLOGICA_VOX1_CROSSCORR_BACKEND"
+_NATIVE_BITWISE_PIXEL_IDS = frozenset({sitk.sitkUInt8})
+_NATIVE_COMPARISON_PIXEL_IDS = frozenset({sitk.sitkUInt8, sitk.sitkFloat32})
+_NATIVE_MASK_PIXEL_IDS = frozenset({sitk.sitkUInt8, sitk.sitkFloat32})
 
 
 def _crosscorr_backend() -> str:
@@ -123,6 +131,69 @@ def _as_bool_image(image: sitk.Image) -> sitk.Image:
     if image.GetPixelID() == sitk.sitkUInt8:
         return image
     return sitk.Cast(image, sitk.sitkUInt8)
+
+
+def _native_images_compatible(*images: sitk.Image) -> bool:
+    """Conservative admission gate for direct NumPy output kernels.
+
+    SimpleITK owns validation of unusual geometry/type combinations.  The
+    fast path accepts only scalar images with exactly matching metadata; every
+    other case takes the established filter path and therefore preserves its
+    precise error behavior.
+    """
+    if not images or any(image.GetNumberOfComponentsPerPixel() != 1 for image in images):
+        return False
+    reference = images[0]
+    return all(
+        image.GetDimension() == reference.GetDimension()
+        and image.GetSize() == reference.GetSize()
+        and image.GetSpacing() == reference.GetSpacing()
+        and image.GetOrigin() == reference.GetOrigin()
+        and image.GetDirection() == reference.GetDirection()
+        for image in images[1:]
+    )
+
+
+def _try_native_output(reference: sitk.Image, pixel_id: int) -> tuple[sitk.Image, np.ndarray] | None:
+    """Fresh native output, or ``None`` when this runtime cannot support it."""
+    if not _native_images_compatible(reference):
+        return None
+    try:
+        image, view = allocate_writable_like(reference, pixel_id)
+    except WritableViewUnavailable:
+        if writable_sitk_output_mode() == "required":
+            raise
+        return None
+    return image, view
+
+
+def _native_comparison(left: object, right: object, op_name: str) -> sitk.Image | None:
+    """Direct native-image implementation of one SimpleITK comparison."""
+    image_values = tuple(value for value in (left, right) if _is_image(value))
+    if not image_values or not _native_images_compatible(*image_values):
+        return None
+    if any(image.GetPixelID() not in _NATIVE_COMPARISON_PIXEL_IDS for image in image_values):
+        return None
+    if len(image_values) == 2 and image_values[0].GetPixelID() != image_values[1].GetPixelID():
+        return None
+    output_pair = _try_native_output(image_values[0], sitk.sitkUInt8)
+    if output_pair is None:
+        return None
+    output, out = output_pair
+    operands = (
+        pinned_view(left) if _is_image(left) else float(cast(SupportsFloat, left)),
+        pinned_view(right) if _is_image(right) else float(cast(SupportsFloat, right)),
+    )
+    np_ops = {
+        "Equal": np.equal,
+        "NotEqual": np.not_equal,
+        "Less": np.less,
+        "LessEqual": np.less_equal,
+        "Greater": np.greater,
+        "GreaterEqual": np.greater_equal,
+    }
+    np_ops[op_name](*operands, out=out, casting="unsafe")
+    return output
 
 
 def _as_float_image(image: sitk.Image) -> sitk.Image:
@@ -231,12 +302,21 @@ def num_gt(left: float, right: float) -> bool:
 def _comparison_values(left: object, right: object, op_name: str) -> object:
     if _is_image(left) and _is_image(right):
         _remember_base_from_values(left, right)
+        native = _native_comparison(left, right, op_name)
+        if native is not None:
+            return native
         return getattr(sitk, op_name)(left, right)
     if _is_image(left):
         _remember_base(left)
+        native = _native_comparison(left, right, op_name)
+        if native is not None:
+            return native
         return getattr(sitk, op_name)(left, float(cast(SupportsFloat, right)))
     if _is_image(right):
         _remember_base(right)
+        native = _native_comparison(left, right, op_name)
+        if native is not None:
+            return native
         flipped = {
             "Equal": "Equal",
             "NotEqual": "NotEqual",
@@ -347,6 +427,16 @@ def logical_not(image: object) -> sitk.Image:
     """Voxel-wise boolean negation."""
     img = _as_image(image, "image")
     _remember_base(img)
+    output_pair = (
+        _try_native_output(img, sitk.sitkUInt8)
+        if img.GetPixelID() in _NATIVE_BITWISE_PIXEL_IDS
+        else None
+    )
+    if output_pair is not None:
+        output, out = output_pair
+        # sitk.Not normalizes through ``!= 0``; it is not a raw bitwise NOT.
+        np.equal(pinned_view(img), 0, out=out, casting="unsafe")
+        return output
     return sitk.Not(img)
 
 
@@ -354,6 +444,17 @@ def logical_and(left: object, right: object) -> object:
     """Voxel-wise boolean and."""
     if _is_image(left) or _is_image(right):
         _remember_base_from_values(left, right)
+        images = tuple(value for value in (left, right) if _is_image(value))
+        if images[0].GetPixelID() in _NATIVE_BITWISE_PIXEL_IDS and _native_images_compatible(*images) and (
+            len(images) == 1 or images[0].GetPixelID() == images[1].GetPixelID()
+        ):
+            output_pair = _try_native_output(images[0], images[0].GetPixelID())
+            if output_pair is not None:
+                output, out = output_pair
+                lhs = pinned_view(left) if _is_image(left) else np.uint8(1 if bool(left) else 0)
+                rhs = pinned_view(right) if _is_image(right) else np.uint8(1 if bool(right) else 0)
+                np.bitwise_and(lhs, rhs, out=out, casting="unsafe")
+                return output
         return sitk.And(left, right)
     return bool(left) and bool(right)
 
@@ -362,6 +463,17 @@ def logical_or(left: object, right: object) -> object:
     """Voxel-wise boolean or."""
     if _is_image(left) or _is_image(right):
         _remember_base_from_values(left, right)
+        images = tuple(value for value in (left, right) if _is_image(value))
+        if images[0].GetPixelID() in _NATIVE_BITWISE_PIXEL_IDS and _native_images_compatible(*images) and (
+            len(images) == 1 or images[0].GetPixelID() == images[1].GetPixelID()
+        ):
+            output_pair = _try_native_output(images[0], images[0].GetPixelID())
+            if output_pair is not None:
+                output, out = output_pair
+                lhs = pinned_view(left) if _is_image(left) else np.uint8(1 if bool(left) else 0)
+                rhs = pinned_view(right) if _is_image(right) else np.uint8(1 if bool(right) else 0)
+                np.bitwise_or(lhs, rhs, out=out, casting="unsafe")
+                return output
         return sitk.Or(left, right)
     return bool(left) or bool(right)
 
@@ -395,6 +507,15 @@ def eq_sv(value: float, image: object) -> sitk.Image:
     """Mask of voxels equal to a scalar value."""
     img = _as_image(image, "image")
     _remember_base(img)
+    output_pair = (
+        _try_native_output(img, sitk.sitkUInt8)
+        if img.GetPixelID() in _NATIVE_COMPARISON_PIXEL_IDS
+        else None
+    )
+    if output_pair is not None:
+        output, out = output_pair
+        np.equal(pinned_view(img), float(value), out=out, casting="unsafe")
+        return output
     return sitk.BinaryThreshold(img, float(value), float(value), 1, 0)
 
 
@@ -402,6 +523,15 @@ def geq_sv(value: float, image: object) -> sitk.Image:
     """Mask of voxels greater than or equal to a scalar value."""
     img = _as_image(image, "image")
     _remember_base(img)
+    output_pair = (
+        _try_native_output(img, sitk.sitkUInt8)
+        if img.GetPixelID() in _NATIVE_COMPARISON_PIXEL_IDS
+        else None
+    )
+    if output_pair is not None:
+        output, out = output_pair
+        np.greater_equal(pinned_view(img), float(value), out=out, casting="unsafe")
+        return output
     return sitk.GreaterEqual(img, float(value))
 
 
@@ -409,6 +539,15 @@ def leq_sv(value: float, image: object) -> sitk.Image:
     """Mask of voxels less than or equal to a scalar value."""
     img = _as_image(image, "image")
     _remember_base(img)
+    output_pair = (
+        _try_native_output(img, sitk.sitkUInt8)
+        if img.GetPixelID() in _NATIVE_COMPARISON_PIXEL_IDS
+        else None
+    )
+    if output_pair is not None:
+        output, out = output_pair
+        np.less_equal(pinned_view(img), float(value), out=out, casting="unsafe")
+        return output
     return sitk.LessEqual(img, float(value))
 
 
@@ -416,6 +555,19 @@ def between(value1: float, value2: float, image: object) -> sitk.Image:
     """Mask of voxels within an inclusive scalar range."""
     img = _as_image(image, "image")
     _remember_base(img)
+    output_pair = (
+        _try_native_output(img, sitk.sitkUInt8)
+        if img.GetPixelID() in _NATIVE_COMPARISON_PIXEL_IDS
+        else None
+    )
+    if output_pair is not None:
+        output, out = output_pair
+        values = pinned_view(img)
+        np.greater_equal(values, float(value1), out=out, casting="unsafe")
+        # Retain false elements from the first comparison, then overwrite only
+        # its true elements with the upper-bound comparison.
+        np.less_equal(values, float(value2), out=out, where=out.astype(bool), casting="unsafe")
+        return output
     return sitk.BinaryThreshold(img, float(value1), float(value2), 1, 0)
 
 
@@ -497,6 +649,20 @@ def mask(image: object, mask_image: object) -> sitk.Image:
     img = _as_image(image, "image")
     msk = _as_image(mask_image, "mask_image")
     _remember_base(img)
+    # The legacy kernel first coerces the mask to UInt8.  Keep the direct path
+    # to already-UInt8 masks so NumPy's ``!= 0`` condition is exactly the
+    # filter's convention without introducing a hidden cast/copy.
+    if (
+        img.GetPixelID() in _NATIVE_MASK_PIXEL_IDS
+        and msk.GetPixelID() == sitk.sitkUInt8
+        and _native_images_compatible(img, msk)
+    ):
+        output_pair = _try_native_output(img, img.GetPixelID())
+        if output_pair is not None:
+            output, out = output_pair
+            out.fill(0)
+            np.copyto(out, pinned_view(img), where=pinned_view(msk) != 0)
+            return output
     return sitk.Mask(img, _as_bool_image(msk), 0.0)
 
 

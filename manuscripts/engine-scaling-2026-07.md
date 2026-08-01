@@ -603,6 +603,28 @@ numpy_native flag without first counting how often the specific pipeline
 under test crosses the sitk<->numpy boundary at that op -- the count, not the
 per-op microbenchmark, determines the sign of the result.
 
+### Addendum: native SimpleITK output buffers (implemented; aggregate benchmark pending)
+
+The boundary tax can instead be removed without changing the engine's value
+protocol: allocate the result as a fresh `sitk.Image`, write a NumPy ufunc
+directly into that image's buffer, and return the native image.  A probe on
+SimpleITK 2.5.5 confirmed bit-identical `Not` output and 2.74x (one thread) /
+4.66x (16 threads) speedups in the original investigation.  This is not the
+reverted sec 19 design: kernels still return `sitk.Image`, so the next ITK
+consumer pays no numpy-to-sitk conversion.
+
+The Python view is officially read-only, so this is deliberately isolated to
+fresh, exclusively-owned output images.  The implementation pins every alias,
+rejects vector and unlisted scalar pixel types, validates write-through once
+per pixel type at runtime, and falls back to the normal SimpleITK kernel when
+that probe is unavailable.  `VOXLOGICA_WRITABLE_SITK_OUTPUT=off` provides an
+operational kill switch; `required` makes validation failure fatal for
+benchmarks, preventing a silent fallback from masquerading as a result.  It
+must never mutate an input or a shared output:
+such a write bypasses SimpleITK copy-on-write semantics.  Full 40-case timing
+and Dice parity remain required before this result is claimed as an aggregate
+engine win.
+
 ## 20. Status of every conjecture in this document, for a reader who only reads this table
 
 | # | Claim | Status |
