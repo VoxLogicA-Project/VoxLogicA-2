@@ -1,4 +1,4 @@
-# A/B/C/D comparison: VL1, `main`, `incoming`, plain Python
+# A/B/C/D comparison: VL1, `main`, VoxLogicA2, plain Python
 
 Companion to [manuscripts/engine-scaling-2026-07.md](../../../../manuscripts/engine-scaling-2026-07.md)
 Part V, the concluding comparison of this investigation. Four independent
@@ -9,7 +9,7 @@ no cross-correlation), same 40 BraTS2020 cases, same host (fmt-5000).
 |---|---|---|
 | A | VL1 (real historical binary) | Hopac-based task parallelism (VL1's own) |
 | B | `main` branch (pre-engine VL2) | single-threaded lazy evaluator |
-| C | `incoming` branch (this engine) | calibrated async scheduler + fusion |
+| C | VoxLogicA2 (`incoming` branch) | calibrated async scheduler + fusion |
 | D | `plain_python_reference.py` (this dir) | **none** — straight-line sequential Python |
 
 Arm D exists to answer a question A-C cannot: how much of the engine's
@@ -66,7 +66,7 @@ in-process warmup concept).
 |---|---|---|---|
 | A: VL1 | 8.16s | 0.204s | (different thresholds -- not compared, see vl1_comparison/README.md) |
 | B: `main` | 56.08s | 1.402s | 0.823801585942116 |
-| C: `incoming` (current) | **5.43s** | **0.136s** | 0.823801585942116 |
+| C: VoxLogicA2 | **5.43s** | **0.136s** | 0.823801585942116 |
 | D: plain Python | 19.23s | 0.481s | 0.823834606712500 |
 
 A/B/D are the original 2026-07-31 measurements. C was refreshed on
@@ -91,3 +91,30 @@ With the buffer pool disabled the same current code averaged 5.50 s; pooling's
 
 See the manuscript for the full interpretation and the investigation's
 concluding remarks.
+
+## Full 369-case validation (fmt-5000, 2026-08-02)
+
+The current arm C is the **VoxLogicA2 implementation** (`incoming` is only its
+branch name). The same warm-up/no-cache procedure was repeated over the full
+BraTS2020 training set:
+
+```bash
+sed 's/case_count = 40/case_count = 369/' \
+  tests/perf/scaling/abcd_comparison/bench_tacas19_incoming.imgql > /tmp/full.imgql
+sed 's/case_count = 369/case_count = 3/' /tmp/full.imgql > /tmp/warmup.imgql
+.venv/bin/python -m voxlogica.main run /tmp/warmup.imgql --no-cache
+.venv/bin/python -m voxlogica.main run /tmp/full.imgql --no-cache
+
+.venv/bin/python tests/perf/scaling/abcd_comparison/plain_python_reference.py \
+  --dataset-root /path/to/MICCAI_BraTS2020_TrainingData --cases 369 --warmup 3
+```
+
+| implementation | wall | per-case | mean Dice |
+|---|---:|---:|---:|
+| **VoxLogicA2** | **45.68 s** | **0.124 s** | 0.800439465181959 |
+| plain Python/SimpleITK | 171.18 s | 0.464 s | 0.800519813411842 |
+
+VoxLogicA2 is **3.75x faster**. Mean Dice differs by 0.00008035; 368/369
+per-case values are within 0.001 and 294/369 within 0.0001. Maximum absolute
+difference is 0.00273785 on case 079 (0 versus 0.00273785), consistent with
+the direct reference's documented floating-point call-sequence difference.

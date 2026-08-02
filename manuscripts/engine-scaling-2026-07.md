@@ -849,7 +849,7 @@ Part has not yet touched.
 
 # Part V — final comparison, and conclusion (2026-07-31)
 
-## 23. A/B/C/D: VL1, `main`, `incoming`, and plain Python
+## 23. A/B/C/D: VL1, `main`, VoxLogicA2, and plain Python
 
 Every measurement so far in this document compares configurations of ONE
 engine (`incoming`) against itself. The one external comparison (Part III,
@@ -870,7 +870,7 @@ cases, then a fresh 40-case timed run) for B/C/D; A uses its own protocol
 |---|---|---|---|---|
 | A | VL1 (real historical binary) | 8.16s | 0.204s | (different thresholds, not compared) |
 | B | `main` (pre-engine VL2) | 56.08s | 1.402s | 0.823801585942116 |
-| C | `incoming` (this engine, current) | **5.43s** | **0.136s** | 0.823801585942116 |
+| C | VoxLogicA2 (`incoming` branch) | **5.43s** | **0.136s** | 0.823801585942116 |
 | D | plain Python, no orchestration | 19.23s | 0.481s | 0.823834606712500 |
 
 A/B/D are the original 2026-07-31 measurements; C was refreshed on
@@ -903,10 +903,10 @@ into D at all, not derived from the compat.imgql formulas by hand alone.
 
 ## 24. What this table says, plainly
 
-**`incoming` is the fastest of the four**, now 1.50x faster than the historical
+**VoxLogicA2 is the fastest of the four**, now 1.50x faster than the historical
 VL1 timing (with VL1's threshold difference still preventing a correctness
 comparison). Against plain sequential Python -- the honest zero-orchestration
-floor -- `incoming` is **3.54x faster**. That is the real, measured answer to "is the
+floor -- VoxLogicA2 is **3.54x faster**. That is the real, measured answer to "is the
 scheduling/fusion/calibration machinery worth its own existence": yes, on
 this recipe, by more than a factor of three over doing nothing clever at all.
 
@@ -926,7 +926,34 @@ was already solved. This document's job was optimizing an engine already
 past that bar, which is why its remaining wins were single-digit percentages
 rather than multiples.
 
-## 25. Conclusion
+## 25. Full 369-case validation: VoxLogicA2 versus plain Python
+
+The optimized arm C is henceforth called the **VoxLogicA2 implementation**;
+`incoming` is its branch name, not the implementation's name.  The 40-case
+comparison was repeated over all 369 BraTS2020 training cases against the same
+straight-line Python/SimpleITK reference.  Both used the established protocol:
+three untimed warm-up cases, then a fresh no-cache timed run on idle fmt-5000.
+
+| implementation | wall (369 cases) | per-case | mean Dice |
+|---|---:|---:|---:|
+| **VoxLogicA2** | **45.68 s** | **0.124 s** | 0.800439465181959 |
+| plain Python/SimpleITK | 171.18 s | 0.464 s | 0.800519813411842 |
+
+VoxLogicA2 is **3.75x faster** (73.3% less wall time).  The agreement also
+strengthens rather than weakens at full scale: the mean Dice difference is
+0.00008035, mean absolute per-case difference is 0.00008045, 368/369 cases
+are within 0.001, and 294/369 are within 0.0001.  The maximum difference is
+0.00273785 on BraTS case 079, where the engine gives 0 and the direct reference
+0.00273785.  This is consistent with the already-audited floating-point call-
+sequence difference in the direct reference, not an engine semantic change;
+the reference is intentionally algorithm-equivalent rather than bit-identical.
+
+The full run also exercised buffer reuse at realistic scale: VoxLogicA2 made
+752 fresh eligible allocations and 12532 reuses, with 2995 MB peak RSS and a
+510.9 MB peak bounded pool.  This confirms that the 40-case speed comparison
+was not a small-subset scheduling artefact.
+
+## 26. Conclusion
 
 This investigation is concluded. Summary, for a reader who reads only this
 section:
@@ -941,6 +968,10 @@ section:
   competitive with its own predecessor lineage: 1.50x over VL1, 10.33x over
   its own prior engine (`main`), 3.54x over a from-scratch naive
   implementation (sec 24).
+- **The full 369-case validation strengthens the external result.** The named
+  VoxLogicA2 implementation completed in 45.68 s versus 171.18 s for direct
+  Python/SimpleITK: 3.75x faster, with mean Dice differing by only 0.00008035
+  and 368/369 per-case results within 0.001 (sec 25).
 - **Blanket NumPy conversion and fusion widening failed, but native-output
   kernels succeeded.** Returning bare arrays was 20% slower and two fusion-
   boundary attempts were flat to mildly negative (Part IV sec 18/19/21).
