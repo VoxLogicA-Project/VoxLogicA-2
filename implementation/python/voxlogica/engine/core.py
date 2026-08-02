@@ -40,6 +40,7 @@ from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
 from voxlogica.engine.calibration import load_cached_itk_threads
 from voxlogica.buffer_pool import pool_stats, trim_pool
+from voxlogica.diagnostics.exceptions import NodeExecutionError
 from voxlogica.engine.fusion import FusionPlanner
 from voxlogica.engine.itk_threads import apply_itk_threads
 from voxlogica.engine.graph import DependencyGraph
@@ -886,6 +887,11 @@ class ComputationEngine:
         everything lets the workers consume-and-skip the remaining units, so
         ``run`` terminates promptly and reports the error instead of hanging.
         """
+        if not isinstance(error, NodeExecutionError):
+            node = self.table.nodes.get(nid)
+            wrapped = NodeExecutionError(nid, node.operator if node is not None else "<engine>")
+            wrapped.__cause__ = error
+            error = wrapped
         if self._first_error is None:
             self._first_error = error
             self.admission.abort(error)

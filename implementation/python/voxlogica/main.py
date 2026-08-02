@@ -12,6 +12,7 @@ import json
 import logging
 import sys
 from typing import Any
+from dataclasses import replace
 
 from voxlogica.converters.dot_converter import to_dot
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder, to_json
@@ -20,6 +21,9 @@ from voxlogica.parser import ProgramParseError, parse_program_content
 from voxlogica.reducer import StaticAnalysisError, reduce_program
 from voxlogica.storage import NoCacheStorageBackend, SQLiteResultsDatabase, delete_results_store, results_store_paths
 from voxlogica.repl import start_repl
+from voxlogica.diagnostics.classify import build_report
+from voxlogica.diagnostics.render import render_diagnostic, render_report_json
+from voxlogica.diagnostics.store import load_report, store_report
 
 logger = logging.getLogger("voxlogica.main")
 
@@ -34,7 +38,9 @@ def _configure_logging(debug: bool) -> None:
 def build_workplan(program_text: str, source_name: str = "<input>", for_expansion_cap: int = 4096):
     """Parse source text and reduce it into a symbolic work plan."""
     syntax = parse_program_content(program_text, source_name=source_name)
-    return syntax, reduce_program(syntax, source_name=source_name, for_expansion_cap=for_expansion_cap)
+    workplan = reduce_program(syntax, source_name=source_name, for_expansion_cap=for_expansion_cap)
+    workplan.source_text = program_text
+    return syntax, workplan
 
 
 def _write_text(path: str | None, content: str) -> None:
@@ -63,6 +69,7 @@ def _summary_payload(workplan, execution_result: Any | None) -> dict[str, Any]:
             "execution_time": execution_result.execution_time,
             "total_operations": execution_result.total_operations,
             "cache_summary": execution_result.cache_summary,
+            "diagnostics": [diagnostic.to_dict() for diagnostic in execution_result.diagnostics],
         }
     return payload
 
@@ -98,7 +105,11 @@ def run_command(args: argparse.Namespace) -> int:
     if cancelled is not None:
         return cancelled
 
-    program_text = Path(args.filename).read_text(encoding="utf-8")
+    try:
+        program_text = Path(args.filename).read_text(encoding="utf-8")
+    except OSError as exc:
+        _render_exception(exc, args)
+        return 3
     try:
         syntax, workplan = build_workplan(program_text, source_name=args.filename,
                                           for_expansion_cap=args.for_expansion_cap)
@@ -134,13 +145,18 @@ def run_command(args: argparse.Namespace) -> int:
             engine_debug=args.engine_debug,
             dynamic_expansion=args.dynamic_expansion,
         ).execute_workplan(workplan, profile=args.profile)
+        if not execution_result.success:
+            for diagnostic in execution_result.diagnostics:
+                _render_diagnostic(diagnostic, args)
+                if args.error_details and diagnostic.details_id:
+                    stored = load_report(diagnostic.details_id)
+                    if stored:
+                        print(stored, file=sys.stderr)
+            if not execution_result.diagnostics:
+                _render_exception(RuntimeError("DAG execution failed"), args)
+            return 1
         print(json.dumps(_summary_payload(workplan, execution_result), indent=2))
         print(f"Execution time: {execution_result.execution_time:.2f} seconds")
-        if not execution_result.success:
-            logger.error("DAG execution failed")
-            for node_id, error_msg in execution_result.failed_operations.items():
-                logger.error(f"Node {node_id} failed:\n{error_msg}")
-            return 1
 
     return 0
 
@@ -159,6 +175,34 @@ def shell_command(args: argparse.Namespace) -> int:
     """Implement the ``repl`` subcommand."""
     start_repl()
     return 0
+
+
+def errors_command(args: argparse.Namespace) -> int:
+    """Print a stored technical diagnostic report."""
+    report = load_report(args.details_id)
+    if report is None:
+        print(f"No diagnostic report found for {args.details_id}", file=sys.stderr)
+        return 2
+    print(report)
+    return 0
+
+
+def _render_diagnostic(diagnostic, args: argparse.Namespace) -> None:
+    if getattr(args, "error_format", "human") == "json":
+        print(json.dumps(diagnostic.to_dict(), indent=2, sort_keys=True), file=sys.stderr)
+    else:
+        print(render_diagnostic(diagnostic), file=sys.stderr)
+
+
+def _render_exception(exc: BaseException, args: argparse.Namespace) -> None:
+    report = build_report(exc)
+    diagnostic = replace(report.diagnostic, details_id=store_report(report))
+    _render_diagnostic(diagnostic, args)
+    if getattr(args, "error_details", False) or getattr(args, "debug", False):
+        if getattr(args, "error_format", "human") == "json":
+            print(render_report_json(report), file=sys.stderr)
+        else:
+            print(report.traceback_text, file=sys.stderr)
 
 
 def calibrate_command(args: argparse.Namespace) -> int:
@@ -217,6 +261,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--cache-max-gb", type=float, default=100.0, metavar="GB",
                             help="Persistent cache byte budget in GB; LRU-evict past it (0 = unbounded)")
     run_parser.add_argument("--debug", action="store_true")
+    run_parser.add_argument("--error-details", action="store_true",
+                            help="Show the technical exception chain and traceback after the concise error")
+    run_parser.add_argument("--error-format", choices=["human", "json"], default="human",
+                            help="Render runtime diagnostics for people (default) or tools")
     run_parser.add_argument("--engine", action=argparse.BooleanOptionalAction, default=True,
                             help="Use the live computation engine (default); --no-engine selects the lazy strategy")
     run_parser.add_argument("--threads", type=int, default=0, metavar="N",
@@ -252,6 +300,12 @@ def build_parser() -> argparse.ArgumentParser:
     shell_parser = subparsers.add_parser("repl", help="Start an interactive REPL session")
     shell_parser.set_defaults(handler=shell_command)
 
+    errors_parser = subparsers.add_parser("errors", help="Inspect a stored technical diagnostic report")
+    errors_subparsers = errors_parser.add_subparsers(dest="errors_command", required=True)
+    errors_show_parser = errors_subparsers.add_parser("show", help="Show one diagnostic report")
+    errors_show_parser.add_argument("details_id", help="Diagnostic id printed by a failed run")
+    errors_show_parser.set_defaults(handler=errors_command)
+
     calibrate_parser = subparsers.add_parser(
         "calibrate",
         help="Measure this machine's actual optimal thread count (engine strategy, hybrid P/E CPUs)")
@@ -273,7 +327,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return int(args.handler(args))
+    try:
+        return int(args.handler(args))
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as exc:  # final CLI boundary: never dump an implementation traceback by default
+        _render_exception(exc, args)
+        return 70
 
 
 if __name__ == "__main__":

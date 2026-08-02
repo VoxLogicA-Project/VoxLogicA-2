@@ -1,8 +1,12 @@
 from pathlib import Path
+from dataclasses import replace
 
 from voxlogica.parser import parse_program
 from voxlogica.execution import ExecutionEngine
 from voxlogica.reducer import _reduce_program_internal, Environment
+from voxlogica.diagnostics.classify import build_report
+from voxlogica.diagnostics.render import render_diagnostic
+from voxlogica.diagnostics.store import store_report
 # from voxlogica.storage import NoCacheStorageBackend
 
 bindings = {}
@@ -51,9 +55,15 @@ class Repl():
             # print(bindings)
             # print(self.prepared.nodes)
             result = self.execution_engine.execute_workplan(self.prepared)
+            if not result.success:
+                for diagnostic in result.diagnostics:
+                    print(render_diagnostic(diagnostic))
+                return
             print(f"Result: {result}")
-        except Exception as e:
-            print(f"Error: {e}")
+        except Exception as exc:
+            report = build_report(exc)
+            diagnostic = replace(report.diagnostic, details_id=store_report(report))
+            print(render_diagnostic(diagnostic))
 
     def cmdloop(self):
         """Start the REPL loop."""

@@ -134,6 +134,8 @@ class WorkPlan:
     imported_namespaces: list[str] = field(default_factory=list)
     registry: PrimitiveRegistry = field(default_factory=PrimitiveRegistry, repr=False)
     for_expansion_cap: int = _DEFAULT_FOR_EXPANSION_CAP
+    provenance: dict[NodeId, tuple[str, ...]] = field(default_factory=dict)
+    source_text: str | None = None
 
     def add_node(self, node: NodeSpec) -> NodeId:
         """Hash-cons a node and return the stable id assigned to it."""
@@ -141,6 +143,14 @@ class WorkPlan:
         if node_id not in self.nodes:
             self.nodes[node_id] = node
         return node_id
+
+    def add_provenance(self, node_id: NodeId, location: str | None) -> None:
+        """Record source provenance without changing content-addressed identity."""
+        if not location:
+            return
+        prior = self.provenance.get(node_id, ())
+        if location not in prior:
+            self.provenance[node_id] = (*prior, location)
 
     def add_goal(self, operation: str, operation_id: NodeId, name: str) -> None:
         """Record a top-level materialization goal such as print or save."""
@@ -203,6 +213,8 @@ class WorkPlan:
             nodes=dict(self.nodes),
             goals=list(self.goals),
             imported_namespaces=tuple(self.imported_namespaces),
+            provenance=dict(self.provenance),
+            source_text=self.source_text,
         )
 
     @property
@@ -569,7 +581,9 @@ def _plan_primitive_call(
             output_kind=output_kind,
         )
 
-    return work_plan.add_node(node)
+    node_id = work_plan.add_node(node)
+    work_plan.add_provenance(node_id, position)
+    return node_id
 
 
 def _reduce_map_call(

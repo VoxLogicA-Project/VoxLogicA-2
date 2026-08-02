@@ -9,6 +9,7 @@ print/save side effects from the materialized results.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 import pickle
 import signal
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from voxlogica.arrays import PolyArray
+from voxlogica.diagnostics.classify import build_report
+from voxlogica.diagnostics.store import store_report
 from voxlogica.engine.core import ComputationEngine
 from voxlogica.engine.priority import Priority
 from voxlogica.execution_strategy.results import ExecutionResult, PreparedPlan, SequenceValue
@@ -70,19 +73,23 @@ class EngineExecutionStrategy:
         target = plan.goals if goals is None else [g for g in plan.goals if g.id in set(goals)]
         failures: dict[NodeId, str] = {}
 
-        async def evaluate() -> dict[NodeId, Any]:
+        async def evaluate() -> tuple[dict[NodeId, Any], BaseException | None]:
             queries = [(g, engine.submit(g.id, g.operation, g.name, Priority.NORMAL)) for g in target]
-            await engine.run()
+            run_error: BaseException | None = None
+            try:
+                await engine.run()
+            except Exception as exc:  # converted below into a structured result
+                run_error = exc
             values: dict[NodeId, Any] = {}
             for goal, query in queries:
                 try:
                     values[goal.id] = await query.result()
                 except Exception as exc:  # noqa: BLE001
                     failures[goal.id] = repr(exc)
-            return values
+            return values, run_error
 
         if profile is None:
-            values = asyncio.run(evaluate())
+            values, run_error = asyncio.run(evaluate())
         else:
             print(
                 "[profile] WARNING: cProfile's single global call-stack has no "
@@ -99,7 +106,7 @@ class EngineExecutionStrategy:
             prof = cProfile.Profile()
             prof.enable()
             try:
-                values = asyncio.run(evaluate())
+                values, run_error = asyncio.run(evaluate())
             finally:
                 prof.disable()
                 # Always dump stats (even if interrupted), to a temp path if profile is stdout-mode.
@@ -133,6 +140,15 @@ class EngineExecutionStrategy:
                 if goal.id in values:
                     self._side_effect(goal.operation, goal.name, values[goal.id])
 
+        diagnostics = []
+        if run_error is not None:
+            node_id = getattr(run_error, "node_id", None)
+            locations = plan.provenance.get(node_id, ()) if node_id else ()
+            report = build_report(run_error, locations=locations, source_text=plan.source_text)
+            diagnostic = replace(report.diagnostic, details_id=store_report(report))
+            diagnostics.append(diagnostic)
+            failures[node_id or "<engine>"] = diagnostic.message
+
         return ExecutionResult(
             success=not failures,
             completed_operations=set(engine.table.completed),
@@ -140,6 +156,7 @@ class EngineExecutionStrategy:
             execution_time=time.time() - started,
             total_operations=len(engine.table.nodes),
             cache_summary=engine.metrics(),
+            diagnostics=diagnostics,
         )
 
     # ── Goal side effects ─────────────────────────────────────────────────────────────────────
