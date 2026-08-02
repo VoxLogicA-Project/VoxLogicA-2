@@ -34,6 +34,9 @@ from voxlogica.lazy.hash import hash_node, hash_sequence_item
 from voxlogica.lazy.ir import NodeId, NodeSpec
 from voxlogica.storage import NoCacheStorageBackend, StorageBackend
 
+
+_MISSING = object()
+
 _sitk = None
 
 
@@ -89,16 +92,43 @@ class NodeTable:
         # Bytes resident in the live tier, tracked incrementally so the scheduler
         # can bound the working set (admission control) without rescanning values.
         self._sizeof: dict[NodeId, int] = {}
+        # Several node ids can intentionally forward the exact same object
+        # (notably a dynamic loop id and its spliced sequence id). Count that
+        # allocation once while either id remains live; per-node accounting
+        # previously double-booked it and applied artificial backpressure.
+        self._object_refs: dict[int, int] = {}
+        self._object_sizes: dict[int, int] = {}
         self.live_bytes = 0
         self.peak_live_bytes = 0
 
+    def _retain_object(self, value: Any, size: int) -> None:
+        object_id = id(value)
+        refs = self._object_refs.get(object_id, 0)
+        if refs == 0:
+            self._object_sizes[object_id] = size
+            self.live_bytes += size
+        elif size > self._object_sizes[object_id]:
+            self.live_bytes += size - self._object_sizes[object_id]
+            self._object_sizes[object_id] = size
+        self._object_refs[object_id] = refs + 1
+
+    def _release_object(self, value: Any) -> None:
+        object_id = id(value)
+        refs = self._object_refs.get(object_id, 0)
+        if refs <= 1:
+            self._object_refs.pop(object_id, None)
+            self.live_bytes -= self._object_sizes.pop(object_id, 0)
+        else:
+            self._object_refs[object_id] = refs - 1
+
     def set_value(self, node_id: NodeId, value: Any) -> int:
         """Place a value in the live tier; return its size (resident bytes)."""
-        if node_id in self._sizeof:
-            self.live_bytes -= self._sizeof[node_id]
+        previous = self.values.get(node_id, _MISSING)
+        if previous is not _MISSING:
+            self._release_object(previous)
         size = approx_bytes(value)
         self._sizeof[node_id] = size
-        self.live_bytes += size
+        self._retain_object(value, size)
         if self.live_bytes > self.peak_live_bytes:
             self.peak_live_bytes = self.live_bytes
         self.values[node_id] = value
@@ -245,8 +275,10 @@ class NodeTable:
         A pending disk write keeps its own reference, so the value survives until
         written; the persistent tier can reload it later on demand.
         """
-        if self.values.pop(node_id, None) is not None:
-            self.live_bytes -= self._sizeof.pop(node_id, 0)
+        value = self.values.pop(node_id, _MISSING)
+        if value is not _MISSING:
+            self._sizeof.pop(node_id, None)
+            self._release_object(value)
 
     def flush(self, timeout_s: float = 600.0) -> None:
         """Block until the background writer has drained (called once, at end of run).

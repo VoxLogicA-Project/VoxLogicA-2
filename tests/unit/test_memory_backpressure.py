@@ -65,6 +65,21 @@ def test_accounted_bytes_counts_persist_backlog() -> None:
     assert table.accounted_bytes == 123
 
 
+@pytest.mark.unit
+def test_live_bytes_counts_shared_forwarded_value_once() -> None:
+    table = NodeTable(backend=None)
+    shared = bytearray(1024)
+
+    table.set_value("spliced-sequence", shared)
+    table.set_value("dynamic-loop", shared)
+    assert table.live_bytes == 1024
+
+    table.evict("spliced-sequence")
+    assert table.live_bytes == 1024
+    table.evict("dynamic-loop")
+    assert table.live_bytes == 0
+
+
 def _admission_with(accounted: int, qsize: int, *, workers: int, hard: int,
                     idle: bool) -> tuple[LoopAdmission, _Job]:
     """A LoopAdmission whose _has_room inputs are all stubbed to fixed values."""
