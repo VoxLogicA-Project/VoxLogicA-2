@@ -62,6 +62,7 @@ from typing import Any, Callable
 from voxlogica.engine.expander import Expander, Expansion
 from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
+from voxlogica.buffer_pool import trim_pool
 from voxlogica.engine.ready import ReadyQueue
 from voxlogica.lazy.ir import NodeId, NodeSpec
 
@@ -222,6 +223,9 @@ class LoopAdmission:
         if job.in_flight >= self.window:
             return False
         accounted = self.graph.table.accounted_bytes
+        if accounted >= self.hard_live_bytes:
+            trim_pool(0)
+            accounted = self.graph.table.accounted_bytes
         if accounted >= self.hard_live_bytes:
             return self._idle()  # at the ceiling: admit only to break a true wedge
         return self.ready.qsize() < self.workers

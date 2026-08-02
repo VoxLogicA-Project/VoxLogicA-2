@@ -32,6 +32,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+from voxlogica.buffer_pool import acquire_sitk, state_of
+
 _sitk = None
 
 
@@ -240,10 +242,12 @@ def writable_view(image: Any) -> Any:
 
 
 def allocate_writable_like(reference: Any, pixel_id: int) -> tuple[Any, Any]:
-    """Allocate a native SimpleITK output and its private writable alias.
+    """Acquire a native SimpleITK output and its private writable alias.
 
-    The returned image has the reference geometry and has no prior consumers;
-    retaining or mutating the alias after the kernel returns is forbidden.
+    The image is exclusively owned but may come from the bounded buffer pool;
+    its pixels are unspecified and the caller must overwrite every element.
+    It has no current consumers; retaining or mutating the alias after the
+    kernel returns is forbidden.
     """
     if writable_sitk_output_mode() == "off":
         raise WritableViewUnavailable("Writable SimpleITK outputs are disabled")
@@ -251,8 +255,7 @@ def allocate_writable_like(reference: Any, pixel_id: int) -> tuple[Any, Any]:
         raise WritableViewUnavailable("Writable aliases do not support vector images")
     if pixel_id not in _writable_pixel_dtypes():
         raise WritableViewUnavailable(f"Unsupported SimpleITK output pixel type: {pixel_id}")
-    image = _simpleitk().Image(reference.GetSize(), pixel_id)
-    image.CopyInformation(reference)
+    image = acquire_sitk(reference, pixel_id)
     return image, writable_view(image)
 
 
@@ -448,3 +451,12 @@ class PolyArray:
 
     def resident_views(self) -> tuple[str, ...]:
         return tuple(self._views.keys())
+
+    def _buffer_pool_states(self) -> tuple[Any, ...]:
+        """Reusable allocations currently reachable through cached views."""
+        states: dict[int, Any] = {}
+        for view in self._views.values():
+            state = state_of(view)
+            if state is not None:
+                states[id(state)] = state
+        return tuple(states.values())

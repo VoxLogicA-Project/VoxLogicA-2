@@ -39,6 +39,7 @@ from voxlogica.engine.config import EngineConfig
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
 from voxlogica.engine.calibration import load_cached_itk_threads
+from voxlogica.buffer_pool import pool_stats, trim_pool
 from voxlogica.engine.fusion import FusionPlanner
 from voxlogica.engine.itk_threads import apply_itk_threads
 from voxlogica.engine.graph import DependencyGraph
@@ -469,6 +470,8 @@ class ComputationEngine:
         would otherwise starve — bounded by the same hard ceiling as loop bodies,
         with the true-wedge escape so it can never deadlock.
         """
+        if self.table.accounted_bytes > self.config.max_live_bytes:
+            trim_pool(0)
         self._reclaim_memory()
         if self.ready.parked_count:
             accounted = self.table.accounted_bytes
@@ -965,6 +968,13 @@ class ComputationEngine:
             m["numba_compiles_started"] = self.numba_backend.compiles_started
             m["numba_compiles_finished"] = self.numba_backend.compiles_finished
             m["numba_compiles_failed"] = self.numba_backend.compiles_failed
+        buffers = pool_stats()
+        m["buffer_pool_allocations"] = buffers["allocations"]
+        m["buffer_pool_reuses"] = buffers["reuses"]
+        m["buffer_pool_returns"] = buffers["returns"]
+        m["buffer_pool_drops"] = buffers["drops"]
+        m["buffer_pool_mb"] = round(buffers["pooled_bytes"] / 1024 ** 2, 1)
+        m["buffer_pool_peak_mb"] = round(buffers["peak_pooled_bytes"] / 1024 ** 2, 1)
         backend = self.table._backend
         if backend is not None and hasattr(backend, "stats"):
             s = backend.stats()

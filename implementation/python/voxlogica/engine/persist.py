@@ -21,6 +21,7 @@ import queue
 import threading
 from typing import Any
 
+from voxlogica.buffer_pool import buffer_states, release_states, retain_states
 from voxlogica.lazy.ir import NodeId
 from voxlogica.storage import StorageBackend
 
@@ -57,7 +58,7 @@ class AsyncPersister:
         # this run's results without touching SQLite. Single set ops from this
         # thread are GIL-atomic; no lock needed.
         self._persisted_ids = persisted_ids
-        self._queue: "queue.SimpleQueue[tuple[NodeId, Any, dict, int, float] | None]" = queue.SimpleQueue()
+        self._queue: "queue.SimpleQueue[tuple[NodeId, Any, dict, int, float, tuple[Any, ...]] | None]" = queue.SimpleQueue()
         self._lock = threading.Lock()
         self._pending_bytes = 0
         self._drained = threading.Event()
@@ -89,7 +90,8 @@ class AsyncPersister:
         with self._lock:
             self._pending_bytes += size
             self._drained.clear()
-        self._queue.put((node_id, value, metadata, size, compute_ms))
+        leases = retain_states(buffer_states(value))
+        self._queue.put((node_id, value, metadata, size, compute_ms, leases))
 
     @property
     def over_budget(self) -> bool:
@@ -144,7 +146,7 @@ class AsyncPersister:
                 batch.append(extra)
             self._write_batch(batch)
 
-    def _write_batch(self, batch: list[tuple[NodeId, Any, dict, int, float]]) -> None:
+    def _write_batch(self, batch: list[tuple[NodeId, Any, dict, int, float, tuple[Any, ...]]]) -> None:
         try:
             # Idempotent: skip values already durable on disk, so re-runs over
             # a warm cache do not rewrite unchanged payloads. The id index
@@ -158,7 +160,7 @@ class AsyncPersister:
                 fresh = [b for b in batch if not self._backend.has(b[0])]
             if fresh:
                 entries = [(nid, value, metadata, compute_ms)
-                           for nid, value, metadata, _size, compute_ms in fresh]
+                           for nid, value, metadata, _size, compute_ms, _leases in fresh]
                 try:
                     if hasattr(self._backend, "put_success_batch"):
                         self._backend.put_success_batch(entries)
@@ -177,7 +179,9 @@ class AsyncPersister:
             logger.exception("async persistence failed for batch of %d (first: %s)",
                              len(batch), batch[0][0])
         finally:
-            written = sum(size for _nid, _value, _metadata, size, _cms in batch)
+            written = sum(size for _nid, _value, _metadata, size, _cms, _leases in batch)
+            for _nid, _value, _metadata, _size, _cms, leases in batch:
+                release_states(leases)
             batch.clear()  # drop the references: collectible once evicted
             with self._lock:
                 self._pending_bytes -= written

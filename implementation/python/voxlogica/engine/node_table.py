@@ -29,6 +29,7 @@ import os
 from typing import Any
 
 from voxlogica.arrays import PolyArray
+from voxlogica.buffer_pool import buffer_states, pooled_bytes, release_states, retain_states
 from voxlogica.engine.persist import AsyncPersister, approx_bytes
 from voxlogica.lazy.hash import hash_node, hash_sequence_item
 from voxlogica.lazy.ir import NodeId, NodeSpec
@@ -98,6 +99,7 @@ class NodeTable:
         # previously double-booked it and applied artificial backpressure.
         self._object_refs: dict[int, int] = {}
         self._object_sizes: dict[int, int] = {}
+        self._buffer_leases: dict[NodeId, tuple[Any, ...]] = {}
         self.live_bytes = 0
         self.peak_live_bytes = 0
 
@@ -123,6 +125,8 @@ class NodeTable:
 
     def set_value(self, node_id: NodeId, value: Any) -> int:
         """Place a value in the live tier; return its size (resident bytes)."""
+        new_buffer_leases = retain_states(buffer_states(value))
+        old_buffer_leases = self._buffer_leases.get(node_id, ())
         previous = self.values.get(node_id, _MISSING)
         if previous is not _MISSING:
             self._release_object(previous)
@@ -132,6 +136,8 @@ class NodeTable:
         if self.live_bytes > self.peak_live_bytes:
             self.peak_live_bytes = self.live_bytes
         self.values[node_id] = value
+        self._buffer_leases[node_id] = new_buffer_leases
+        release_states(old_buffer_leases)
         return size
 
     def intern(self, node: NodeSpec) -> NodeId:
@@ -152,17 +158,18 @@ class NodeTable:
     @property
     def accounted_bytes(self) -> int:
         """True resident total the admission controller must bound: the live
-        tier plus the unwritten persist backlog.
+        tier, the unwritten persist backlog, and reusable pooled buffers.
 
         ``live_bytes`` alone under-reports RSS — a value evicted from the live
         tier stays alive in the persist queue until written, so counting only
         ``live_bytes`` let real memory (and OS RSS) climb far past the budget
         while the engine believed its live tier was small. Folding the backlog
         in here closes that gap and turns a slow disk into real backpressure.
+        Pooled buffers are also resident even though immediately reclaimable;
+        admission trims them before enforcing its hard ceiling.
         """
-        if self._persister is None:
-            return self.live_bytes
-        return self.live_bytes + self._persister.pending_bytes
+        backlog = 0 if self._persister is None else self._persister.pending_bytes
+        return self.live_bytes + backlog + pooled_bytes()
 
     def persisted(self, node_id: NodeId) -> bool:
         """Existence check against the disk tier — an in-memory set lookup."""
@@ -279,6 +286,7 @@ class NodeTable:
         if value is not _MISSING:
             self._sizeof.pop(node_id, None)
             self._release_object(value)
+            release_states(self._buffer_leases.pop(node_id, ()))
 
     def flush(self, timeout_s: float = 600.0) -> None:
         """Block until the background writer has drained (called once, at end of run).

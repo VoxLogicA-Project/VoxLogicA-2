@@ -28,6 +28,7 @@ from typing import Any, Callable, TYPE_CHECKING
 import numpy as np
 
 from voxlogica.arrays import PolyArray
+from voxlogica.buffer_pool import acquire_numpy
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.engine.numba_fusion import resolve_out_dtype, shape_of
 from voxlogica.lazy.ir import NodeId
@@ -188,7 +189,7 @@ class Executor:
         outputs = []
         for exit_id, member_idx in zip(binding.exit_ids_topo, binding.shape.out_positions):
             out_dtype = resolve_out_dtype(binding.shape, member_idx, arrays, scalars, self.registry)
-            outputs.append(np.empty(n, dtype=out_dtype))
+            outputs.append(acquire_numpy((n,), out_dtype))
 
         compiled_fn(*arrays, *scalars, *outputs)
 
