@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import gc
 import threading
+import weakref
 
 import numpy as np
 import pytest
@@ -13,6 +15,7 @@ from voxlogica.buffer_pool import (
     acquire_numpy,
     buffer_states,
     pool_stats,
+    recycle_unleased_states,
     release_states,
     reset_pool_for_tests,
     retain_states,
@@ -88,6 +91,18 @@ def test_pool_key_separates_shape_and_dtype() -> None:
 
     assert acquire_numpy((8, 8), np.float32) is not first
     assert acquire_numpy((4, 16), np.uint8) is not first
+
+
+def test_unleased_scratch_is_recycled_without_creating_a_reference_cycle() -> None:
+    first = acquire_numpy((16, 16), np.uint8)
+    first_ref = weakref.ref(first)
+    assert recycle_unleased_states(buffer_states(first)) == 1
+    second = acquire_numpy((16, 16), np.uint8)
+    assert second is first
+
+    del first, second
+    gc.collect()
+    assert first_ref() is None
 
 
 def test_async_persistence_holds_lease_until_transfer_finishes() -> None:

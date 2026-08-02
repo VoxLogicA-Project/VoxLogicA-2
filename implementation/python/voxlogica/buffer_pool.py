@@ -12,6 +12,7 @@ from collections import defaultdict
 import os
 import threading
 from typing import Any, Iterable
+import weakref
 
 
 _STATE_ATTR = "_voxlogica_buffer_pool_state"
@@ -51,15 +52,19 @@ def _per_key_limit() -> int:
 class BufferState:
     """One reusable allocation plus the number of outstanding engine leases."""
 
-    __slots__ = ("kind", "key", "buffer", "nbytes", "leases", "pooled")
+    __slots__ = ("kind", "key", "buffer_ref", "pooled_buffer", "nbytes", "leases", "pooled")
 
     def __init__(self, kind: str, key: tuple[Any, ...], buffer: Any, nbytes: int):
         self.kind = kind
         self.key = key
-        self.buffer = buffer
+        self.buffer_ref = weakref.ref(buffer)
+        self.pooled_buffer = None
         self.nbytes = int(nbytes)
         self.leases = 0
         self.pooled = False
+
+    def current_buffer(self) -> Any | None:
+        return self.pooled_buffer if self.pooled_buffer is not None else self.buffer_ref()
 
     def retain(self) -> None:
         with _LOCK:
@@ -90,7 +95,7 @@ def _pooled_ndarray_cls():
     return _POOLED_NDARRAY_CLS
 
 
-def _take_locked(key: tuple[Any, ...]) -> BufferState | None:
+def _take_locked(key: tuple[Any, ...]) -> tuple[BufferState, Any] | None:
     global _POOLED_BYTES
     bucket = _POOLS.get(key)
     if not bucket:
@@ -98,11 +103,15 @@ def _take_locked(key: tuple[Any, ...]) -> BufferState | None:
     state = bucket.pop()
     if not bucket:
         _POOLS.pop(key, None)
+    buffer = state.current_buffer()
+    if buffer is None:
+        raise RuntimeError("pooled buffer disappeared")
     state.pooled = False
+    state.pooled_buffer = None
     _POOLED_BYTES -= state.nbytes
     _STATS["reuses"] += 1
     _STATS[f"{state.kind}_reuses"] += 1
-    return state
+    return state, buffer
 
 
 def _return_locked(state: BufferState) -> None:
@@ -112,11 +121,18 @@ def _return_locked(state: BufferState) -> None:
     if limit <= 0 or state.nbytes > limit or len(bucket) >= _per_key_limit() \
             or _POOLED_BYTES + state.nbytes > limit:
         _STATS["drops"] += 1
-        state.buffer = None
+        state.pooled_buffer = None
         if not bucket:
             _POOLS.pop(state.key, None)
         return
     state.pooled = True
+    state.pooled_buffer = state.buffer_ref()
+    if state.pooled_buffer is None:
+        state.pooled = False
+        _STATS["drops"] += 1
+        if not bucket:
+            _POOLS.pop(state.key, None)
+        return
     bucket.append(state)
     _POOLED_BYTES += state.nbytes
     _PEAK_POOLED_BYTES = max(_PEAK_POOLED_BYTES, _POOLED_BYTES)
@@ -129,27 +145,41 @@ def acquire_numpy(shape: tuple[int, ...], dtype: Any) -> Any:
 
     normalized_shape = tuple(int(v) for v in shape)
     normalized_dtype = np.dtype(dtype)
+    if _limit_bytes() <= 0:
+        with _LOCK:
+            _STATS["allocations"] += 1
+            _STATS["numpy_allocations"] += 1
+        return np.empty(normalized_shape, dtype=normalized_dtype)
     key = ("numpy", normalized_shape, normalized_dtype.str, "C")
     with _LOCK:
-        state = _take_locked(key)
-        if state is None:
+        pooled = _take_locked(key)
+        if pooled is None:
             array = np.empty(normalized_shape, dtype=normalized_dtype).view(_pooled_ndarray_cls())
             state = BufferState("numpy", key, array, array.nbytes)
             setattr(array, _STATE_ATTR, state)
             _STATS["allocations"] += 1
             _STATS["numpy_allocations"] += 1
         else:
-            array = state.buffer
+            _state, array = pooled
     return array
 
 
 def acquire_sitk(reference: Any, pixel_id: int) -> Any:
     """Exclusive scalar SimpleITK output; contents are unspecified."""
     size = tuple(int(v) for v in reference.GetSize())
+    if _limit_bytes() <= 0:
+        import SimpleITK as sitk
+
+        with _LOCK:
+            _STATS["allocations"] += 1
+            _STATS["sitk_allocations"] += 1
+        image = sitk.Image(size, pixel_id)
+        image.CopyInformation(reference)
+        return image
     key = ("sitk", size, int(pixel_id), 1)
     with _LOCK:
-        state = _take_locked(key)
-        if state is None:
+        pooled = _take_locked(key)
+        if pooled is None:
             import SimpleITK as sitk
 
             image = sitk.Image(size, pixel_id)
@@ -159,7 +189,7 @@ def acquire_sitk(reference: Any, pixel_id: int) -> Any:
             _STATS["allocations"] += 1
             _STATS["sitk_allocations"] += 1
         else:
-            image = state.buffer
+            _state, image = pooled
     image.CopyInformation(reference)
     return image
 
@@ -241,7 +271,7 @@ def trim_pool(target_bytes: int = 0) -> int:
             while bucket and _POOLED_BYTES > target:
                 state = bucket.pop()
                 state.pooled = False
-                state.buffer = None
+                state.pooled_buffer = None
                 _POOLED_BYTES -= state.nbytes
                 dropped += 1
             if not bucket:
@@ -264,6 +294,17 @@ def pool_stats() -> dict[str, int]:
 def pooled_bytes() -> int:
     with _LOCK:
         return _POOLED_BYTES
+
+
+def recycle_unleased_states(states: Iterable[BufferState]) -> int:
+    """Return scratch allocations that never entered the live tier."""
+    recycled = 0
+    with _LOCK:
+        for state in states:
+            if state.leases == 0 and not state.pooled and state.current_buffer() is not None:
+                _return_locked(state)
+                recycled += int(state.pooled)
+    return recycled
 
 
 def reset_pool_for_tests() -> None:

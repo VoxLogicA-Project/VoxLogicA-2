@@ -28,7 +28,7 @@ from typing import Any, Callable, TYPE_CHECKING
 import numpy as np
 
 from voxlogica.arrays import PolyArray
-from voxlogica.buffer_pool import acquire_numpy
+from voxlogica.buffer_pool import acquire_numpy, buffer_states, recycle_unleased_states
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.engine.numba_fusion import resolve_out_dtype, shape_of
 from voxlogica.lazy.ir import NodeId
@@ -118,6 +118,19 @@ class Executor:
                 results[member_id] = wrapped
             else:
                 scratch[member_id] = raw  # interior: stays raw, never wrapped
+        exit_state_ids = {
+            id(state)
+            for result in results.values()
+            for state in buffer_states(result)
+        }
+        scratch_states = {
+            id(state): state
+            for member_id, value in scratch.items()
+            if member_id not in cone.exits
+            for state in buffer_states(value)
+            if id(state) not in exit_state_ids
+        }
+        recycle_unleased_states(scratch_states.values())
         return results
 
     async def run_cone_numba(self, table: NodeTable, cone: "Cone", compiled_fn: Callable,
