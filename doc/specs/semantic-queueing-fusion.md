@@ -382,10 +382,19 @@ that expect images, and wraps `sitk.Image` returns into
 are wrapped at completion time; unwrapping keys off isinstance. Keep the
 adapter in one place (executor), not scattered.
 
-**Buffer pool** (second-order; implement last): per `(site, shape, dtype)`
-free-list with a byte cap. `table.evict`/last-release returns poolable
-(fusion-produced) buffers; Stage B writes through `out=` into pooled buffers.
-Metrics: `pool_hits`, `pool_bytes`. Skip pooling sitk-owned buffers.
+**Buffer pool:** a bounded free-list keyed by `(backend/device, shape,
+dtype/pixel-id, layout/components)`.  It covers both NumPy/Numba outputs and
+fresh SimpleITK outputs allocated by VoxLogicA; foreign inputs and shared
+in-place mutation are never eligible.  A buffer returns only after its last
+live-tier lease and any asynchronous-persistence lease end, so cache mode is
+safe once transfer/serialization completes.  Fused Stage-A scratch that never
+enters the live tier is returned explicitly.  Checked-out allocations retain
+only a weak self-reference through their state object, preventing the tracking
+metadata from extending their lifetime.  The pool has total-byte and per-key
+caps (`VOXLOGICA_BUFFER_POOL_MB`, `VOXLOGICA_BUFFER_POOL_PER_KEY`), is included
+in engine memory accounting, and is trimmed under admission pressure.  A zero
+byte cap is a true fast-path disable.  Metrics expose allocations, reuses,
+returns, drops, current bytes, and peak bytes.
 
 ## 6. Testing (gates, per phase)
 

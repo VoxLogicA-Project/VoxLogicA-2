@@ -715,8 +715,32 @@ three runs, mean RSS moved 2155 -> 2112 MB and accounted live memory
 claimed as a stable speedup; the decisive memory result is removal of the
 provable full-buffer copies above.
 
-For this benchmark, no further host-memory copy or residency change has a
-measurable aggregate target: direct-output removal from the still-smaller
+The remaining allocator-reuse opportunity was then implemented as a bounded
+cross-backend pool (commits `353e0cb`, `625ec47`).  Fresh VoxLogicA-owned
+SimpleITK outputs and NumPy/Numba outputs share one lease protocol but never
+one free-list key: keys include backend, shape, dtype/pixel id, and layout.
+Live DAG values and asynchronous cache writes each hold a lease; cache mode is
+therefore compatible because a buffer becomes reusable only after both the
+consumer lifetime and transfer/serialization finish.  Stage-A fusion scratch
+that never enters the live tier is returned explicitly.  A weak checked-out
+state reference avoids the tracking cycle found by the first stress run, and
+the pool is byte-capped, included in admission accounting, pressure-trimmable,
+and fully disabled by a zero-byte cap.
+
+On the controlled 40-case A/B (three-case warm-up, three timed no-cache runs),
+pool-off took 5.45/5.48/5.57 s (mean 5.50 s) and the default 512 MiB pool took
+5.33/5.42/5.53 s (mean 5.43 s): a 1.3% directional difference, too small to
+claim as a stable speedup.  The structural result is clear: mean fresh
+allocations fell from 1440 to 120 per run (91.7%), with 1320 mean reuses, while
+the exact ordered result vector and `mean_dice=0.823801585942116` were
+unchanged.  This is a retention trade-off, not free memory reduction: mean
+peak RSS was 1854 MB off versus 2217 MB on, and the pool retained 409--477 MB
+at run end.  The cap can be lowered or set to zero; memory pressure trims it
+automatically.  A separate cold-cache three-case run completed correctly with
+66 reuses, directly exercising the persistence-lease path.
+
+For this benchmark, no further host-memory copy, lifetime, or allocator-reuse
+change is visible in plain sight: direct-output removal from the still-smaller
 `maxvol`/`percentiles` mappings was already a null result and reverted.  The
 general engine still documents a terminal materialisation spike for sequences
 whose *elements themselves are large images*; eliminating it requires a new
@@ -742,6 +766,7 @@ frontier is therefore GPU residency.
 | *(chat)* | "18x" is reachable with calibration + P/E scheduling | **NO** -- see sec 16; ceiling is ~10-12x on measured evidence, and only traffic reduction (bit-packing) can move it |
 | *(chat)* | Convert easy ITK filters to numpy for a ~15-25% win | **WRONG, REVERTED** -- see sec 19. The per-op microbenchmark was real; the aggregate effect was a 20% REGRESSION because the adapter-boundary cost is paid far more often than the isolated benchmark could show |
 | *(chat)* | Write NumPy results directly into fresh native SimpleITK output buffers | **CONFIRMED, KEPT** -- 12.8% lower aggregate wall time (6.27 -> 5.47 s), byte-identical results; guarded implementation covers the eligible pointwise/label kernels and rejects or falls back for unsupported pixels. See the addendum above. |
+| *(chat)* | Reuse released buffers across SimpleITK, NumPy/Numba, and cache mode | **CONFIRMED, KEPT** -- exact lease tracking reduced fresh allocations 1440 -> 120 per run (91.7%) with identical outputs. Wall time moved only 1.3%, while the default pool retained 409--477 MB; this is allocator-churn reduction with a bounded, pressure-trimmable memory reserve, not a claimed aggregate speedup. |
 | *(chat)* | Widen the fusion boundary one op at a time (`eq_sv`, following mask's pattern) | **NULL RESULT** -- see sec 21. `mean_cone_size` went DOWN (4.26 -> 3.65-3.68), wall-clock flat. Two independent attempts (mask, eq_sv) both failed to move cones toward Stage B's 12-member threshold -- this line of attack is now considered exhausted, not just unlucky twice |
 
 ## 21. `eq_sv` registered elementwise (kernel unchanged): a second null result

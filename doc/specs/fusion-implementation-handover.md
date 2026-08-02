@@ -290,17 +290,13 @@ Commit: `engine: Phase 3 — execution sites + GPU cone backend`.
 
 ---
 
-## Phase 4 — buffer pool + docs + bench write-up
+## Phase 4 — buffer pool + docs + bench write-up — implemented
 
-Spec §5 (pool), §7. Per-`(site, shape, dtype)` free-list with a byte cap;
-Stage B writes through `out=` into pooled buffers; last-release returns
-fusion-produced buffers to the pool (never sitk-owned ones). Metric
-`pool_hits`, `pool_bytes`; a leak/stress test. Then write the "Semantic
-queueing" section into `doc/dev/dynamic-scheduler/frontier-scheduler.md` with
-the measured before/after per phase (honesty rules of the existing sections),
-and the paper notes (the "semantic queueing" term, affinity as placement).
-
-Commit: `engine: Phase 4 — buffer pool + fusion docs`.
+The final implementation is broader than the original sketch: the bounded
+pool reuses both NumPy/Numba outputs and fresh VoxLogicA-owned SimpleITK
+outputs.  Exact lease tracking spans live DAG values, nested aliases, and
+asynchronous persistence; Stage-A scratch is recycled directly.  Foreign or
+shared inputs remain ineligible.  See spec §5 and the measured paper addendum.
 
 ---
 
