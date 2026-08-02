@@ -678,6 +678,53 @@ left for this 40-case benchmark: the next meaningful performance experiment
 is device-resident GPU execution of the neighbourhood/global region, with
 transfers kept outside the parameter sweep.
 
+### Memory closure before GPU work (fmt-5000, 2026-08-02)
+
+The writable SimpleITK route above is operationally zero-copy at the NumPy
+write boundary: the NumPy alias writes the freshly allocated image's native
+pixel container and no result conversion follows.  It is nevertheless called
+*guarded* because SimpleITK exposes that NumPy view as read-only and does not
+support writable aliases as a public contract.  The implementation's pinning,
+pixel whitelist, fresh-output rule, write-through probe, kill switch, and
+required mode contain that compatibility risk; they do not add a copy.
+
+A final static and measured host-memory pass removed four independent sources
+of redundant residency (commits `3c5fc4c`, `5834c2b`):
+
+- a NumPy-origin `PolyArray` no longer retains its old independent NumPy buffer
+  after crossing to a legacy SimpleITK consumer; the SimpleITK buffer becomes
+  canonical and any later NumPy request is again a zero-copy read-only alias;
+- cache serialization feeds a contiguous buffer view directly to gzip instead
+  of first materialising `array.tobytes()`.  A 256 MiB probe reduced peak RSS
+  from 301348 to 38872 KiB and compression time from 0.185 to 0.102 s, removing
+  one whole-volume temporary per active persistence writer;
+- live-tier accounting now counts one shared object once when the dynamic-loop
+  id forwards the exact object already held by its spliced sequence id, instead
+  of applying artificial double pressure;
+- constant/coordinate image construction and the generic array equality helper
+  no longer allocate redundant full volumes (`np.indices` formerly allocated
+  one volume per dimension; scalar equality formerly built and copied an entire
+  threshold image).
+
+The retained 40-case recipe remained bit-identical.  Three runs took
+5.40/5.46/5.41 s (mean 5.42 s); peak RSS was 2092/2191/2054 MB (mean 2112 MB)
+and engine-accounted peak live memory was 1175.0/1353.8/1217.6 MB (mean
+1248.8 MB).  Against the immediately preceding retained implementation's
+three runs, mean RSS moved 2155 -> 2112 MB and accounted live memory
+1280.1 -> 1248.8 MB.  These small aggregate differences are directional, not
+claimed as a stable speedup; the decisive memory result is removal of the
+provable full-buffer copies above.
+
+For this benchmark, no further host-memory copy or residency change has a
+measurable aggregate target: direct-output removal from the still-smaller
+`maxvol`/`percentiles` mappings was already a null result and reverted.  The
+general engine still documents a terminal materialisation spike for sequences
+whose *elements themselves are large images*; eliminating it requires a new
+streaming `sequence`/`fold` contract, and it is not exercised by this recipe's
+scalar reductions.  That is a separate capacity feature, not a hidden copy in
+the measured pipeline.  For the studied workload, the remaining performance
+frontier is therefore GPU residency.
+
 ## 20. Status of every conjecture in this document, for a reader who only reads this table
 
 | # | Claim | Status |
@@ -875,6 +922,13 @@ section:
   are neighbourhood/global algorithms. The next meaningful frontier is a
   GPU-resident region spanning those kernels and the parameter sweep, not more
   one-by-one NumPy substitutions.
+- **The host-memory pass is also complete for this workload.** Independent
+  NumPy/SimpleITK representations are released at real boundaries, persistence
+  no longer creates a full `tobytes()` temporary, forwarded values are not
+  double-accounted, and obvious construction temporaries were removed. The
+  remaining documented image-sequence terminal spike belongs to a different
+  workload shape and needs a streaming language/runtime contract, not another
+  buffer adapter.
 - The single most consequential finding in the whole document is Part V's:
   **the historical engine rewrite this document's optimizations sit on top
   of was worth 9.02x, dwarfing every percentage-level result found since.**
