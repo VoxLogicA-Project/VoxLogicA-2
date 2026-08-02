@@ -87,6 +87,21 @@ def test_nbytes_counts_two_buffers_once_sitk_is_built_from_numpy() -> None:
 
 
 @pytest.mark.unit
+def test_sitk_boundary_can_drop_independent_numpy_buffer() -> None:
+    arr = np.arange(4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+    poly = PolyArray.from_numpy(arr)
+
+    image = poly.sitk(retain_numpy=False)
+
+    assert poly.resident_views() == ("sitk",)
+    assert poly.nbytes == arr.nbytes
+    rebuilt = poly.np()
+    assert poly.is_readonly_np
+    assert np.array_equal(rebuilt, arr)
+    assert np.shares_memory(rebuilt, sitk.GetArrayViewFromImage(image))
+
+
+@pytest.mark.unit
 def test_dlpack_round_trips_through_torch() -> None:
     torch = pytest.importorskip("torch")
     arr = np.arange(24, dtype=np.float32).reshape(2, 3, 4)

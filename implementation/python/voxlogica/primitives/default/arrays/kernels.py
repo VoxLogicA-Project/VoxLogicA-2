@@ -299,16 +299,9 @@ def threshold_equal(**kwargs):
         
         # Use SimpleITK Equal function if input is SimpleITK image
         if hasattr(image, 'GetSize'):
-            # Shape from a zero-copy view, not GetArrayFromImage -- the old
-            # form materialised a full copy of the volume purely to read
-            # .shape, then discarded it. (The sitk.Image allocated here was
-            # also dead: it was overwritten on the next line.)
-            threshold_array = np.full(sitk.GetArrayViewFromImage(image).shape, threshold)
-            threshold_image = sitk.GetImageFromArray(threshold_array)
-            threshold_image.CopyInformation(image)
-            
-            # Use SimpleITK Equal
-            result = sitk.Equal(image, threshold_image, false_value, true_value)
+            # Scalar overload: avoids allocating a full threshold volume and
+            # the second full copy formerly made by GetImageFromArray.
+            result = sitk.Equal(image, threshold, false_value, true_value)
             return result
         else:
             # Work with numpy arrays

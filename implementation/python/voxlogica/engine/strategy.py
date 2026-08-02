@@ -166,9 +166,9 @@ class EngineExecutionStrategy:
         Sequence artifacts are expanded to a concrete list as before.
         """
         if isinstance(value, PolyArray):
-            return value.sitk()
+            return value.sitk(retain_numpy=False)
         if isinstance(value, SequenceValue):
-            return [item.sitk() if isinstance(item, PolyArray) else item
+            return [item.sitk(retain_numpy=False) if isinstance(item, PolyArray) else item
                     for item in value.iter_values()]
         return value
 

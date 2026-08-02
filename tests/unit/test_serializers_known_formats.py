@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import voxlogica.pod_codec as pod_codec
 from voxlogica.pod_codec import decode_runtime_value, encode_for_storage
 from voxlogica.value_model import OverlayValue
 
@@ -24,6 +25,25 @@ def test_ndarray_roundtrip_binary_codec() -> None:
     assert decoded.dtype == arr.dtype
     assert decoded.shape == arr.shape
     assert np.array_equal(decoded, arr)
+
+
+@pytest.mark.unit
+def test_contiguous_array_serialization_avoids_tobytes_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    np = pytest.importorskip("numpy")
+    arr = np.arange(24, dtype=np.int16).reshape(2, 3, 4)
+    observed: list[object] = []
+    real_compress = pod_codec._compress
+
+    def observe(raw):
+        observed.append(raw)
+        return real_compress(raw)
+
+    monkeypatch.setattr(pod_codec, "_compress", observe)
+    encode_for_storage(arr)
+
+    assert len(observed) == 1
+    assert isinstance(observed[0], memoryview)
+    assert observed[0].nbytes == arr.nbytes
 
 
 @pytest.mark.unit

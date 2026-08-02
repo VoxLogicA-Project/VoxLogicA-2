@@ -18,7 +18,7 @@ _GZIP_LEVEL = 1
 _GZIP_MAGIC = b"\x1f\x8b"
 
 
-def _compress(raw: bytes) -> bytes:
+def _compress(raw: Any) -> bytes:
     return gzip.compress(raw, compresslevel=_GZIP_LEVEL)
 
 
@@ -90,6 +90,17 @@ def _json_native_or_raise(value: Any, *, context: str) -> Any:
     return value
 
 
+def _array_byte_view(array: Any) -> memoryview:
+    """Contiguous byte view without ``ndarray.tobytes()``'s full-size copy."""
+    view = memoryview(array)
+    if not view.c_contiguous:
+        np = _import_numpy()
+        if np is None:
+            raise RuntimeError("NumPy is required to serialize non-contiguous arrays")
+        view = memoryview(np.ascontiguousarray(array))
+    return view.cast("B")
+
+
 def _ndarray_payload(array: Any) -> tuple[dict[str, Any], bytes]:
     return {
         "encoding": "ndarray-binary-v1",
@@ -97,7 +108,7 @@ def _ndarray_payload(array: Any) -> tuple[dict[str, Any], bytes]:
         "shape": [int(v) for v in array.shape],
         "order": "C",
         "byte_order": "little",
-    }, _compress(array.tobytes(order="C"))
+    }, _compress(_array_byte_view(array))
 
 
 def _encode_embedded_record(value: Any, *, page_size: int) -> dict[str, Any]:
@@ -154,7 +165,7 @@ def encode_for_storage(value: Any, *, page_size: int = 128) -> EncodedRecord:
             "byte_order": "little",
             "metadata": adapted.storage_metadata(),
         }
-        payload_bin = _compress(array.tobytes(order="C"))
+        payload_bin = _compress(_array_byte_view(array))
         return EncodedRecord(VOX_FORMAT_VERSION, "image", descriptor, payload_json, payload_bin)
 
     if isinstance(adapted, VoxBytesValue):

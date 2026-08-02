@@ -7,6 +7,7 @@ import pytest
 import SimpleITK as sitk
 
 from voxlogica.arrays import WritableViewUnavailable, allocate_writable_like
+from voxlogica.primitives.arrays import kernels as array_kernels
 from voxlogica.primitives.vox1 import kernels
 
 
@@ -97,6 +98,33 @@ def test_native_through_and_border_match_fallback(monkeypatch: pytest.MonkeyPatc
 
     _assert_same(kernels.through(intersection, components), expected_through)
     _assert_same(kernels.border(components), expected_border)
+
+
+def test_native_constant_and_coordinate_images_match_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reference = sitk.GetImageFromArray(np.zeros((3, 4, 5), dtype=np.uint8))
+    reference.SetSpacing((0.7, 1.3, 2.1))
+    reference.SetOrigin((2.0, -1.0, 4.0))
+
+    monkeypatch.setenv("VOXLOGICA_WRITABLE_SITK_OUTPUT", "off")
+    expected_constant = kernels._filled_image_like(reference, sitk.sitkFloat32, 3.5)
+    expected_coords = [kernels.x(reference), kernels.y(reference), kernels.z(reference)]
+    monkeypatch.setenv("VOXLOGICA_WRITABLE_SITK_OUTPUT", "required")
+
+    _assert_same(kernels._filled_image_like(reference, sitk.sitkFloat32, 3.5), expected_constant)
+    for actual, expected in zip(
+        [kernels.x(reference), kernels.y(reference), kernels.z(reference)],
+        expected_coords,
+    ):
+        _assert_same(actual, expected)
+
+
+def test_array_threshold_equal_uses_scalar_semantics() -> None:
+    image = _image(np.array([[1.0, 2.0, 1.0, np.nan]], dtype=np.float32))
+    actual = array_kernels.threshold_equal(**{"0": image, "1": 1.0, "2": 7, "3": 3})
+    expected = sitk.Equal(image, 1.0, 3, 7)
+    _assert_same(actual, expected)
 
 
 def test_native_output_kernels_match_simpleitk_on_nan_and_boundaries() -> None:

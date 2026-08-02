@@ -9,8 +9,9 @@ This is also the sole PolyArray adapter boundary (see ``voxlogica.arrays``):
 kernels are untouched and still speak plain ``sitk.Image``. Inputs that arrived
 as a ``PolyArray`` (produced by a prior kernel call, or reloaded from disk —
 see ``NodeTable.load``) are unwrapped to their ``.sitk()`` view before a kernel
-sees them; a kernel result that is a ``sitk.Image`` is wrapped into a
-``PolyArray`` before it re-enters the table. Every other value (scalars,
+sees them; an independently-owned numpy buffer is released once that copied
+SimpleITK representation becomes canonical. A kernel result that is a
+``sitk.Image`` is wrapped into a ``PolyArray`` before it re-enters the table. Every other value (scalars,
 sequences, closures) passes through unchanged. Keeping the adapter in this one
 place, rather than in every kernel, is what lets fused/numba execution
 (``engine/fusion.py``) later swap in a different array library without any
@@ -49,7 +50,7 @@ def _simpleitk():
 
 def _unwrap(value: Any) -> Any:
     """PolyArray -> its sitk view; everything else passes through untouched."""
-    return value.sitk() if isinstance(value, PolyArray) else value
+    return value.sitk(retain_numpy=False) if isinstance(value, PolyArray) else value
 
 
 def _wrap(value: Any) -> Any:

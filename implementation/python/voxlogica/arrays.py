@@ -4,9 +4,9 @@ Kernels today speak SimpleITK exclusively; fused kernels (``engine/fusion.py``)
 speak numpy/numba, and a future GPU site speaks device arrays. Without a
 shared value type, every kernel boundary would force a conversion and every
 consumer would need to know which library produced its input. ``PolyArray``
-is that shared type: it holds exactly one canonical buffer plus geometry, and
-builds every other view lazily, on first request, cached thereafter — so a
-value crossing the sitk/numpy boundary N times pays the conversion once.
+is that shared type: it holds a canonical buffer plus geometry and builds
+other views lazily. Views remain cached unless a representation transition
+explicitly releases the old independent buffer.
 
 HONEST CONSTRAINTS (do not paper over these):
 - sitk -> numpy is zero-copy but read-only (``GetArrayViewFromImage``): a
@@ -16,7 +16,9 @@ HONEST CONSTRAINTS (do not paper over these):
 - numpy -> sitk always copies (SimpleITK owns its buffers; it cannot wrap a
   foreign one). This is unavoidable, only avoidable to *cross less often* —
   a chain of fused kernels should stay in numpy end-to-end and only pay this
-  once, when a legacy sitk kernel finally consumes the result.
+  once, when a legacy sitk kernel finally consumes the result. At that real
+  boundary the engine drops the old independent numpy cache; a later numpy
+  request becomes a zero-copy alias of the new SimpleITK canonical buffer.
 - ``nbytes`` sums every resident view's footprint (host + device), because
   the engine's memory accounting (``NodeTable``/admission) must see the true
   resident cost, not just one view of it. A numpy view and the sitk view
@@ -361,15 +363,28 @@ class PolyArray:
             self.shape = tuple(arr.shape)
             return arr
 
-    def sitk(self):
-        """SimpleITK image view. Built (copied from the numpy view) on first
-        request, then cached."""
+    def sitk(self, *, retain_numpy: bool = True):
+        """SimpleITK image view, copied from numpy on first request.
+
+        ``retain_numpy=False`` makes the new SimpleITK buffer canonical by
+        dropping an independently-owned numpy cache after the copy.  Future
+        ``np()`` calls remain valid: they rebuild a read-only zero-copy alias
+        of the SimpleITK buffer.  Engine adapters use this mode at a real
+        numpy->SimpleITK boundary so a value does not remain double-resident
+        merely in case a later consumer asks for numpy again.
+        """
         cached = self._views.get("sitk")
         if cached is not None:
+            if not retain_numpy:
+                with self._view_lock:
+                    if "np" in self._views and not self._readonly_np:
+                        self._views.pop("np", None)
             return cached
         with self._view_lock:
             cached = self._views.get("sitk")
             if cached is not None:
+                if not retain_numpy and "np" in self._views and not self._readonly_np:
+                    self._views.pop("np", None)
                 return cached
             sitk = _simpleitk()
             arr = self.np()
@@ -378,6 +393,8 @@ class PolyArray:
             image.SetOrigin(self.geometry.origin)
             image.SetDirection(self.geometry.direction)
             self._views["sitk"] = image
+            if not retain_numpy and not self._readonly_np:
+                self._views.pop("np", None)
             return image
 
     def __dlpack__(self, stream=None):

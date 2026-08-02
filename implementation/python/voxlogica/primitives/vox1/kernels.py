@@ -114,6 +114,12 @@ def _new_image_like(reference: sitk.Image, pixel_id: int) -> sitk.Image:
 
 
 def _filled_image_like(reference: sitk.Image, pixel_id: int, value: float | int) -> sitk.Image:
+    output_pair = _try_native_output(reference, pixel_id)
+    if output_pair is not None:
+        output, values = output_pair
+        values.fill(value)
+        return output
+
     template = _new_image_like(reference, pixel_id)
     shape = sitk.GetArrayViewFromImage(template).shape
     if pixel_id == sitk.sitkUInt8:
@@ -1341,12 +1347,22 @@ def _coord_image(img: sitk.Image, coord: int) -> sitk.Image:
     size = list(img.GetSize())
     ndim = len(size)
     shape = tuple(reversed(size))
-    result = np.zeros(shape, dtype=np.float32)
+    output_pair = _try_native_output(img, sitk.sitkFloat32)
+    if output_pair is None:
+        image = None
+        result = np.empty(shape, dtype=np.float32)
+    else:
+        image, result = output_pair
     if coord < ndim:
         axis = ndim - 1 - coord
-        result = np.indices(shape, dtype=np.float32)[axis]
-    image = sitk.GetImageFromArray(result, isVector=False)
-    image.CopyInformation(img)
+        broadcast_shape = [1] * ndim
+        broadcast_shape[axis] = shape[axis]
+        result[...] = np.arange(shape[axis], dtype=np.float32).reshape(broadcast_shape)
+    else:
+        result.fill(0)
+    if image is None:
+        image = sitk.GetImageFromArray(result, isVector=False)
+        image.CopyInformation(img)
     return image
 
 
