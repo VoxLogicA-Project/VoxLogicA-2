@@ -870,8 +870,25 @@ cases, then a fresh 40-case timed run) for B/C/D; A uses its own protocol
 |---|---|---|---|---|
 | A | VL1 (real historical binary) | 8.16s | 0.204s | (different thresholds, not compared) |
 | B | `main` (pre-engine VL2) | 56.08s | 1.402s | 0.823801585942116 |
-| C | `incoming` (this engine) | 6.22s | 0.156s | 0.823801585942116 |
+| C | `incoming` (this engine, current) | **5.43s** | **0.136s** | 0.823801585942116 |
 | D | plain Python, no orchestration | 19.23s | 0.481s | 0.823834606712500 |
+
+A/B/D are the original 2026-07-31 measurements; C was refreshed on
+2026-08-02 after the native-output and host-memory passes, using the same
+three-case warm-up and 40-case no-cache protocol.  The current C value is the
+mean of 5.33/5.42/5.53 s.  To separate the effects honestly:
+
+| C configuration | 40-case runs | mean | per-case | vs original C |
+|---|---|---|---|---|
+| original A/B/C/D publication | 6.22 s | 6.22 s | 0.156 s | baseline |
+| current, buffer pool disabled | 5.45/5.48/5.57 s | 5.50 s | 0.138 s | 11.6% lower wall time |
+| current, default buffer pool | 5.33/5.42/5.53 s | **5.43 s** | **0.136 s** | **12.7% lower wall time (1.15x)** |
+
+Thus the completed passes make arm C materially faster than its published
+A/B/C/D value.  Buffer reuse itself accounts for only 1.3% of the current
+comparison and remains below a stable speedup claim; most of the 6.22 -> 5.43
+s improvement comes from computing eligible kernels directly into native
+SimpleITK outputs and eliminating redundant host copies.
 
 **Correctness, checked before any of the timings are trusted**: B and C are
 bit-identical across all 40 cases, not just spot-checked (same `mean_dice` to
@@ -886,12 +903,12 @@ into D at all, not derived from the compat.imgql formulas by hand alone.
 
 ## 24. What this table says, plainly
 
-**`incoming` is the fastest of the four**, and by a wide margin against
-everything except VL1 (which it already beats, Part III sec 14: 1.08x).
-Against plain sequential Python -- the honest zero-orchestration floor --
-`incoming` is **3.09x faster**. That is the real, measured answer to "is the
+**`incoming` is the fastest of the four**, now 1.50x faster than the historical
+VL1 timing (with VL1's threshold difference still preventing a correctness
+comparison). Against plain sequential Python -- the honest zero-orchestration
+floor -- `incoming` is **3.54x faster**. That is the real, measured answer to "is the
 scheduling/fusion/calibration machinery worth its own existence": yes, on
-this recipe, by a factor of three over doing nothing clever at all.
+this recipe, by more than a factor of three over doing nothing clever at all.
 
 **`main` is slower than plain Python -- 2.9x slower.** This is the most
 important single number in this table, and it reframes everything else in
@@ -921,8 +938,8 @@ section:
 - The engine is **not at the state of the art** in any general sense --
   that claim was never supported by evidence and was explicitly retracted
   mid-investigation. It IS, on the one external comparison actually run,
-  competitive with its own predecessor lineage: 1.08x over VL1, 9.02x over
-  its own prior engine (`main`), 3.09x over a from-scratch naive
+  competitive with its own predecessor lineage: 1.50x over VL1, 10.33x over
+  its own prior engine (`main`), 3.54x over a from-scratch naive
   implementation (sec 24).
 - **Blanket NumPy conversion and fusion widening failed, but native-output
   kernels succeeded.** Returning bare arrays was 20% slower and two fusion-

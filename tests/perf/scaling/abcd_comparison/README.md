@@ -66,8 +66,15 @@ in-process warmup concept).
 |---|---|---|---|
 | A: VL1 | 8.16s | 0.204s | (different thresholds -- not compared, see vl1_comparison/README.md) |
 | B: `main` | 56.08s | 1.402s | 0.823801585942116 |
-| C: `incoming` | 6.22s | 0.156s | 0.823801585942116 |
+| C: `incoming` (current) | **5.43s** | **0.136s** | 0.823801585942116 |
 | D: plain Python | 19.23s | 0.481s | 0.823834606712500 |
+
+A/B/D are the original 2026-07-31 measurements. C was refreshed on
+2026-08-02 after the native-output and host-memory passes: 5.33/5.42/5.53 s,
+mean 5.43 s, using the same warm-up/no-cache protocol. The previous published
+C value was 6.22 s, so current `incoming` is 12.7% lower wall time (1.15x).
+With the buffer pool disabled the same current code averaged 5.50 s; pooling's
+1.3% difference is too small to claim separately as a stable speedup.
 
 **Correctness cross-checks, not just timings:**
 - B and C are **bit-identical** across all 40 cases (same `mean_dice` to 15
