@@ -195,10 +195,15 @@ def main() -> None:
     t0 = time.perf_counter()
     for i in range(1, args.cases + 1):
         dice_values.append(run_case(*case_paths(i), border_fn, percentiles_fn, through_fn))
+        if i % 10 == 0 or i == args.cases:
+            elapsed = time.perf_counter() - t0
+            print(f"progress cases={i}/{args.cases} elapsed={elapsed:.1f}s",
+                  file=sys.stderr, flush=True)
     wall = time.perf_counter() - t0
 
     for i, d in enumerate(dice_values, start=1):
         print(f"dice_c{i}={d:.10f}")
+    print(f"mean_dice={float(np.mean(dice_values)):.15f}")
     print(f"wall={wall:.2f}s  per_case={wall/args.cases:.3f}s  cases={args.cases}")
 
 
