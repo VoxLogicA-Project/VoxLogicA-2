@@ -266,6 +266,24 @@ def test_reclaim_is_a_noop_under_budget() -> None:
 
 
 @pytest.mark.unit
+def test_evict_candidate_queue_is_lossless_past_former_cap() -> None:
+    """A wide symbolic sweep may retain more than 200k pending values.
+
+    Dropping the oldest candidate bounds a tiny deque by making its much larger
+    image value permanently unreclaimable, defeating the hard memory ceiling.
+    """
+    table = NodeTable(backend=None)
+    engine = _engine_stub(table, max_live_bytes=1)
+
+    former_cap = 200_000
+    for index in range(former_cap + 1):
+        engine._track_evict_candidate(f"n{index}")
+
+    assert len(engine._evict_candidates) == former_cap + 1
+    assert engine._evict_candidates[0] == "n0"
+
+
+@pytest.mark.unit
 def test_reclaim_skips_not_yet_persisted_candidates(tmp_path) -> None:
     """A value queued for writing but not yet durably confirmed must not be
     evicted (that would force a recompute, not a reload) — it is simply

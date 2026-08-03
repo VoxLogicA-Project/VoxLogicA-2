@@ -64,7 +64,6 @@ _SEQUENCE_OPERATORS = {"default.sequence", "sequence", "default.map", "map",
 _PROGRESS_BATCH = 64  # completions folded into one progress-bar refresh
 
 _EVICT_SWEEP = 256      # candidates examined per _reclaim_memory call (bounds the work)
-_EVICT_QUEUE_CAP = 200_000  # backstop on the candidate queue itself (bounds idle-run memory)
 
 # Compact one-line bar: a small FIXED-width bar ({bar:12}) so it never balloons
 # to fill the terminal (which, with the goal count sitting at 0 for a long time,
@@ -202,6 +201,12 @@ class ComputationEngine:
         # early — its eventual consumer reloads it via `_rematerialize` (same
         # path an ordinary evicted dependency already uses). See
         # `_reclaim_memory`.
+        # This queue must be lossless while values remain resident. A former
+        # 200k-entry cap discarded the oldest candidates permanently; wide
+        # sweeps then retained those image values forever and could exceed the
+        # hard memory ceiling. The deque stores references to node ids already
+        # owned by the table, so retaining every reclaimable value is much
+        # cheaper than losing even one image-valued candidate.
         self._evict_candidates: deque[NodeId] = deque()
         self._evicted_early = 0    # values evicted proactively (metrics)
         # In-flight read guard: `_reclaim_memory` evicts a value that still has
@@ -537,6 +542,15 @@ class ComputationEngine:
             else:
                 self._evict_candidates.append(nid)  # not yet durable; retry later
 
+    def _track_evict_candidate(self, nid: NodeId) -> None:
+        """Remember a resident value until reclaim or natural release handles it.
+
+        This index is deliberately lossless: dropping an id here can retain the
+        corresponding image value indefinitely, which costs far more memory
+        than the deque reference and bypasses the engine's hard ceiling.
+        """
+        self._evict_candidates.append(nid)
+
     def _pin_dispatch(self, deps) -> None:
         """Protect ``deps`` from proactive eviction for the span of one dispatch.
 
@@ -624,9 +638,7 @@ class ComputationEngine:
         if (nid not in self._goals and self.graph.consumers.get(nid, 0) > 0
                 and (will_be_durable
                      or (self.table._persister is not None and self.table.persisted(nid)))):
-            if len(self._evict_candidates) >= _EVICT_QUEUE_CAP:
-                self._evict_candidates.popleft()  # backstop: bound idle-run memory too
-            self._evict_candidates.append(nid)
+            self._track_evict_candidate(nid)
         frontier = len(self.graph.incomplete)
         if frontier > self._peak_frontier:
             self._peak_frontier = frontier
