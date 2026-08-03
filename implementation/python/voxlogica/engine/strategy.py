@@ -72,6 +72,16 @@ class EngineExecutionStrategy:
 
         target = plan.goals if goals is None else [g for g in plan.goals if g.id in set(goals)]
         failures: dict[NodeId, str] = {}
+        diagnostics = []
+
+        def record_failure(exc: BaseException, *, fallback_node_id: NodeId | None = None) -> None:
+            """Turn every terminal engine/query failure into a CLI diagnostic."""
+            node_id = getattr(exc, "node_id", None) or fallback_node_id
+            locations = plan.provenance.get(node_id, ()) if node_id else ()
+            report = build_report(exc, locations=locations, source_text=plan.source_text)
+            diagnostic = replace(report.diagnostic, details_id=store_report(report))
+            diagnostics.append(diagnostic)
+            failures[node_id or "<engine>"] = diagnostic.message
 
         async def evaluate() -> tuple[dict[NodeId, Any], BaseException | None]:
             queries = [(g, engine.submit(g.id, g.operation, g.name, Priority.NORMAL)) for g in target]
@@ -82,10 +92,27 @@ class EngineExecutionStrategy:
                 run_error = exc
             values: dict[NodeId, Any] = {}
             for goal, query in queries:
+                # ``ready.wait_idle`` counts admitted work.  A malformed or
+                # prematurely-pruned graph can therefore drain while a goal is
+                # still unresolved; never await that query forever or exit
+                # without explaining the failed run.
+                if not query._done.is_set():
+                    if run_error is not None:
+                        # The engine failure below is the root cause; the
+                        # unresolved query is only its consequence.
+                        continue
+                    record_failure(
+                        RuntimeError(
+                            "engine finished with an unresolved goal; this is "
+                            "a scheduling failure, not a successful empty result"
+                        ),
+                        fallback_node_id=goal.id,
+                    )
+                    continue
                 try:
                     values[goal.id] = await query.result()
                 except Exception as exc:  # noqa: BLE001
-                    failures[goal.id] = repr(exc)
+                    record_failure(exc, fallback_node_id=goal.id)
             return values, run_error
 
         if profile is None:
@@ -140,14 +167,8 @@ class EngineExecutionStrategy:
                 if goal.id in values:
                     self._side_effect(goal.operation, goal.name, values[goal.id])
 
-        diagnostics = []
         if run_error is not None:
-            node_id = getattr(run_error, "node_id", None)
-            locations = plan.provenance.get(node_id, ()) if node_id else ()
-            report = build_report(run_error, locations=locations, source_text=plan.source_text)
-            diagnostic = replace(report.diagnostic, details_id=store_report(report))
-            diagnostics.append(diagnostic)
-            failures[node_id or "<engine>"] = diagnostic.message
+            record_failure(run_error)
 
         return ExecutionResult(
             success=not failures,

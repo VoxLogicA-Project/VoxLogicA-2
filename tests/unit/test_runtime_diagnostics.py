@@ -40,6 +40,20 @@ def test_error_details_opt_in_prints_traceback(tmp_path, monkeypatch, capsys) ->
     assert "Traceback" in capsys.readouterr().err
 
 
+def test_failed_goal_reports_its_root_cause_not_a_stalled_progress_bar(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("VOXLOGICA_DIAGNOSTIC_DIR", str(tmp_path / "diagnostics"))
+    program = tmp_path / "missing-directory.imgql"
+    program.write_text(
+        'print "paths" dir("/does/not/exist", "*.nii.gz", true, true)\n',
+        encoding="utf-8",
+    )
+
+    assert main(["run", "--no-cache", str(program)]) == 1
+    stderr = capsys.readouterr().err
+    assert "dir root not found: /does/not/exist" in stderr
+    assert "unresolved goal" not in stderr
+
+
 def test_common_operation_failures_receive_stable_codes() -> None:
     assert build_report(ValueError("avg failed: mask selects no voxels")).diagnostic.code == "E_EMPTY_SELECTION"
     assert build_report(ValueError("images must have the same number of voxels")).diagnostic.code == "E_IMAGE_MISMATCH"
