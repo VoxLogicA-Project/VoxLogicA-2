@@ -958,6 +958,28 @@ def n4(image: object, mask_image: object) -> sitk.Image:
     return img / sitk.Exp(log_bias)
 
 
+def contralateral_asymmetry(image: object, sigma_mm: float) -> sitk.Image:
+    """Positive left-right intensity asymmetry after optional Gaussian smoothing.
+
+    The input is assumed to be in a common left-right atlas orientation.  The
+    image is reflected across its x-index axis and subtracted from itself; only
+    positive residuals remain.  This gives a deterministic, image-derived field
+    on which a symbolic region selector can find unilateral abnormalities that
+    are dim in absolute intensity but distinct from contralateral tissue.
+    """
+    sigma = float(sigma_mm)
+    if sigma < 0:
+        raise ValueError("contralateral_asymmetry requires sigma_mm >= 0")
+    img = _as_float_image(_as_image(image, "image"))
+    _remember_base(img)
+    smoothed = img if sigma == 0 else sitk.SmoothingRecursiveGaussian(img, sigma)
+    values = _flatten_image(smoothed, np.float32)
+    shape = sitk.GetArrayViewFromImage(smoothed).shape
+    array = values.reshape(shape)
+    positive = np.maximum(array - np.flip(array, axis=-1), 0.0)
+    return _make_image_from_flat(positive.reshape(-1), shape, img, np.float32)
+
+
 def _surface_distances(a_obj: object, b_obj: object):
     """Symmetric surface distances (mm, image spacing) between two boolean masks.
 

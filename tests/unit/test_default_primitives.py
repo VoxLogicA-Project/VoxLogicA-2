@@ -19,6 +19,7 @@ from voxlogica.primitives.default import (
     load,
     map as map_primitive,
     multiplication,
+    parameter_grid,
     print_primitive,
     range as range_primitive,
     subsequence,
@@ -213,6 +214,24 @@ def test_argmax_primitive():
 
     with pytest.raises(ValueError):
         argmax_primitive.execute(**{"0": []})
+
+
+@pytest.mark.unit
+def test_parameter_grid_primitive():
+    assert parameter_grid.execute(**{"0": [[0.9, 0.95], [12, 18]]}) == [
+        [0.9, 12],
+        [0.9, 18],
+        [0.95, 12],
+        [0.95, 18],
+    ]
+    assert parameter_grid.execute(**{"0": []}) == [[]]
+    assert parameter_grid.execute(**{"0": [[1], []]}) == []
+
+    lazy_axis = SequenceValue(lambda: iter([2, 3]), total_size=2)
+    assert parameter_grid.execute(**{"0": [[1], lazy_axis]}) == [[1, 2], [1, 3]]
+
+    with pytest.raises(ValueError, match="axis 1"):
+        parameter_grid.execute(**{"0": [[1], 2]})
 
 
 @pytest.mark.unit
