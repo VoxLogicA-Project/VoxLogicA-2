@@ -263,7 +263,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete the persistent results database and payload files before running (prompts for confirmation)",
     )
     run_parser.add_argument("--store-db", help="Path to the persistent results SQLite database")
-    run_parser.add_argument("--cache-max-gb", type=float, default=100.0, metavar="GB",
+    run_parser.add_argument("--cache-max-gb", type=float, default=32.0, metavar="GB",
                             help="Persistent cache byte budget in GB; LRU-evict past it (0 = unbounded)")
     run_parser.add_argument("--debug", action="store_true")
     run_parser.add_argument("--error-details", action="store_true",

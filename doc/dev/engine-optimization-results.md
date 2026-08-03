@@ -205,7 +205,7 @@ outputs byte-identical. Regression coverage in
   for a separate investigation.
 - **The persistent store is a bounded, cost-aware cache.** It persists every
   value (gzip level 1; masks shrink ~70×) but caps total payload bytes at a
-  budget (default 100 GB, `--cache-max-gb`, 0 = unbounded) and evicts past it by
+  budget (default 32 GB, `--cache-max-gb`, 0 = unbounded) and evicts past it by
   **GreedyDual-Size**: eviction key = `clock + compute_ms / bytes`, on the async
   writer thread. So a *small value that was expensive to compute* (a precious,
   hard-won result) is kept over a *large cheap intermediate* — size is the
