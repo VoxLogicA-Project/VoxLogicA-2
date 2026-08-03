@@ -22,7 +22,12 @@ from voxlogica.reducer import StaticAnalysisError, reduce_program
 from voxlogica.storage import NoCacheStorageBackend, SQLiteResultsDatabase, delete_results_store, results_store_paths
 from voxlogica.repl import start_repl
 from voxlogica.diagnostics.classify import build_report
-from voxlogica.diagnostics.render import render_diagnostic, render_report_json
+from voxlogica.diagnostics.render import (
+    color_enabled,
+    render_diagnostic,
+    render_legacy_error_block,
+    render_report_json,
+)
 from voxlogica.diagnostics.store import load_report, store_report
 
 logger = logging.getLogger("voxlogica.main")
@@ -114,10 +119,10 @@ def run_command(args: argparse.Namespace) -> int:
         syntax, workplan = build_workplan(program_text, source_name=args.filename,
                                           for_expansion_cap=args.for_expansion_cap)
     except ProgramParseError as exc:
-        print(exc.format_block())
+        print(render_legacy_error_block(exc.format_block(), color=color_enabled(stream=sys.stderr)), file=sys.stderr)
         return 2
     except StaticAnalysisError as exc:
-        print(exc.format_block())
+        print(render_legacy_error_block(exc.format_block(), color=color_enabled(stream=sys.stderr)), file=sys.stderr)
         return 2
 
     _write_text(args.save_syntax, syntax.to_syntax())
@@ -191,7 +196,7 @@ def _render_diagnostic(diagnostic, args: argparse.Namespace) -> None:
     if getattr(args, "error_format", "human") == "json":
         print(json.dumps(diagnostic.to_dict(), indent=2, sort_keys=True), file=sys.stderr)
     else:
-        print(render_diagnostic(diagnostic), file=sys.stderr)
+        print(render_diagnostic(diagnostic, color=color_enabled(stream=sys.stderr)), file=sys.stderr)
 
 
 def _render_exception(exc: BaseException, args: argparse.Namespace) -> None:

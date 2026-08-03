@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 
 from voxlogica.diagnostics.classify import build_report
+from voxlogica.diagnostics.model import Diagnostic, SourceSpan
+from voxlogica.diagnostics.render import render_diagnostic, render_legacy_error_block
 from voxlogica.main import main
 
 
@@ -58,3 +60,32 @@ def test_common_operation_failures_receive_stable_codes() -> None:
     assert build_report(ValueError("avg failed: mask selects no voxels")).diagnostic.code == "E_EMPTY_SELECTION"
     assert build_report(ValueError("images must have the same number of voxels")).diagnostic.code == "E_IMAGE_MISMATCH"
     assert build_report(IndexError("list index out of range")).diagnostic.code == "E_INDEX_OUT_OF_RANGE"
+
+
+def test_terminal_diagnostic_uses_high_contrast_emphasis_when_enabled() -> None:
+    rendered = render_diagnostic(
+        Diagnostic(
+            code="E_IMAGE_NOT_FOUND",
+            title="Cannot open image",
+            message="Path does not exist.",
+            hint="Check the filename.",
+            details_id="VLX-ABC123",
+            span=SourceSpan("demo.imgql", 2, 5, 'ReadImage("missing.nii.gz")'),
+        ),
+        color=True,
+    )
+    assert "\x1b[1m" in rendered
+    assert "\x1b[31merror" in rendered
+    assert "\x1b[32mHint:" in rendered
+    assert "\x1b[0m" in rendered
+
+
+def test_legacy_parse_and_static_blocks_keep_the_same_terminal_emphasis() -> None:
+    rendered = render_legacy_error_block(
+        "demo.imgql:2:5: error: unexpected token )\n    ^\n"
+        "E_UNBOUND_IDENTIFIER at demo.imgql:3:1: Unknown symbol x",
+        color=True,
+    )
+    assert "\x1b[31merror:" in rendered
+    assert "\x1b[31m^" in rendered
+    assert "\x1b[31mE_UNBOUND_IDENTIFIER" in rendered
