@@ -79,7 +79,6 @@ class PrimitiveSpec:
     namespace: str = "default"
     description: str = ""
     is_legacy_adapter: bool = False
-    type_rule: TypeRule | None = None
 
     @property
     def qualified_name(self) -> str:
