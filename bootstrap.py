@@ -6,15 +6,24 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
+import urllib.request
+import zipfile
 
 
 REPO_ROOT = Path(__file__).resolve().parent
 VENV_DIR = REPO_ROOT / ".venv"
 UV_STATE_DIR = REPO_ROOT / ".cache" / "uv"
 UV_PYTHON_INSTALL_DIR = UV_STATE_DIR / "python"
+# uv downloaded by us lives inside the repo cache, so bootstrapping needs no
+# root and no writes outside the checkout (see _install_uv).
+UV_BIN_DIR = UV_STATE_DIR / "bin"
+UV_RELEASE_BASE = "https://github.com/astral-sh/uv/releases"
 RUNTIME_REQ = REPO_ROOT / "implementation" / "python" / "requirements.txt"
 TEST_REQ = REPO_ROOT / "implementation" / "python" / "requirements-test.txt"
 PYTHON_VERSION_FILE = REPO_ROOT / ".python-version"
@@ -132,6 +141,130 @@ def _save_stamp(payload: dict[str, str]) -> None:
     ENV_STAMP.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _vendored_uv() -> Path:
+    if os.name == "nt":
+        return UV_BIN_DIR / "uv.exe"
+    return UV_BIN_DIR / "uv"
+
+
+def _uv_download_targets() -> list[str]:
+    """Rust target triples to try, best first.
+
+    A list rather than a single value because the libc flavour of a Linux box
+    cannot be told apart reliably from Python (platform.libc_ver() reads the
+    *interpreter's* build, and a musl host may still ship a glibc python); the
+    gnu build is by far the common case, so try it and fall back to musl.
+    """
+    system = platform.system()
+    machine = platform.machine().lower()
+    arch = {
+        "x86_64": "x86_64",
+        "amd64": "x86_64",
+        "arm64": "aarch64",
+        "aarch64": "aarch64",
+    }.get(machine)
+    if arch is None:
+        return []
+    if system == "Linux":
+        return [f"uv-{arch}-unknown-linux-gnu", f"uv-{arch}-unknown-linux-musl"]
+    if system == "Darwin":
+        return [f"uv-{arch}-apple-darwin"]
+    if system == "Windows":
+        return [f"uv-{arch}-pc-windows-msvc"]
+    return []
+
+
+def _download(url: str) -> bytes:
+    with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310 - fixed https host
+        return response.read()
+
+
+def _extract_uv(archive: Path, dest_dir: Path) -> Path:
+    """Pull just the uv executable out of a release archive."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    wanted = "uv.exe" if os.name == "nt" else "uv"
+    with tempfile.TemporaryDirectory(dir=str(dest_dir)) as staging_str:
+        staging = Path(staging_str)
+        if archive.suffix == ".zip":
+            with zipfile.ZipFile(archive) as zf:
+                names = [n for n in zf.namelist() if Path(n).name == wanted]
+                if not names:
+                    raise SystemExit(f"No '{wanted}' inside {archive.name}")
+                zf.extract(names[0], staging)
+                extracted = staging / names[0]
+        else:
+            with tarfile.open(archive) as tf:
+                members = [m for m in tf.getmembers() if m.isfile() and Path(m.name).name == wanted]
+                if not members:
+                    raise SystemExit(f"No '{wanted}' inside {archive.name}")
+                member = members[0]
+                # Flatten: the tarball nests the binary under uv-<target>/.
+                member.name = wanted
+                tf.extract(member, staging)
+                extracted = staging / wanted
+        final = dest_dir / wanted
+        extracted.chmod(0o755)
+        os.replace(extracted, final)
+    return final
+
+
+def _install_uv() -> list[str] | None:
+    """Fetch a private uv into .cache/uv/bin. Returns None if unavailable.
+
+    Deliberately unprivileged: nothing is written outside the checkout, so a
+    user without root (or without a writable ~/.local/bin) can still run
+    ./voxlogica on a shared machine. Set VOXLOGICA_NO_UV_DOWNLOAD=1 to opt out
+    (air-gapped hosts), or VOXLOGICA_UV_VERSION=x.y.z to pin a release instead
+    of tracking the latest.
+    """
+    if os.environ.get("VOXLOGICA_NO_UV_DOWNLOAD", "").strip():
+        return None
+
+    targets = _uv_download_targets()
+    if not targets:
+        return None
+
+    version = os.environ.get("VOXLOGICA_UV_VERSION", "").strip()
+    base = f"{UV_RELEASE_BASE}/download/{version}" if version else f"{UV_RELEASE_BASE}/latest/download"
+    suffix = ".zip" if os.name == "nt" else ".tar.gz"
+
+    print("uv not found; downloading a private copy into .cache/uv/bin ...", file=sys.stderr)
+    last_error: Exception | None = None
+    for target in targets:
+        url = f"{base}/{target}{suffix}"
+        try:
+            payload = _download(url)
+            # Releases publish a .sha256 next to each asset; verifying it is
+            # cheap and keeps a truncated or MITM'd download from being exec'd.
+            expected = _download(f"{url}.sha256").decode("utf-8", "replace").split()[0].strip()
+            actual = hashlib.sha256(payload).hexdigest()
+            if expected and actual != expected:
+                raise SystemExit(
+                    f"Checksum mismatch for {url}: expected {expected}, got {actual}"
+                )
+        except SystemExit:
+            raise
+        except Exception as exc:  # try the next target triple
+            last_error = exc
+            continue
+
+        UV_BIN_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=str(UV_BIN_DIR)) as tmp:
+            archive = Path(tmp) / f"{target}{suffix}"
+            archive.write_bytes(payload)
+            uv_path = _extract_uv(archive, UV_BIN_DIR)
+        try:
+            subprocess.check_output([str(uv_path), "--version"], text=True, stderr=subprocess.STDOUT)
+        except Exception as exc:
+            last_error = exc
+            continue
+        print(f"Installed uv at {uv_path}", file=sys.stderr)
+        return [str(uv_path)]
+
+    print(f"Could not download uv automatically: {last_error}", file=sys.stderr)
+    return None
+
+
 def _detect_uv(explicit: str | None) -> list[str]:
     candidates: list[list[str]] = []
     if explicit:
@@ -144,6 +277,10 @@ def _detect_uv(explicit: str | None) -> list[str]:
     uv_bin = shutil.which("uv")
     if uv_bin:
         candidates.append([uv_bin])
+
+    vendored = _vendored_uv()
+    if vendored.exists():
+        candidates.append([str(vendored)])
 
     candidates.append([sys.executable, "-m", "uv"])
 
@@ -159,8 +296,14 @@ def _detect_uv(explicit: str | None) -> list[str]:
         except Exception:
             continue
 
+    installed = _install_uv()
+    if installed is not None:
+        return installed
+
     raise SystemExit(
-        "uv is required for deterministic bootstrapping. Install it once (https://docs.astral.sh/uv/) and retry."
+        "uv is required for deterministic bootstrapping and could not be installed "
+        "automatically. Install it once (https://docs.astral.sh/uv/) and retry, or point "
+        "VOXLOGICA_UV at an existing binary."
     )
 
 

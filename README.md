@@ -14,8 +14,10 @@ Current runtime architecture:
 Run from repo root:
 
 ```bash
-# Install uv once (https://docs.astral.sh/uv/)
-# Example (macOS/Linux): curl -LsSf https://astral.sh/uv/install.sh | sh
+# No prerequisites beyond python3 and git: if uv (https://docs.astral.sh/uv/) is not
+# on PATH, bootstrap downloads a checksum-verified copy into .cache/uv/bin. That needs
+# no root and writes nothing outside the checkout. Set VOXLOGICA_NO_UV_DOWNLOAD=1 to
+# require a preinstalled uv instead (offline hosts), or VOXLOGICA_UV=/path/to/uv.
 
 # Deterministic environment sync (creates/updates .venv using .python-version + pinned requirements, including pytest)
 python3 bootstrap.py

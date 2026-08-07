@@ -7,7 +7,7 @@ Pytest is the canonical test runner.
 From repo root:
 
 ```bash
-# install uv once (https://docs.astral.sh/uv/)
+# uv is fetched automatically into .cache/uv/bin if not already on PATH
 
 python3 bootstrap.py
 ```
