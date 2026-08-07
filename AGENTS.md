@@ -1,5 +1,31 @@
 # Agent Guidelines for VoxLogicA-2
 
+## Multi-Machine Work: Local First, Always
+
+**CRITICAL:** When work spans more than one machine (e.g. a laptop and a compute
+host), ALL editing happens on the LOCAL machine. Never edit files directly on the
+remote.
+
+The loop is always:
+
+1. Edit locally.
+2. Commit locally.
+3. Push.
+4. `git pull` on the remote, then run there.
+
+**Never** `ssh remote` and edit a file, patch it with a script, or `scp` a
+modified file onto it as a substitute for committing. A dropped connection, a
+reboot, or simply forgetting leaves that work stranded on a host nobody looks at
+— and it is invisible to `git status` locally, so it is lost silently rather than
+loudly. Two failures of this kind have already happened here: a `utils.imgql`
+that existed only on fmt-5000 and was lost when the host went down (its header
+still records the reconstruction), and a `run_iter.sh` edited on both sides that
+produced a rebase conflict the moment the two were reconciled.
+
+Corollary: if the remote already has commits the local does not, `git pull
+--rebase` BEFORE doing anything else. Diverging histories on a machine you only
+reach over ssh are far more expensive to untangle than to prevent.
+
 ## Long-Running Commands (>30 seconds)
 
 **CRITICAL:** Any command expected to run longer than 30 seconds MUST:
