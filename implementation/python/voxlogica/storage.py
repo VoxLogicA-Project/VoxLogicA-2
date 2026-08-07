@@ -39,6 +39,24 @@ STORE_SCHEMA_VERSION = 4
 # regenerable from lineage, so an evicted entry only ever costs a recompute.
 # 0 disables the bound (unbounded).
 DEFAULT_CACHE_MAX_BYTES = 100 * 1024 ** 3
+
+
+def _auto_cache_max_bytes(payload_dir) -> int:
+    """Size the cache budget from the disk it actually lives on.
+
+    A FIXED default cannot be right: this tier is the engine's spill space, so
+    a budget smaller than the run's live working set turns "spill to free RAM"
+    into "evict the copy RAM is waiting on" and the memory bound fails outright
+    (measured: a 369-case sweep filled a 32 GB cap, then climbed to 56 GB RSS
+    and had to be killed, on a host with 1.2 TB free). Half the free space keeps
+    the machine usable while giving the valve room to work; the floor matters on
+    a nearly-full disk, where a tiny budget is still better than none.
+    """
+    try:
+        free = shutil.disk_usage(payload_dir).free
+    except OSError:
+        return DEFAULT_CACHE_MAX_BYTES
+    return max(32 * 1024 ** 3, int(free * 0.5))
 # Maximum number of value-bearing entries kept in the in-memory cache tier.
 # Overridable via VOXLOGICA_MEMORY_CACHE_CAPACITY for memory-heavy runs.
 DEFAULT_MEMORY_CACHE_CAPACITY = 1024
@@ -185,8 +203,14 @@ class SQLiteResultsDatabase:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.payload_dir = self.db_path.with_suffix(self.db_path.suffix + ".files")
         self.payload_dir.mkdir(parents=True, exist_ok=True)
+        self._purge_partial_payloads()   # debris from a killed writer is never data
         self.runtime_version = runtime_version or "unknown"
-        self._max_bytes = DEFAULT_CACHE_MAX_BYTES if max_bytes is None else max_bytes
+        self._max_bytes = (_auto_cache_max_bytes(self.payload_dir)
+                           if max_bytes is None else max_bytes)
+        # Guard installed by the engine: "this node's RAM copy is waiting on its
+        # disk copy". Evicting such a payload strands the live value — see
+        # _enforce_budget.
+        self._spill_guard = None
         self._lock = threading.RLock()
         self._live_node_ids: set[str] = set()  # legacy push-style live set (see set_live_nodes)
         self._live_probe = None                # preferred: O(1) predicate from the engine
@@ -392,7 +416,7 @@ class SQLiteResultsDatabase:
             payload_bytes = 0
             if encoded.payload_bin is not None:
                 payload_file = f"{node_id}.bin"
-                (self.payload_dir / payload_file).write_bytes(encoded.payload_bin)
+                self._write_payload_atomically(payload_file, encoded.payload_bin)
                 payload_bytes = len(encoded.payload_bin)
             prepared.append((node_id, encoded, payload_file, payload_bytes,
                              dumps_json(dict(metadata or {})), compute_ms))
@@ -512,6 +536,61 @@ class SQLiteResultsDatabase:
     _EVICT_SCAN = ("SELECT node_id, payload_file, payload_bytes, gd_key FROM results "
                    "WHERE payload_bytes > 0 ORDER BY gd_key ASC LIMIT 128")
 
+    def _write_payload_atomically(self, payload_file: str, payload_bin: bytes) -> None:
+        """Write a payload so it is either wholly there or not there at all.
+
+        A plain write leaves a TRUNCATED file behind if the process dies partway
+        through — and this engine's processes do die: the OOM killer, a SIGSEGV,
+        an operator ^C. The next run then finds a complete-looking cache row
+        pointing at a partial payload and decodes garbage: observed as
+        "cannot reshape array of size 0" in one run, and native crashes seconds
+        into several others that reused a killed run's store. A cache must never
+        be able to poison the run that inherits it.
+
+        Temp file plus rename: `os.replace` is atomic within a filesystem, and
+        the temp name carries the pid so concurrent writers never collide.
+        """
+        target = self.payload_dir / payload_file
+        tmp = self.payload_dir / f"{payload_file}.{os.getpid()}.part"
+        try:
+            tmp.write_bytes(payload_bin)
+            os.replace(tmp, target)
+        except BaseException:
+            tmp.unlink(missing_ok=True)   # never leave debris to be mistaken for data
+            raise
+
+    def _purge_partial_payloads(self) -> int:
+        """Delete `.part` files stranded by a killed writer. Returns how many."""
+        removed = 0
+        try:
+            for stale in self.payload_dir.glob("*.part"):
+                stale.unlink(missing_ok=True)
+                removed += 1
+        except OSError:
+            pass
+        return removed
+
+    def set_spill_guard(self, guard) -> None:
+        """Install the engine's "RAM is waiting on this payload" predicate."""
+        self._spill_guard = guard
+
+    def _spilled_ram_copy(self, node_id: str) -> bool:
+        """True while dropping this payload would strand a live in-RAM value.
+
+        The engine spills a value to disk precisely so it can free the RAM copy;
+        between the write landing and that eviction, the disk copy is the only
+        thing making the RAM copy droppable. Evicting it here (the last-resort
+        "evict live values" path) silently revokes the engine's only way to
+        release memory, and the run climbs to OOM with an empty candidate queue.
+        """
+        guard = self._spill_guard
+        if guard is None:
+            return False
+        try:
+            return bool(guard(node_id))
+        except Exception:  # noqa: BLE001 — a guard error must not break eviction
+            return False
+
     def _evict_row(self, node_id: str, payload_file: str | None, nbytes: int, gd_key: float, tier: str) -> None:
         """Delete one payload row + its file and update byte/clock/stat counters."""
         if payload_file:
@@ -541,6 +620,7 @@ class SQLiteResultsDatabase:
             live = set(self._live_node_ids)  # snapshot to avoid lock contention
             while self._payload_bytes > low_water:
                 rows = self._connection.execute(self._EVICT_SCAN).fetchall()
+                rows = [r for r in rows if not self._spilled_ram_copy(r[0])]
                 dead = [r for r in rows if not self._is_live(r[0], live)]
                 for node_id, payload_file, nbytes, gd_key in dead:
                     if self._payload_bytes <= low_water:

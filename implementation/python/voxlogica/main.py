@@ -7,6 +7,8 @@ exports the syntax or graph, and optionally executes the plan.
 from __future__ import annotations
 
 import argparse
+import faulthandler
+import io
 from pathlib import Path
 import json
 import logging
@@ -140,7 +142,8 @@ def run_command(args: argparse.Namespace) -> int:
         if args.profile is not None and not args.engine:
             logger.warning("--profile has no effect with --no-engine (lazy strategy doesn't support it)")
         storage = NoCacheStorageBackend() if args.no_cache else SQLiteResultsDatabase(
-            db_path=args.store_db, max_bytes=int(args.cache_max_gb * 1024 ** 3))
+            db_path=args.store_db,
+            max_bytes=int(args.cache_max_gb * 1024 ** 3) if args.cache_max_gb else None)
         execution_result = ExecutionEngine(
             storage_backend=storage,
             no_cache=args.no_cache,
@@ -211,7 +214,7 @@ def _render_exception(exc: BaseException, args: argparse.Namespace) -> None:
 
 
 def calibrate_command(args: argparse.Namespace) -> int:
-    """Implement the ``calibrate`` subcommand: measure this host's actual
+    """DEPRECATED. Implement the ``calibrate`` subcommand: measure this host's actual
     optimal thread count instead of relying on engine/topology.py's
     heuristic, AND (at that worker count) the ITK internal thread count that
     works best alongside it -- no fixed formula for that second value survives
@@ -263,8 +266,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete the persistent results database and payload files before running (prompts for confirmation)",
     )
     run_parser.add_argument("--store-db", help="Path to the persistent results SQLite database")
-    run_parser.add_argument("--cache-max-gb", type=float, default=32.0, metavar="GB",
-                            help="Persistent cache byte budget in GB; LRU-evict past it (0 = unbounded)")
+    run_parser.add_argument("--cache-max-gb", type=float, default=0.0, metavar="GB",
+                            help="Persistent cache byte budget in GB; LRU-evict past it. "
+                                 "Default 0 = size it automatically from free disk (the cache is the "
+                                 "engine's spill space, so a fixed budget smaller than a run's working "
+                                 "set breaks the memory bound).")
     run_parser.add_argument("--debug", action="store_true")
     run_parser.add_argument("--error-details", action="store_true",
                             help="Show the technical exception chain and traceback after the concise error")
@@ -293,10 +299,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--for-expansion-cap", type=int, default=4096, metavar="N",
                             help="Max constant-loop static unroll length (0 disables)")
     run_parser.add_argument("--profile", nargs="?", const="", default=None, metavar="PATH",
-                            help="Profile the run with cProfile (engine strategy only). "
-                                 "Bare --profile prints top-30 cumulative+tottime to stderr; "
-                                 "--profile=PATH dumps raw .pstats to PATH (open with "
-                                 "pstats.Stats(PATH) or snakeviz).")
+                            help="DEPRECATED -- do not use for performance questions. cProfile has "
+                                 "one global call stack and no representation for this engine's "
+                                 "concurrent workers, so its numbers can be arbitrarily wrong "
+                                 "(measured: 1389s of cumulative time reported inside a 52s run). "
+                                 "Use /usr/bin/time -v's %%CPU and the engine's own saturation / "
+                                 "cpu-per-wall figures instead. Kept only for single-threaded "
+                                 "debugging of the reducer.")
     run_parser.set_defaults(handler=run_command)
 
     list_parser = subparsers.add_parser("list-primitives", help="List primitive kernels.")
@@ -313,7 +322,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     calibrate_parser = subparsers.add_parser(
         "calibrate",
-        help="Measure this machine's actual optimal thread count (engine strategy, hybrid P/E CPUs)")
+        help="DEPRECATED -- measures a thread-count optimum that is not worth acting on. "
+             "Measured on the reference host: its own winner (20 workers) beat the shipped "
+             "heuristic (16) by 0.1%%, i.e. noise, and it records no ITK thread count at all, "
+             "so the value it caches changes nothing. Leaving ITK unpinned at the shipped "
+             "defaults measured fastest. Kept for re-measurement on new hardware.")
     calibrate_parser.add_argument("--n-cases", type=int, default=16, metavar="N",
                                    help="Synthetic cases per candidate thread count (default: 16 -- "
                                         "needs to be large enough that each candidate's run takes "
@@ -330,8 +343,31 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # A native crash (SIGSEGV/SIGABRT inside ITK or a numpy view over a recycled
+    # buffer) otherwise leaves NOTHING to debug: the process dies with a bare
+    # signal and the log ends mid-progress-bar. faulthandler costs nothing while
+    # the process is healthy — it only installs signal handlers — and prints the
+    # C-level Python traceback of every thread at the moment of the fault, which
+    # is the difference between diagnosing such a crash and guessing at it.
+    try:
+        faulthandler.enable()
+    except (ValueError, AttributeError, io.UnsupportedOperation):
+        # stderr is captured or replaced (pytest, an embedding host) and has no
+        # real file descriptor to write a fault report to. Crash diagnostics are
+        # a nicety; refusing to start the CLI over them is not.
+        pass
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Deprecations are only useful if the person running the command sees them.
+    if getattr(args, "profile", None) is not None:
+        print("[voxlogica] WARNING: --profile is DEPRECATED. cProfile cannot represent this "
+              "engine's concurrent workers and its numbers can be arbitrarily wrong. Use "
+              "/usr/bin/time -v (%CPU) and the run's own saturation/cpu-per-wall figures.",
+              file=sys.stderr)
+    if getattr(args, "command", None) == "calibrate":
+        print("[voxlogica] WARNING: calibrate is DEPRECATED. On the reference host its winner beat "
+              "the shipped heuristic by 0.1% (noise) and it caches no ITK thread count, so it "
+              "changes nothing. The shipped defaults measured fastest.", file=sys.stderr)
     try:
         return int(args.handler(args))
     except (KeyboardInterrupt, SystemExit):

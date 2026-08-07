@@ -84,7 +84,38 @@ class EngineExecutionStrategy:
             failures[node_id or "<engine>"] = diagnostic.message
 
         async def evaluate() -> tuple[dict[NodeId, Any], BaseException | None]:
-            queries = [(g, engine.submit(g.id, g.operation, g.name, Priority.NORMAL)) for g in target]
+            # Goals are submitted in DECLARATION ORDER with strictly decreasing
+            # priority, so the scheduler prefers to FINISH an earlier goal over
+            # opening a later one. Equal priority (the old rule) gave it no such
+            # reason: on a 369-case sweep the workers spread across 369 goals at
+            # once, and a goal's per-case working set stays resident until that
+            # goal completes, so peak memory tracks the number of cases OPEN
+            # rather than the number in flight.
+            #
+            # HONESTY NOTE: the runaway memory that motivated this was later
+            # root-caused to four value LEAKS (fused-cone interiors, recompute
+            # scaffolding, discarded pinned candidates, non-atomic payloads), all
+            # fixed separately. This ordering was never isolated as a benefit on
+            # its own, and the benchmark that reproduces the manuscript's numbers
+            # is single-goal, so it does not exercise this path. It is kept
+            # because finishing before opening is the right default for a
+            # memory-bounded scheduler, not because it was measured to help.
+            #
+            # A shared subexpression still inherits
+            # the HIGHEST priority of the goals demanding it (see
+            # ComputationEngine._schedule_subgraph), so cross-case sharing is
+            # unaffected; and the ready queue always keeps every worker fed from
+            # later goals whenever an earlier one cannot fill the machine alone.
+            # The rank rides BELOW the enum level (level * 1000 + rank) so it
+            # orders goals within a priority class without ever promoting one
+            # past a genuinely higher class, and stays positive — the engine
+            # folds priorities with ``max(self._priority.get(nid, 0), priority)``,
+            # which would flatten negative ranks to a single value and undo the
+            # ordering entirely.
+            ranked = list(enumerate(target))
+            queries = [(g, engine.submit(g.id, g.operation, g.name,
+                                         int(Priority.NORMAL) * 1000 + (len(ranked) - index)))
+                       for index, g in ranked]
             run_error: BaseException | None = None
             try:
                 await engine.run()

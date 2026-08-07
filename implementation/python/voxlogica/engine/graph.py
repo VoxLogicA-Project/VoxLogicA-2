@@ -171,7 +171,20 @@ class DependencyGraph:
             self.pending.pop(member, None)
             self._dependents.pop(member, None)
             self._deps_memo.pop(member, None)
-            self.consumers.pop(member, None)
+            # Dropping the refcount entry is only safe for a member that never
+            # materialized. An interior CAN hold a value — it may have been
+            # rematerialized for an earlier dispatch, or computed before the
+            # fusion planner folded it into a cone — and popping its consumers
+            # entry without evicting leaks that value permanently: it is then
+            # resident with no consumer, so `release` will never fire for it and
+            # `ComputationEngine._finish`'s candidate rule (consumers > 0) never
+            # admits it for reclaim either. Measured on a one-case sweep, this
+            # left 30.7 GB resident with ZERO eviction candidates, dominated by
+            # exactly the operators fusion folds into cones (vox1.dt 8.6 GB,
+            # vox1.mask 8.6 GB). Evicting here is free when there is no value.
+            if self.consumers.pop(member, None) is not None or member in self.table.values:
+                if member not in self.protected:
+                    self.table.evict(member)
 
     # ── Value lifetime ────────────────────────────────────────────────────────
 

@@ -100,28 +100,57 @@ class NodeTable:
         self._object_refs: dict[int, int] = {}
         self._object_sizes: dict[int, int] = {}
         self._buffer_leases: dict[NodeId, tuple[Any, ...]] = {}
+        # Ids currently handed to the writer, by ANY path (`complete`'s
+        # worth-it write or `spill`'s pressure write). A second submit of the
+        # same id would put two writer threads on one payload concurrently and
+        # can leave a truncated record behind — observed as a zero-length
+        # reload ("cannot reshape array of size 0"). One ledger for both paths
+        # is what makes "is a write already in flight for this value?"
+        # answerable; `evict` drops the entry with the live copy.
+        self._write_queued: set[NodeId] = set()
+        # Resident bytes attributed to the operator that produced them, kept
+        # incrementally (two dict updates per value, no scan) so "what is
+        # holding memory right now" is answerable at any instant without an
+        # O(live tier) walk. Sampling that walk was the alternative; at hundreds
+        # of thousands of live values it would cost more than the answer is
+        # worth, and it would perturb the very run being measured.
+        self._resident_by_op: dict[str, int] = {}
+        # Tell the disk tier which payloads a live RAM copy is waiting on, so its
+        # budget enforcement never evicts the one copy that makes a resident
+        # value droppable (see SQLiteResultsDatabase._spilled_ram_copy).
+        if self._backend is not None and hasattr(self._backend, "set_spill_guard"):
+            self._backend.set_spill_guard(
+                lambda node_id: node_id in self.values and node_id in self._write_queued)
         self.live_bytes = 0
         self.peak_live_bytes = 0
 
-    def _retain_object(self, value: Any, size: int) -> None:
+    def _retain_object(self, value: Any, size: int) -> int:
+        """Retain one reference; return the bytes this call ADDED to the live tier."""
         object_id = id(value)
         refs = self._object_refs.get(object_id, 0)
+        added = 0
         if refs == 0:
             self._object_sizes[object_id] = size
             self.live_bytes += size
+            added = size
         elif size > self._object_sizes[object_id]:
-            self.live_bytes += size - self._object_sizes[object_id]
+            added = size - self._object_sizes[object_id]
+            self.live_bytes += added
             self._object_sizes[object_id] = size
         self._object_refs[object_id] = refs + 1
+        return added
 
-    def _release_object(self, value: Any) -> None:
+    def _release_object(self, value: Any) -> int:
+        """Drop one reference; return the bytes this call FREED from the live tier."""
         object_id = id(value)
         refs = self._object_refs.get(object_id, 0)
         if refs <= 1:
             self._object_refs.pop(object_id, None)
-            self.live_bytes -= self._object_sizes.pop(object_id, 0)
-        else:
-            self._object_refs[object_id] = refs - 1
+            freed = self._object_sizes.pop(object_id, 0)
+            self.live_bytes -= freed
+            return freed
+        self._object_refs[object_id] = refs - 1
+        return 0
 
     def set_value(self, node_id: NodeId, value: Any) -> int:
         """Place a value in the live tier; return its size (resident bytes)."""
@@ -129,16 +158,32 @@ class NodeTable:
         old_buffer_leases = self._buffer_leases.get(node_id, ())
         previous = self.values.get(node_id, _MISSING)
         if previous is not _MISSING:
-            self._release_object(previous)
+            self._account_op(node_id, -self._release_object(previous))
         size = approx_bytes(value)
         self._sizeof[node_id] = size
-        self._retain_object(value, size)
+        self._account_op(node_id, self._retain_object(value, size))
         if self.live_bytes > self.peak_live_bytes:
             self.peak_live_bytes = self.live_bytes
         self.values[node_id] = value
         self._buffer_leases[node_id] = new_buffer_leases
         release_states(old_buffer_leases)
         return size
+
+    def _account_op(self, node_id: NodeId, delta: int) -> None:
+        """Attribute a live-tier byte delta to the producing operator."""
+        if not delta:
+            return
+        node = self.nodes.get(node_id)
+        operator = getattr(node, "operator", "unknown")
+        total = self._resident_by_op.get(operator, 0) + delta
+        if total > 0:
+            self._resident_by_op[operator] = total
+        else:
+            self._resident_by_op.pop(operator, None)
+
+    def resident_by_operator(self, top: int = 6) -> list[tuple[str, int]]:
+        """The operators holding the live tier right now, largest first."""
+        return sorted(self._resident_by_op.items(), key=lambda kv: -kv[1])[:top]
 
     def intern(self, node: NodeSpec) -> NodeId:
         """Add a node by structural identity, returning its stable hash id."""
@@ -265,6 +310,9 @@ class NodeTable:
         self.completed.add(node_id)
         if self._persister is not None and (critical or (persist and not self._persister.over_budget)):
             node = self.nodes[node_id]
+            # Record the in-flight write BEFORE submitting: `spill` consults this
+            # to avoid putting a second writer thread on the same payload.
+            self._write_queued.add(node_id)
             self._persister.submit(node_id, value, {"source": "runtime", "operator": node.operator},
                                    compute_ms, size=size)
             return True
@@ -276,6 +324,55 @@ class NodeTable:
             item_id = hash_sequence_item(node_id, index)
             self._persister.submit(item_id, value, {"source": "runtime", "index": index})
 
+    def spill(self, node_id: NodeId) -> bool:
+        """Force a resident value onto the writer queue so it can leave RAM.
+
+        Ordinary persistence is *worth-it gated* (``complete``'s ``persist``
+        argument): a value cheaper to recompute than to serialize is skipped,
+        because writing it would tax dispatch for nothing. That gate answers
+        "is this worth CACHING for reuse". Under memory pressure the question
+        is a different one — "can this value leave RAM AT ALL" — and the
+        cost-based answer is not merely unhelpful there, it is inverted: a
+        sub-millisecond kernel over a 35 MB mask is exactly the value we most
+        want out of the live tier, and exactly the one the worth-it gate
+        refuses to make durable. With eviction requiring durability
+        (``ComputationEngine._reclaim_memory``), such a value was permanently
+        unreclaimable, so a sweep of cheap large-image kernels could pin tens
+        of GB with an empty candidate queue and walk the engine into the OOM
+        killer. Measured: a one-case brats021 sweep held 55 GB resident with
+        12 MB written and 0-2 eviction candidates.
+
+        Spilling therefore ignores the worth-it gate — but NOT the writer's
+        backlog budget. That distinction is load-bearing and was measured the
+        hard way: a first version bypassed both, the reclaim sweep submitted
+        every candidate it scanned, and the unwritten backlog went 0.5 -> 10.3
+        GB in ten seconds while the live copies it was supposed to free stayed
+        resident (a value can only be evicted once its write LANDS). Accounted
+        bytes then crossed the hard ceiling from the spill itself. A queued
+        write is not reclaimed memory; it is the same memory, twice. So when
+        the writer is already saturated this returns False: nothing can leave
+        RAM right now, and the caller must let the queue drain instead.
+
+        Idempotent — a value already durable or already queued is not
+        submitted twice.
+
+        Returns True if the value is durable or is now queued to become so,
+        i.e. iff eviction of the live copy is (or will shortly be) safe.
+        """
+        if self._persister is None or node_id not in self.values:
+            return False
+        if self.persisted(node_id) or node_id in self._write_queued:
+            return True   # already durable, or its write is already in flight
+        if self._persister.over_budget:
+            return False  # writer saturated: draining it is the only way forward
+        value = self.values[node_id]
+        node = self.nodes.get(node_id)
+        operator = getattr(node, "operator", "unknown")
+        self._write_queued.add(node_id)
+        self._persister.submit(node_id, value, {"source": "spill", "operator": operator},
+                               0.0, size=self._sizeof.get(node_id))
+        return True
+
     def evict(self, node_id: NodeId) -> None:
         """Demote a value out of the live tier.
 
@@ -284,8 +381,17 @@ class NodeTable:
         """
         value = self.values.pop(node_id, _MISSING)
         if value is not _MISSING:
+            # Forget the id only once its write has LANDED: from then on
+            # `persisted` alone answers "already written", so the ledger stays
+            # bounded by the live tier instead of growing once per node for the
+            # whole run. While a write is still in flight the entry must stay —
+            # `release` can evict a value at any time (last consumer), and a
+            # reload before that write lands would otherwise look like a fresh
+            # value and let `spill` queue the same payload a second time.
+            if self.persisted(node_id):
+                self._write_queued.discard(node_id)
             self._sizeof.pop(node_id, None)
-            self._release_object(value)
+            self._account_op(node_id, -self._release_object(value))
             release_states(self._buffer_leases.pop(node_id, ()))
 
     def flush(self, timeout_s: float = 600.0) -> None:

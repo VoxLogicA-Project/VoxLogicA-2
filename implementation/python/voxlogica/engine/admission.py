@@ -83,13 +83,14 @@ class LoopAdmission:
 
     def __init__(self, expander: Expander, graph: DependencyGraph, ready: ReadyQueue,
                  liveness: LivenessProbe, *, window: int, chunk: int, workers: int,
-                 hard_live_bytes: int,
+                 hard_live_bytes: int, soft_live_bytes: int = 0,
                  schedule: Callable[[NodeId, int], None],
                  available: Callable[[NodeId], bool],
                  materialize: Callable[[NodeId], Any],
                  idle: Callable[[], bool],
                  on_spliced: Callable[[NodeId, NodeId, int], None],
-                 fail_node: Callable[[NodeId, BaseException], None]):
+                 fail_node: Callable[[NodeId, BaseException], None],
+                 reclaim: Callable[[], None] | None = None):
         self.expander = expander
         self.graph = graph
         self.ready = ready
@@ -98,12 +99,24 @@ class LoopAdmission:
         self.chunk = max(1, chunk)
         self.workers = workers
         self.hard_live_bytes = hard_live_bytes
+        # The soft budget is where reclaim starts working; admission consults it
+        # only to notice that reclaim CANNOT work (writer saturated) — see _has_room.
+        self.soft_live_bytes = soft_live_bytes or hard_live_bytes
         self._schedule = schedule
         self._available = available
         self._materialize = materialize
         self._idle = idle
         self._on_spliced = on_spliced
         self._fail_node = fail_node
+        self._reclaim = reclaim or (lambda: None)
+        # One-shot token for the at-the-ceiling wedge-breaker (see _has_room);
+        # cleared by any completion, so the escape can never run away.
+        self._escape_spent = False
+        self.ceiling_escapes = 0  # metric: times admission crossed the ceiling
+        # Adaptive per-loop concurrency (see _live_window): starts at the
+        # configured window and settles where the working set actually fits.
+        self._window_now = self.window
+        self.min_window_seen = self.window  # metric: how far memory pushed it down
         self._jobs: dict[NodeId, _Job] = {}
         self._body_owner: dict[NodeId, _Job] = {}
         # Closure-capture holds released when the owning loop finishes expanding.
@@ -220,15 +233,73 @@ class LoopAdmission:
         can't reclaim memory already committed to open work in the first
         place, only reclaiming what is already resident can.
         """
-        if job.in_flight >= self.window:
+        if job.in_flight >= self._live_window():
             return False
         accounted = self.graph.table.accounted_bytes
         if accounted >= self.hard_live_bytes:
             trim_pool(0)
+            # Reclaim BEFORE considering the escape: the engine can now make a
+            # resident value durable on demand and drop it (NodeTable.spill),
+            # so "at the ceiling" is usually a solvable state, not a wedge.
+            self._reclaim()
             accounted = self.graph.table.accounted_bytes
         if accounted >= self.hard_live_bytes:
-            return self._idle()  # at the ceiling: admit only to break a true wedge
+            # Still at the ceiling after reclaiming. Admitting here cannot be
+            # routine: every admission adds resident bytes, and the "nothing
+            # running, nothing ready" condition that justifies it RECURS after
+            # each completion — so an unconditional escape is an unbounded one.
+            # Measured: a one-case brats021 sweep walked from this 37.6 GB
+            # ceiling to a 56.7 GB OOM kill, one wedge-break at a time. Grant
+            # at most ONE body per completion, and only when truly wedged; the
+            # token is cleared in on_complete, so progress is still guaranteed.
+            return self._wedge_escape()
+        if accounted > self.soft_live_bytes and self.graph.table.persist_over_budget:
+            # Over budget AND the spill valve is saturated (NodeTable.spill
+            # refuses while the writer is behind). Nothing the engine does can
+            # free memory until writes land, so opening another body only adds
+            # resident bytes it has no way to release. Waiting here is what
+            # turns "OOM" into "slower": production drops to writer speed.
+            return self._wedge_escape()
         return self.ready.qsize() < self.workers
+
+    def _live_window(self) -> int:
+        """How many bodies of ONE loop may be open right now, from live memory.
+
+        The configured ``window`` is an upper bound, not a set point. A fixed
+        window assumes every body has a footprint the machine can afford N of —
+        false for image sweeps, where one BraTS body's working set is GBs: at
+        window=16 the resident set of 16 open cases exceeded RAM, and the engine
+        (once it could no longer die) fell back to spilling every value to disk,
+        turning a 300 node/s run into a 15 node/s one. Nothing in the fixed-window
+        design could notice that opening fewer bodies would have been *faster*.
+
+        So the window halves while the run is over its soft budget and recovers
+        one slot at a time once memory is comfortable, bottoming out at one body
+        (a loop must always be able to make progress). Concurrency then settles
+        where the working set actually fits, with no knob to set: a cheap loop
+        keeps the full window, an image sweep converges to the few bodies RAM
+        can hold, and the same program adapts to a bigger or smaller machine.
+        """
+        accounted = self.graph.table.accounted_bytes
+        if accounted > self.soft_live_bytes:
+            self._window_now = max(1, self._window_now // 2)
+            self.min_window_seen = min(self.min_window_seen, self._window_now)
+        elif accounted * 2 < self.soft_live_bytes and self._window_now < self.window:
+            self._window_now += 1
+        return self._window_now
+
+    def _wedge_escape(self) -> bool:
+        """Admit one body past a memory stop, and only to break a true wedge.
+
+        One-shot: re-armed by the next completion (``on_complete``), so a run
+        that genuinely cannot proceed any other way still makes progress
+        without the escape becoming a continuous licence to grow.
+        """
+        if self._escape_spent or not self._idle():
+            return False
+        self._escape_spent = True
+        self.ceiling_escapes += 1
+        return True
 
     def _admit(self, job: _Job) -> None:
         """Move staged bodies into the schedule while the window allows."""
@@ -239,6 +310,10 @@ class LoopAdmission:
                 self._body_owner.setdefault(body, job)
                 job.in_flight += 1
             elif self._available(body):            # completed or on disk: no slot
+                # Nothing was scheduled, so no completion is coming to re-arm a
+                # spent wedge escape — give the token back, or an idle run that
+                # keeps drawing warm bodies here would never admit again.
+                self._escape_spent = False
                 continue
             else:
                 self._body_owner[body] = job
@@ -255,6 +330,10 @@ class LoopAdmission:
         job = self._body_owner.pop(nid, None)
         if job is not None:
             job.in_flight -= 1
+        # A completion is the proof of progress the ceiling escape waits for:
+        # re-arm it (see _has_room) so a genuinely wedged run keeps moving,
+        # one body per completion, instead of admitting a burst at the ceiling.
+        self._escape_spent = False
         self.wake_jobs()
 
     def wake_jobs(self) -> None:

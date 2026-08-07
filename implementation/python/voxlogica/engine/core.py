@@ -34,6 +34,7 @@ from typing import Any
 from tqdm import tqdm
 
 from voxlogica.engine.admission import LoopAdmission
+from voxlogica.engine.bandwidth import BandwidthMeter, measure_ceiling_bytes_per_s
 from voxlogica.engine.concurrency_probe import ConcurrencyProbe
 from voxlogica.engine.config import EngineConfig
 from voxlogica.engine.executor import Executor
@@ -154,12 +155,14 @@ class ComputationEngine:
             chunk=self.config.expansion_chunk or self.config.loop_window,
             workers=self.max_concurrency,
             hard_live_bytes=self.config.hard_live_bytes,
+            soft_live_bytes=self.config.max_live_bytes,
             schedule=self._schedule_subgraph,
             available=self._available,
             materialize=self._rematerialize,
             idle=self._idle,
             on_spliced=self._on_spliced,
             fail_node=self._fail_node,
+            reclaim=self._reclaim_memory,
         )
 
         # ── Queries / goals ──
@@ -208,7 +211,16 @@ class ComputationEngine:
         # owned by the table, so retaining every reclaimable value is much
         # cheaper than losing even one image-valued candidate.
         self._evict_candidates: deque[NodeId] = deque()
+        # Values whose write is in flight: the only ones a sweep can actually
+        # free, kept on their own queue so they are never starved behind the
+        # much larger not-yet-spilled backlog (see _reclaim_memory PASS 1).
+        self._spill_pending: deque[NodeId] = deque()
         self._evicted_early = 0    # values evicted proactively (metrics)
+        self._spilled_early = 0    # values force-written under pressure so they COULD be evicted
+        # Engine-visible traffic (kernel inputs read + output written). Two integer
+        # adds per completion; see engine/bandwidth.py for why this is the honest
+        # lower bound and how it turns "we are bandwidth-bound" into a measurement.
+        self._bandwidth = BandwidthMeter()
         # In-flight read guard: `_reclaim_memory` evicts a value that still has
         # an unmet consumer (that consumer just hasn't *run* yet) as long as
         # it's durably persisted — correct when the eventual read is still in
@@ -456,6 +468,9 @@ class ComputationEngine:
             "parked": self.ready.parked_count,
             "evicted_early": self._evicted_early,
             "evict_candidates": len(self._evict_candidates),
+            "spill_pending": len(self._spill_pending),
+            "resident_by_op": self.table.resident_by_operator(),
+            "bandwidth": self._bandwidth.sample(self.max_concurrency),
         }
 
     def _idle(self) -> bool:
@@ -525,22 +540,92 @@ class ComputationEngine:
         can wait a few milliseconds for the in-flight read to finish; a
         `KeyError` mid-kernel cannot be undone.
         """
-        if self.table._persister is None or not self._evict_candidates:
+        # NO early return when there is no disk tier. Spilling needs a writer,
+        # but dropping an OWNERLESS value does not: nothing will ever read it, so
+        # it is free memory even under --no-cache, where this was previously the
+        # engine's only reclaim path and it was disabled outright.
+        # PASS 1 — values already handed to the writer, waiting to become
+        # durable. These are the only ones that can be FREED right now, so they
+        # are checked first and on their own queue. Sharing one FIFO with the
+        # not-yet-spilled values starved this pass: every sweep re-appended the
+        # values it had just spilled, so a durable one sat tens of thousands of
+        # entries behind the 256-per-sweep scan window. Measured with the single
+        # queue: 110,495 spills against 1,972 evictions — the engine kept paying
+        # to write and almost never collected the memory it had bought.
+        scanned = 0
+        limit = min(len(self._spill_pending), _EVICT_SWEEP)
+        while (scanned < limit
+               and self.table.accounted_bytes > self.config.max_live_bytes):
+            nid = self._spill_pending.popleft()
+            scanned += 1
+            if nid not in self.table.values:
+                continue                          # already gone
+            if self.graph.consumers.get(nid, 0) <= 0:
+                self._drop_ownerless(nid)         # nothing will ever ask for it again
+                continue
+            if self._dispatch_pins.get(nid, 0) > 0:
+                self._spill_pending.append(nid)   # a dispatch is reading it RIGHT NOW: retry later
+                continue
+            if self.table.persisted(nid):
+                self.table.evict(nid)
+                self._evicted_early += 1
+            else:
+                self._spill_pending.append(nid)  # write still in flight; look again later
+        if not self._evict_candidates:
             return
+        # PASS 2 — everything else: evict what is already durable, and start a
+        # write for what is not so a later PASS 1 can free it.
         scanned = 0
         limit = min(len(self._evict_candidates), _EVICT_SWEEP)
         while (scanned < limit
                and self.table.accounted_bytes > self.config.max_live_bytes):
             nid = self._evict_candidates.popleft()
             scanned += 1
-            if (nid not in self.table.values or self.graph.consumers.get(nid, 0) <= 0
-                    or self._dispatch_pins.get(nid, 0) > 0):
-                continue  # already naturally released, or a dispatch is reading it right now
+            if nid not in self.table.values:
+                continue  # already gone
+            if self.graph.consumers.get(nid, 0) <= 0:
+                self._drop_ownerless(nid)  # ownerless and resident: pure reclaimable garbage
+                continue
+            if self._dispatch_pins.get(nid, 0) > 0:
+                # A dispatch is reading it right now. A PIN IS TRANSIENT, so this
+                # must be a deferral, not a verdict: `continue` here dropped the
+                # id from the queue for good, and with every worker pinning deps
+                # on every dispatch the candidate set drained steadily to empty
+                # while the values themselves stayed resident and unreclaimable.
+                # Measured: candidates at 0 with 36 GB live, dt/mask dominating.
+                self._evict_candidates.append(nid)
+                continue
             if self.table.persisted(nid):
                 self.table.evict(nid)
                 self._evicted_early += 1
             else:
-                self._evict_candidates.append(nid)  # not yet durable; retry later
+                # NOT spilled. The disk tier is a pure optimisation in this
+                # engine's design (manuscripts/parallel-engine: "a miss falls
+                # back to recompute"); memory is bounded by eager eviction,
+                # admission control and bounded loop unrolling. Forcing writes
+                # here to buy back RAM spends the one resource the workload is
+                # actually short of — measured memory bandwidth, STREAM ceiling
+                # 69.5 GB/s on this host, already the binding constraint — on
+                # gzip and I/O for values nothing has asked for yet. A pressure
+                # spill wrote 300 GB in ~40 minutes doing exactly that.
+                # Requeue and let admission throttle instead.
+                self._evict_candidates.append(nid)
+
+    def _drop_ownerless(self, nid: NodeId) -> None:
+        """Free a resident value that no consumer will ever ask for again.
+
+        Recompute scaffolding lands here: it is materialized to rebuild
+        something else, and once that is done nothing holds a reference to it.
+        Treating this case as "skip" (it was) made such a value invisible to
+        every memory mechanism at once — `release` cannot fire without a
+        consumer, and the candidate rule requires one. Under pressure it is free
+        memory: no write is needed, because nothing will read it, and if some
+        later query does want it, content addressing rebuilds or reloads it.
+        """
+        if self._dispatch_pins.get(nid, 0) > 0 or nid in self._goals:
+            return
+        self.table.evict(nid)
+        self._evicted_early += 1
 
     def _track_evict_candidate(self, nid: NodeId) -> None:
         """Remember a resident value until reclaim or natural release handles it.
@@ -631,14 +716,20 @@ class ComputationEngine:
                 self._enqueue(child)
         self._priority.pop(nid, None)
         self.admission.on_complete(nid)
-        # A reclaim candidate must have a durable copy coming (just submitted)
-        # or already on disk (e.g. a value forwarded after a warm load) —
-        # values the engine chose not to persist can never be evicted-and-
-        # reloaded and would only churn the sweep.
-        if (nid not in self._goals and self.graph.consumers.get(nid, 0) > 0
-                and (will_be_durable
-                     or (self.table._persister is not None and self.table.persisted(nid)))):
+        # EVERY resident value with unrun consumers is a reclaim candidate.
+        # This deliberately does NOT pre-filter on durability: a value the
+        # worth-it gate declined to persist is not un-reclaimable, it is
+        # merely not durable YET, and `_reclaim_memory` can make it durable on
+        # demand (NodeTable.spill). Pre-filtering here was the bug: a sweep of
+        # cheap large-image kernels persists almost nothing, so the candidate
+        # queue ran dry exactly under pressure and the engine had no valve
+        # left — 55 GB resident, 12 MB written, 0 candidates, OOM.
+        if nid not in self._goals and self.graph.consumers.get(nid, 0) > 0:
             self._track_evict_candidate(nid)
+        moved = self.table._sizeof.get(nid, 0)
+        for dep in self.graph.deps(nid):
+            moved += self.table._sizeof.get(dep, 0)
+        self._bandwidth.add(moved)
         frontier = len(self.graph.incomplete)
         if frontier > self._peak_frontier:
             self._peak_frontier = frontier
@@ -717,6 +808,7 @@ class ComputationEngine:
             return self.table.values[nid]
         loaded = self.table.load(nid)
         if loaded is not None:
+            self._retrack_resident(nid)
             return loaded
         node = self.table.nodes[nid]
         if node.kind == "constant":
@@ -724,12 +816,53 @@ class ComputationEngine:
         elif node.kind == "closure":
             value = None  # closures are trivial; only their captures carry data
         else:
+            # Rebuilding this value may drag in whole subtrees that NOTHING else
+            # still wants (their consumers ran long ago and released them). Such
+            # a child is resident purely as scaffolding for this one recompute:
+            # with a zero consumer count it can never be released by `release`,
+            # and `_retrack_resident` will not offer it for reclaim either, so
+            # leaving it behind strands it for the rest of the run. Measured on a
+            # one-case sweep: 37 GB resident with BOTH reclaim queues empty,
+            # dominated by exactly these recompute intermediates (vox1.dt 10 GB,
+            # vox1.mask 10 GB). Note the children each hold their own scaffolding
+            # transitively, so the deepest recompute frees itself first.
+            scaffolding = [child for child in self.graph.deps(nid)
+                           if child not in self.table.values
+                           and self.graph.consumers.get(child, 0) <= 0]
             for child in self.graph.deps(nid):
                 self._rematerialize(child)
             self._recomputes += 1  # an evicted value we could neither find nor reload
             value = self.executor._compute(self.table, nid)
+            for child in scaffolding:
+                # Make it RECLAIMABLE, do not throw it away. The defect was that
+                # scaffolding was unreachable by reclaim, not that it was
+                # resident: a sweep's sibling recomputes share subexpressions, so
+                # evicting eagerly here just rebuilds the same values moments
+                # later. Measured when this evicted instead of tracking: 19,066
+                # recomputes in 83,701 nodes (23%) against a 1.4% baseline — the
+                # leak was fixed by burning the CPU the leak had saved.
+                self._track_evict_candidate(child)
         self.table.set_value(nid, value)
+        self._retrack_resident(nid)
         return value
+
+    def _retrack_resident(self, nid: NodeId) -> None:
+        """Re-arm reclaim for a value just brought BACK into the live tier.
+
+        Eviction consumes a candidate: `_reclaim_memory` pops it and drops the
+        RAM copy. When a later consumer reloads that value, it is resident
+        again — but it was no longer registered anywhere, so reclaim could
+        never touch it a second time. Every evict/reload cycle therefore
+        retired one value from the valve's reach permanently, and the candidate
+        queue drained to empty exactly when pressure was highest: measured, the
+        one-case sweep finished with 44 GB resident and ZERO candidates, its
+        whole tail spent reloading values it could no longer release.
+
+        Duplicates in the queue are harmless (a popped id that is gone, or has
+        no consumers left, is skipped) — losing an id is not.
+        """
+        if nid not in self._goals and self.graph.consumers.get(nid, 0) > 0:
+            self._track_evict_candidate(nid)
 
     # ── Workers ─────────────────────────────────────────────────────────────────────────────
 
@@ -974,6 +1107,11 @@ class ComputationEngine:
             "expanded_loops": self.admission.expanded_loops,
             "expanded_bodies": self.admission.expanded_bodies,
             "evicted_early": self._evicted_early,
+            "spilled_early": self._spilled_early,
+            "ceiling_escapes": self.admission.ceiling_escapes,
+            "min_loop_window": self.admission.min_window_seen,
+            "bytes_moved_gb": round(self._bandwidth.bytes_moved / 1024 ** 3, 1),
+            "machine_copy_bandwidth_gbs": round(measure_ceiling_bytes_per_s(self.max_concurrency) / 1024 ** 3, 1),
             "cones_dispatched": self._cones_dispatched,
             "ops_fused": self._ops_fused,
             "mean_cone_size": round(

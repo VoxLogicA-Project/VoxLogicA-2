@@ -21,6 +21,48 @@ def _system_ram_bytes() -> int:
         return 16 * _GB
 
 
+def _available_ram_bytes() -> int:
+    """RAM actually available right now (Linux MemAvailable), else 0."""
+    try:
+        with open("/proc/meminfo") as meminfo:
+            for line in meminfo:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def _default_live_budget(ram: int) -> int:
+    """MEASURED AND REJECTED — kept as a record, deliberately not wired in.
+
+    The idea was that 0.4 x RAM is arbitrary and costs recomputes. It does not
+    pay: on a 61 GB host, raising the budget to 47 GB made the same one-case
+    BraTS sweep marginally SLOWER (318.4 s vs 313.8 s) with MORE recomputes
+    (5,080 vs 4,041) and 47 GB peak RSS instead of 25 GB. A bigger live tier
+    keeps more values that are never asked for again while the values that do
+    get reused are on disk either way, so it buys risk, not throughput. Any
+    future attempt to retune this must beat 313.8 s on that workload.
+
+    Original rationale follows.
+
+    A fixed 0.4 x RAM is arbitrary, and on a big host it is expensive: measured
+    on a 61 GB box, a one-case BraTS sweep pinned itself at the 25 GB cap and
+    paid 1,416 evictions and 4,041 recomputes to stay there, while peak RSS
+    never passed 29 GB — the engine was rebuilding values it had room to keep.
+    Recomputes are pure waste in a bandwidth-bound workload (the same run with
+    the disk tier off, and therefore 3x the recomputes, was 16% SLOWER).
+
+    So: take what is genuinely free, minus a reserve for the OS, the page cache
+    and everything else on the machine, and never claim more than three quarters
+    of the box. The reserve is the larger of 8 GB and a tenth of RAM, so this
+    stays conservative on small machines and still hands a big one real headroom.
+    """
+    reserve = max(8 * _GB, int(ram * 0.10))
+    available = _available_ram_bytes() or int(ram * 0.5)
+    return max(int(ram * 0.4), min(int(ram * 0.75), available - reserve))
+
+
 def _env_gb_as_bytes(name: str) -> int:
     """Read an env var holding a GB float, in bytes; 0 if unset/invalid."""
     raw = os.environ.get(name)
