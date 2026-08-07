@@ -25,7 +25,6 @@ import os
 import sys
 
 _CPU_CORE_LIST_PATH = "/sys/devices/cpu_core/cpus"
-_hint_printed = False  # module-level: print the calibrate hint at most once per process
 
 
 def _count_cpu_list(path: str) -> int | None:
@@ -120,7 +119,6 @@ def default_concurrency(mode: str = "balanced") -> int:
     if not p_cores:
         return logical  # no hybrid split exposed: nothing to be clever about
 
-    _print_calibrate_hint()
     if effective_mode == "p-cores":
         return p_cores
     e_cores = max(0, logical - p_cores)
@@ -140,14 +138,16 @@ def _cached_threads() -> int | None:
         return None
 
 
-def _print_calibrate_hint() -> None:
-    global _hint_printed
-    if _hint_printed:
-        return
-    _hint_printed = True
-    print(
-        "[voxlogica] using a heuristic thread-count default for this hybrid "
-        "P/E CPU -- run 'voxlogica calibrate' once to measure the actual "
-        "optimum for this machine instead of guessing.",
-        file=sys.stderr,
-    )
+# The calibrate hint that used to print here is GONE, and deliberately so: it
+# advertised a command that is now deprecated, on the premise that the heuristic
+# was "guessing". It is not. Measured on the reference hybrid host (fmt-5000,
+# 8 P + 16 E), min-of-3, interleaved, idle-gated, bit-exact, in the regime this
+# engine actually ships (ITK unpinned):
+#
+#     workers   8      12     16(default)  20     24
+#     wall(s)   61.68  59.36  57.77        57.87  59.49
+#
+# The heuristic's answer is the optimum: 20 is a tie (+0.2%), and using every
+# logical CPU is 3% WORSE. Calibration's own cached winner beat the heuristic by
+# 0.1% -- noise. Telling the user to go calibrate was advice to spend minutes
+# measuring their way back to the number they already had.

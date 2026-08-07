@@ -1081,6 +1081,43 @@ def maxvol(image: object) -> sitk.Image:
 # each array — adjacent, no gap, no overlap). O(n log m) vectorized C calls,
 # not a Python loop, so merging is cheap even for millions of elements.
 
+def _warm_numba_dispatchers() -> None:
+    """Compile the percentile JIT path ONCE, on the importing thread.
+
+    numba's dispatcher is not safe to enter concurrently while it still has to
+    produce a specialization, and this build of CPython is free-threaded, so
+    nothing else serializes it either. The engine's very first phase calls
+    `percentiles` on ~16 cases at once, which is exactly 16 threads racing into
+    an uncompiled dispatcher. That corrupted the interpreter three different
+    ways in one session on the 369-case sweep: a SIGSEGV, a glibc
+    "double free or corruption", and finally
+
+        SystemError: CPUDispatcher(_extract_population) returned a result with
+        an exception set
+        SystemError: Objects/tupleobject.c:123: bad argument to internal function
+
+    Touching each entry point here with production dtypes forces the
+    specialization while only one thread exists. With cache=True the machine
+    code is already on disk, so this costs milliseconds, and it CANNOT be done
+    by wrapping the dispatchers instead: two of them are inline="always" and are
+    called from inside other jitted functions, where a Python wrapper would not
+    compile.
+    """
+    if not _HAS_NUMBA:
+        return
+    try:
+        img = np.zeros(4, dtype=np.float32)
+        mask = np.ones(4, dtype=np.uint8)
+        population, values = _extract_population(img, mask)
+        order = np.argsort(values)
+        _group_and_write(values[order].astype(np.float32),
+                         population[order].astype(np.int64), 4, 0.0)
+        _merge_sorted_pairs(values[:2].astype(np.float32), population[:2].astype(np.int64),
+                            values[2:].astype(np.float32), population[2:].astype(np.int64))
+    except Exception:  # noqa: BLE001 — a warm-up failure must not stop the run
+        pass
+
+
 _PARALLEL_SORT_MIN_POPULATION = 200_000  # below this, thread/merge overhead isn't worth it
 _PARALLEL_SORT_CHUNKS = min(os.cpu_count() or 4, 8)
 
@@ -1203,6 +1240,9 @@ def _parallel_sorted_population(population: np.ndarray, population_values: np.nd
             next_round.append(sequences[-1])
         sequences = next_round
     return sequences[0]
+
+
+_warm_numba_dispatchers()   # single-threaded, before any worker exists
 
 
 def percentiles(image: object, mask_image: object, correction: float) -> sitk.Image:
