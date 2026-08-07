@@ -29,7 +29,8 @@ import os
 from typing import Any
 
 from voxlogica.arrays import PolyArray
-from voxlogica.buffer_pool import buffer_states, pooled_bytes, release_states, retain_states
+from voxlogica.buffer_pool import (buffer_states, pooled_bytes_approx, release_states,
+                                   retain_states)
 from voxlogica.engine.persist import AsyncPersister, approx_bytes
 from voxlogica.lazy.hash import hash_node, hash_sequence_item
 from voxlogica.lazy.ir import NodeId, NodeSpec
@@ -214,7 +215,7 @@ class NodeTable:
         admission trims them before enforcing its hard ceiling.
         """
         backlog = 0 if self._persister is None else self._persister.pending_bytes
-        return self.live_bytes + backlog + pooled_bytes()
+        return self.live_bytes + backlog + pooled_bytes_approx()
 
     def persisted(self, node_id: NodeId) -> bool:
         """Existence check against the disk tier — an in-memory set lookup."""

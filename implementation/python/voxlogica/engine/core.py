@@ -552,10 +552,17 @@ class ComputationEngine:
         # entries behind the 256-per-sweep scan window. Measured with the single
         # queue: 110,495 spills against 1,972 evictions — the engine kept paying
         # to write and almost never collected the memory it had bought.
+        # The budget is read ONCE per sweep, not once per candidate. It is a
+        # heuristic comparison, and re-reading it per iteration meant up to 256
+        # reads of accounted_bytes -- each of which used to take the buffer
+        # pool's global lock, the same lock every worker needs to allocate or
+        # return a buffer. This runs on every worker turn, so that put the event
+        # loop in contention with all 16 workers hundreds of times a second.
+        budget = self.config.max_live_bytes
+        over_budget = self.table.accounted_bytes > budget
         scanned = 0
-        limit = min(len(self._spill_pending), _EVICT_SWEEP)
-        while (scanned < limit
-               and self.table.accounted_bytes > self.config.max_live_bytes):
+        limit = min(len(self._spill_pending), _EVICT_SWEEP) if over_budget else 0
+        while scanned < limit:
             nid = self._spill_pending.popleft()
             scanned += 1
             if nid not in self.table.values:
@@ -571,14 +578,13 @@ class ComputationEngine:
                 self._evicted_early += 1
             else:
                 self._spill_pending.append(nid)  # write still in flight; look again later
-        if not self._evict_candidates:
+        if not self._evict_candidates or not over_budget:
             return
         # PASS 2 — everything else: evict what is already durable, and start a
         # write for what is not so a later PASS 1 can free it.
         scanned = 0
         limit = min(len(self._evict_candidates), _EVICT_SWEEP)
-        while (scanned < limit
-               and self.table.accounted_bytes > self.config.max_live_bytes):
+        while scanned < limit:
             nid = self._evict_candidates.popleft()
             scanned += 1
             if nid not in self.table.values:

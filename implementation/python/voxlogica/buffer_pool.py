@@ -296,6 +296,20 @@ def pooled_bytes() -> int:
         return _POOLED_BYTES
 
 
+def pooled_bytes_approx() -> int:
+    """Pooled bytes WITHOUT taking the pool lock — for hot-path budget checks.
+
+    `_POOLED_BYTES` is a plain int, so this read is atomic; it may be a few
+    allocations stale, which is irrelevant to a budget comparison that is a
+    heuristic anyway. Taking the lock here is not: this is read from the
+    scheduler's admission and reclaim paths, which run on every worker turn,
+    against the same lock every worker needs to allocate or return a buffer.
+    Contending the pool lock to read an advisory number serialises the workers
+    against the event loop for no benefit.
+    """
+    return _POOLED_BYTES
+
+
 def recycle_unleased_states(states: Iterable[BufferState]) -> int:
     """Return scratch allocations that never entered the live tier."""
     recycled = 0
