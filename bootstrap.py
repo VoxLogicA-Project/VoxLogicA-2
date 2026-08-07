@@ -200,7 +200,10 @@ def _extract_uv(archive: Path, dest_dir: Path) -> Path:
                 member = members[0]
                 # Flatten: the tarball nests the binary under uv-<target>/.
                 member.name = wanted
-                tf.extract(member, staging)
+                try:
+                    tf.extract(member, staging, filter="data")
+                except TypeError:  # filter= only exists from 3.12
+                    tf.extract(member, staging)
                 extracted = staging / wanted
         final = dest_dir / wanted
         extracted.chmod(0o755)
@@ -307,13 +310,30 @@ def _detect_uv(explicit: str | None) -> list[str]:
     )
 
 
-def _run_uv(uv_cmd: list[str], args: list[str]) -> None:
+def _run_uv(uv_cmd: list[str], args: list[str], *, attempts: int = 1) -> None:
     UV_STATE_DIR.mkdir(parents=True, exist_ok=True)
     UV_PYTHON_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.setdefault("UV_CACHE_DIR", str(UV_STATE_DIR))
     env.setdefault("UV_PYTHON_INSTALL_DIR", str(UV_PYTHON_INSTALL_DIR))
-    subprocess.check_call([*uv_cmd, *args], cwd=REPO_ROOT, env=env)
+    # torch drags in the multi-hundred-MB nvidia-* CUDA wheels; uv's 30s default
+    # per-request timeout is not enough for those on a slow or shared link, and
+    # it fails the whole install rather than just that wheel.
+    env.setdefault("UV_HTTP_TIMEOUT", "300")
+    for attempt in range(1, attempts + 1):
+        try:
+            subprocess.check_call([*uv_cmd, *args], cwd=REPO_ROOT, env=env)
+            return
+        except subprocess.CalledProcessError:
+            if attempt == attempts:
+                raise
+            # Whatever already landed stays in UV_CACHE_DIR, so a retry only
+            # re-fetches what the interrupted run had not finished.
+            print(
+                f"uv failed (attempt {attempt}/{attempts}); retrying -- already-downloaded "
+                "packages are cached.",
+                file=sys.stderr,
+            )
 
 
 def _ensure_venv(
@@ -409,7 +429,7 @@ def _sync_requirements(
     install_args.extend(["-r", str(RUNTIME_REQ)])
     if include_test:
         install_args.extend(["-r", str(TEST_REQ)])
-    _run_uv(uv_cmd, install_args)
+    _run_uv(uv_cmd, install_args, attempts=3)
 
     _save_stamp(
         {
