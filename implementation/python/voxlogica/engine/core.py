@@ -40,7 +40,7 @@ from voxlogica.engine.config import EngineConfig
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
 from voxlogica.engine.calibration import load_cached_itk_threads
-from voxlogica.buffer_pool import pool_stats, set_limit_bytes, trim_pool
+from voxlogica.buffer_pool import pool_stats, trim_pool
 from voxlogica.diagnostics.exceptions import NodeExecutionError
 from voxlogica.engine.fusion import FusionPlanner
 from voxlogica.engine.itk_threads import apply_itk_threads
@@ -164,13 +164,14 @@ class ComputationEngine:
             fail_node=self._fail_node,
             reclaim=self._reclaim_memory,
         )
-        # Size the buffer pool from the memory budget instead of a fixed 512 MB.
-        # Recycling a freed volume is strictly better than freeing it: the bytes
-        # stay usable by any allocation of the same shape (this workload is
-        # nearly single-shaped), and pooled bytes are counted by
-        # `accounted_bytes` and trimmed before the ceiling, so this is budgeted
-        # memory rather than an extra allowance.
-        set_limit_bytes(int(self.config.max_live_bytes * 0.1))
+        # NOTE: sizing the buffer pool from the memory budget (10% instead of a
+        # fixed 512 MB) is a real and measurable win — this workload is nearly
+        # single-shaped, so the pool's flat 16-per-key count, not its byte
+        # budget, is what sends freed volumes back to the allocator. It is NOT
+        # enabled, because raising reuse took the buffer-pool use-after-free
+        # documented in engine/persist.py from rare to ~50% of runs. Re-enable
+        # only once that is fixed; the amplification is the point, not a
+        # coincidence.
 
         # ── Queries / goals ──
         self._goals: set[NodeId] = set()

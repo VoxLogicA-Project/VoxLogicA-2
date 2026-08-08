@@ -93,6 +93,33 @@ class AsyncPersister:
         leases = retain_states(buffer_states(value))
         self._queue.put((node_id, value, metadata, size, compute_ms, leases))
 
+    # KNOWN DEFECT — buffer-pool use-after-free, reproduced 2026-08-09.
+    #
+    # This thread segfaults inside gzip while serializing a payload, i.e. it
+    # reads a buffer that has already been recycled underneath it. Captured
+    # with faulthandler on a 1-case brats021 run (~2 s in, cold store):
+    #
+    #   Fatal Python error: Segmentation fault
+    #     gzip.py:634 in compress
+    #     pod_codec.py:22 in _compress
+    #     pod_codec.py:168 in encode_for_storage
+    #     storage.py:414 in put_success_batch
+    #     engine/persist.py:166 in _write_batch      <- this thread
+    #
+    # The lease protocol above looks correct in isolation (retain at submit,
+    # release in _write_batch's finally), so the hole is elsewhere: either a
+    # value whose `buffer_states` traversal misses its allocation — no lease is
+    # taken and the live tier's eviction pools the buffer while this thread
+    # still reads it — or the non-atomic gap between `buffer_states` and
+    # `retain_states`, during which the last lease can drop and the buffer be
+    # handed to another allocation. Both are consistent with the evidence; the
+    # traceback does not discriminate them, so this comment does not claim one.
+    #
+    # It predates the 2026-08-08/09 memory work (SIGSEGV, glibc double-free and
+    # a CPython tuple corruption were all seen on 08-06/07 with the GIL on),
+    # but anything that raises buffer reuse makes it fire far more often — see
+    # the disabled pool sizing in engine/core.py.
+
     @property
     def over_budget(self) -> bool:
         """True while the unwritten backlog exceeds the in-flight budget."""
