@@ -171,6 +171,7 @@ def _engine_stub(table: NodeTable, *, max_live_bytes: int) -> ComputationEngine:
     engine.expander = types.SimpleNamespace(can_expand=lambda node: False)
     engine._evict_candidates = deque()
     engine._spill_pending = deque()
+    engine._ownerless = deque()
     engine._evicted_early = 0
     engine._spilled_early = 0
     engine._dispatch_pins = {}
@@ -517,6 +518,62 @@ def test_recompute_scaffolding_disposal_is_pressure_gated() -> None:
             "under budget scaffolding is cached; over budget it must be dropped "
             "where it is created, not queued")
         assert "want" in table.values, "the value actually wanted must survive"
+
+
+@pytest.mark.unit
+def test_free_garbage_is_collected_before_anything_costing_a_recompute(tmp_path) -> None:
+    """PASS 0 priority: an ownerless value costs nothing to release, while
+    evicting a value that still has a consumer buys the same bytes at the price
+    of a recompute. One shared FIFO inverted that — the sweep spent its
+    256-per-turn budget on consumer-holding values while garbage sat deeper in
+    the queue. Measured: 23.3 GB ownerless pinned at the budget with throughput
+    collapsing from 345 to 100 node/s as the engine recomputed around it."""
+    backend = SQLiteResultsDatabase(db_path=str(tmp_path / "results.db"))
+    table = NodeTable(backend=backend)
+    try:
+        engine = _engine_stub(table, max_live_bytes=1)
+        _completed_node(table, "needed", b"n" * 1000)   # durable, has a consumer
+        engine.graph.consumers["needed"] = 1
+        engine._evict_candidates.append("needed")
+        table.nodes["garbage"] = NodeSpec(kind="primitive", operator="test.blob")
+        table.set_value("garbage", b"g" * 1000)         # ownerless scaffolding
+        engine.graph.consumers["garbage"] = 0
+        engine._ownerless.append("garbage")
+
+        # Budget with room for exactly one of the two: freeing the garbage must
+        # be enough, so the value with a pending consumer never pays a recompute.
+        engine.config.max_live_bytes = table.live_bytes - table._sizeof["garbage"]
+
+        engine._reclaim_memory()
+
+        assert "garbage" not in table.values, "free garbage is collected first"
+        assert "needed" in table.values, "and a recompute was not paid for unnecessarily"
+    finally:
+        table.flush()
+        backend.close()
+
+
+@pytest.mark.unit
+def test_a_pinned_ownerless_value_is_deferred_not_discarded() -> None:
+    """A dispatch pin is transient. Dropping the id from the free-garbage queue
+    on encountering one would strand its bytes for the rest of the run — the
+    same defect PASS 2 already carries a regression test for."""
+    table = NodeTable(backend=None)
+    engine = _engine_stub(table, max_live_bytes=1)
+    table.nodes["g"] = NodeSpec(kind="primitive", operator="test.blob")
+    table.set_value("g", b"g" * 1000)
+    engine.graph.consumers["g"] = 0
+    engine._ownerless.append("g")
+    engine._dispatch_pins["g"] = 1
+
+    engine._reclaim_memory()
+
+    assert "g" in table.values, "a pinned value must survive the sweep"
+    assert list(engine._ownerless) == ["g"], "and must stay queued for a later one"
+
+    engine._unpin_dispatch(["g"])
+    engine._reclaim_memory()
+    assert "g" not in table.values, "collected once the pin lifts"
 
 
 @pytest.mark.unit
@@ -996,7 +1053,7 @@ def test_recompute_scaffolding_is_freed_not_stranded() -> None:
     engine.config.max_live_bytes = 1_000_000_000
     ComputationEngine._rematerialize(engine, "parent")
     assert "child" in table.values, "with room to spare, scaffolding is cached"
-    assert "child" in engine._evict_candidates, "and stays reclaimable"
+    assert "child" in engine._ownerless, "on the free-garbage queue, collected first"
 
 
 @pytest.mark.unit

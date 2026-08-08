@@ -215,6 +215,15 @@ class ComputationEngine:
         # free, kept on their own queue so they are never starved behind the
         # much larger not-yet-spilled backlog (see _reclaim_memory PASS 1).
         self._spill_pending: deque[NodeId] = deque()
+        # Ownerless values (recompute scaffolding whose consumers already ran).
+        # Freeing one costs NOTHING — no write, and no future read to satisfy —
+        # whereas evicting a value that still has a consumer buys the same bytes
+        # at the price of a recompute. Sharing one FIFO inverted that priority:
+        # the sweep spent its 256-per-turn budget evicting consumer-holding
+        # values while free garbage sat deeper in the queue. Measured: 23.3 GB
+        # ownerless pinned at the budget line with throughput collapsing from
+        # 345 to 100 node/s as the engine recomputed around it.
+        self._ownerless: deque[NodeId] = deque()
         self._evicted_early = 0    # values evicted proactively (metrics)
         self._spilled_early = 0    # values force-written under pressure so they COULD be evicted
         # Engine-visible traffic (kernel inputs read + output written). Two integer
@@ -497,7 +506,8 @@ class ComputationEngine:
         exception handling make it best-effort, per memlog's contract.
         """
         try:
-            tracked = set(self._evict_candidates) | set(self._spill_pending)
+            tracked = (set(self._evict_candidates) | set(self._spill_pending)
+                       | set(self._ownerless))
             buckets = {"goal": 0, "pinned": 0, "ownerless": 0, "durable": 0,
                        "write_queued": 0, "undurable": 0,
                        "untracked": 0, "untracked_n": 0}
@@ -610,6 +620,26 @@ class ComputationEngine:
         # loop in contention with all 16 workers hundreds of times a second.
         budget = self.config.max_live_bytes
         over_budget = self.table.accounted_bytes > budget
+        # PASS 0 — free garbage first. An ownerless value costs nothing to
+        # release: no write, and no future read to satisfy. Every byte taken
+        # here is a byte NOT bought by evicting a value that still has a
+        # consumer, which costs a recompute. Draining it behind the general
+        # queue inverted exactly that priority and the engine recomputed its
+        # way around 23.3 GB of garbage it was holding as "cache".
+        scanned = 0
+        limit = min(len(self._ownerless), _EVICT_SWEEP) if over_budget else 0
+        while scanned < limit:
+            nid = self._ownerless.popleft()
+            scanned += 1
+            if nid not in self.table.values:
+                continue                        # already gone
+            if self._dispatch_pins.get(nid, 0) > 0:
+                self._ownerless.append(nid)     # transient: defer, never discard
+                continue
+            if self.graph.consumers.get(nid, 0) > 0:
+                self._track_evict_candidate(nid)  # gained a consumer: not garbage
+                continue
+            self._drop_ownerless(nid)
         scanned = 0
         limit = min(len(self._spill_pending), _EVICT_SWEEP) if over_budget else 0
         while scanned < limit:
@@ -628,7 +658,9 @@ class ComputationEngine:
                 self._evicted_early += 1
             else:
                 self._spill_pending.append(nid)  # write still in flight; look again later
-        if not self._evict_candidates or not over_budget:
+        # Re-read: PASS 0/1 may have freed enough that no consumer-holding value
+        # needs to pay a recompute this turn.
+        if not self._evict_candidates or self.table.accounted_bytes <= budget:
             return
         # PASS 2 — everything else: evict what is already durable, and start a
         # write for what is not so a later PASS 1 can free it.
@@ -951,7 +983,9 @@ class ComputationEngine:
                 if over_budget:
                     self._drop_ownerless(child)
                 else:
-                    self._track_evict_candidate(child)
+                    # Cached, but on the FREE-GARBAGE queue: PASS 0 collects it
+                    # ahead of anything whose eviction would cost a recompute.
+                    self._ownerless.append(child)
         self.table.set_value(nid, value)
         self._retrack_resident(nid)
         return value
