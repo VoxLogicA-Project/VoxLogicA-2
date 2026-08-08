@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import os
+import sys
 import threading
 from typing import Any, Iterable
 import weakref
@@ -29,6 +30,9 @@ _STATS = {
     "numpy_reuses": 0,
     "sitk_allocations": 0,
     "sitk_reuses": 0,
+    # Invariant violations caught rather than left to corrupt memory.
+    "leased_reuse_blocked": 0,
+    "unsafe_recycle_blocked": 0,
 }
 _POOLED_NDARRAY_CLS: Any = None
 
@@ -106,6 +110,15 @@ def _take_locked(key: tuple[Any, ...]) -> tuple[BufferState, Any] | None:
     buffer = state.current_buffer()
     if buffer is None:
         raise RuntimeError("pooled buffer disappeared")
+    # INVARIANT: a pooled buffer has no outstanding owners. Handing out one
+    # that is still leased is the use-after-free that segfaults the persister
+    # thread inside gzip (see engine/persist.py). Fail loudly and locally
+    # instead of corrupting memory and dying somewhere unrelated.
+    if state.leases != 0:
+        _STATS["leased_reuse_blocked"] += 1
+        raise RuntimeError(
+            f"buffer-pool invariant: took a pooled buffer with {state.leases} "
+            f"outstanding lease(s), kind={state.kind} key={state.key}")
     state.pooled = False
     state.pooled_buffer = None
     _POOLED_BYTES -= state.nbytes
@@ -310,14 +323,37 @@ def pooled_bytes_approx() -> int:
     return _POOLED_BYTES
 
 
-def recycle_unleased_states(states: Iterable[BufferState]) -> int:
-    """Return scratch allocations that never entered the live tier."""
+def recycle_unleased_states(states: Iterable[BufferState], *,
+                            extra_refs: int = 0) -> int:
+    """Return scratch allocations that never entered the live tier.
+
+    ``leases == 0`` alone is NOT a safe test for "nobody is using this".  A
+    buffer has zero leases for the whole window between ``acquire_*`` and the
+    event loop's ``NodeTable.set_value``, so anything still holding the Python
+    object — a fusion cone's exit value on its way back to the scheduler, a
+    view handed to another kernel — is invisible to a lease check. Recycling
+    there hands a live buffer to the next allocation, which is the
+    use-after-free that segfaults the persister inside gzip.
+
+    The refcount is the direct test the lease count cannot give: if anything
+    beyond this function's own temporaries still references the object, leave
+    it alone. ``extra_refs`` lets the caller declare references it is still
+    holding deliberately (its own scratch dict, for instance).
+    """
     recycled = 0
     with _LOCK:
         for state in states:
-            if state.leases == 0 and not state.pooled and state.current_buffer() is not None:
-                _return_locked(state)
-                recycled += int(state.pooled)
+            if state.leases != 0 or state.pooled:
+                continue
+            buffer = state.current_buffer()
+            if buffer is None:
+                continue
+            # `buffer` local + getrefcount's own argument = 2 baseline.
+            if sys.getrefcount(buffer) > 2 + extra_refs:
+                _STATS["unsafe_recycle_blocked"] += 1
+                continue
+            _return_locked(state)
+            recycled += int(state.pooled)
     return recycled
 
 

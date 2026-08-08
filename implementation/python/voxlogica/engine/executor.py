@@ -130,7 +130,12 @@ class Executor:
             for state in buffer_states(value)
             if id(state) not in exit_state_ids
         }
-        recycle_unleased_states(scratch_states.values())
+        # extra_refs=1: `scratch` above still holds one reference to each
+        # interior value, deliberately — dropping it first would let the object
+        # die and take its reusable buffer with it. Anything BEYOND that one
+        # reference means something else still holds the buffer, and recycling
+        # it would hand a live allocation to the next kernel.
+        recycle_unleased_states(scratch_states.values(), extra_refs=1)
         return results
 
     async def run_cone_numba(self, table: NodeTable, cone: "Cone", compiled_fn: Callable,
