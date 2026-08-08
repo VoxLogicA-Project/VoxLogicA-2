@@ -109,6 +109,12 @@ class NodeTable:
         # is what makes "is a write already in flight for this value?"
         # answerable; `evict` drops the entry with the live copy.
         self._write_queued: set[NodeId] = set()
+        # Measured kernel wall-time for RESIDENT values only (popped with the
+        # value in `evict`, so it is bounded by the live tier, not the plan).
+        # Reclaim reads it to choose a value's exit route under pressure:
+        # below the worth-it gate -> drop and recompute on demand; above it ->
+        # a write is the cheaper exit (see ComputationEngine._reclaim_memory).
+        self._compute_ms: dict[NodeId, float] = {}
         # Resident bytes attributed to the operator that produced them, kept
         # incrementally (two dict updates per value, no scan) so "what is
         # holding memory right now" is answerable at any instant without an
@@ -217,6 +223,15 @@ class NodeTable:
         backlog = 0 if self._persister is None else self._persister.pending_bytes
         return self.live_bytes + backlog + pooled_bytes_approx()
 
+    def compute_ms_of(self, node_id: NodeId) -> float:
+        """Measured kernel cost of a resident value; 0.0 when unknown.
+
+        Unknown covers constants, closures and rematerialized values — all of
+        which are cheap to rebuild, so defaulting to 0.0 (evict-and-recompute
+        under pressure) is the correct side to land on.
+        """
+        return self._compute_ms.get(node_id, 0.0)
+
     def persisted(self, node_id: NodeId) -> bool:
         """Existence check against the disk tier — an in-memory set lookup."""
         if self._persisted_ids is not None:
@@ -309,6 +324,7 @@ class NodeTable:
         self._running.discard(node_id)
         size = self.set_value(node_id, value)
         self.completed.add(node_id)
+        self._compute_ms[node_id] = compute_ms
         if self._persister is not None and (critical or (persist and not self._persister.over_budget)):
             node = self.nodes[node_id]
             # Record the in-flight write BEFORE submitting: `spill` consults this
@@ -392,6 +408,7 @@ class NodeTable:
             if self.persisted(node_id):
                 self._write_queued.discard(node_id)
             self._sizeof.pop(node_id, None)
+            self._compute_ms.pop(node_id, None)
             self._account_op(node_id, -self._release_object(value))
             release_states(self._buffer_leases.pop(node_id, ()))
 

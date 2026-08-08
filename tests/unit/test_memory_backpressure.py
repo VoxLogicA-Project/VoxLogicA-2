@@ -166,7 +166,9 @@ def _engine_stub(table: NodeTable, *, max_live_bytes: int) -> ComputationEngine:
     engine = ComputationEngine.__new__(ComputationEngine)  # bypass __init__
     engine.table = table
     engine.graph = types.SimpleNamespace(consumers={})
-    engine.config = types.SimpleNamespace(max_live_bytes=max_live_bytes)
+    engine.config = types.SimpleNamespace(max_live_bytes=max_live_bytes,
+                                          persist_min_compute_ms=1.0)
+    engine.expander = types.SimpleNamespace(can_expand=lambda node: False)
     engine._evict_candidates = deque()
     engine._spill_pending = deque()
     engine._evicted_early = 0
@@ -302,10 +304,10 @@ def test_evict_candidate_queue_is_lossless_past_former_cap() -> None:
 
 
 @pytest.mark.unit
-def test_reclaim_skips_not_yet_persisted_candidates(tmp_path) -> None:
-    """A value queued for writing but not yet durably confirmed must not be
-    evicted (that would force a recompute, not a reload) — it is simply
-    retried on a later sweep."""
+def test_reclaim_defers_an_expensive_in_flight_write_to_the_spill_queue(tmp_path) -> None:
+    """An expensive value queued for writing but not yet durably confirmed must
+    not be evicted (that would force a recompute, not a reload) — it moves to
+    the writer-side queue so PASS 1 collects it the moment its write lands."""
     backend = SQLiteResultsDatabase(db_path=str(tmp_path / "results.db"))
     table = NodeTable(backend=backend)
     try:
@@ -320,13 +322,16 @@ def test_reclaim_skips_not_yet_persisted_candidates(tmp_path) -> None:
 
         engine._reclaim_memory()
 
-        # Either it wasn't durable yet (kept as a candidate) or the writer won
-        # the race and it's already durable (evicted) — both are correct; what
-        # must never happen is losing the candidate outright.
+        # Either it wasn't durable yet (moved to the spill queue, where spill()
+        # reports its in-flight write) or the writer won the race and it's
+        # already durable (evicted) — both are correct; what must never happen
+        # is losing the candidate outright.
         if "n1" in table.values:
-            assert list(engine._evict_candidates) == ["n1"], "kept for a later sweep"
-        else:
-            assert engine._evicted_early == 1
+            assert list(engine._spill_pending) == ["n1"], "handed to PASS 1 for collection"
+            table.flush()
+            engine._reclaim_memory()  # write has landed: PASS 1 frees it now
+            assert "n1" not in table.values
+        assert engine._evicted_early == 1
     finally:
         table.flush()
         backend.close()
@@ -404,8 +409,8 @@ def test_spill_makes_a_never_persisted_value_durable(tmp_path) -> None:
 
 
 @pytest.mark.unit
-def test_reclaim_does_not_write_to_buy_back_memory(tmp_path) -> None:
-    """Reclaim must never force a write to free RAM.
+def test_reclaim_evicts_a_cheap_value_for_recompute_not_for_a_write(tmp_path) -> None:
+    """A cheap undurable value under pressure is DROPPED, never written.
 
     The disk tier is a pure optimisation in this engine ("a miss falls back to
     recompute", manuscripts/parallel-engine): memory is bounded by eager
@@ -414,6 +419,16 @@ def test_reclaim_does_not_write_to_buy_back_memory(tmp_path) -> None:
     host's measured STREAM ceiling is 69.5 GB/s and the paper establishes the
     workload is bandwidth-bound at its optimum — on gzip and I/O for values
     nothing has asked for. A pressure spill wrote 300 GB in ~40 minutes.
+
+    But "no write" must not mean "no exit": merely requeueing the candidate —
+    "admission throttles" — re-created the day-one hole, because admission only
+    gates NEW work and cannot reclaim bytes already committed to finished
+    values. The assembly tail's cheap masks were then structurally
+    unreclaimable: the eval-30 tail held 36.6 GB against a 25 GB budget, and
+    the 369-case run grew past 42 GB until killed. The worth-it gate already
+    judged this value cheaper to rebuild than to store, so the correct exit is
+    eviction with recompute-on-demand (`_rematerialize`) — free of bandwidth,
+    bounded in cost by the gate itself.
     """
     backend = SQLiteResultsDatabase(db_path=str(tmp_path / "results.db"))
     table = NodeTable(backend=backend)
@@ -434,10 +449,106 @@ def test_reclaim_does_not_write_to_buy_back_memory(tmp_path) -> None:
         engine._reclaim_memory()
 
         assert submitted == [], "reclaim must not queue writes to free memory"
-        assert "n1" in table.values, "and must not drop a value it cannot reload"
-        assert list(engine._evict_candidates) == ["n1"], "it stays a candidate; admission throttles"
+        assert "n1" not in table.values, "cheap value must leave RAM; a miss recomputes"
+        assert engine._evicted_early == 1
+        # The consumer relationship survives — _rematerialize rebuilds the
+        # value when that consumer finally dispatches.
+        assert engine.graph.consumers["n1"] == 1
     finally:
         table._persister.submit = real_submit
+        backend.close()
+
+
+@pytest.mark.unit
+def test_assembly_floor_of_cheap_values_is_bounded_under_pressure() -> None:
+    """The tail-overshoot regression: a wide aggregation's completed-but-cheap
+    inputs (all below the worth-it gate, all with a pending consumer) must not
+    accumulate as an unreclaimable floor. Under pressure the sweep drains them
+    even with no disk tier at all — recompute is the reload path."""
+    table = NodeTable(backend=None)  # --no-cache: nothing can ever be durable
+    engine = _engine_stub(table, max_live_bytes=1)
+    n = 50
+    for index in range(n):
+        nid = f"body{index}"
+        table.nodes[nid] = NodeSpec(kind="primitive", operator="test.blob")
+        table.begin(nid)
+        # Distinct payloads: a folded constant would be one shared object and
+        # the per-object accounting would (correctly) count it once.
+        table.complete(nid, index.to_bytes(2, "big") * 500, compute_ms=0.0, persist=False)
+        engine.graph.consumers[nid] = 1  # the aggregator still needs each one
+        engine._evict_candidates.append(nid)
+    assert table.live_bytes >= n * 1000
+
+    engine._reclaim_memory()
+
+    assert table.live_bytes == 0, "the whole cheap floor must drain under pressure"
+    assert engine._evicted_early == n
+
+
+@pytest.mark.unit
+def test_expansion_nodes_are_never_evicted_for_recompute() -> None:
+    """A loop/sequence value is produced by the expander, not its kernel —
+    `executor._compute` on a `for_loop` node raises (its closure argument
+    rematerializes to None by design). Without a durable copy such a value
+    must survive the sweep, however cheap it looks."""
+    table = NodeTable(backend=None)
+    engine = _engine_stub(table, max_live_bytes=1)
+    engine.expander = types.SimpleNamespace(
+        can_expand=lambda node: node.operator == "default.for_loop")
+    table.nodes["loop"] = NodeSpec(kind="primitive", operator="default.for_loop")
+    table.begin("loop")
+    table.complete("loop", [b"body0"], compute_ms=0.0, persist=False)
+    engine.graph.consumers["loop"] = 1
+    engine._evict_candidates.append("loop")
+
+    engine._reclaim_memory()
+
+    assert "loop" in table.values, "expandable node without a durable copy must survive"
+    assert engine._evicted_early == 0
+
+
+@pytest.mark.unit
+def test_resident_census_attributes_bytes_by_blocking_reason(tmp_path) -> None:
+    """The memlog census must classify resident bytes correctly — it is the
+    instrument every overshoot investigation reads first."""
+    backend = SQLiteResultsDatabase(db_path=str(tmp_path / "results.db"))
+    table = NodeTable(backend=backend)
+    try:
+        engine = _engine_stub(table, max_live_bytes=1)
+
+        _completed_node(table, "dur", b"d" * 100)       # durable -> evictable now
+        engine.graph.consumers["dur"] = 1
+        engine._evict_candidates.append("dur")
+
+        table.nodes["cheap"] = NodeSpec(kind="primitive", operator="test.blob")
+        table.begin("cheap")
+        table.complete("cheap", b"c" * 200, compute_ms=0.0, persist=False)
+        engine.graph.consumers["cheap"] = 1             # undurable, tracked
+        engine._evict_candidates.append("cheap")
+
+        table.values["orphan"] = b"o" * 300             # ownerless AND untracked
+        table._sizeof["orphan"] = 300
+
+        table.values["goalv"] = b"g" * 400
+        table._sizeof["goalv"] = 400
+        engine._goals = {"goalv"}
+
+        table.values["pinned"] = b"p" * 500
+        table._sizeof["pinned"] = 500
+        engine.graph.consumers["pinned"] = 1
+        engine._dispatch_pins["pinned"] = 1
+        engine._evict_candidates.append("pinned")
+
+        census = engine._resident_census()
+
+        assert census["durable"] == 100
+        assert census["undurable"] == 200
+        assert census["ownerless"] == 300
+        assert census["goal"] == 400
+        assert census["pinned"] == 500
+        assert census["untracked"] == 300 and census["untracked_n"] == 1
+    finally:
+        table.flush()
         backend.close()
 
 

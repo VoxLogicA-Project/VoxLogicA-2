@@ -74,7 +74,7 @@ class MemoryLogger:
             self._file.write("elapsed_s\tcompleted\tlive_mb\tbacklog_mb\taccounted_mb"
                              "\tbudget_mb\thard_mb\trss_mb\tin_flight\tready\tparked"
                              "\tevicted_early\tevict_cand\tspill_pending"
-                             "\tbw_gbs\tbw_util\tresident_by_op\n")
+                             "\tbw_gbs\tbw_util\tresident_by_op\tcensus\n")
         except OSError:
             self._file = None
             return
@@ -98,6 +98,10 @@ class MemoryLogger:
             bw_rate, bw_util = s.get("bandwidth", (0.0, 0.0))
             by_op = ";".join(f"{op}={size / 1024 ** 3:.1f}G"
                              for op, size in s.get("resident_by_op", ()))
+            c = s.get("census", {})
+            census = ";".join(
+                f"{key}={val / 1024 ** 3:.1f}G" if not key.endswith("_n") else f"{key}={val}"
+                for key, val in c.items() if val) or "-"
             self._file.write(
                 f"{time.monotonic() - self._t0:.1f}\t{s.get('completed', 0)}\t"
                 f"{s.get('live_bytes', 0) / mb:.1f}\t{s.get('backlog_bytes', 0) / mb:.1f}\t"
@@ -112,7 +116,10 @@ class MemoryLogger:
                 f"{bw_rate / 1024 ** 3:.2f}\t{bw_util:.2f}\t"
                 # Which operators hold the live tier, largest first: the direct
                 # answer to "what is memory full OF" at any moment.
-                f"{by_op}\n")
+                f"{by_op}\t"
+                # WHY none of it can leave: resident bytes by reclaim-blocking
+                # reason (see ComputationEngine._resident_census).
+                f"{census}\n")
         except Exception:  # noqa: BLE001 — observ. must never break the run
             pass
 

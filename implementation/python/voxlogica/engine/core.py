@@ -471,7 +471,57 @@ class ComputationEngine:
             "spill_pending": len(self._spill_pending),
             "resident_by_op": self.table.resident_by_operator(),
             "bandwidth": self._bandwidth.sample(self.max_concurrency),
+            "census": self._resident_census(),
         }
+
+    def _resident_census(self) -> dict[str, int]:
+        """Attribute every resident byte to the reason it cannot be freed yet.
+
+        The memlog's `resident_by_op` column answers "what is memory full OF";
+        this answers "WHY can none of it leave" — the question every tail
+        overshoot investigation has had to reconstruct by hand. Buckets are
+        disjoint, first match wins:
+
+        - goal:       run outputs, held until the end by design
+        - pinned:     a dispatch is reading it right now (transient)
+        - ownerless:  zero consumers — pure reclaimable garbage; a large number
+                      here means the drop path is not keeping up
+        - durable:    on disk, evictable NOW — large means the sweep lags
+        - write_queued: write in flight — bounded by the writer backlog budget
+        - undurable:  cheap, recompute-evictable under pressure — the bucket
+                      the old requeue-forever policy let grow without bound
+        - untracked / untracked_n: resident but on NEITHER reclaim queue — a
+                      leak detector; should stay near zero
+
+        Runs on the memlog thread against live dicts: snapshots and broad
+        exception handling make it best-effort, per memlog's contract.
+        """
+        try:
+            tracked = set(self._evict_candidates) | set(self._spill_pending)
+            buckets = {"goal": 0, "pinned": 0, "ownerless": 0, "durable": 0,
+                       "write_queued": 0, "undurable": 0,
+                       "untracked": 0, "untracked_n": 0}
+            for nid in list(self.table.values.keys()):
+                size = self.table._sizeof.get(nid, 0)
+                if nid in self._goals:
+                    buckets["goal"] += size
+                    continue
+                if self._dispatch_pins.get(nid, 0) > 0:
+                    buckets["pinned"] += size
+                elif self.graph.consumers.get(nid, 0) <= 0:
+                    buckets["ownerless"] += size
+                elif self.table.persisted(nid):
+                    buckets["durable"] += size
+                elif nid in self.table._write_queued:
+                    buckets["write_queued"] += size
+                else:
+                    buckets["undurable"] += size
+                if nid not in tracked:
+                    buckets["untracked"] += size
+                    buckets["untracked_n"] += 1
+            return buckets
+        except Exception:  # noqa: BLE001 — observability must never break the run
+            return {}
 
     def _idle(self) -> bool:
         """True when nothing is running and nothing is ready — a true wedge.
@@ -604,18 +654,50 @@ class ComputationEngine:
             if self.table.persisted(nid):
                 self.table.evict(nid)
                 self._evicted_early += 1
+            elif (self.table.compute_ms_of(nid) < self.config.persist_min_compute_ms
+                  and self._recomputable(nid)):
+                # Cheap and not durable: DROP IT — this is the design's actual
+                # valve ("a miss falls back to recompute", manuscripts/
+                # parallel-engine — eager eviction, admission control, bounded
+                # unrolling). The worth-it gate already ruled a rebuild cheaper
+                # than a write, so recompute-on-demand (`_rematerialize`) is
+                # the exit that costs no bandwidth. Merely requeueing here —
+                # "let admission throttle" — re-created the day-one hole in its
+                # pure form: admission only gates NEW work, it cannot reclaim
+                # bytes already committed to finished values, so the assembly
+                # tail's cheap masks were structurally unreclaimable and the
+                # eval-30 tail held 36.6 GB against a 25 GB budget (369 cases:
+                # grew past 42 GB until killed).
+                self.table.evict(nid)
+                self._evicted_early += 1
+            elif self.table.spill(nid):
+                # Expensive but not durable — its completion-time write was
+                # skipped (writer saturated at that moment). Recompute would
+                # repay the full kernel cost, so a write is the cheaper exit:
+                # re-offer it to the writer (spill respects the backlog
+                # budget) and let PASS 1 evict it when the write lands.
+                self._spill_pending.append(nid)
             else:
-                # NOT spilled. The disk tier is a pure optimisation in this
-                # engine's design (manuscripts/parallel-engine: "a miss falls
-                # back to recompute"); memory is bounded by eager eviction,
-                # admission control and bounded loop unrolling. Forcing writes
-                # here to buy back RAM spends the one resource the workload is
-                # actually short of — measured memory bandwidth, STREAM ceiling
-                # 69.5 GB/s on this host, already the binding constraint — on
-                # gzip and I/O for values nothing has asked for yet. A pressure
-                # spill wrote 300 GB in ~40 minutes doing exactly that.
-                # Requeue and let admission throttle instead.
+                # Writer still saturated: nothing can leave RAM this way right
+                # now. Keep the candidate; a later sweep retries.
                 self._evict_candidates.append(nid)
+
+    def _recomputable(self, nid: NodeId) -> bool:
+        """True iff `_rematerialize` can rebuild this value WITHOUT a disk copy.
+
+        Loop and sequence nodes are computed by the engine's own expansion
+        machinery, not by their kernel — `executor._compute` on a `for_loop`
+        node raises (the closure argument rematerializes to None by design).
+        Such values may only be evicted once durable; everything the executor
+        can genuinely re-run (primitives, constants, closures) is fair game
+        for evict-and-recompute.
+        """
+        node = self.table.nodes.get(nid)
+        if node is None:
+            return False
+        if node.kind in ("constant", "closure"):
+            return True
+        return node.operator not in _SEQUENCE_OPERATORS and not self.expander.can_expand(node)
 
     def _drop_ownerless(self, nid: NodeId) -> None:
         """Free a resident value that no consumer will ever ask for again.
@@ -730,8 +812,15 @@ class ComputationEngine:
         # cheap large-image kernels persists almost nothing, so the candidate
         # queue ran dry exactly under pressure and the engine had no valve
         # left — 55 GB resident, 12 MB written, 0 candidates, OOM.
+        # A value whose write is already in flight goes on the writer-side
+        # queue instead, so PASS 1 collects it the moment its write lands —
+        # sharing one FIFO buried the durable ones tens of thousands of
+        # entries deep (measured: 110,495 spills, 1,972 evictions).
         if nid not in self._goals and self.graph.consumers.get(nid, 0) > 0:
-            self._track_evict_candidate(nid)
+            if will_be_durable:
+                self._spill_pending.append(nid)
+            else:
+                self._track_evict_candidate(nid)
         moved = self.table._sizeof.get(nid, 0)
         for dep in self.graph.deps(nid):
             moved += self.table._sizeof.get(dep, 0)
