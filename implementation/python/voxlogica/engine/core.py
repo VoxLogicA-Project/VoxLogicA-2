@@ -40,7 +40,7 @@ from voxlogica.engine.config import EngineConfig
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
 from voxlogica.engine.calibration import load_cached_itk_threads
-from voxlogica.buffer_pool import pool_stats, trim_pool
+from voxlogica.buffer_pool import pool_stats, set_limit_bytes, trim_pool
 from voxlogica.diagnostics.exceptions import NodeExecutionError
 from voxlogica.engine.fusion import FusionPlanner
 from voxlogica.engine.itk_threads import apply_itk_threads
@@ -164,6 +164,13 @@ class ComputationEngine:
             fail_node=self._fail_node,
             reclaim=self._reclaim_memory,
         )
+        # Size the buffer pool from the memory budget instead of a fixed 512 MB.
+        # Recycling a freed volume is strictly better than freeing it: the bytes
+        # stay usable by any allocation of the same shape (this workload is
+        # nearly single-shaped), and pooled bytes are counted by
+        # `accounted_bytes` and trimmed before the ceiling, so this is budgeted
+        # memory rather than an extra allowance.
+        set_limit_bytes(int(self.config.max_live_bytes * 0.1))
 
         # ── Queries / goals ──
         self._goals: set[NodeId] = set()
@@ -224,6 +231,19 @@ class ComputationEngine:
         # ownerless pinned at the budget line with throughput collapsing from
         # 345 to 100 node/s as the engine recomputed around it.
         self._ownerless: deque[NodeId] = deque()
+        # Bytes held by that queue, maintained incrementally so the cap below is
+        # an O(1) test rather than a walk.
+        self._ownerless_bytes = 0
+        # Ownerless values are SPECULATIVE cache: they pay off only if a sibling
+        # recompute wants the same subtree again. Values with a pending consumer
+        # are a CERTAIN future read. Letting speculation take the whole budget
+        # inverts that: measured, ownerless grew to 23.1 GB of a 25 GB budget,
+        # evicting certain-read values to make room, which recomputed, which
+        # produced more scaffolding — 246,318 recomputes, the highest of any run,
+        # and a 3% net slowdown even though peak memory was bounded correctly.
+        # Their buffers are far more useful in the pool, where ANY allocation of
+        # the same shape can reuse them, than pinned to one node id.
+        self._ownerless_share = 0.25
         self._evicted_early = 0    # values evicted proactively (metrics)
         self._spilled_early = 0    # values force-written under pressure so they COULD be evicted
         # Engine-visible traffic (kernel inputs read + output written). Two integer
@@ -626,15 +646,20 @@ class ComputationEngine:
         # consumer, which costs a recompute. Draining it behind the general
         # queue inverted exactly that priority and the engine recomputed its
         # way around 23.3 GB of garbage it was holding as "cache".
+        # Collect when the run is over budget OR when speculation alone has
+        # outgrown its share — the second trigger is what stops garbage from
+        # squatting the whole budget while total memory still reads "fine".
+        over_share = self._ownerless_bytes > budget * self._ownerless_share
         scanned = 0
-        limit = min(len(self._ownerless), _EVICT_SWEEP) if over_budget else 0
+        limit = min(len(self._ownerless), _EVICT_SWEEP) if (over_budget or over_share) else 0
         while scanned < limit:
             nid = self._ownerless.popleft()
+            self._ownerless_bytes -= self.table._sizeof.get(nid, 0)
             scanned += 1
             if nid not in self.table.values:
                 continue                        # already gone
             if self._dispatch_pins.get(nid, 0) > 0:
-                self._ownerless.append(nid)     # transient: defer, never discard
+                self._track_ownerless(nid)      # transient: defer, never discard
                 continue
             if self.graph.consumers.get(nid, 0) > 0:
                 self._track_evict_candidate(nid)  # gained a consumer: not garbage
@@ -746,6 +771,11 @@ class ComputationEngine:
             return
         self.table.evict(nid)
         self._evicted_early += 1
+
+    def _track_ownerless(self, nid: NodeId) -> None:
+        """Queue free garbage, keeping the byte counter the cap reads in step."""
+        self._ownerless.append(nid)
+        self._ownerless_bytes += self.table._sizeof.get(nid, 0)
 
     def _track_evict_candidate(self, nid: NodeId) -> None:
         """Remember a resident value until reclaim or natural release handles it.
@@ -984,8 +1014,9 @@ class ComputationEngine:
                     self._drop_ownerless(child)
                 else:
                     # Cached, but on the FREE-GARBAGE queue: PASS 0 collects it
-                    # ahead of anything whose eviction would cost a recompute.
-                    self._ownerless.append(child)
+                    # ahead of anything whose eviction would cost a recompute,
+                    # and drops it once speculation exceeds its share.
+                    self._track_ownerless(child)
         self.table.set_value(nid, value)
         self._retrack_resident(nid)
         return value

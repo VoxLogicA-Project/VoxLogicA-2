@@ -172,6 +172,8 @@ def _engine_stub(table: NodeTable, *, max_live_bytes: int) -> ComputationEngine:
     engine._evict_candidates = deque()
     engine._spill_pending = deque()
     engine._ownerless = deque()
+    engine._ownerless_bytes = 0
+    engine._ownerless_share = 0.25
     engine._evicted_early = 0
     engine._spilled_early = 0
     engine._dispatch_pins = {}
@@ -538,7 +540,7 @@ def test_free_garbage_is_collected_before_anything_costing_a_recompute(tmp_path)
         table.nodes["garbage"] = NodeSpec(kind="primitive", operator="test.blob")
         table.set_value("garbage", b"g" * 1000)         # ownerless scaffolding
         engine.graph.consumers["garbage"] = 0
-        engine._ownerless.append("garbage")
+        engine._track_ownerless("garbage")
 
         # Budget with room for exactly one of the two: freeing the garbage must
         # be enough, so the value with a pending consumer never pays a recompute.
@@ -563,7 +565,7 @@ def test_a_pinned_ownerless_value_is_deferred_not_discarded() -> None:
     table.nodes["g"] = NodeSpec(kind="primitive", operator="test.blob")
     table.set_value("g", b"g" * 1000)
     engine.graph.consumers["g"] = 0
-    engine._ownerless.append("g")
+    engine._track_ownerless("g")
     engine._dispatch_pins["g"] = 1
 
     engine._reclaim_memory()
@@ -574,6 +576,33 @@ def test_a_pinned_ownerless_value_is_deferred_not_discarded() -> None:
     engine._unpin_dispatch(["g"])
     engine._reclaim_memory()
     assert "g" not in table.values, "collected once the pin lifts"
+
+
+@pytest.mark.unit
+def test_speculative_cache_cannot_squat_the_whole_budget() -> None:
+    """Ownerless values are speculation — they pay off only if a sibling
+    recompute wants the same subtree again. Values with a pending consumer are
+    a CERTAIN future read. Collecting garbage only when TOTAL memory is over
+    budget let speculation take the whole budget and evict the certain reads to
+    make room, which recomputed, which produced more scaffolding: measured
+    23.1 GB ownerless of a 25 GB budget, 246,318 recomputes, a 3% net slowdown
+    with peak memory nonetheless "correct".
+    """
+    table = NodeTable(backend=None)
+    engine = _engine_stub(table, max_live_bytes=100_000)  # far from full
+    for index in range(40):
+        nid = f"scaf{index}"
+        table.nodes[nid] = NodeSpec(kind="primitive", operator="test.blob")
+        table.set_value(nid, index.to_bytes(2, "big") * 500)
+        engine.graph.consumers[nid] = 0
+        engine._track_ownerless(nid)
+    assert table.accounted_bytes < engine.config.max_live_bytes, "not over budget"
+    assert engine._ownerless_bytes > 100_000 * engine._ownerless_share, "over its share"
+
+    engine._reclaim_memory()
+
+    assert table.live_bytes == 0, "speculation over its share is collected anyway"
+    assert engine._ownerless_bytes == 0
 
 
 @pytest.mark.unit
