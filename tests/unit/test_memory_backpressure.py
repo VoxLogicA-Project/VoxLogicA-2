@@ -486,6 +486,40 @@ def test_assembly_floor_of_cheap_values_is_bounded_under_pressure() -> None:
 
 
 @pytest.mark.unit
+def test_recompute_scaffolding_disposal_is_pressure_gated() -> None:
+    """Scaffolding is kept while there is room and dropped at the point of
+    creation once there is not.
+
+    Both halves were measured by getting them wrong. Always evicting rebuilt
+    values a sibling recompute wanted moments later (23% recomputes vs a 1.4%
+    baseline). Always tracking could not bound the tail: one `_rematerialize`
+    recursion materializes a whole subtree inside ONE worker turn, while the
+    256-per-sweep reclaim only runs BETWEEN turns — the census read
+    ownerless=32.9G of a 38.0 GB peak with every other bucket bounded.
+    """
+    for over_budget, expect_resident in ((False, True), (True, False)):
+        table = NodeTable(backend=None)
+        budget = 1 if over_budget else 1_000_000_000
+        engine = _engine_stub(table, max_live_bytes=budget)
+        engine._alias = {}
+        engine.executor = types.SimpleNamespace(
+            _compute=lambda tbl, nid: b"rebuilt")
+        # "scaf" is a dep of "want" whose own consumers have all run.
+        table.nodes["want"] = NodeSpec(kind="primitive", operator="test.blob")
+        table.nodes["scaf"] = NodeSpec(kind="primitive", operator="test.blob")
+        engine.graph.deps = lambda nid: ["scaf"] if nid == "want" else []
+        engine.graph.consumers["want"] = 1
+        engine.graph.consumers["scaf"] = 0   # ownerless: pure scaffolding
+
+        engine._rematerialize("want")
+
+        assert ("scaf" in table.values) is expect_resident, (
+            "under budget scaffolding is cached; over budget it must be dropped "
+            "where it is created, not queued")
+        assert "want" in table.values, "the value actually wanted must survive"
+
+
+@pytest.mark.unit
 def test_expansion_nodes_are_never_evicted_for_recompute() -> None:
     """A loop/sequence value is produced by the expander, not its kernel —
     `executor._compute` on a `for_loop` node raises (its closure argument
@@ -947,15 +981,22 @@ def test_recompute_scaffolding_is_freed_not_stranded() -> None:
     assert value == b"v" * 512
     assert computed["parent"] is True, "scaffolding must be live DURING the recompute"
     assert "parent" in table.values, "the value actually asked for stays"
-    # Kept, but RECLAIMABLE: evicting eagerly here rebuilt the same values moments
-    # later (19,066 recomputes in 83,701 nodes against a 1.4% baseline).
-    assert "child" in table.values, "scaffolding is cached, not thrown away"
-    assert "child" in engine._evict_candidates, "but it must be reclaimable under pressure"
-
-    # Under pressure it is freed: ownerless resident values are pure garbage.
-    engine._dispatch_pins = {}
-    engine._reclaim_memory()
+    # Over budget (max_live_bytes=1): freed AT THE POINT OF CREATION, not queued.
+    # Queueing it cannot bound the tail — one `_rematerialize` recursion
+    # materializes a whole subtree inside ONE worker turn while the
+    # 256-per-sweep reclaim only runs BETWEEN turns. Measured with queueing
+    # alone: census ownerless=32.9G of a 38.0 GB peak against a 25 GB budget,
+    # every other bucket bounded.
     assert "child" not in table.values, "pressure frees what nothing will ask for again"
+
+    # Under budget it is CACHED instead: evicting eagerly regardless of pressure
+    # rebuilt the same values moments later (19,066 recomputes in 83,701 nodes
+    # against a 1.4% baseline). Free RAM is the best cache available.
+    table.values.pop("parent", None)
+    engine.config.max_live_bytes = 1_000_000_000
+    ComputationEngine._rematerialize(engine, "parent")
+    assert "child" in table.values, "with room to spare, scaffolding is cached"
+    assert "child" in engine._evict_candidates, "and stays reclaimable"
 
 
 @pytest.mark.unit

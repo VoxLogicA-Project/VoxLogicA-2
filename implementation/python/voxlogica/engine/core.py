@@ -928,15 +928,30 @@ class ComputationEngine:
                 self._rematerialize(child)
             self._recomputes += 1  # an evicted value we could neither find nor reload
             value = self.executor._compute(self.table, nid)
+            # Scaffolding disposal is PRESSURE-GATED, and both halves are
+            # load-bearing — each was measured by getting it wrong:
+            #
+            # - Always evicting burns CPU the leak had saved: a sweep's sibling
+            #   recomputes share subexpressions, so dropping them here just
+            #   rebuilds the same values moments later (19,066 recomputes in
+            #   83,701 nodes = 23%, against a 1.4% baseline).
+            # - Always tracking cannot bound the tail: a recompute produces
+            #   scaffolding faster than a 256-per-sweep reclaim consumes it,
+            #   because a single `_rematerialize` recursion materializes a whole
+            #   subtree within ONE worker turn while the sweep runs BETWEEN
+            #   turns. Measured with tracking alone: the census read
+            #   `ownerless=32.9G` of a 38.0 GB peak against a 25 GB budget, with
+            #   every other bucket bounded (undurable 1.0G, untracked 0.0G).
+            #
+            # So: keep it while there is room (free RAM is the best cache we
+            # have), drop it the moment there is not — at the point of
+            # creation, where no queue latency can let it accumulate.
+            over_budget = self.table.accounted_bytes > self.config.max_live_bytes
             for child in scaffolding:
-                # Make it RECLAIMABLE, do not throw it away. The defect was that
-                # scaffolding was unreachable by reclaim, not that it was
-                # resident: a sweep's sibling recomputes share subexpressions, so
-                # evicting eagerly here just rebuilds the same values moments
-                # later. Measured when this evicted instead of tracking: 19,066
-                # recomputes in 83,701 nodes (23%) against a 1.4% baseline — the
-                # leak was fixed by burning the CPU the leak had saved.
-                self._track_evict_candidate(child)
+                if over_budget:
+                    self._drop_ownerless(child)
+                else:
+                    self._track_evict_candidate(child)
         self.table.set_value(nid, value)
         self._retrack_resident(nid)
         return value
