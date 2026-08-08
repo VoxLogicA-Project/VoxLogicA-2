@@ -358,8 +358,20 @@ class PolyArray:
             sitk_image = self._views.get("sitk")
             if sitk_image is None:
                 raise RuntimeError("PolyArray has no cached view to build numpy from")
-            sitk = _simpleitk()
-            arr = sitk.GetArrayViewFromImage(sitk_image)
+            # PINNED, not a bare GetArrayViewFromImage: this alias owns no
+            # memory, it points into the SimpleITK image's buffer, and it
+            # routinely outlives the caller that asked for it — the persister
+            # thread takes it via VoxImageValue.as_array() and then spends
+            # milliseconds inside gzip reading those bytes, on a different
+            # thread from every other owner. If the image it aliases is freed
+            # in that window (the view cache dropped, the value evicted, the
+            # last reference released), the read is into freed memory and the
+            # process dies with a SIGSEGV inside gzip.compress with no Python
+            # traceback to explain it. Pinning makes the view keep its source
+            # image alive for exactly as long as the view exists, which is the
+            # rule pinned_view() documents and the sibling branch of
+            # as_array() already follows for raw sitk images.
+            arr = pinned_view(sitk_image)
             self._views["np"] = arr
             self._readonly_np = True
             self.dtype = arr.dtype
