@@ -776,7 +776,7 @@ def Lcc(image: object) -> sitk.Image:
     return lcc(image)
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _through_mask_components_into_numba(
     mask_values: np.ndarray,
     cc_values: np.ndarray,
@@ -1122,7 +1122,7 @@ _PARALLEL_SORT_MIN_POPULATION = 200_000  # below this, thread/merge overhead isn
 _PARALLEL_SORT_CHUNKS = min(os.cpu_count() or 4, 8)
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _extract_population(img_values: np.ndarray, mask_values: np.ndarray):
     """(population flat-indices, population values) where mask_values > 0."""
     population_size = 0
@@ -1140,7 +1140,7 @@ def _extract_population(img_values: np.ndarray, mask_values: np.ndarray):
     return population, population_values
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _group_and_write(
     sorted_values: np.ndarray,
     sorted_indices: np.ndarray,
@@ -1171,7 +1171,7 @@ def _group_and_write(
     return result_values
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _merge_sorted_pairs(values1: np.ndarray, idx1: np.ndarray,
                          values2: np.ndarray, idx2: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Merge two ALREADY-sorted (values, original-index) sequences into one
@@ -1744,7 +1744,7 @@ def _bin_index_numba(m1: float, m2: float, delta: float, value: float, nbins: in
     return idx
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _prepare_hist_corr_reference_numba(h2: np.ndarray) -> tuple[np.ndarray, float, np.uint8]:
     n = h2.shape[0]
     sum2 = 0.0
@@ -1788,7 +1788,7 @@ def _hist_corr_numba(
     return num / (math.sqrt(den1) * h2_sqrt_den)
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _build_big_histogram_numba(
     values: np.ndarray,
     mask_values: np.ndarray,
@@ -1806,7 +1806,7 @@ def _build_big_histogram_numba(
     return hist
 
 
-@njit(cache=True, parallel=True)
+@njit(cache=True, parallel=True, nogil=True)
 def _crosscorr_kernel_numba(
     outer_values: np.ndarray,
     hidx: np.ndarray,

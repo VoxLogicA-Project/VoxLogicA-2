@@ -6,13 +6,52 @@ exports the syntax or graph, and optionally executes the plan.
 
 from __future__ import annotations
 
+import os
+import sys
+import sysconfig
+
+
+def _reexec_without_gil() -> None:
+    """On a free-threaded build, re-launch with the GIL genuinely disabled.
+
+    This interpreter is a free-threading build, but SimpleITK does not declare
+    GIL-safety, so importing it silently re-enables the GIL process-wide —
+    every run, every benchmark, the whole engine. That default costs measured
+    throughput: the same cold BraTS eval-30 program runs 2:13:16 with the GIL
+    off against 2:22:28 with it on, bit-identical results, and the percentile
+    kernels alone go ~9x faster off-GIL in isolation (295 vs 33 iterations/s
+    across 16 threads).
+
+    Safety is not assumed, it was measured: 63/63 comparable unit tests and
+    20/20 fan-out stress runs byte-identical under no-GIL execution, plus a
+    full cold eval-30 reproducing `avg_oracle_brats021` exactly.
+
+    This must run BEFORE the imports below, which pull SimpleITK in — once it
+    is loaded the GIL is already back on and only a fresh process can undo it.
+    Hence exec rather than a runtime switch. `sys._is_gil_enabled()` is useless
+    as the trigger here: at this point it still reads False, because nothing
+    has imported SimpleITK yet.
+
+    An explicit `-X gil=...` or `PYTHON_GIL=...` from the operator is always
+    respected and also breaks the exec loop.
+    """
+    if not sysconfig.get_config_var("Py_GIL_DISABLED"):
+        return  # not a free-threading build: nothing to disable
+    if sys._xoptions.get("gil") is not None or "PYTHON_GIL" in os.environ:
+        return  # explicitly chosen (or this is the re-exec'd process)
+    os.execv(sys.executable,
+             [sys.executable, "-X", "gil=0", "-m", "voxlogica.main", *sys.argv[1:]])
+
+
+if __name__ == "__main__":
+    _reexec_without_gil()
+
 import argparse
 import faulthandler
 import io
 from pathlib import Path
 import json
 import logging
-import sys
 from typing import Any
 from dataclasses import replace
 
