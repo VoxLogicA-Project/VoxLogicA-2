@@ -410,8 +410,8 @@ class SQLiteResultsDatabase:
         only the inserts serialize.
         """
         prepared = []  # (node_id, encoded, payload_file, payload_bytes, metadata_json, compute_ms)
-        for node_id, value, metadata, compute_ms in entries:
-            encoded = encode_for_storage(value)
+        for node_id, value, metadata, compute_ms, *snap in entries:
+            encoded = encode_for_storage(value, payload_snapshot=snap[0] if snap else None)
             payload_file = None
             payload_bytes = 0
             if encoded.payload_bin is not None:

@@ -64,6 +64,26 @@ def _trace_mmap():
     return _TRACE_MMAP
 
 
+def _payload_snapshot(value):
+    """Copy a volumetric payload's bytes, or None when there is nothing to copy.
+
+    Only image-like values alias ITK memory; scalars, bytes and sequences are
+    already owned by Python and are left alone (returning None makes the
+    encoder use its normal path).
+    """
+    try:
+        np_fn = getattr(value, "np", None)
+        if not callable(np_fn):
+            return None
+        array = np_fn()
+        view = memoryview(array)
+        if not view.c_contiguous:
+            return None
+        return memoryview(bytes(view.cast("B")))
+    except Exception:  # noqa: BLE001 - never break a write over a snapshot
+        return None
+
+
 def _trace_batch(entries) -> None:
     try:
         buf = _trace_mmap()
@@ -146,34 +166,12 @@ class AsyncPersister:
             self._pending_bytes += size
             self._drained.clear()
         leases = retain_states(buffer_states(value))
-        self._queue.put((node_id, value, metadata, size, compute_ms, leases))
-
-    # KNOWN DEFECT — buffer-pool use-after-free, reproduced 2026-08-09.
-    #
-    # This thread segfaults inside gzip while serializing a payload, i.e. it
-    # reads a buffer that has already been recycled underneath it. Captured
-    # with faulthandler on a 1-case brats021 run (~2 s in, cold store):
-    #
-    #   Fatal Python error: Segmentation fault
-    #     gzip.py:634 in compress
-    #     pod_codec.py:22 in _compress
-    #     pod_codec.py:168 in encode_for_storage
-    #     storage.py:414 in put_success_batch
-    #     engine/persist.py:166 in _write_batch      <- this thread
-    #
-    # The lease protocol above looks correct in isolation (retain at submit,
-    # release in _write_batch's finally), so the hole is elsewhere: either a
-    # value whose `buffer_states` traversal misses its allocation — no lease is
-    # taken and the live tier's eviction pools the buffer while this thread
-    # still reads it — or the non-atomic gap between `buffer_states` and
-    # `retain_states`, during which the last lease can drop and the buffer be
-    # handed to another allocation. Both are consistent with the evidence; the
-    # traceback does not discriminate them, so this comment does not claim one.
-    #
-    # It predates the 2026-08-08/09 memory work (SIGSEGV, glibc double-free and
-    # a CPython tuple corruption were all seen on 08-06/07 with the GIL on),
-    # but anything that raises buffer reuse makes it fire far more often — see
-    # the disabled pool sizing in engine/core.py.
+        # Snapshot HERE, on the event loop. See pod_codec.encode_for_storage:
+        # the payload aliases ITK-owned memory that ITK frees on its own
+        # schedule, so a writer thread compressing the live alias races a
+        # worker's SimpleITK call and reads unmapped pages.
+        self._queue.put((node_id, value, metadata, size, compute_ms, leases,
+                         _payload_snapshot(value)))
 
     @property
     def over_budget(self) -> bool:
@@ -228,7 +226,7 @@ class AsyncPersister:
                 batch.append(extra)
             self._write_batch(batch)
 
-    def _write_batch(self, batch: list[tuple[NodeId, Any, dict, int, float, tuple[Any, ...]]]) -> None:
+    def _write_batch(self, batch) -> None:
         try:
             # Idempotent: skip values already durable on disk, so re-runs over
             # a warm cache do not rewrite unchanged payloads. The id index
@@ -241,8 +239,8 @@ class AsyncPersister:
             else:
                 fresh = [b for b in batch if not self._backend.has(b[0])]
             if fresh:
-                entries = [(nid, value, metadata, compute_ms)
-                           for nid, value, metadata, _size, compute_ms, _leases in fresh]
+                entries = [(nid, value, metadata, compute_ms, snap)
+                           for nid, value, metadata, _size, compute_ms, _leases, snap in fresh]
                 if _TRACE_PATH:
                     # Diagnostic for the SIGSEGV inside gzip (see the note on
                     # submit): record what is about to be serialized, flushed,
@@ -266,8 +264,8 @@ class AsyncPersister:
             logger.exception("async persistence failed for batch of %d (first: %s)",
                              len(batch), batch[0][0])
         finally:
-            written = sum(size for _nid, _value, _metadata, size, _cms, _leases in batch)
-            for _nid, _value, _metadata, _size, _cms, leases in batch:
+            written = sum(item[3] for item in batch)
+            for leases in (item[5] for item in batch):
                 release_states(leases)
             batch.clear()  # drop the references: collectible once evicted
             with self._lock:

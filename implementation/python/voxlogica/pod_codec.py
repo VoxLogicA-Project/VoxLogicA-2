@@ -141,7 +141,19 @@ def can_serialize_value(value: Any) -> tuple[bool, str | None, EncodedRecord | N
     return True, None, record
 
 
-def encode_for_storage(value: Any, *, page_size: int = 128) -> EncodedRecord:
+def encode_for_storage(value: Any, *, page_size: int = 128,
+                       payload_snapshot: Any = None) -> EncodedRecord:
+    """``payload_snapshot`` is an ALREADY-COPIED byte view of the image payload.
+
+    Volumetric payloads alias memory owned by SimpleITK/ITK, and ITK frees that
+    memory on its own schedule -- holding the Python image object does not keep
+    the buffer alive. Compressing the live alias on a writer thread therefore
+    races a worker's SimpleITK call. Proven by address match: the SIGSEGV
+    address 0x7ffee6b82000 fell inside the block SimpleITK unmapped at that
+    instant (addr=0x7ffee5df1000 len=35713024, _int_free_chunk <- _SimpleITK.so
+    <- cfunction_call, on a worker thread). The caller takes the snapshot on
+    the event loop, ordered with the kernels, and passes it here.
+    """
     adapted = adapt_runtime_value(value)
     descriptor = adapted.describe(path="")
     vox_type = str(descriptor.get("vox_type", adapted.vox_type))
@@ -165,7 +177,8 @@ def encode_for_storage(value: Any, *, page_size: int = 128) -> EncodedRecord:
             "byte_order": "little",
             "metadata": adapted.storage_metadata(),
         }
-        payload_bin = _compress(_array_byte_view(array))
+        payload_bin = _compress(payload_snapshot if payload_snapshot is not None
+                                else _array_byte_view(array))
         return EncodedRecord(VOX_FORMAT_VERSION, "image", descriptor, payload_json, payload_bin)
 
     if isinstance(adapted, VoxBytesValue):
