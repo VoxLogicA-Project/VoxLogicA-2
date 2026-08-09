@@ -102,27 +102,6 @@ def _pinned_cls() -> Any:
     return _PINNED_CLS
 
 
-# PROCESS-WIDE, not per-image. SimpleITK's array-view machinery cannot be
-# entered concurrently AT ALL, not merely for the same image: it reaches into
-# ITK's reference-counted image internals and the SWIG proxy layer, both of
-# which carry process-global state. PolyArray's per-object `_view_lock` was
-# written for the narrower "same image" reading and therefore does not help
-# when two threads build views of two DIFFERENT images at the same instant.
-#
-# That is exactly the crash this guards. Reproduced on a 1-case cold run:
-# ~60% of runs died with SIGSEGV at ~1.8 s, inside zlib's deflate reading a
-# payload buffer, while a worker thread was in SimpleITK munmap-ing a volume
-# (gdb, both stacks captured). An mmap probe showed the three persister
-# threads building views of three different images concurrently
-# (simpleitk.ReadImage, vox1.intensity, vox1.border — all `views=sitk`, so
-# each had to construct its numpy view). Forcing ONE writer thread, which
-# removes exactly that cross-image concurrency, gave 8 clean runs out of 8.
-#
-# Serializing costs nothing measurable: building a view wraps an existing
-# buffer, it does not copy. Compression, the expensive part, stays parallel.
-_SITK_VIEW_LOCK = threading.RLock()
-
-
 def pinned_view(image: Any) -> Any:
     """Zero-copy, read-only numpy view of ``image`` that pins it alive.
 
@@ -131,8 +110,7 @@ def pinned_view(image: Any) -> Any:
     it would corrupt the sitk-owned buffer, so a writer must take a copy.
     """
     sitk = _simpleitk()
-    with _SITK_VIEW_LOCK:
-        view = sitk.GetArrayViewFromImage(image).view(_pinned_cls())
+    view = sitk.GetArrayViewFromImage(image).view(_pinned_cls())
     view._src = image
     return view
 
@@ -200,8 +178,7 @@ def _raw_writable_view(image: Any) -> Any:
     """Build a pinned writable alias after all safety checks have passed."""
     import numpy as np
 
-    with _SITK_VIEW_LOCK:
-        ro = _simpleitk().GetArrayViewFromImage(image)
+    ro = _simpleitk().GetArrayViewFromImage(image)
     expected_dtype = _writable_pixel_dtypes().get(image.GetPixelID())
     if expected_dtype is None or ro.dtype != expected_dtype:
         raise WritableViewUnavailable(f"Unsupported SimpleITK pixel type: {image.GetPixelIDTypeAsString()}")
@@ -242,8 +219,7 @@ def _validate_writable_pixel_type(pixel_id: int) -> None:
             view = _raw_writable_view(probe)
             sentinel = dtype.type(7.5 if dtype.kind == "f" else 7)
             view.fill(sentinel)
-            with _SITK_VIEW_LOCK:
-                observed = sitk.GetArrayViewFromImage(probe)
+            observed = sitk.GetArrayViewFromImage(probe)
             if not (observed == sentinel).all():
                 raise WritableViewUnavailable("SimpleITK did not observe a writable alias write")
         except Exception as exc:
