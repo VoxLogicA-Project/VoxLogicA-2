@@ -207,7 +207,29 @@ class AsyncPersister:
     # fsync-bound and the queue drained slower than compute filled it.
     _BATCH = 64
 
+    @staticmethod
+    def _deprioritize_self() -> None:
+        """Run this writer at batch priority: background, never preempting a kernel.
+
+        Persistence is latency-insensitive by construction — the engine never
+        waits on it (submit is non-blocking, and a value the writer has not
+        reached yet is simply recomputed). Compute is the opposite: a kernel
+        that loses its core stalls the frontier. At the shipped defaults the
+        writers are 4 threads competing on equal terms with 16 kernel workers
+        for 24 cores, which is exactly backwards.
+
+        SCHED_BATCH tells the scheduler this thread is throughput-oriented and
+        not interactive: it keeps a full share when cores are idle, and yields
+        first when they are contended. Best-effort — unavailable off Linux, and
+        a restricted environment may refuse it; neither is worth failing over.
+        """
+        try:
+            os.sched_setscheduler(0, os.SCHED_BATCH, os.sched_param(0))
+        except (AttributeError, OSError, ValueError):
+            pass
+
     def _run(self) -> None:
+        self._deprioritize_self()
         while True:
             item = self._queue.get()
             if item is None:
