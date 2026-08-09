@@ -17,6 +17,7 @@ loop keeps running, memory stays bounded, and no cache entry is dropped.
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 from typing import Any
@@ -26,6 +27,26 @@ from voxlogica.lazy.ir import NodeId
 from voxlogica.storage import StorageBackend
 
 logger = logging.getLogger(__name__)
+
+# Diagnostic only (off unless the path is set): names the value the writer is
+# serializing right now, so a SIGSEGV inside gzip identifies its own payload.
+_TRACE_PATH = os.environ.get("VOXLOGICA_TRACE_PERSIST", "")
+
+
+def _trace_batch(entries) -> None:
+    try:
+        lines = []
+        for nid, value, metadata, _cms in entries:
+            inner = getattr(value, "_views", None)
+            lines.append(
+                f"{nid[:12]} op={metadata.get('operator')} src={metadata.get('source')} "
+                f"type={type(value).__name__} views={list(inner) if inner else '-'}\n")
+        with open(_TRACE_PATH, "a") as handle:
+            handle.writelines(lines)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:  # noqa: BLE001 — diagnostics must never break the run
+        pass
 
 
 def approx_bytes(value: object) -> int:
@@ -188,6 +209,11 @@ class AsyncPersister:
             if fresh:
                 entries = [(nid, value, metadata, compute_ms)
                            for nid, value, metadata, _size, compute_ms, _leases in fresh]
+                if _TRACE_PATH:
+                    # Diagnostic for the SIGSEGV inside gzip (see the note on
+                    # submit): record what is about to be serialized, flushed,
+                    # so the file names the exact value the writer died on.
+                    _trace_batch(entries)
                 try:
                     if hasattr(self._backend, "put_success_batch"):
                         self._backend.put_success_batch(entries)
