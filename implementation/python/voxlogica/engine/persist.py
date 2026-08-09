@@ -293,11 +293,21 @@ class AsyncPersister:
                     else:
                         raise NotImplementedError
                 except Exception:  # noqa: BLE001 — one bad value must not sink the batch
-                    for nid, value, metadata, compute_ms in entries:
+                    # Retry one at a time through the *batch* entry point: these
+                    # are 5-tuples carrying a payload snapshot that put_success's
+                    # signature cannot express, and dropping it here would both
+                    # lose the snapshot and mask the original error behind an
+                    # unpack failure — which is exactly what it used to do.
+                    for entry in entries:
                         try:
-                            self._backend.put_success(nid, value, metadata=metadata, compute_ms=compute_ms)
+                            if hasattr(self._backend, "put_success_batch"):
+                                self._backend.put_success_batch([entry])
+                            else:
+                                nid, value, metadata, compute_ms = entry[0], entry[1], entry[2], entry[3]
+                                self._backend.put_success(nid, value, metadata=metadata,
+                                                          compute_ms=compute_ms)
                         except Exception:  # noqa: BLE001
-                            logger.exception("async persistence failed for node %s", nid)
+                            logger.exception("async persistence failed for node %s", entry[0])
             if self._persisted_ids is not None:
                 for nid, *_rest in batch:
                     self._persisted_ids.add(nid)
