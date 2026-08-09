@@ -827,8 +827,12 @@ def _dilate_box3_separable(src, scratch, out):
     max-over-3 applied along each axis in turn. That is 9 reads per voxel
     instead of 27, three linear passes with perfect locality, and it
     parallelises over slices. ITK's BinaryDilate does not exploit this here:
-    measured on a 155x240x240 volume it takes 86 ms, against 1.0 ms for this
-    kernel -- 84x, bit-identical on every shape and density tested.
+    measured on a 155x240x240 volume at 15% density it takes 182 ms, against
+    7.5 ms for this kernel with the passes parallel -- 24x. (An earlier
+    docstring here claimed 84x/1.0 ms. That number was measured on the
+    revision whose x pass was being discarded, so it timed two thirds of the
+    work; treat it as withdrawn.) Without prange -- macOS, where numba's
+    threading layer is unsafe, see _PARALLEL_SAFE -- it is 19.5 ms, 9x.
 
     Boundary: clamping the index replicates the edge voxel, which for a MAX is
     identical to treating the outside as background, matching
