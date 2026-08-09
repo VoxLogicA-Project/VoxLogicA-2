@@ -1427,6 +1427,9 @@ def maxvol(image: object) -> sitk.Image:
 # each array — adjacent, no gap, no overlap). O(n log m) vectorized C calls,
 # not a Python loop, so merging is cheap even for millions of elements.
 
+_WARMUP_FAILURES: list[str] = []
+
+
 def _warm_numba_dispatchers() -> None:
     """Compile the percentile JIT path ONCE, on the importing thread.
 
@@ -1448,38 +1451,78 @@ def _warm_numba_dispatchers() -> None:
     by wrapping the dispatchers instead: two of them are inline="always" and are
     called from inside other jitted functions, where a Python wrapper would not
     compile.
+
+    A warm-up must reproduce the signature numba will specialise on EXACTLY,
+    and that includes the array's read-only flag, not just its dtype and rank.
+    Hand-built probe arrays are writable; the production call sites pass
+    `pinned_view()`/`_flatten_image()` results, which are read-only views over
+    ITK-owned memory. numba treats `Array(float32, 1, 'C', False)` and
+    `Array(float32, 1, 'C', True)` as different signatures, so the probes below
+    were warming variants that no native-path call ever produces, leaving the
+    real ones to be compiled by whichever worker thread reached them first.
+    Measured before this was fixed: six dispatchers still compiled at runtime,
+    `_extract_population` -- the one named in the traceback above -- among them.
+    The warm-up had never actually covered its original target.
+
+    So the read-only signatures are warmed by calling the real kernels on tiny
+    images, which makes them correct by construction and keeps them correct if
+    a call site changes. The low-level probes are kept as well, because the
+    non-native fallback paths (where `_flatten_image` has to copy) genuinely do
+    pass writable arrays; both variants are reachable in production.
+
+    Steps are guarded individually: this function used to be one `try` around
+    everything, so the first failure silently skipped every registration after
+    it. Failures are recorded in `_WARMUP_FAILURES` rather than discarded, so a
+    test can assert the warm-up actually ran.
     """
     if not _HAS_NUMBA:
         return
-    try:
+
+    def _writable_probes() -> None:
         img = np.zeros(4, dtype=np.float32)
-        mask = np.ones(4, dtype=np.uint8)
-        population, values = _extract_population(img, mask)
+        flat_mask = np.ones(4, dtype=np.uint8)
+        population, values = _extract_population(img, flat_mask)
         order = np.argsort(values)
         _group_and_write(values[order].astype(np.float32),
                          population[order].astype(np.int64), 4, 0.0)
         _merge_sorted_pairs(values[:2].astype(np.float32), population[:2].astype(np.int64),
                             values[2:].astype(np.float32), population[2:].astype(np.int64))
-        # `near`'s separable dilation: same hazard, and it is called on many
-        # cases at once in the same opening phase.
         cube = np.zeros((2, 2, 2), dtype=np.uint8)
         _dilate_box3_separable(cube, np.empty_like(cube), np.empty_like(cube))
-        # The run-based connected-component kernels behind `through`/`maxvol`:
-        # same hazard again, and `through` is likewise dispatched across many
-        # cases concurrently.
         fg = np.array([[[1, 0], [1, 1]], [[0, 1], [0, 0]]], dtype=np.uint8)
         offsets, starts, ends, parent = _cc_build_runs(fg)
         _cc_seeded_flags(fg.shape[1], offsets, starts, ends, parent, fg)
         volumes = _cc_component_volumes(offsets, starts, ends, parent)
         _cc_write_selected(np.zeros_like(fg), fg.shape[1], offsets, starts, ends,
                            parent, (volumes > 0).astype(np.uint8))
-        # `mask`'s jitted select, for both pixel types it accepts.
-        flat_mask = np.ones(4, dtype=np.uint8)
         for probe_dtype in (np.float32, np.uint8):
             probe = np.zeros(4, dtype=probe_dtype)
             _mask_into(probe, flat_mask, np.empty_like(probe))
-    except Exception:  # noqa: BLE001 — a warm-up failure must not stop the run
-        pass
+
+    solid = np.zeros((4, 5, 6), dtype=np.uint8)
+    solid[0, 0, 0] = 1
+    solid[2, 3, 4] = 1
+    seed = np.zeros((4, 5, 6), dtype=np.uint8)
+    seed[0, 0, 0] = 1
+    ramp = np.arange(4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+    img_u8 = sitk.GetImageFromArray(solid)
+    seed_u8 = sitk.GetImageFromArray(seed)
+    img_f32 = sitk.GetImageFromArray(ramp)
+
+    steps: tuple[tuple[str, Any], ...] = (
+        ("writable probes", _writable_probes),
+        ("near", lambda: near(img_u8)),
+        ("through", lambda: through(img_u8, seed_u8)),
+        ("maxvol", lambda: maxvol(img_u8)),
+        ("mask uint8", lambda: mask(img_u8, seed_u8)),
+        ("mask float32", lambda: mask(img_f32, seed_u8)),
+        ("percentiles", lambda: percentiles(img_f32, img_u8, 0.0)),
+    )
+    for label, step in steps:
+        try:
+            step()
+        except Exception as exc:  # noqa: BLE001 — must not stop the run
+            _WARMUP_FAILURES.append(f"{label}: {type(exc).__name__}: {exc}")
 
 
 _PARALLEL_SORT_MIN_POPULATION = 200_000  # below this, thread/merge overhead isn't worth it
@@ -1604,9 +1647,6 @@ def _parallel_sorted_population(population: np.ndarray, population_values: np.nd
             next_round.append(sequences[-1])
         sequences = next_round
     return sequences[0]
-
-
-_warm_numba_dispatchers()   # single-threaded, before any worker exists
 
 
 def percentiles(image: object, mask_image: object, correction: float) -> sitk.Image:
@@ -2428,3 +2468,11 @@ def crossCorrelation(
         np.float32,
     )
     return sitk.Crop(temporary_image, ball_radius, ball_radius)
+
+
+# Must be the LAST statement in the module: the warm-up drives the real kernel
+# entry points (`near`, `through`, `maxvol`, `mask`, `percentiles`) so that the
+# signatures it compiles are the ones production actually uses, and those
+# functions have to exist by the time it runs. It previously sat mid-file,
+# above `percentiles`, which is part of why that kernel was never warmed.
+_warm_numba_dispatchers()   # single-threaded, before any worker exists
