@@ -64,11 +64,11 @@ _SEQUENCE_OPERATORS = {"default.sequence", "sequence", "default.map", "map",
 
 _PROGRESS_BATCH = 64  # completions folded into one progress-bar refresh
 
-#: Nodes to complete before the throughput window opens. Below this the figure
-#: is a whole-run average; above it, throughput since steady state (see
-#: _flush_progress). 500 is ~2 s of steady-state work and comfortably past
-#: planning and the first prologue dispatches.
-_RATE_WARMUP_NODES = 500
+#: Span of the sliding throughput window, in seconds (see _flush_progress).
+#: Long enough that one slow kernel does not make the figure jitter, short
+#: enough that it leaves a multi-minute startup prologue behind on its own
+#: rather than averaging it in for the rest of the run.
+_RATE_WINDOW_S = 10.0
 
 _EVICT_SWEEP = 256      # candidates examined per _reclaim_memory call (bounds the work)
 
@@ -149,10 +149,10 @@ class ComputationEngine:
         self._progress_op = ""         # most recent operator, shown in the postfix
         self._nodes_done = 0           # cumulative node completions (postfix counter)
         self._progress_start = 0.0     # perf_counter at bar creation, for the node rate
-        # The rate is measured from a LATER origin than the bar's creation: see
-        # _flush_progress. Set once, when the warm-up threshold is crossed.
-        self._rate_origin = 0.0        # perf_counter when rate measurement began
-        self._rate_origin_done = 0     # _nodes_done at that instant
+        # The rate is measured over a SLIDING window, not from any fixed origin:
+        # see _flush_progress. Samples are (perf_counter, _nodes_done) pairs,
+        # trimmed to the last _RATE_WINDOW_S seconds on every refresh.
+        self._rate_samples: deque[tuple[float, int]] = deque()
 
         # ── The four parts (all event-loop owned; see module docstrings) ──
         self.graph = DependencyGraph(self.table)
@@ -940,32 +940,35 @@ class ComputationEngine:
         without this, the op name used to sit mid-line and made the ETA/rate
         dance left and right as it changed length every refresh.
         """
-        # RATE ORIGIN, not run origin. Measuring from t=0 folds planning, the
-        # store's id-index scan and the first per-case prologues into a
-        # cumulative average that then takes minutes to shed them: the figure
-        # crawls up from ~10 node/s and understates the engine for most of a
-        # run, which reads as "the sweep is slow" when it is not. Restarting
-        # the window after a warm-up (_RATE_WARMUP_NODES) makes the number mean
-        # "throughput since the engine reached steady state". Still an average
-        # over that window -- it smooths deliberately, so a single slow kernel
-        # does not make it jitter -- but the window no longer contains the
-        # startup transient.
+        # SLIDING window, not an average from any origin. A single fixed origin
+        # -- even one deferred past a warm-up threshold -- still divides by an
+        # ever-growing elapsed time, so anything slow that the window has ever
+        # contained keeps dragging the figure down for the rest of the run and
+        # the number can never recover. On a cold 369-case sweep the per-case
+        # n4/border prologue holds ~18 node/s for the first five minutes; with a
+        # fixed origin the bar was still reporting ~300 node/s an hour later
+        # while the engine was measurably sustaining ~450. The warm-up threshold
+        # that origin waited for was 500 nodes, crossed ~30 s into that run --
+        # deep inside the prologue -- so the reset did not exclude it either.
+        #
+        # A window that forgets instead: only the last _RATE_WINDOW_S seconds
+        # count, so the figure tracks what the engine is doing NOW and climbs
+        # out of any transient on its own. Still an average over that span --
+        # it smooths deliberately, so one slow kernel does not make it jitter.
         now = time.perf_counter()
-        if self._rate_origin == 0.0:
-            if self._nodes_done < _RATE_WARMUP_NODES:
-                # Before the threshold, report over the whole run: some number
-                # is better than none, and it is honest about what it covers.
-                rate = self._nodes_done / max(1e-6, now - self._progress_start)
-            else:
-                self._rate_origin = now
-                self._rate_origin_done = self._nodes_done
-                rate = self._nodes_done / max(1e-6, now - self._progress_start)
-        if self._rate_origin != 0.0:
-            window_done = self._nodes_done - self._rate_origin_done
-            window_s = now - self._rate_origin
-            # Guard the instant the window opens (window_s ~ 0, window_done 0).
-            rate = (window_done / window_s) if window_s > 0.5 and window_done else \
-                   self._nodes_done / max(1e-6, now - self._progress_start)
+        self._rate_samples.append((now, self._nodes_done))
+        cutoff = now - _RATE_WINDOW_S
+        # Keep one sample at or before the cutoff so the window spans the full
+        # period even when refreshes are sparse; drop everything older.
+        while len(self._rate_samples) > 2 and self._rate_samples[1][0] <= cutoff:
+            self._rate_samples.popleft()
+        t0, done0 = self._rate_samples[0]
+        window_s = now - t0
+        window_done = self._nodes_done - done0
+        # Before the window has any span to speak of, report over the whole run:
+        # some number is better than none, and it is honest about what it covers.
+        rate = (window_done / window_s) if window_s > 0.5 and window_done else \
+               self._nodes_done / max(1e-6, now - self._progress_start)
         elapsed = max(1e-6, now - self._progress_start)
         # `known` = nodes discovered so far (graph.registered_total). It grows
         # monotonically as loops unroll and stops growing once the plan is fully
