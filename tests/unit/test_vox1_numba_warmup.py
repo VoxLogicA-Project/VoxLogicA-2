@@ -124,3 +124,61 @@ def test_no_kernel_compiles_on_a_worker_thread(probe: dict) -> None:
         "warm-up (name: [signatures_after_import, signatures_after_calls]): "
         f"{cold}. Usually this means the warm-up passes writable arrays "
         "where the kernel is really called with a read-only pinned_view.")
+
+
+# ---------------------------------------------------------------------------
+# The second numba threading hazard: entering a `parallel=True` region from
+# several worker threads at once. numba's default `workqueue` layer is not
+# threadsafe, and neither `tbb` nor `intel-openmp` ships a macOS wheel, so on
+# Apple Silicon it is the only layer available. `_PARALLEL_SAFE` gates every
+# `parallel=True` in the kernels module on a layer that tolerates this.
+# ---------------------------------------------------------------------------
+
+def test_parallel_is_disabled_when_only_workqueue_is_available(monkeypatch) -> None:
+    """An explicit workqueue request must disable parallel kernels.
+
+    numba honours NUMBA_THREADING_LAYER, so the module has to agree with the
+    layer numba is actually going to select -- otherwise it compiles parallel
+    regions that the executor's worker threads cannot safely enter.
+    """
+    from voxlogica.primitives.vox1 import kernels
+
+    monkeypatch.setenv("NUMBA_THREADING_LAYER", "workqueue")
+    assert kernels._numba_parallel_is_safe() is False
+
+
+def test_parallel_gate_matches_layer_availability() -> None:
+    """Without an explicit request, the gate follows what numba can import."""
+    import importlib
+
+    from voxlogica.primitives.vox1 import kernels
+
+    if not kernels._HAS_NUMBA:
+        pytest.skip("numba unavailable")
+
+    available = False
+    for module in ("tbbpool", "omppool"):
+        try:
+            importlib.import_module(f"numba.np.ufunc.{module}")
+            available = True
+            break
+        except Exception:
+            continue
+    assert kernels._numba_parallel_is_safe() is available
+
+
+def test_no_kernel_hardcodes_parallel_true() -> None:
+    """Every parallel kernel must go through the gate.
+
+    A literal `parallel=True` would abort the process on any host whose only
+    threading layer is workqueue, which is every Apple Silicon machine.
+    """
+    from pathlib import Path
+
+    from voxlogica.primitives.vox1 import kernels
+
+    source = Path(kernels.__file__).read_text()
+    offenders = [line.strip() for line in source.splitlines()
+                 if "parallel=True" in line and line.lstrip().startswith("@njit")]
+    assert not offenders, (
+        f"these decorators bypass _PARALLEL_SAFE: {offenders}")

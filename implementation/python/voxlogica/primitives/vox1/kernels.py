@@ -28,6 +28,59 @@ except Exception:  # pragma: no cover - optional acceleration
     def get_num_threads() -> int:  # type: ignore[misc]
         return os.cpu_count() or 1
 
+
+def _numba_parallel_is_safe() -> bool:
+    """Whether a `parallel=True` kernel may be entered from several threads.
+
+    numba dispatches parallel regions through a "threading layer", and the
+    default one on any host without Intel TBB or OpenMP is `workqueue`, which
+    is explicitly *not* threadsafe:
+
+        Numba workqueue threading layer is terminating: Concurrent access has
+        been detected. [...] Concurrent access typically occurs through a
+        nested parallel region launch or by calling Numba parallel=True
+        functions from multiple Python threads.
+
+    This engine does exactly that: the executor runs ~16 nodes at once and each
+    one may call a jitted kernel, so on such a host the run aborts outright --
+    observed here as that message, and, with NUMBA_NUM_THREADS=1, as a plain
+    SIGSEGV instead. Neither `tbb` nor `intel-openmp` publishes a macOS wheel
+    (both are Intel-only), so on Apple Silicon `workqueue` is the *only*
+    available layer and the vox1 kernels could not run under the parallel
+    executor at all.
+
+    Rather than dropping intra-kernel parallelism everywhere -- which would
+    change the performance of the tuned Linux sweep host, where the layer is
+    tbb and therefore safe -- decide per host, at import, before any kernel is
+    compiled. Where a threadsafe layer exists nothing changes; where one does
+    not, the kernels compile serially and the executor still supplies all the
+    parallelism it always did, across nodes rather than within them.
+    """
+    if not _HAS_NUMBA:
+        return False
+    import importlib
+
+    # An explicit request wins: numba would honour it, so we must agree with
+    # whatever it is actually going to select.
+    requested = os.environ.get("NUMBA_THREADING_LAYER", "").strip().lower()
+    if requested == "workqueue":
+        return False
+    candidates = {"tbb": ("tbbpool",), "omp": ("omppool",)}.get(
+        requested, ("tbbpool", "omppool"))
+    for module in candidates:
+        try:
+            importlib.import_module(f"numba.np.ufunc.{module}")
+            return True
+        except Exception:  # noqa: BLE001 — absence is the normal case
+            continue
+    return False
+
+
+#: Guards every `parallel=True` in this module. See the function above: on a
+#: host whose only threading layer is `workqueue`, entering a parallel region
+#: from the executor's worker threads aborts the process.
+_PARALLEL_SAFE = _numba_parallel_is_safe()
+
 from voxlogica.arrays import (
     WritableViewUnavailable,
     allocate_writable_like,
@@ -650,7 +703,7 @@ def subtract(left: object, right: object) -> object:
     return apply_binary_op("Subtraction", left, right, _sub_values)
 
 
-@njit(cache=True, nogil=True, parallel=True)
+@njit(cache=True, nogil=True, parallel=_PARALLEL_SAFE)
 def _mask_into(src, msk, dst):
     """``dst[i] = src[i] if msk[i] else 0`` — one pass, no temporaries."""
     for i in prange(src.shape[0]):
@@ -766,7 +819,7 @@ def mul_vs(image: object, value: float) -> sitk.Image:
     return sitk.Multiply(img, float(value))
 
 
-@njit(cache=True, nogil=True, parallel=True)
+@njit(cache=True, nogil=True, parallel=_PARALLEL_SAFE)
 def _dilate_box3_separable(src, mid, dst):
     """3x3x3 binary box dilation as three 1D max passes (z, then y, then x).
 
@@ -881,7 +934,7 @@ def interior(image: object) -> sitk.Image:
 # tests/unit/test_vox1_connected_components.py.
 
 
-@njit(cache=True, nogil=True, parallel=True)
+@njit(cache=True, nogil=True, parallel=_PARALLEL_SAFE)
 def _cc_count_runs(fg, counts):
     """Number of maximal foreground runs in each row (one row per y,z)."""
     nz, ny, nx = fg.shape
@@ -898,7 +951,7 @@ def _cc_count_runs(fg, counts):
         counts[r] = c
 
 
-@njit(cache=True, nogil=True, parallel=True)
+@njit(cache=True, nogil=True, parallel=_PARALLEL_SAFE)
 def _cc_fill_runs(fg, offsets, starts, ends):
     """Write each row's runs (inclusive x bounds) into its slice of the arrays."""
     nz, ny, nx = fg.shape
@@ -1014,7 +1067,7 @@ def _cc_component_volumes(offsets, starts, ends, parent):
     return volumes
 
 
-@njit(cache=True, nogil=True, parallel=True)
+@njit(cache=True, nogil=True, parallel=_PARALLEL_SAFE)
 def _cc_write_selected(out, ny, offsets, starts, ends, parent, selected):
     """Write 1 over every run whose component is selected; 0 elsewhere."""
     for r in prange(offsets.shape[0] - 1):
@@ -2210,7 +2263,7 @@ def _build_big_histogram_numba(
     return hist
 
 
-@njit(cache=True, parallel=True, nogil=True)
+@njit(cache=True, parallel=_PARALLEL_SAFE, nogil=True)
 def _crosscorr_kernel_numba(
     outer_values: np.ndarray,
     hidx: np.ndarray,
