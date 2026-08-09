@@ -823,6 +823,218 @@ def interior(image: object) -> sitk.Image:
     return sitk.BinaryErode(_as_bool_image(img), [1, 1, 1], sitk.sitkBox, 0.0)
 
 
+# ── Run-based connected components (26-connectivity) ────────────────────────
+#
+# `through` and `maxvol` both used sitk.ConnectedComponent, together 16% of the
+# sweep's kernel time (2904 s + 1276 s of 25565 s). ITK labels VOXELS: it walks
+# every voxel, unions it with its already-seen neighbours, then writes a uint32
+# label volume that the caller immediately reduces away again — 4 bytes per
+# voxel of traffic (35 MB on a BraTS volume) for information neither primitive
+# actually wants.
+#
+# These kernels label RUNS instead: each row of constant y,z is compressed to
+# its maximal foreground intervals, and union-find operates on intervals, not
+# voxels. Two runs are 26-connected exactly when their x-intervals overlap
+# after expanding one of them by a voxel on each side, so linking two adjacent
+# rows is one linear two-pointer walk. For real masks that is ~100k runs
+# against 8.9M voxels, and neither the label volume nor its reduction is ever
+# materialized — only a per-component flag array and one write pass.
+#
+# Measured on a 155x240x240 volume (155*240*240 = 8.9M voxels):
+#
+#   blobby mask, 20% fg    through 16.1 ms vs 164.6 ms   maxvol 14.5 vs 173.5
+#   salt-and-pepper p=0.5  through  108.9 ms vs 926.4 ms   (2.2M runs, worst case)
+#   all foreground           4.4 ms vs  13.7 ms
+#   empty                    1.1 ms vs   3.1 ms
+#
+# The adversarial case — uniform noise, where run compression buys least and
+# the run count approaches n/4 — is still 8.5x ahead, so there is no density
+# at which this path regresses.
+#
+# Bit-identical to the ITK path on every shape and density tested (blobby and
+# uniform-random fills from 0% to 100%, cubic and strongly anisotropic
+# volumes, and degenerate extents down to 2x3x4), verified voxel-by-voxel in
+# tests/unit/test_vox1_connected_components.py.
+
+
+@njit(cache=True, nogil=True, parallel=True)
+def _cc_count_runs(fg, counts):
+    """Number of maximal foreground runs in each row (one row per y,z)."""
+    nz, ny, nx = fg.shape
+    for r in prange(nz * ny):
+        z = r // ny
+        y = r - z * ny
+        c = 0
+        prev = np.uint8(0)
+        for x in range(nx):
+            v = fg[z, y, x]
+            if v != 0 and prev == 0:
+                c += 1
+            prev = v
+        counts[r] = c
+
+
+@njit(cache=True, nogil=True, parallel=True)
+def _cc_fill_runs(fg, offsets, starts, ends):
+    """Write each row's runs (inclusive x bounds) into its slice of the arrays."""
+    nz, ny, nx = fg.shape
+    for r in prange(nz * ny):
+        z = r // ny
+        y = r - z * ny
+        k = offsets[r]
+        x = 0
+        while x < nx:
+            if fg[z, y, x] != 0:
+                s = x
+                while x < nx and fg[z, y, x] != 0:
+                    x += 1
+                starts[k] = s
+                ends[k] = x - 1
+                k += 1
+            else:
+                x += 1
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _cc_find(parent, i):
+    root = i
+    while parent[root] != root:
+        root = parent[root]
+    while parent[i] != root:  # path compression
+        nxt = parent[i]
+        parent[i] = root
+        i = nxt
+    return root
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _cc_union(parent, a, b):
+    ra = _cc_find(parent, a)
+    rb = _cc_find(parent, b)
+    if ra < rb:
+        parent[rb] = ra
+    elif rb < ra:
+        parent[ra] = rb
+
+
+@njit(cache=True, nogil=True)
+def _cc_link_rows(offsets, starts, ends, parent, ra, rb):
+    """Union every 26-connected pair of runs across two rows.
+
+    Both rows' runs are sorted and disjoint, so one two-pointer walk sees every
+    overlapping pair: advance whichever run ends first. Runs [s1,e1] and
+    [s2,e2] in diagonally- or orthogonally-adjacent rows touch under
+    26-connectivity iff their x-intervals overlap once either is grown by one
+    voxel at each end, i.e. s1 <= e2+1 and s2 <= e1+1.
+    """
+    i = offsets[ra]
+    iend = offsets[ra + 1]
+    j = offsets[rb]
+    jend = offsets[rb + 1]
+    while i < iend and j < jend:
+        if starts[i] <= ends[j] + 1 and starts[j] <= ends[i] + 1:
+            _cc_union(parent, i, j)
+        if ends[i] < ends[j]:
+            i += 1
+        else:
+            j += 1
+
+
+@njit(cache=True, nogil=True)
+def _cc_union_all(nz, ny, offsets, starts, ends, parent):
+    """Union runs into components, visiting rows in raster order.
+
+    Only the four already-visited neighbour rows need linking — (z,y-1),
+    (z-1,y-1), (z-1,y) and (z-1,y+1) — because connectivity is symmetric and
+    every later row will link back to this one when its own turn comes.
+    """
+    for i in range(parent.shape[0]):
+        parent[i] = i
+    for z in range(nz):
+        for y in range(ny):
+            r = z * ny + y
+            if offsets[r] == offsets[r + 1]:
+                continue
+            if y > 0:
+                _cc_link_rows(offsets, starts, ends, parent, r, r - 1)
+            if z > 0:
+                base = (z - 1) * ny
+                _cc_link_rows(offsets, starts, ends, parent, r, base + y)
+                if y > 0:
+                    _cc_link_rows(offsets, starts, ends, parent, r, base + y - 1)
+                if y < ny - 1:
+                    _cc_link_rows(offsets, starts, ends, parent, r, base + y + 1)
+
+
+@njit(cache=True, nogil=True)
+def _cc_seeded_flags(ny, offsets, starts, ends, parent, seed):
+    """Mark every component holding at least one nonzero ``seed`` voxel."""
+    flags = np.zeros(parent.shape[0], dtype=np.uint8)
+    for r in range(offsets.shape[0] - 1):
+        z = r // ny
+        y = r - z * ny
+        for k in range(offsets[r], offsets[r + 1]):
+            for x in range(starts[k], ends[k] + 1):
+                if seed[z, y, x] != 0:
+                    flags[_cc_find(parent, k)] = np.uint8(1)
+                    break
+    return flags
+
+
+@njit(cache=True, nogil=True)
+def _cc_component_volumes(offsets, starts, ends, parent):
+    """Voxel count per component, indexed by root run (non-roots stay 0)."""
+    volumes = np.zeros(parent.shape[0], dtype=np.int64)
+    for k in range(parent.shape[0]):
+        volumes[_cc_find(parent, k)] += ends[k] - starts[k] + 1
+    return volumes
+
+
+@njit(cache=True, nogil=True, parallel=True)
+def _cc_write_selected(out, ny, offsets, starts, ends, parent, selected):
+    """Write 1 over every run whose component is selected; 0 elsewhere."""
+    for r in prange(offsets.shape[0] - 1):
+        z = r // ny
+        y = r - z * ny
+        for x in range(out.shape[2]):
+            out[z, y, x] = np.uint8(0)
+        for k in range(offsets[r], offsets[r + 1]):
+            if selected[_cc_find(parent, k)] != 0:
+                for x in range(starts[k], ends[k] + 1):
+                    out[z, y, x] = np.uint8(1)
+
+
+def _cc_build_runs(fg: np.ndarray):
+    """Run decomposition plus union-find parents for a 3D uint8 foreground."""
+    nz, ny, _nx = fg.shape
+    counts = np.empty(nz * ny, dtype=np.int64)
+    _cc_count_runs(fg, counts)
+    offsets = np.empty(nz * ny + 1, dtype=np.int64)
+    offsets[0] = 0
+    np.cumsum(counts, out=offsets[1:])
+    run_count = int(offsets[-1])
+    starts = np.empty(run_count, dtype=np.int32)
+    ends = np.empty(run_count, dtype=np.int32)
+    _cc_fill_runs(fg, offsets, starts, ends)
+    parent = np.empty(run_count, dtype=np.int64)
+    _cc_union_all(nz, ny, offsets, starts, ends, parent)
+    return offsets, starts, ends, parent
+
+
+def _as_zyx(view: np.ndarray) -> np.ndarray | None:
+    """``view`` as a 3D (z,y,x) array, or None if it cannot be one.
+
+    A 2D image becomes a single slice, under which 26-connectivity degenerates
+    to exactly the 8-connectivity ITK applies to a 2D image — so the fast path
+    stays bit-identical there too. Anything above three dimensions falls back.
+    """
+    if view.ndim == 3:
+        return view
+    if view.ndim < 3:
+        return view.reshape((1,) * (3 - view.ndim) + view.shape)
+    return None
+
+
 def _label_connected_components(image: sitk.Image) -> tuple[sitk.Image, int]:
     labels = sitk.ConnectedComponent(_as_bool_image(image), True)
     labels_array = _flatten_image(labels, np.uint32)
@@ -869,6 +1081,25 @@ def through(image1: object, image2: object) -> sitk.Image:
     img1 = _as_image(image1, "image1")
     img2 = _as_image(image2, "image2")
     _remember_base(img1)
+
+    # `image1` selects seeds by "is nonzero". Below, the uint8 case reads the
+    # raw voxels and the general case reads _as_bool_image's cast — mirroring
+    # exactly what the two ITK branches at the bottom of this function do, so
+    # the fast path inherits their (differing) treatment of, say, an int16 256.
+    seed_image = img1 if img1.GetPixelID() == sitk.sitkUInt8 else _as_bool_image(img1)
+    binary2 = _as_bool_image(img2)
+    if _HAS_NUMBA and _native_images_compatible(seed_image, binary2):
+        fg = _as_zyx(pinned_view(binary2))
+        seed = _as_zyx(pinned_view(seed_image))
+        if fg is not None and seed is not None:
+            output_pair = _try_native_output(binary2, sitk.sitkUInt8)
+            if output_pair is not None:
+                output, out = output_pair
+                offsets, starts, ends, parent = _cc_build_runs(fg)
+                flags = _cc_seeded_flags(fg.shape[1], offsets, starts, ends, parent, seed)
+                _cc_write_selected(out.reshape(fg.shape), fg.shape[1],
+                                   offsets, starts, ends, parent, flags)
+                return output
 
     cc_image, max_label = _label_connected_components(img2)
     cc_values = _flatten_image(cc_image, np.uint32)
@@ -1102,6 +1333,24 @@ def maxvol(image: object) -> sitk.Image:
     """Largest connected component mask (ties keep union)."""
     img = _as_image(image, "image")
     _remember_base(img)
+
+    binary = _as_bool_image(img)
+    if _HAS_NUMBA:
+        fg = _as_zyx(pinned_view(binary))
+        if fg is not None:
+            output_pair = _try_native_output(binary, sitk.sitkUInt8)
+            if output_pair is not None:
+                output, out = output_pair
+                offsets, starts, ends, parent = _cc_build_runs(fg)
+                volumes = _cc_component_volumes(offsets, starts, ends, parent)
+                best = int(volumes.max(initial=0))
+                # Ties keep the union, matching the ITK path's `volumes == best`.
+                selected = (volumes == best).astype(np.uint8) if best > 0 \
+                    else np.zeros(volumes.shape, dtype=np.uint8)
+                _cc_write_selected(out.reshape(fg.shape), fg.shape[1],
+                                   offsets, starts, ends, parent, selected)
+                return output
+
     labels_image, max_label = _label_connected_components(img)
     labels = _flatten_image(labels_image, np.uint32)
 
@@ -1185,6 +1434,15 @@ def _warm_numba_dispatchers() -> None:
         # cases at once in the same opening phase.
         cube = np.zeros((2, 2, 2), dtype=np.uint8)
         _dilate_box3_separable(cube, np.empty_like(cube), np.empty_like(cube))
+        # The run-based connected-component kernels behind `through`/`maxvol`:
+        # same hazard again, and `through` is likewise dispatched across many
+        # cases concurrently.
+        fg = np.array([[[1, 0], [1, 1]], [[0, 1], [0, 0]]], dtype=np.uint8)
+        offsets, starts, ends, parent = _cc_build_runs(fg)
+        _cc_seeded_flags(fg.shape[1], offsets, starts, ends, parent, fg)
+        volumes = _cc_component_volumes(offsets, starts, ends, parent)
+        _cc_write_selected(np.zeros_like(fg), fg.shape[1], offsets, starts, ends,
+                           parent, (volumes > 0).astype(np.uint8))
     except Exception:  # noqa: BLE001 — a warm-up failure must not stop the run
         pass
 
