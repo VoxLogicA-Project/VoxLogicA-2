@@ -283,6 +283,31 @@ class SQLiteResultsDatabase:
                 # Eviction scans by GreedyDual key among rows that hold payload bytes.
                 self._connection.execute("CREATE INDEX idx_results_evict ON results(gd_key) WHERE payload_bytes > 0")
                 self._connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
+            # LINEAGE, added additively: never inside the version-reset branch,
+            # because bumping the results schema drops every payload and the
+            # DAG must survive that. Keyed by the raw 32-byte content hash, not
+            # hex and not a rowid: the store is designed to be decentralizable,
+            # so ids must be identical on every machine and merging must be a
+            # plain INSERT OR IGNORE. Arguments are PACKED (N x 32 bytes, order
+            # = argument order) inside the row rather than normalized into an
+            # edge table, which would repeat the 32-byte parent key once per
+            # edge; measured at 369-sweep scale that is ~2 GB packed against
+            # ~6 GB normalized. No local integer index is built: reconstructing
+            # the DAG behind a result is one row fetch per node, which needs no
+            # index, and the index is derivable from these rows alone in ~1.3
+            # min if whole-DAG analytics ever need it.
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS node (
+                    hash       BLOB PRIMARY KEY,
+                    kind       TEXT NOT NULL,
+                    operator   TEXT NOT NULL,
+                    args       BLOB NOT NULL,
+                    kwargs     TEXT,
+                    attrs_json TEXT
+                ) WITHOUT ROWID
+                """
+            )
 
     def _reader(self) -> sqlite3.Connection:
         """A per-thread read-only connection (WAL: concurrent with the writer)."""
@@ -431,6 +456,26 @@ class SQLiteResultsDatabase:
                 self._connection.execute("ROLLBACK")
                 raise
         self._enforce_budget()
+
+    def put_lineage_batch(self, rows) -> None:
+        """Insert DAG rows; idempotent, so merging two stores is a no-op replay.
+
+        Content addressing makes INSERT OR IGNORE the whole conflict story: a
+        hash that is already present describes the identical expression by
+        construction.
+        """
+        if not rows:
+            return
+        with self._lock:
+            self._connection.execute("BEGIN")
+            try:
+                self._connection.executemany(
+                    "INSERT OR IGNORE INTO node(hash,kind,operator,args,kwargs,attrs_json)"
+                    " VALUES(?,?,?,?,?,?)", rows)
+                self._connection.execute("COMMIT")
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
 
     def _put_encoded_locked(self, node_id: str, encoded, payload_file: str | None,
                             payload_bytes: int, metadata_json: str, compute_ms: float,

@@ -34,7 +34,7 @@ from voxlogica.buffer_pool import (buffer_states, pooled_bytes_approx, release_s
 from voxlogica.engine.persist import AsyncPersister, approx_bytes
 from voxlogica.lazy.hash import hash_node, hash_sequence_item
 from voxlogica.lazy.ir import NodeId, NodeSpec
-from voxlogica.storage import NoCacheStorageBackend, StorageBackend
+from voxlogica.storage import NoCacheStorageBackend, StorageBackend, dumps_json
 
 
 _MISSING = object()
@@ -130,6 +130,12 @@ class NodeTable:
                 lambda node_id: node_id in self.values and node_id in self._write_queued)
         self.live_bytes = 0
         self.peak_live_bytes = 0
+        # DAG rows awaiting their batched write. Lineage is METADATA and payload
+        # is DATA: they need different retention, so this is recorded for every
+        # completed node regardless of whether its value was worth persisting,
+        # and never evicted. An evicted value then stays regenerable because the
+        # store still holds its recipe.
+        self._lineage: list[tuple] = []
 
     def _retain_object(self, value: Any, size: int) -> int:
         """Retain one reference; return the bytes this call ADDED to the live tier."""
@@ -195,7 +201,14 @@ class NodeTable:
     def intern(self, node: NodeSpec) -> NodeId:
         """Add a node by structural identity, returning its stable hash id."""
         node_id = hash_node(node)
-        self.nodes.setdefault(node_id, node)
+        if node_id not in self.nodes:
+            self.nodes[node_id] = node
+            # Record the DAG row HERE, not at completion: interning is the one
+            # point every node passes through exactly once. Hooking _finish
+            # instead lost constants, closures and fusion-completed members --
+            # measured on a small for_loop program, 10 of 21 referenced nodes
+            # were missing, so the reconstructed DAG had dangling edges.
+            self.record_lineage(node_id)
         return node_id
 
     def has_value(self, node_id: NodeId) -> bool:
@@ -222,6 +235,39 @@ class NodeTable:
         """
         backlog = 0 if self._persister is None else self._persister.pending_bytes
         return self.live_bytes + backlog + pooled_bytes_approx()
+
+    _LINEAGE_BATCH = 512
+
+    def record_lineage(self, node_id: NodeId) -> None:
+        """Buffer this node's expression: operator, packed args, kwargs, literals.
+
+        Args are packed as raw 32-byte hashes in argument order — the same bytes
+        on every machine, so two stores merge by INSERT OR IGNORE with no id
+        remapping. attrs are canonicalized (sorted keys) or two machines would
+        hash the same expression differently and the DAG would silently fork.
+        """
+        if self._persister is None:
+            return
+        node = self.nodes.get(node_id)
+        if node is None:
+            return
+        try:
+            packed = b"".join(bytes.fromhex(a) for a in node.args)
+            kwargs = (dumps_json({k: v for k, v in node.normalized_kwargs()})
+                      if node.kwargs else None)
+            attrs = dumps_json(node.attrs) if node.attrs else None
+            self._lineage.append((bytes.fromhex(node_id), node.kind, node.operator,
+                                  packed, kwargs, attrs))
+        except (ValueError, TypeError):
+            return  # a non-hash id (tests use plain strings): nothing to record
+        if len(self._lineage) >= self._LINEAGE_BATCH:
+            self.flush_lineage()
+
+    def flush_lineage(self) -> None:
+        """Hand buffered DAG rows to the writer threads."""
+        if self._lineage and self._persister is not None:
+            self._persister.submit_lineage(self._lineage)
+            self._lineage = []
 
     def compute_ms_of(self, node_id: NodeId) -> float:
         """Measured kernel cost of a resident value; 0.0 when unknown.
@@ -413,6 +459,7 @@ class NodeTable:
             release_states(self._buffer_leases.pop(node_id, ()))
 
     def flush(self, timeout_s: float = 600.0) -> None:
+        self.flush_lineage()
         """Block until the background writer has drained (called once, at end of run).
 
         Must actually finish: the run promised to persist its critical results

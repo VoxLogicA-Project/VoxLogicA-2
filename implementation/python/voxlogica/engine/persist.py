@@ -152,6 +152,13 @@ class AsyncPersister:
         for thread in self._threads:
             thread.start()
 
+    _LINEAGE = "\x00lineage"   # queue sentinel: a DAG batch, not a value
+
+    def submit_lineage(self, rows) -> None:
+        """Queue DAG rows for the writer threads. Never blocks, never fails a run."""
+        if rows:
+            self._queue.put((self._LINEAGE, rows, {}, 0, 0.0, (), None))
+
     def submit(self, node_id: NodeId, value: Any, metadata: dict, compute_ms: float = 0.0,
                size: int | None = None) -> None:
         """Hand a value to the writer thread. Never blocks.
@@ -249,6 +256,18 @@ class AsyncPersister:
             self._write_batch(batch)
 
     def _write_batch(self, batch) -> None:
+        lineage = [item for item in batch if item[0] is self._LINEAGE]
+        if lineage:
+            batch = [item for item in batch if item[0] is not self._LINEAGE]
+            try:
+                rows = [row for item in lineage for row in item[1]]
+                put = getattr(self._backend, "put_lineage_batch", None)
+                if put is not None:
+                    put(rows)
+            except Exception:  # noqa: BLE001 — lineage must never sink a run
+                logger.exception("lineage write failed for %d rows", len(lineage))
+            if not batch:
+                return
         try:
             # Idempotent: skip values already durable on disk, so re-runs over
             # a warm cache do not rewrite unchanged payloads. The id index

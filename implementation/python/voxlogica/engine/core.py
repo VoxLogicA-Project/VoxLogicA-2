@@ -276,7 +276,10 @@ class ComputationEngine:
         self.registry.apply_imports(plan.imported_namespaces)
         self.registry.reset_runtime_state()
         for node_id, node in plan.nodes.items():
-            self.table.nodes.setdefault(node_id, node)
+            if node_id not in self.table.nodes:
+                self.table.nodes[node_id] = node
+                self.table.record_lineage(node_id)   # static plan nodes
+        self.table.flush_lineage()
 
     def submit(self, node_id: NodeId, operation: str = "value", name: str = "",
                priority: Priority = Priority.NORMAL) -> Query:
