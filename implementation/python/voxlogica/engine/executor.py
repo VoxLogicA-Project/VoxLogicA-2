@@ -191,6 +191,14 @@ class Executor:
 
     def _compute_cone_numba(self, table: NodeTable, cone: "Cone", compiled_fn: Callable,
                              binding: "ShapeBinding") -> dict[NodeId, Any]:
+        # A spatial shape (some member is a stencil) needs real axes to read
+        # neighbours from, so arrays go in as 3D views; the flat shape keeps
+        # the pre-flattened 1D convention it was generated against. Getting
+        # this backwards is not a subtle numerical difference, it is a numba
+        # typing error at call time — but the two conventions are only ever
+        # paired correctly because `spatial` is part of the ConeShape cache
+        # key, so a compiled function can never be handed the other layout.
+        spatial = binding.shape.spatial
         arrays: list[Any] = []
         ref_shape: tuple[int, ...] | None = None
         ref_geometry = None
@@ -200,20 +208,21 @@ class Executor:
             if ref_shape is None:
                 ref_shape = arr.shape
                 ref_geometry = value.geometry
-            arrays.append(np.ascontiguousarray(arr).reshape(-1))
+            contiguous = np.ascontiguousarray(arr)
+            arrays.append(contiguous if spatial else contiguous.reshape(-1))
         scalars = [float(table.values[dep_id]) for dep_id in binding.scalar_input_ids]
 
-        n = arrays[0].shape[0]
+        out_shape = ref_shape if spatial else (arrays[0].shape[0],)
         outputs = []
         for exit_id, member_idx in zip(binding.exit_ids_topo, binding.shape.out_positions):
             out_dtype = resolve_out_dtype(binding.shape, member_idx, arrays, scalars, self.registry)
-            outputs.append(acquire_numpy((n,), out_dtype))
+            outputs.append(acquire_numpy(out_shape, out_dtype))
 
         compiled_fn(*arrays, *scalars, *outputs)
 
         results: dict[NodeId, Any] = {}
-        for exit_id, flat_out in zip(binding.exit_ids_topo, outputs):
-            results[exit_id] = PolyArray.from_numpy(flat_out.reshape(ref_shape), ref_geometry)
+        for exit_id, out in zip(binding.exit_ids_topo, outputs):
+            results[exit_id] = PolyArray.from_numpy(out.reshape(ref_shape), ref_geometry)
         return results
 
     def _compute(self, table: NodeTable, node_id: NodeId) -> Any:

@@ -127,6 +127,13 @@ class ConeShape:
     array_input_count: int
     scalar_input_count: int
     out_positions: tuple[int, ...]
+    #: True when some member is a stencil, which changes the CALLING
+    #: CONVENTION, not just the loop body: arrays come in as 3D ``(z, y, x)``
+    #: views instead of pre-flattened 1D ones, because neighbour reads need
+    #: real axes. It is therefore part of the cache key even though it is
+    #: derivable from ``ops`` — two shapes that disagree here cannot share a
+    #: compiled function.
+    spatial: bool = False
 
 
 @dataclass(frozen=True)
@@ -170,11 +177,28 @@ def shape_of(cone: "Cone", table: "NodeTable", registry: "PrimitiveRegistry") ->
     for m in cone.members_topo:
         node = table.nodes[m]
         try:
-            spec = registry.get_spec(node.operator).elementwise
+            primitive = registry.get_spec(node.operator)
         except KeyError:
-            spec = None
-        if spec is None:
             return None
+        spec = primitive.elementwise
+        stencil = primitive.stencil
+        if spec is None and stencil is None:
+            return None
+        if stencil is not None:
+            # The planner only ever seeds a cone with a stencil, never grows
+            # into one (see engine/fusion.py) -- but shape_of must not TRUST
+            # that, because admitting a stencil anywhere else silently emits
+            # neighbour reads of an array that does not exist. Re-check here.
+            if member_index[m] != 0:
+                return None
+            if stencil.radius != 1:
+                # The fused form is a direct box reduction, not the separable
+                # three-pass one; that is only the better trade while the box
+                # stays inside cache. At radius 2 it is already 125 reads per
+                # voxel against 15 for three separable passes.
+                return None
+            if len(node.args) != 1:
+                return None
         ops.append(node.operator)
         refs: list[ArgRef] = []
         for arg_id in node.args:
@@ -187,6 +211,8 @@ def shape_of(cone: "Cone", table: "NodeTable", registry: "PrimitiveRegistry") ->
             if isinstance(value, bool):
                 return None  # bool is an int subclass; never a genuine scalar operand here
             if isinstance(value, (int, float)):
+                if stencil is not None:
+                    return None  # a stencil's operand is a volume, never a scalar
                 idx = scalar_input_index.setdefault(arg_id, len(scalar_input_index))
                 refs.append(ArgRef("scalar_input", idx))
                 continue
@@ -200,6 +226,15 @@ def shape_of(cone: "Cone", table: "NodeTable", registry: "PrimitiveRegistry") ->
                 # would silently "succeed" per-component. Bit-identical means
                 # identical failures too — refuse, let Stage A raise.
                 return None
+            if stencil is not None:
+                # Outside its declared dtypes the real kernel CASTS before it
+                # dilates, and a truncating cast is not a per-voxel function of
+                # the original array (float 256.0 becomes 0). Refuse rather
+                # than approximate.
+                if _dtype.name not in stencil.input_dtypes:
+                    return None
+                if len(geometry.spacing) != 3:
+                    return None  # the spatial nest is written for volumes
             if reference_geometry is None:
                 reference_geometry = geometry
             elif geometry != reference_geometry:
@@ -220,6 +255,7 @@ def shape_of(cone: "Cone", table: "NodeTable", registry: "PrimitiveRegistry") ->
         array_input_count=len(array_input_index),
         scalar_input_count=len(scalar_input_index),
         out_positions=out_positions,
+        spatial=any(registry.get_spec(op).stencil is not None for op in ops),
     )
     array_input_ids = tuple(sorted(array_input_index, key=array_input_index.get))
     scalar_input_ids = tuple(sorted(scalar_input_index, key=scalar_input_index.get))
@@ -228,6 +264,13 @@ def shape_of(cone: "Cone", table: "NodeTable", registry: "PrimitiveRegistry") ->
 
 def _expr_for(registry: "PrimitiveRegistry", operator: str) -> str:
     return registry.get_spec(operator).elementwise.expr
+
+
+def _stencil_for(registry: "PrimitiveRegistry", operator: str) -> Any | None:
+    try:
+        return registry.get_spec(operator).stencil
+    except KeyError:
+        return None
 
 
 _ARG_DTYPE_RE = re.compile(r"^arg(\d+)$")
@@ -247,7 +290,10 @@ def resolve_out_dtype(shape: ConeShape, member_idx: int,
     the leaf case — the recursion terminates because cone members are a DAG in
     topological order, so a "member" ref always points strictly earlier.
     """
-    out_dtype = registry.get_spec(shape.ops[member_idx]).elementwise.out_dtype
+    spec = registry.get_spec(shape.ops[member_idx])
+    # A stencil member never declares "argN": its output type is fixed by the
+    # morphological op's own ITK semantics, not by what flowed in.
+    out_dtype = spec.elementwise.out_dtype if spec.elementwise is not None else spec.stencil.out_dtype
     m = _ARG_DTYPE_RE.match(out_dtype)
     if m is None:
         return np.dtype(out_dtype)
@@ -261,14 +307,28 @@ def resolve_out_dtype(shape: ConeShape, member_idx: int,
 
 
 def _generate_source(shape: ConeShape, registry: "PrimitiveRegistry") -> str:
-    """Build the Python source for one flat, per-voxel loop over a cone.
+    """Build the Python source for one per-voxel loop over a cone.
 
-    All array inputs and outputs are passed as pre-flattened 1D views (the
-    caller reshapes to/from the original shape) — this keeps the generated
-    loop nest ndim-agnostic: a 2D, 3D, or vector-image cone all compile to
-    the exact same *shape of code*, differing only in the runtime array
-    sizes numba specializes on.
+    Two loop shapes, chosen by ``shape.spatial``:
+
+    Flat (the common case, no stencil members). All array inputs and outputs
+    are passed as pre-flattened 1D views (the caller reshapes to/from the
+    original shape) — this keeps the generated loop nest ndim-agnostic: a 2D,
+    3D, or vector-image cone all compile to the exact same *shape of code*,
+    differing only in the runtime array sizes numba specializes on.
+
+    Spatial (some member is a stencil). Arrays arrive as 3D ``(z, y, x)``
+    views and the nest is explicit, because a neighbour read needs real axes.
+    This is strictly less general than the flat path — hence keeping both,
+    rather than making everything spatial: the flat form is what the vast
+    majority of cones are, it is already tuned, and it works at any ndim.
     """
+    if shape.spatial:
+        return _generate_spatial_source(shape, registry)
+    return _generate_flat_source(shape, registry)
+
+
+def _generate_flat_source(shape: ConeShape, registry: "PrimitiveRegistry") -> str:
     array_params = [f"arr{i}" for i in range(shape.array_input_count)]
     scalar_params = [f"scalar{i}" for i in range(shape.scalar_input_count)]
     out_params = [f"out{i}" for i in range(len(shape.out_positions))]
@@ -294,6 +354,114 @@ def _generate_source(shape: ConeShape, registry: "PrimitiveRegistry") -> str:
             lines.append(f"        out{out_slot_of_member[member_idx]}[_i] = m{member_idx}")
 
     return "\n".join(lines) + "\n"
+
+
+def _generate_spatial_source(shape: ConeShape, registry: "PrimitiveRegistry") -> str:
+    """The 3D-indexed variant, for cones containing a stencil member.
+
+    The stencil's reduction is emitted as a fully unrolled sequence of clamped
+    reads rather than a triple ``range(-r, r+1)`` loop: at radius 1 that is 27
+    reads whose clamped indices are loop-invariant in x for two of the three
+    axes, and unrolling lets numba hoist and vectorize them. It also keeps the
+    generated source readable, which matters more here than usual — a
+    mis-generated stencil is a silent wrong-answer bug, and
+    ``_write_source_for_debugging`` dumps this to a real file precisely so it
+    can be read back and checked by eye.
+
+    Note this is a DIRECT box reduction, not the separable three-pass form the
+    standalone kernel uses. Separability needs whole-array intermediates,
+    which is exactly the round trip fusion exists to delete; inside a cone the
+    27 reads are already resident in cache. That trade only holds at small
+    radius, which is why ``shape_of`` refuses radius > 1.
+    """
+    array_params = [f"arr{i}" for i in range(shape.array_input_count)]
+    scalar_params = [f"scalar{i}" for i in range(shape.scalar_input_count)]
+    out_params = [f"out{i}" for i in range(len(shape.out_positions))]
+    params = array_params + scalar_params + out_params
+
+    lines = [f"def _cone_kernel({', '.join(params)}):"]
+    lines.append(f"    nz, ny, nx = {array_params[0]}.shape")
+
+    # Clamped neighbour indices along z and y are invariant in the inner loop,
+    # so they are bound once per z / per y rather than recomputed for every
+    # voxel. That is 18 of the 27 index computations lifted out of the hot
+    # loop at radius 1. (LLVM can often hoist these itself, but only when it
+    # can prove the min/max is loop-invariant through the array indexing;
+    # emitting them already hoisted costs nothing and does not rely on it.)
+    radii = sorted({s.radius for s in (_stencil_for(registry, op) for op in shape.ops)
+                    if s is not None})
+    lines.append("    for _z in range(nz):")
+    for r in radii:
+        for d in range(-r, r + 1):
+            if d != 0:
+                lines.append(f"        _z{_offset_name(d)} = {_clamped(d, '_z', 'nz')}")
+    lines.append("        for _y in range(ny):")
+    for r in radii:
+        for d in range(-r, r + 1):
+            if d != 0:
+                lines.append(f"            _y{_offset_name(d)} = {_clamped(d, '_y', 'ny')}")
+    lines.append("            for _x in range(nx):")
+    body = " " * 16
+
+    out_slot_of_member = {member_idx: slot for slot, member_idx in enumerate(shape.out_positions)}
+    for member_idx, (op, refs) in enumerate(zip(shape.ops, shape.arg_refs)):
+        stencil = _stencil_for(registry, op)
+        if stencil is not None:
+            src = f"arr{refs[0].index}"  # shape_of guarantees a single array_input arg
+            radius = stencil.radius
+            better = ">" if stencil.reduce == "max" else "<"
+            centre = stencil.neighbour_expr.format(f"{src}[_z, _y, _x]")
+            lines.append(f"{body}_acc{member_idx} = {centre}")
+            for dz in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    for dx in range(-radius, radius + 1):
+                        if dz == 0 and dy == 0 and dx == 0:
+                            continue
+                        zz = "_z" if dz == 0 else f"_z{_offset_name(dz)}"
+                        yy = "_y" if dy == 0 else f"_y{_offset_name(dy)}"
+                        xx = _clamped(dx, "_x", "nx")
+                        value = stencil.neighbour_expr.format(f"{src}[{zz}, {yy}, {xx}]")
+                        lines.append(f"{body}_v = {value}")
+                        lines.append(f"{body}if _v {better} _acc{member_idx}:")
+                        lines.append(f"{body}    _acc{member_idx} = _v")
+            result = stencil.result_expr.format(f"_acc{member_idx}", f"{src}[_z, _y, _x]")
+            lines.append(f"{body}m{member_idx} = {result}")
+        else:
+            placeholders = []
+            for ref in refs:
+                if ref.kind == "member":
+                    placeholders.append(f"m{ref.index}")
+                elif ref.kind == "array_input":
+                    placeholders.append(f"arr{ref.index}[_z, _y, _x]")
+                else:
+                    placeholders.append(f"scalar{ref.index}")
+            lines.append(f"{body}m{member_idx} = {_expr_for(registry, op).format(*placeholders)}")
+        if member_idx in out_slot_of_member:
+            slot = out_slot_of_member[member_idx]
+            lines.append(f"{body}out{slot}[_z, _y, _x] = m{member_idx}")
+
+    return "\n".join(lines) + "\n"
+
+
+def _offset_name(delta: int) -> str:
+    """A python-identifier-safe suffix for a signed neighbour offset."""
+    return f"m{-delta}" if delta < 0 else f"p{delta}"
+
+
+def _clamped(delta: int, var: str, extent: str) -> str:
+    """A neighbour index expression that replicates the edge voxel.
+
+    Clamping, not wrapping and not skipping: it is what
+    ``sitk.BinaryDilate``'s boundary handling reduces to for a box structuring
+    element, and it matches the standalone kernel exactly (see
+    ``kernels._dilate_box3_separable``). Emitted as ``min``/``max`` rather
+    than a branch so numba can keep the inner loop branch-free.
+    """
+    if delta == 0:
+        return var
+    if delta < 0:
+        return f"max({var} - {-delta}, 0)"
+    return f"min({var} + {delta}, {extent} - 1)"
 
 
 def _write_source_for_debugging(source: str) -> str:

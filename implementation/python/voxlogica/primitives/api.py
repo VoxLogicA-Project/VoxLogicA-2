@@ -101,6 +101,45 @@ class ElementwiseSpec:
 
 
 @dataclass(frozen=True)
+class StencilSpec:
+    """Opt-in metadata marking a primitive as a fusable NEIGHBOURHOOD op.
+
+    An ``ElementwiseSpec`` member reads its inputs at the voxel being written;
+    a stencil member reads them across a ``(2*radius+1)**3`` box around it.
+    That difference is why the two cannot share one spec: the fused loop must
+    switch from flat 1D indexing to a real ``(z, y, x)`` nest with clamped
+    boundary reads, which is a different calling convention (see
+    ``engine/numba_fusion.py::ConeShape.spatial``).
+
+    The generated code is::
+
+        acc = <reduce> over the box of ``neighbour_expr``
+        out = ``result_expr`` formatted with (acc, centre voxel)
+
+    ``neighbour_expr`` and ``result_expr`` take ``{0}``/``{1}`` placeholders
+    rather than being hardcoded because a morphological op's exact ITK
+    semantics are rarely the naive reduction: ``vox1.near`` is not "max over
+    the box", it is "1 where a voxel *equal to 1* is in the box, else the
+    ORIGINAL voxel", since sitk.BinaryDilate copies its input and then sets
+    dilated pixels to the foreground value. Encoding that faithfully is the
+    whole point — a fused kernel that is 24x faster but not bit-identical is
+    not a fused kernel, it is a bug.
+
+    ``input_dtypes`` names the numpy dtypes for which the expressions above
+    are known bit-identical to the real kernel. Anything else refuses Stage B
+    and takes the normal path, so widening a stencil's applicability is a
+    deliberate act that has to be backed by a test.
+    """
+
+    radius: int
+    reduce: str  # "max" or "min"
+    neighbour_expr: str  # over {0} = a neighbour's value
+    result_expr: str  # over {0} = the reduction, {1} = the centre voxel
+    out_dtype: str
+    input_dtypes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class PrimitiveSpec:
     """Primitive descriptor consumed by the planner and runtime."""
 
@@ -114,6 +153,7 @@ class PrimitiveSpec:
     description: str = ""
     is_legacy_adapter: bool = False
     elementwise: ElementwiseSpec | None = None
+    stencil: StencilSpec | None = None
 
     @property
     def qualified_name(self) -> str:

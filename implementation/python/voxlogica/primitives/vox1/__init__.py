@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from voxlogica.primitives.api import AritySpec, ElementwiseSpec, PrimitiveSpec, default_planner_factory
+from voxlogica.primitives.api import (
+    AritySpec,
+    ElementwiseSpec,
+    PrimitiveSpec,
+    StencilSpec,
+    default_planner_factory,
+)
 from voxlogica.primitives.vox1 import kernels
 
 
@@ -57,6 +63,37 @@ _ELEMENTWISE: dict[str, ElementwiseSpec] = {
     # boundary instead of breaking there -- see manuscripts/engine-scaling-
     # 2026-07.md Part IV for the measurement this was added to chase.
     "mask": ElementwiseSpec(expr="({0} if {1} != 0 else 0.0)", out_dtype="arg0"),
+}
+
+# Neighbourhood opt-in for schedule-time fusion. Unlike _ELEMENTWISE these can
+# only ever be a cone's SEED, never grown into (engine/fusion.py) — a stencil
+# reads its input at neighbouring voxels, and a non-seed member's input is a
+# value the fused loop computes on the fly and never materializes, so there is
+# nothing to read a neighbour OF. A seed's dependencies are guaranteed already
+# resident, which makes the read well-defined.
+_STENCIL: dict[str, StencilSpec] = {
+    # near(image) == sitk.BinaryDilate(cast_to_uint8(image), [1,1,1], Box, 1.0).
+    #
+    # Not "max over the 3x3x3 box": BinaryDilate copies its input and then sets
+    # dilated voxels to the foreground value, so foreground is `== 1` (not
+    # `!= 0`) and a voxel holding some other value is neither foreground nor
+    # erased — it survives unless a genuine 1 dilates over it. Both details are
+    # live, because _as_bool_image CASTS (truncating) rather than thresholds,
+    # so any non-0/1 input reaches the kernel with its stray values intact.
+    # See kernels._dilate_box3_separable and tests/unit/test_vox1_near.py,
+    # where this exact semantics is pinned against ITK over 57 configurations.
+    #
+    # uint8 only: for any other input dtype the real kernel casts FIRST, and a
+    # truncating cast is not expressible as a per-voxel read of the original
+    # array (float 256.0 becomes 0). Those calls take the normal path.
+    "near": StencilSpec(
+        radius=1,
+        reduce="max",
+        neighbour_expr="(1 if {0} == 1 else 0)",
+        result_expr="(1 if {0} == 1 else {1})",
+        out_dtype="uint8",
+        input_dtypes=("uint8",),
+    ),
 }
 
 _PRIMITIVES: dict[str, tuple[Callable[..., Any], AritySpec]] = {
@@ -159,6 +196,7 @@ def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
             kernel_name=qualified,
             description=(kernel.__doc__ or "").strip(),
             elementwise=_ELEMENTWISE.get(primitive_name),
+            stencil=_STENCIL.get(primitive_name),
         )
         specs[primitive_name] = (spec, kernel)
     return specs

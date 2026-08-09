@@ -23,6 +23,18 @@ A cone never crosses a SimpleITK op boundary: only primitives whose
 (morphology, distance transforms, resampling, ...) is where a cone always
 stops, and the normal single-node dispatch path runs it unchanged.
 
+One exception, and it is deliberately narrow: a primitive with a
+``PrimitiveSpec.stencil`` (a neighbourhood op, e.g. ``vox1.near``) may be a
+cone's SEED, but is never grown into. A stencil reads its input at
+*neighbouring* voxels, and the growth rule above admits members whose inputs
+are other cone members — values the fused loop computes per-voxel on the fly
+and never materializes, so there is no array to read a neighbour of. A seed is
+different: ``plan``'s contract is that every one of the seed's dependencies is
+already resident, which makes the neighbour read well-defined. So a stencil
+can OPEN a cone that then absorbs its elementwise consumers (the ~2700
+``near``-rooted cones in the oracle sweep), but a ``near`` sitting downstream
+of other fusable work still ends its predecessor's cone.
+
 Growth is O(cone size × node degree) — only dict/set lookups and
 ``DependencyGraph._dependents`` list walks, never a traversal of the whole
 graph or plan, preserving the engine's central O(frontier) discipline.
@@ -71,6 +83,17 @@ def _elementwise_spec(registry: "PrimitiveRegistry", node: Any) -> Any | None:
     return spec.elementwise
 
 
+def _stencil_spec(registry: "PrimitiveRegistry", node: Any) -> Any | None:
+    """A node's ``StencilSpec``, or None if it is not a fusable neighbourhood op."""
+    if node.kind != "primitive":
+        return None
+    try:
+        spec = registry.get_spec(node.operator)
+    except KeyError:
+        return None
+    return spec.stencil
+
+
 def _materialized_shape(table: "NodeTable", dep_id: NodeId) -> tuple[int, ...] | None:
     """The resident shape of a dependency's value, or None (scalar/no shape)."""
     value = table.values.get(dep_id)
@@ -95,7 +118,8 @@ class FusionPlanner:
         one node — see ``ComputationEngine._worker``).
         """
         seed_node = table.nodes[seed]
-        if _elementwise_spec(self.registry, seed_node) is None:
+        if (_elementwise_spec(self.registry, seed_node) is None
+                and _stencil_spec(self.registry, seed_node) is None):
             return None
 
         ref_shape = None
