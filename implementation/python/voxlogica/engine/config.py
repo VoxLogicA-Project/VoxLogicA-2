@@ -128,7 +128,14 @@ class EngineConfig:
     #: numba_fusion.py's ``_MIN_MEMBERS_FOR_STAGE_B``) — below this, the
     #: mandatory numpy->sitk conversion at the cone's exit costs more than
     #: the compiled loop saves; measured net LOSS, not just a wash.
-    numba_min_members: int = 12
+    # Minimum cone size for the numba backend. Was 12, which this workload's
+    # cones never reach (measured mean 3.24; cones_numba stayed 0 on every
+    # run). Swept at 12/3/2 on the 1-case reproducer, bit-exact results:
+    # 249.1 s / 237.1 s / 231.3 s, with minor faults down 25% at 2 -- fused
+    # loops skip the intermediate volumes entirely. Compile-storm risk is why
+    # the gate exists; the sweep showed none (compiles are per-shape and this
+    # workload is single-shaped).
+    numba_min_members: int = 2
 
     @classmethod
     def from_env(cls, max_concurrency: int, max_live_bytes: int = 0) -> "EngineConfig":
@@ -174,5 +181,5 @@ class EngineConfig:
             fusion_enabled=fusion_enabled,
             fusion_cap=_env_int("VOXLOGICA_FUSION_CAP") or 64,
             numba_fusion_enabled=numba_fusion_enabled,
-            numba_min_members=_env_int("VOXLOGICA_NUMBA_MIN_MEMBERS") or 12,
+            numba_min_members=_env_int("VOXLOGICA_NUMBA_MIN_MEMBERS") or 2,
         )
