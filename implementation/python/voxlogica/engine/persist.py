@@ -25,6 +25,7 @@ from typing import Any
 from voxlogica.buffer_pool import buffer_states, release_states, retain_states
 from voxlogica.lazy.ir import NodeId
 from voxlogica.storage import StorageBackend
+from voxlogica.value_model import PayloadSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,10 @@ def _payload_snapshot(value):
     Only image-like values alias ITK memory; scalars, bytes and sequences are
     already owned by Python and are left alone (returning None makes the
     encoder use its normal path).
+
+    dtype/shape/size are captured HERE, with the copy, because every later
+    reader of them runs on a writer thread where touching the live value means
+    building a SimpleITK array view against memory ITK may already have freed.
     """
     try:
         np_fn = getattr(value, "np", None)
@@ -79,7 +84,12 @@ def _payload_snapshot(value):
         view = memoryview(array)
         if not view.c_contiguous:
             return None
-        return memoryview(bytes(view.cast("B")))
+        return PayloadSnapshot(
+            data=memoryview(bytes(view.cast("B"))),
+            dtype=str(array.dtype),
+            shape=tuple(int(v) for v in array.shape),
+            size=int(array.size),
+        )
     except Exception:  # noqa: BLE001 - never break a write over a snapshot
         return None
 

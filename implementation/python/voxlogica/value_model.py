@@ -3,10 +3,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 import math
 
 from voxlogica.arrays import PolyArray
+
+
+class PayloadSnapshot(NamedTuple):
+    """An image payload copied OFF the ITK buffer, plus the shape facts about it.
+
+    The bytes alone are not enough. Describing an image needs dtype/shape/size,
+    and reading those back off the live value means building a SimpleITK array
+    view — the exact call that races ITK's own frees and segfaults the writer.
+    They are cheap to record at snapshot time, on the event loop, where the copy
+    is already being made and the kernels are ordered against it; so they are
+    recorded there and travel with the bytes.
+    """
+    data: Any                    # memoryview of the copied bytes
+    dtype: str
+    shape: tuple[int, ...]
+    size: int
 
 
 VOX_FORMAT_VERSION = "voxpod/1"
@@ -258,13 +274,23 @@ class VoxImageValue(VoxValue):
             }
         return {"runtime": "array"}
 
-    def describe(self, *, path: str = "") -> dict[str, Any]:
-        array = self.as_array()
+    def describe(self, *, path: str = "", snapshot: PayloadSnapshot | None = None) -> dict[str, Any]:
+        """``snapshot`` supplies dtype/shape/size taken off the event loop.
+
+        Without it this materialises a live array view purely to read three
+        numbers, and on a writer thread that view is a use-after-free waiting
+        for ITK to free the buffer underneath it.
+        """
+        if snapshot is not None:
+            dtype, shape, size = snapshot.dtype, snapshot.shape, snapshot.size
+        else:
+            array = self.as_array()
+            dtype, shape, size = str(array.dtype), array.shape, array.size
         payload = self.descriptor_base(path=path, can_descend=True)
         payload["summary"] = {
-            "dtype": str(array.dtype),
-            "shape": [int(v) for v in array.shape],
-            "size": int(array.size),
+            "dtype": str(dtype),
+            "shape": [int(v) for v in shape],
+            "size": int(size),
             **self.storage_metadata(),
         }
         return payload

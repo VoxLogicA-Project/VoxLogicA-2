@@ -155,7 +155,13 @@ def encode_for_storage(value: Any, *, page_size: int = 128,
     the event loop, ordered with the kernels, and passes it here.
     """
     adapted = adapt_runtime_value(value)
-    descriptor = adapted.describe(path="")
+    # The snapshot carries the shape facts precisely so describing an image does
+    # not have to reach back into ITK memory from this thread. Only images have
+    # one; everything else describes itself from memory Python owns.
+    if payload_snapshot is not None and isinstance(adapted, VoxImageValue):
+        descriptor = adapted.describe(path="", snapshot=payload_snapshot)
+    else:
+        descriptor = adapted.describe(path="")
     vox_type = str(descriptor.get("vox_type", adapted.vox_type))
 
     if vox_type in {"null", "boolean", "integer", "number", "string"}:
@@ -168,17 +174,24 @@ def encode_for_storage(value: Any, *, page_size: int = 128,
         )
 
     if isinstance(adapted, VoxImageValue):
-        array = adapted.as_array()
+        # Same rule as the descriptor above: with a snapshot, dtype/shape come
+        # from it and the live array is never materialised on this thread.
+        if payload_snapshot is not None:
+            dtype, shape = payload_snapshot.dtype, payload_snapshot.shape
+            payload_bytes = payload_snapshot.data
+        else:
+            array = adapted.as_array()
+            dtype, shape = str(array.dtype), array.shape
+            payload_bytes = _array_byte_view(array)
         payload_json = {
             "encoding": "image-array-binary-v1",
-            "dtype": str(array.dtype),
-            "shape": [int(v) for v in array.shape],
+            "dtype": str(dtype),
+            "shape": [int(v) for v in shape],
             "order": "C",
             "byte_order": "little",
             "metadata": adapted.storage_metadata(),
         }
-        payload_bin = _compress(payload_snapshot if payload_snapshot is not None
-                                else _array_byte_view(array))
+        payload_bin = _compress(payload_bytes)
         return EncodedRecord(VOX_FORMAT_VERSION, "image", descriptor, payload_json, payload_bin)
 
     if isinstance(adapted, VoxBytesValue):
