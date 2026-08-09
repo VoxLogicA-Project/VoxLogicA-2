@@ -57,6 +57,16 @@ def _auto_cache_max_bytes(payload_dir) -> int:
     except OSError:
         return DEFAULT_CACHE_MAX_BYTES
     return max(32 * 1024 ** 3, int(free * 0.5))
+
+
+#: Free space the cache must never consume, whatever its budget says. A budget
+#: is a promise made once; the disk is shared with everything else on the host
+#: (and with this run's own SQLite file and spill), so the promise goes stale.
+_DISK_RESERVE_MIN_BYTES = 50 * 1024 ** 3
+_DISK_RESERVE_FRACTION = 0.05
+#: Seconds between statvfs probes. The ceiling only moves as fast as the disk
+#: fills, so probing on every persist batch would burn syscalls for nothing.
+_DISK_PROBE_INTERVAL_S = 5.0
 # Maximum number of value-bearing entries kept in the in-memory cache tier.
 # Overridable via VOXLOGICA_MEMORY_CACHE_CAPACITY for memory-heavy runs.
 DEFAULT_MEMORY_CACHE_CAPACITY = 1024
@@ -207,6 +217,9 @@ class SQLiteResultsDatabase:
         self.runtime_version = runtime_version or "unknown"
         self._max_bytes = (_auto_cache_max_bytes(self.payload_dir)
                            if max_bytes is None else max_bytes)
+        # Cached disk-pressure ceiling; see _effective_max_bytes.
+        self._disk_ceiling: int | None = None
+        self._disk_ceiling_at = 0.0
         # Guard installed by the engine: "this node's RAM copy is waiting on its
         # disk copy". Evicting such a payload strands the live value — see
         # _enforce_budget.
@@ -649,6 +662,38 @@ class SQLiteResultsDatabase:
         self._stats[tier] += 1  # evicted_dead | evicted_live
         self._stats["evicted_bytes"] += int(nbytes or 0)
 
+    def _effective_max_bytes(self) -> int:
+        """The budget actually enforced right now: the configured one, capped by
+        what the disk can still give.
+
+        ``_auto_cache_max_bytes`` reads free space ONCE, at construction. That
+        number is a snapshot of a quantity this very cache is busy consuming: a
+        sweep starting with 1.7 TB free gets an ~850 GB budget and then grows
+        toward it while free space falls by the same amount, so the budget stops
+        describing the disk almost immediately. Anything else sharing the volume
+        makes it worse, and the failure is not graceful -- a full disk surfaces
+        as ENOSPC/EDQUOT inside the persister, mid-run.
+
+        So the ceiling is re-derived from CURRENT free space: allow the payload
+        to grow into what is there, minus a reserve that stays free. This binds
+        an explicit --cache-max-gb too; a budget larger than the disk is not a
+        budget the disk can honour, and silently overrunning it helps nobody.
+        """
+        now = time.time()
+        if self._disk_ceiling is None or (now - self._disk_ceiling_at) >= _DISK_PROBE_INTERVAL_S:
+            try:
+                usage = shutil.disk_usage(self.payload_dir)
+                reserve = max(_DISK_RESERVE_MIN_BYTES, int(usage.total * _DISK_RESERVE_FRACTION))
+                # Headroom the payload tier may occupy while leaving `reserve`
+                # free: what it holds now, plus what is free, less the reserve.
+                self._disk_ceiling = max(0, self._payload_bytes + usage.free - reserve)
+            except OSError:
+                self._disk_ceiling = self._max_bytes  # no probe: fall back to the budget
+            self._disk_ceiling_at = now
+        if self._max_bytes <= 0:
+            return self._disk_ceiling      # "unbounded" still may not fill the disk
+        return min(self._max_bytes, self._disk_ceiling)
+
     def _enforce_budget(self) -> None:
         """Evict payloads to stay under budget: dead values first, live only if forced.
 
@@ -658,9 +703,10 @@ class SQLiteResultsDatabase:
         A value still needed by active work (``live``) is evicted only when no dead
         value remains — a last resort. Evicted values stay regenerable from lineage.
         """
-        if self._max_bytes <= 0 or self._payload_bytes <= self._max_bytes:
+        budget = self._effective_max_bytes()
+        if budget <= 0 or self._payload_bytes <= budget:
             return
-        low_water = int(self._max_bytes * 0.9)
+        low_water = int(budget * 0.9)
         with self._lock:
             live = set(self._live_node_ids)  # snapshot to avoid lock contention
             while self._payload_bytes > low_water:
@@ -696,6 +742,7 @@ class SQLiteResultsDatabase:
             "payload_entries": int(payload_rows),
             "payload_bytes": self._payload_bytes,
             "max_bytes": self._max_bytes,
+            "effective_max_bytes": self._effective_max_bytes(),
             "compute_ms_banked": float(total_ms),
             **dict(self._stats),
             "most_expensive": [{"node": n[:12], "compute_ms": round(c, 1), "bytes": b} for n, c, b in top],

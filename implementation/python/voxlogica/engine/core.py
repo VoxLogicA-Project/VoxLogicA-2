@@ -68,7 +68,7 @@ _PROGRESS_BATCH = 64  # completions folded into one progress-bar refresh
 #: Long enough that one slow kernel does not make the figure jitter, short
 #: enough that it leaves a multi-minute startup prologue behind on its own
 #: rather than averaging it in for the rest of the run.
-_RATE_WINDOW_S = 10.0
+_RATE_WINDOW_S = 60.0
 
 _EVICT_SWEEP = 256      # candidates examined per _reclaim_memory call (bounds the work)
 
@@ -965,9 +965,12 @@ class ComputationEngine:
         t0, done0 = self._rate_samples[0]
         window_s = now - t0
         window_done = self._nodes_done - done0
-        # Before the window has any span to speak of, report over the whole run:
-        # some number is better than none, and it is honest about what it covers.
-        rate = (window_done / window_s) if window_s > 0.5 and window_done else \
+        # Report over whatever span the window has, from the very first refresh:
+        # a partial window is already the right answer for the period it covers,
+        # and short-circuiting to a whole-run average would reintroduce exactly
+        # the origin this replaced. Only the degenerate first sample (no span,
+        # nothing completed) falls back.
+        rate = (window_done / window_s) if window_s > 1e-6 else \
                self._nodes_done / max(1e-6, now - self._progress_start)
         elapsed = max(1e-6, now - self._progress_start)
         # `known` = nodes discovered so far (graph.registered_total). It grows
