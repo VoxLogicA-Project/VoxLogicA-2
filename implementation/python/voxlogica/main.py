@@ -43,8 +43,42 @@ def _reexec_without_gil() -> None:
              [sys.executable, "-X", "gil=0", "-m", "voxlogica.main", *sys.argv[1:]])
 
 
+def _tune_glibc_for_volumes() -> None:
+    """Keep volume-sized allocations reusable instead of mmap/munmap'd.
+
+    glibc serves any allocation above M_MMAP_THRESHOLD (default 128 KB) with a
+    private mmap and returns it with munmap on free. Every volume this engine
+    touches is 9-35 MB, so each alloc/free cycle unmaps the pages and the next
+    allocation faults them back one by one, zeroed by the kernel. Measured on
+    the 369 sweep: 881,158 minor faults/s and 20.3% system time -- about five
+    of 24 cores doing nothing but page bookkeeping, with the fault traffic
+    (faults x 4 KB ~ 3.4 GB/s) equal to the engine's entire measured value
+    traffic, i.e. essentially every byte written landed on a fresh page.
+
+    Raising the threshold keeps those blocks on the heap's free lists, where
+    free/alloc is a pointer swap and the pages stay mapped and warm. The heap
+    then holds freed volumes instead of returning them to the OS; that memory
+    is bounded by the engine's own budget/ceiling machinery, which measures
+    RSS-level usage (accounted_bytes) and throttles admission, so the
+    retention is governed, not hidden.
+
+    ctypes into libc, not an environment variable: the engine must self-tune
+    on any host it lands on (AGENT.md: no env-var fixes). Non-Linux or a
+    missing symbol is a silent no-op.
+    """
+    import ctypes
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        M_MMAP_THRESHOLD, M_TRIM_THRESHOLD = -3, -1
+        libc.mallopt(M_MMAP_THRESHOLD, 64 * 1024 * 1024)
+        libc.mallopt(M_TRIM_THRESHOLD, 256 * 1024 * 1024)
+    except (OSError, AttributeError, TypeError):
+        pass
+
+
 if __name__ == "__main__":
     _reexec_without_gil()
+    _tune_glibc_for_volumes()
 
 import argparse
 import faulthandler
