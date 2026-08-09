@@ -64,6 +64,12 @@ _SEQUENCE_OPERATORS = {"default.sequence", "sequence", "default.map", "map",
 
 _PROGRESS_BATCH = 64  # completions folded into one progress-bar refresh
 
+#: Nodes to complete before the throughput window opens. Below this the figure
+#: is a whole-run average; above it, throughput since steady state (see
+#: _flush_progress). 500 is ~2 s of steady-state work and comfortably past
+#: planning and the first prologue dispatches.
+_RATE_WARMUP_NODES = 500
+
 _EVICT_SWEEP = 256      # candidates examined per _reclaim_memory call (bounds the work)
 
 # Compact one-line bar: a small FIXED-width bar ({bar:12}) so it never balloons
@@ -143,6 +149,10 @@ class ComputationEngine:
         self._progress_op = ""         # most recent operator, shown in the postfix
         self._nodes_done = 0           # cumulative node completions (postfix counter)
         self._progress_start = 0.0     # perf_counter at bar creation, for the node rate
+        # The rate is measured from a LATER origin than the bar's creation: see
+        # _flush_progress. Set once, when the warm-up threshold is crossed.
+        self._rate_origin = 0.0        # perf_counter when rate measurement began
+        self._rate_origin_done = 0     # _nodes_done at that instant
 
         # ── The four parts (all event-loop owned; see module docstrings) ──
         self.graph = DependencyGraph(self.table)
@@ -930,8 +940,33 @@ class ComputationEngine:
         without this, the op name used to sit mid-line and made the ETA/rate
         dance left and right as it changed length every refresh.
         """
-        elapsed = max(1e-6, time.perf_counter() - self._progress_start)
-        rate = self._nodes_done / elapsed
+        # RATE ORIGIN, not run origin. Measuring from t=0 folds planning, the
+        # store's id-index scan and the first per-case prologues into a
+        # cumulative average that then takes minutes to shed them: the figure
+        # crawls up from ~10 node/s and understates the engine for most of a
+        # run, which reads as "the sweep is slow" when it is not. Restarting
+        # the window after a warm-up (_RATE_WARMUP_NODES) makes the number mean
+        # "throughput since the engine reached steady state". Still an average
+        # over that window -- it smooths deliberately, so a single slow kernel
+        # does not make it jitter -- but the window no longer contains the
+        # startup transient.
+        now = time.perf_counter()
+        if self._rate_origin == 0.0:
+            if self._nodes_done < _RATE_WARMUP_NODES:
+                # Before the threshold, report over the whole run: some number
+                # is better than none, and it is honest about what it covers.
+                rate = self._nodes_done / max(1e-6, now - self._progress_start)
+            else:
+                self._rate_origin = now
+                self._rate_origin_done = self._nodes_done
+                rate = self._nodes_done / max(1e-6, now - self._progress_start)
+        if self._rate_origin != 0.0:
+            window_done = self._nodes_done - self._rate_origin_done
+            window_s = now - self._rate_origin
+            # Guard the instant the window opens (window_s ~ 0, window_done 0).
+            rate = (window_done / window_s) if window_s > 0.5 and window_done else \
+                   self._nodes_done / max(1e-6, now - self._progress_start)
+        elapsed = max(1e-6, now - self._progress_start)
         # `known` = nodes discovered so far (graph.registered_total). It grows
         # monotonically as loops unroll and stops growing once the plan is fully
         # expanded — at which point it IS the true total node count. Shown as a
