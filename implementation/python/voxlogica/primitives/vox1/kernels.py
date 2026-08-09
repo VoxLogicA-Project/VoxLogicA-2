@@ -1175,6 +1175,12 @@ def volume(image: object) -> float:
     """Number of true (nonzero) voxels."""
     img = _as_image(image, "image")
     _remember_base(img)
+    if img.GetPixelID() == sitk.sitkUInt8:
+        # uint8 is unsigned, so (v > 0) is exactly (v != 0), which is the
+        # predicate count_nonzero already applies. Going through the general
+        # path below would allocate an 8.9M-voxel bool temporary to compute a
+        # mask that is then immediately reduced to a single integer.
+        return float(np.count_nonzero(pinned_view(img)))
     values = _flatten_image(_as_bool_image(img), np.uint8)
     return float(np.count_nonzero(values > 0))
 
