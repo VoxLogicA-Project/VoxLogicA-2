@@ -33,18 +33,52 @@ logger = logging.getLogger(__name__)
 _TRACE_PATH = os.environ.get("VOXLOGICA_TRACE_PERSIST", "")
 
 
+_TRACE_SLOT = 256          # bytes per writer thread
+_TRACE_SLOTS = 32
+_TRACE_MMAP = None
+_TRACE_IDS: dict[int, int] = {}
+_TRACE_LOCK = threading.Lock()
+
+
+def _trace_mmap():
+    """Shared mmap holding one 'currently serializing' record per writer.
+
+    A file-based trace CANNOT be used here: writing + fsync per batch perturbs
+    the writer timing enough that the SIGSEGV under investigation stops
+    reproducing entirely (6 clean runs against a ~60%-per-run base rate). An
+    mmap write is a plain store to memory — no syscall, no lock, no I/O — so it
+    cannot reorder the race it is meant to observe, and the kernel still
+    flushes the dirty page after the process dies, so the record survives the
+    crash that produced it.
+    """
+    global _TRACE_MMAP
+    if _TRACE_MMAP is None:
+        with _TRACE_LOCK:
+            if _TRACE_MMAP is None:
+                import mmap
+                size = _TRACE_SLOT * _TRACE_SLOTS
+                with open(_TRACE_PATH, "wb") as handle:
+                    handle.write(b"\0" * size)
+                handle = open(_TRACE_PATH, "r+b")
+                _TRACE_MMAP = mmap.mmap(handle.fileno(), size)
+    return _TRACE_MMAP
+
+
 def _trace_batch(entries) -> None:
     try:
-        lines = []
-        for nid, value, metadata, _cms in entries:
-            inner = getattr(value, "_views", None)
-            lines.append(
-                f"{nid[:12]} op={metadata.get('operator')} src={metadata.get('source')} "
-                f"type={type(value).__name__} views={list(inner) if inner else '-'}\n")
-        with open(_TRACE_PATH, "a") as handle:
-            handle.writelines(lines)
-            handle.flush()
-            os.fsync(handle.fileno())
+        buf = _trace_mmap()
+        ident = threading.get_ident()
+        slot = _TRACE_IDS.get(ident)
+        if slot is None:
+            slot = len(_TRACE_IDS) % _TRACE_SLOTS
+            _TRACE_IDS[ident] = slot
+        nid, value, metadata, _cms = entries[0]
+        inner = getattr(value, "_views", None)
+        record = (f"slot{slot} n={len(entries)} {nid[:12]} op={metadata.get('operator')} "
+                  f"src={metadata.get('source')} type={type(value).__name__} "
+                  f"views={','.join(inner) if inner else '-'}").encode()[:_TRACE_SLOT - 1]
+        base = slot * _TRACE_SLOT
+        buf[base:base + _TRACE_SLOT] = record.ljust(_TRACE_SLOT, b"\0")
     except Exception:  # noqa: BLE001 — diagnostics must never break the run
         pass
 
