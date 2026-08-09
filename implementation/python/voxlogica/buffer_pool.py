@@ -37,20 +37,56 @@ _STATS = {
 _POOLED_NDARRAY_CLS: Any = None
 
 
+_DEFAULT_LIMIT_BYTES = 512 * 1024 * 1024
+_LIMIT_BYTES: int | None = None   # set by the engine from its memory budget
+
+
+def set_limit_bytes(limit: int) -> None:
+    """Size the pool from the engine's memory budget (see ComputationEngine).
+
+    A fixed default cannot fit this workload: the pool's whole job is to keep
+    freed volumes recyclable rather than handing them back to the allocator,
+    and a BraTS volume is 9-35 MB, so 512 MB holds ~20 of them against a live
+    tier of tens of GB. Pooled bytes are counted in `NodeTable.accounted_bytes`
+    and trimmed by admission before its ceiling, so a larger pool is budgeted
+    memory, not hidden memory.
+    """
+    global _LIMIT_BYTES
+    _LIMIT_BYTES = max(0, limit)
+
+
 def _limit_bytes() -> int:
-    raw = os.environ.get("VOXLOGICA_BUFFER_POOL_MB", "512").strip()
+    if _LIMIT_BYTES is not None:
+        return _LIMIT_BYTES
+    raw = os.environ.get("VOXLOGICA_BUFFER_POOL_MB", "").strip()
+    if not raw:
+        return _DEFAULT_LIMIT_BYTES
     try:
         return max(0, int(float(raw) * 1024 * 1024))
     except ValueError:
-        return 512 * 1024 * 1024
+        return _DEFAULT_LIMIT_BYTES
 
 
-def _per_key_limit() -> int:
-    raw = os.environ.get("VOXLOGICA_BUFFER_POOL_PER_KEY", "16").strip()
-    try:
-        return max(1, int(raw))
-    except ValueError:
+def _per_key_limit(nbytes: int = 0) -> int:
+    """How many buffers of ONE shape/dtype key the pool may hold.
+
+    Derived from the byte limit rather than fixed, because this workload is
+    nearly single-shaped: every volume in a BraTS sweep shares one key, so a
+    flat count of 16 capped the pool at ~16 volumes however large its byte
+    budget was — the count bound, not the byte bound, was what sent freed
+    buffers back to the allocator (measured: 3,842 drops in a 4-minute run,
+    against 5.5 BILLION minor page faults on a full one, i.e. the fresh pages
+    those drops forced the kernel to fault back in).
+    """
+    raw = os.environ.get("VOXLOGICA_BUFFER_POOL_PER_KEY", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    if nbytes <= 0:
         return 16
+    return max(16, _limit_bytes() // nbytes)  # bytes are the real bound
 
 
 class BufferState:
@@ -131,7 +167,7 @@ def _return_locked(state: BufferState) -> None:
     global _POOLED_BYTES, _PEAK_POOLED_BYTES
     limit = _limit_bytes()
     bucket = _POOLS[state.key]
-    if limit <= 0 or state.nbytes > limit or len(bucket) >= _per_key_limit() \
+    if limit <= 0 or state.nbytes > limit or len(bucket) >= _per_key_limit(state.nbytes) \
             or _POOLED_BYTES + state.nbytes > limit:
         _STATS["drops"] += 1
         state.pooled_buffer = None

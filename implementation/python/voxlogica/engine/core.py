@@ -40,7 +40,7 @@ from voxlogica.engine.config import EngineConfig
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
 from voxlogica.engine.calibration import load_cached_itk_threads
-from voxlogica.buffer_pool import pool_stats, trim_pool
+from voxlogica.buffer_pool import pool_stats, set_limit_bytes, trim_pool
 from voxlogica.diagnostics.exceptions import NodeExecutionError
 from voxlogica.engine.fusion import FusionPlanner
 from voxlogica.engine.itk_threads import apply_itk_threads
@@ -164,14 +164,17 @@ class ComputationEngine:
             fail_node=self._fail_node,
             reclaim=self._reclaim_memory,
         )
-        # NOTE: sizing the buffer pool from the memory budget (10% instead of a
-        # fixed 512 MB) is a real and measurable win — this workload is nearly
-        # single-shaped, so the pool's flat 16-per-key count, not its byte
-        # budget, is what sends freed volumes back to the allocator. It is NOT
-        # enabled, because raising reuse took the buffer-pool use-after-free
-        # documented in engine/persist.py from rare to ~50% of runs. Re-enable
-        # only once that is fixed; the amplification is the point, not a
-        # coincidence.
+        # Pool sized from the memory budget (10%) instead of a fixed 512 MB.
+        # This workload is nearly single-shaped, so the flat 16-per-key count,
+        # not the byte budget, was what sent freed volumes back to the
+        # allocator: measured on the 369 sweep, the pool pinned at 510.9 of
+        # 512 MB with 3,906 drops and the kernel spent 20.5% of the machine
+        # (~5 cores) servicing 968,846 minor page faults/s re-zeroing pages
+        # for volumes the pool had just released. Enabling this was previously
+        # blamed for the persister SIGSEGV and backed out; that crash is now
+        # root-caused (ITK-owned payload alias, fixed by the event-loop
+        # snapshot in engine/persist.py) and the pool is exonerated.
+        set_limit_bytes(int(self.config.max_live_bytes * 0.1))
 
         # ── Queries / goals ──
         self._goals: set[NodeId] = set()
