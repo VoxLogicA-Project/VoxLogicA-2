@@ -820,7 +820,7 @@ def mul_vs(image: object, value: float) -> sitk.Image:
 
 
 @njit(cache=True, nogil=True, parallel=_PARALLEL_SAFE)
-def _dilate_box3_separable(src, mid, dst):
+def _dilate_box3_separable(src, scratch, out):
     """3x3x3 binary box dilation as three 1D max passes (z, then y, then x).
 
     A box structuring element is SEPARABLE: max over the 27-voxel cube equals
@@ -833,6 +833,24 @@ def _dilate_box3_separable(src, mid, dst):
     Boundary: clamping the index replicates the edge voxel, which for a MAX is
     identical to treating the outside as background, matching
     sitk.BinaryDilate(..., sitkBox, 1.0).
+
+    Foreground is ``== 1``, not ``!= 0``, and non-foreground voxels are copied
+    through rather than zeroed: sitk.BinaryDilate's foregroundValue argument is
+    1.0, and the filter's semantics are copy-input-then-set-dilated-to-1. So a
+    uint8 voxel holding any OTHER non-zero value -- which reaches here whenever
+    the caller's input was not already 0/1, since the cast in _as_bool_image
+    TRUNCATES rather than thresholds -- is neither foreground nor erased: it
+    survives untouched unless some genuine 1 dilates over it. A plain max over
+    the raw values gets this wrong twice, treating the stray value as
+    foreground AND propagating it to its neighbours. The threshold is paid once
+    in the z pass (the y and x passes already see 0/1 data) and the
+    pass-through once in the x pass.
+
+    The result is left in ``out``, the LAST argument -- the three passes
+    ping-pong (src -> out -> scratch -> out) and an earlier revision named the
+    buffers so that the final pass landed in the MIDDLE one, which read as a
+    scratch slot. near() duly copied the wrong buffer back and shipped a
+    two-axis dilation for the x pass's entire lifetime. Keep the output last.
     """
     nz, ny, nx = src.shape
     for z in prange(nz):
@@ -840,40 +858,38 @@ def _dilate_box3_separable(src, mid, dst):
         zp = z + 1 if z < nz - 1 else nz - 1
         for y in range(ny):
             for x in range(nx):
-                v = src[zm, y, x]
-                a = src[z, y, x]
-                b = src[zp, y, x]
-                if a > v:
-                    v = a
-                if b > v:
-                    v = b
-                mid[z, y, x] = v
+                v = np.uint8(1) if src[zm, y, x] == 1 else np.uint8(0)
+                if v == 0 and src[z, y, x] == 1:
+                    v = np.uint8(1)
+                if v == 0 and src[zp, y, x] == 1:
+                    v = np.uint8(1)
+                out[z, y, x] = v
     for z in prange(nz):
         for y in range(ny):
             ym = y - 1 if y > 0 else 0
             yp = y + 1 if y < ny - 1 else ny - 1
             for x in range(nx):
-                v = mid[z, ym, x]
-                a = mid[z, y, x]
-                b = mid[z, yp, x]
+                v = out[z, ym, x]
+                a = out[z, y, x]
+                b = out[z, yp, x]
                 if a > v:
                     v = a
                 if b > v:
                     v = b
-                dst[z, y, x] = v
+                scratch[z, y, x] = v
     for z in prange(nz):
         for y in range(ny):
             for x in range(nx):
                 xm = x - 1 if x > 0 else 0
                 xp = x + 1 if x < nx - 1 else nx - 1
-                v = dst[z, y, xm]
-                a = dst[z, y, x]
-                b = dst[z, y, xp]
+                v = scratch[z, y, xm]
+                a = scratch[z, y, x]
+                b = scratch[z, y, xp]
                 if a > v:
                     v = a
                 if b > v:
                     v = b
-                mid[z, y, x] = v
+                out[z, y, x] = np.uint8(1) if v == 1 else src[z, y, x]
 
 
 def near(image: object) -> sitk.Image:
@@ -887,8 +903,7 @@ def near(image: object) -> sitk.Image:
             output, out = output_pair
             src = _flatten_image(binary, np.uint8).reshape(out.shape)
             scratch = np.empty_like(out)
-            _dilate_box3_separable(src, out, scratch)
-            out[...] = scratch
+            _dilate_box3_separable(src, scratch, out)
             return output
     return sitk.BinaryDilate(binary, [1, 1, 1], sitk.sitkBox, 1.0)
 
