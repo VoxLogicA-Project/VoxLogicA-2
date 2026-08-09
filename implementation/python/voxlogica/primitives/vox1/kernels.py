@@ -650,6 +650,16 @@ def subtract(left: object, right: object) -> object:
     return apply_binary_op("Subtraction", left, right, _sub_values)
 
 
+@njit(cache=True, nogil=True, parallel=True)
+def _mask_into(src, msk, dst):
+    """``dst[i] = src[i] if msk[i] else 0`` — one pass, no temporaries."""
+    for i in prange(src.shape[0]):
+        if msk[i] != 0:
+            dst[i] = src[i]
+        else:
+            dst[i] = 0
+
+
 def mask(image: object, mask_image: object) -> sitk.Image:
     """Zero out voxels where a boolean mask is false."""
     img = _as_image(image, "image")
@@ -666,8 +676,22 @@ def mask(image: object, mask_image: object) -> sitk.Image:
         output_pair = _try_native_output(img, img.GetPixelID())
         if output_pair is not None:
             output, out = output_pair
-            out.fill(0)
-            np.copyto(out, pinned_view(img), where=pinned_view(msk) != 0)
+            # This was `out.fill(0)` then `np.copyto(..., where=mask != 0)`.
+            # NumPy's `where=` is not a vectorized select: it walks the buffer
+            # under a per-element predicate, which cost 28 ms on a BraTS volume
+            # against 0.4-2.9 ms for every alternative — two passes plus a
+            # full-size boolean temporary, for a select. A jitted select writes
+            # the pooled output in one pass with no temporary at all.
+            #
+            # `np.multiply(img, mask != 0)` is the obvious vectorized rewrite
+            # and is WRONG: NaN*0 is NaN, not 0, so masked-out non-finite
+            # voxels would survive. Verified — it differs from the ITK path
+            # exactly on NaN and +/-inf.
+            if _HAS_NUMBA:
+                _mask_into(pinned_view(img).reshape(-1), pinned_view(msk).reshape(-1),
+                           out.reshape(-1))
+            else:
+                np.copyto(out, np.where(pinned_view(msk) != 0, pinned_view(img), 0))
             return output
     return sitk.Mask(img, _as_bool_image(msk), 0.0)
 
@@ -1443,6 +1467,11 @@ def _warm_numba_dispatchers() -> None:
         volumes = _cc_component_volumes(offsets, starts, ends, parent)
         _cc_write_selected(np.zeros_like(fg), fg.shape[1], offsets, starts, ends,
                            parent, (volumes > 0).astype(np.uint8))
+        # `mask`'s jitted select, for both pixel types it accepts.
+        flat_mask = np.ones(4, dtype=np.uint8)
+        for probe_dtype in (np.float32, np.uint8):
+            probe = np.zeros(4, dtype=probe_dtype)
+            _mask_into(probe, flat_mask, np.empty_like(probe))
     except Exception:  # noqa: BLE001 — a warm-up failure must not stop the run
         pass
 
