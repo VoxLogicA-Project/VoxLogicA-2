@@ -1014,9 +1014,15 @@ class ComputationEngine:
         # anchored estimate duly promised the remaining 443 in 48 seconds). A
         # window has no origin to be wrong about: the burst ages out of it.
         #
-        # No node-frontier fallback. It is precisely the estimator this replaces,
-        # so falling back to it means printing a number already known to be
-        # wrong; "?" is the honest reading until the window has evidence.
+        # Something is always shown. Withholding a figure until the estimate is
+        # solid sounds honest and is not: on a warm restart the cache burst
+        # arrives in chunks (measured: 43, 107, 171, 235, 289, 299, 310, all in
+        # one second), each restarting the window, after which a single real
+        # goal took five minutes -- so "?" stayed lit with no end in sight while
+        # the reader learned nothing. A rough number beats no number, provided
+        # its roughness is visible: estimates built on fewer than three real
+        # goals, and the node-frontier reading used before any has closed, are
+        # prefixed "~".
         # A cache burst is a DISCONTINUITY, not a rate, and waiting for it to age
         # out of the window leaves a quarter of an hour of wrong readings. Goals
         # arriving many-at-once in a single refresh are therefore treated as what
@@ -1033,11 +1039,15 @@ class ComputationEngine:
         gt0, gd0 = self._goal_samples[0]
         goals_in_window = goals_done - gd0
         goal_span = now - gt0
-        # Two, not one: one goal gives a rate from a single sample, and goals are
-        # coarse enough that a lone one says little about the ones behind it.
-        if goals_in_window >= 2 and goal_span > 0 and goals_total > goals_done:
+        if goals_in_window >= 1 and goal_span > 0 and goals_total > goals_done:
             eta = tqdm.format_interval(
                 (goals_total - goals_done) * goal_span / goals_in_window)
+            if goals_in_window < 3:
+                eta = "~" + eta   # one or two goals: a direction, not a figure
+        elif rate > 1e-9 and remaining_nodes > 0:
+            # Nothing closed yet. The node frontier under-reads badly while the
+            # plan is still unrolling, so it is marked as the guess it is.
+            eta = "~" + tqdm.format_interval(remaining_nodes / rate)
         else:
             eta = "?"
         known_str = f"{known:,}"
