@@ -86,6 +86,7 @@ _ETA_GOAL_WINDOW_FRACTION = 0.5
 #: store answering hundreds at once does.
 _ETA_GOAL_JUMP = 8
 
+
 _EVICT_SWEEP = 256      # candidates examined per _reclaim_memory call (bounds the work)
 
 # Compact one-line bar: a small FIXED-width bar ({bar:12}) so it never balloons
@@ -1039,9 +1040,18 @@ class ComputationEngine:
         if self._goal_samples and goals_done - self._goal_samples[-1][1] >= _ETA_GOAL_JUMP:
             self._goal_samples.clear()
             self._goal_epoch = now
+        # Sample only when the count actually MOVES. Recording every refresh
+        # makes the newest sample "now", so between two goals the span grows
+        # while the count does not and the estimate inflates by one second per
+        # second -- measured on the live bar, 7:45:19 climbing to 7:45:51 over
+        # 32 idle seconds, then collapsing when the next goal landed. A sawtooth
+        # that is arithmetically correct and unreadable. Spanning goal EVENTS
+        # instead holds the figure still between them.
         if not self._goal_samples:
             self._goal_epoch = self._goal_epoch or now
-        self._goal_samples.append((now, goals_done))
+            self._goal_samples.append((now, goals_done))
+        elif goals_done != self._goal_samples[-1][1]:
+            self._goal_samples.append((now, goals_done))
         goal_window = min(_ETA_GOAL_WINDOW_MAX_S,
                           max(_ETA_GOAL_WINDOW_MIN_S,
                               (now - self._goal_epoch) * _ETA_GOAL_WINDOW_FRACTION))
@@ -1049,8 +1059,9 @@ class ComputationEngine:
         while len(self._goal_samples) > 2 and self._goal_samples[1][0] <= goal_cutoff:
             self._goal_samples.popleft()
         gt0, gd0 = self._goal_samples[0]
-        goals_in_window = goals_done - gd0
-        goal_span = now - gt0
+        gtn, gdn = self._goal_samples[-1]
+        goals_in_window = gdn - gd0
+        goal_span = gtn - gt0
         if goals_in_window >= 1 and goal_span > 0 and goals_total > goals_done:
             eta = tqdm.format_interval(
                 (goals_total - goals_done) * goal_span / goals_in_window)
