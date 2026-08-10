@@ -70,11 +70,16 @@ _PROGRESS_BATCH = 64  # completions folded into one progress-bar refresh
 #: rather than averaging it in for the rest of the run.
 _RATE_WINDOW_S = 60.0
 
-#: Span of the sliding window the ETA is extrapolated from, in seconds. Goals
-#: are coarse -- minutes apart on a large sweep -- so this is much longer than
-#: the throughput window: it must hold several of them to say anything, while
-#: still being short enough to forget a warm store's opening burst.
-_ETA_GOAL_WINDOW_S = 900.0
+#: The ETA window GROWS with the run, between these bounds. A span fixed at the
+#: lower bound holds only a handful of goals on a large sweep -- they are minutes
+#: apart -- so each new one visibly shifts the estimate, which is wrong for a
+#: process measured in hours: the longer it has run, the more history there is
+#: to average and the less any single goal should move the answer. Taking a
+#: fraction of the elapsed run keeps it responsive in the first minutes and
+#: steady later, without ever reverting to a fixed origin.
+_ETA_GOAL_WINDOW_MIN_S = 900.0
+_ETA_GOAL_WINDOW_MAX_S = 7200.0
+_ETA_GOAL_WINDOW_FRACTION = 0.5
 
 #: Goals closing in ONE refresh that mark a cache burst rather than progress.
 #: Refreshes are sub-second, so computed goals never arrive this fast; a warm
@@ -166,6 +171,7 @@ class ComputationEngine:
         self._rate_samples: deque[tuple[float, int]] = deque()
         # (perf_counter, goals completed) over the ETA window; see _flush_progress.
         self._goal_samples: deque[tuple[float, int]] = deque()
+        self._goal_epoch = 0.0         # when the ETA window last restarted
 
         # ── The four parts (all event-loop owned; see module docstrings) ──
         self.graph = DependencyGraph(self.table)
@@ -1032,8 +1038,14 @@ class ComputationEngine:
         goals_total = self._progress.total or 0
         if self._goal_samples and goals_done - self._goal_samples[-1][1] >= _ETA_GOAL_JUMP:
             self._goal_samples.clear()
+            self._goal_epoch = now
+        if not self._goal_samples:
+            self._goal_epoch = self._goal_epoch or now
         self._goal_samples.append((now, goals_done))
-        goal_cutoff = now - _ETA_GOAL_WINDOW_S
+        goal_window = min(_ETA_GOAL_WINDOW_MAX_S,
+                          max(_ETA_GOAL_WINDOW_MIN_S,
+                              (now - self._goal_epoch) * _ETA_GOAL_WINDOW_FRACTION))
+        goal_cutoff = now - goal_window
         while len(self._goal_samples) > 2 and self._goal_samples[1][0] <= goal_cutoff:
             self._goal_samples.popleft()
         gt0, gd0 = self._goal_samples[0]
