@@ -70,6 +70,17 @@ _PROGRESS_BATCH = 64  # completions folded into one progress-bar refresh
 #: rather than averaging it in for the rest of the run.
 _RATE_WINDOW_S = 60.0
 
+#: Span of the sliding window the ETA is extrapolated from, in seconds. Goals
+#: are coarse -- minutes apart on a large sweep -- so this is much longer than
+#: the throughput window: it must hold several of them to say anything, while
+#: still being short enough to forget a warm store's opening burst.
+_ETA_GOAL_WINDOW_S = 900.0
+
+#: Goals closing in ONE refresh that mark a cache burst rather than progress.
+#: Refreshes are sub-second, so computed goals never arrive this fast; a warm
+#: store answering hundreds at once does.
+_ETA_GOAL_JUMP = 8
+
 _EVICT_SWEEP = 256      # candidates examined per _reclaim_memory call (bounds the work)
 
 # Compact one-line bar: a small FIXED-width bar ({bar:12}) so it never balloons
@@ -153,9 +164,8 @@ class ComputationEngine:
         # see _flush_progress. Samples are (perf_counter, _nodes_done) pairs,
         # trimmed to the last _RATE_WINDOW_S seconds on every refresh.
         self._rate_samples: deque[tuple[float, int]] = deque()
-        # Goals already satisfied when the bar first refreshed (warm store);
-        # they are not this run's work and must not drive its ETA.
-        self._eta_goals_base: int | None = None
+        # (perf_counter, goals completed) over the ETA window; see _flush_progress.
+        self._goal_samples: deque[tuple[float, int]] = deque()
 
         # ── The four parts (all event-loop owned; see module docstrings) ──
         self.graph = DependencyGraph(self.table)
@@ -996,23 +1006,38 @@ class ComputationEngine:
         # per-case prologue -- and converges as the run proceeds, which is the
         # opposite of, and strictly better than, being confidently wrong forever.
         #
-        # Only goals THIS run earned may drive it. On a warm store a re-run
-        # satisfies goals from cache before the bar's first refresh -- observed:
-        # 312 of 748 already closed at 1:59 elapsed -- and counting those as
-        # work done in that elapsed time claims the remaining 436 will take
-        # three minutes. The inherited count is recorded once and subtracted.
+        # It must also measure only goals THIS run is closing, over a SLIDING
+        # window. A warm store satisfies hundreds of goals from cache in the
+        # first seconds; anchoring at a fixed origin cannot exclude them, because
+        # the bar's first refresh lands at 0/748 BEFORE that burst arrives (seen
+        # in the log: "goals: 0/748 | 00:00", then 305/748 by 00:32, and an
+        # anchored estimate duly promised the remaining 443 in 48 seconds). A
+        # window has no origin to be wrong about: the burst ages out of it.
+        #
+        # No node-frontier fallback. It is precisely the estimator this replaces,
+        # so falling back to it means printing a number already known to be
+        # wrong; "?" is the honest reading until the window has evidence.
+        # A cache burst is a DISCONTINUITY, not a rate, and waiting for it to age
+        # out of the window leaves a quarter of an hour of wrong readings. Goals
+        # arriving many-at-once in a single refresh are therefore treated as what
+        # they are -- work that did not happen here -- and the window restarts
+        # from after them, so a true rate is available within two real goals.
         goals_done = self._progress.n or 0
         goals_total = self._progress.total or 0
-        if self._eta_goals_base is None:
-            self._eta_goals_base = goals_done
-        earned = goals_done - self._eta_goals_base
-        # Two, not one: a single goal gives a rate built on one sample, and the
-        # first one closed still carries whatever prologue preceded it.
-        if earned >= 2 and goals_total > goals_done:
-            eta = tqdm.format_interval(elapsed * (goals_total - goals_done) / earned)
-        elif rate > 1e-9 and remaining_nodes > 0:
-            # No goal has closed yet: the node frontier is all there is to go on.
-            eta = tqdm.format_interval(remaining_nodes / rate)
+        if self._goal_samples and goals_done - self._goal_samples[-1][1] >= _ETA_GOAL_JUMP:
+            self._goal_samples.clear()
+        self._goal_samples.append((now, goals_done))
+        goal_cutoff = now - _ETA_GOAL_WINDOW_S
+        while len(self._goal_samples) > 2 and self._goal_samples[1][0] <= goal_cutoff:
+            self._goal_samples.popleft()
+        gt0, gd0 = self._goal_samples[0]
+        goals_in_window = goals_done - gd0
+        goal_span = now - gt0
+        # Two, not one: one goal gives a rate from a single sample, and goals are
+        # coarse enough that a lone one says little about the ones behind it.
+        if goals_in_window >= 2 and goal_span > 0 and goals_total > goals_done:
+            eta = tqdm.format_interval(
+                (goals_total - goals_done) * goal_span / goals_in_window)
         else:
             eta = "?"
         known_str = f"{known:,}"
