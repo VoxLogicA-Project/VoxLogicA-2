@@ -979,7 +979,28 @@ class ComputationEngine:
         # plain counter (done / known), never as a fraction, so it never dances.
         known = self.graph.registered_total
         remaining_nodes = known - self._nodes_done
-        eta = tqdm.format_interval(remaining_nodes / rate) if rate > 1e-9 and remaining_nodes > 0 else "?"
+        # ETA FROM GOALS, not from nodes. `known` counts nodes discovered so far
+        # and grows as loops unroll, so `known - done` is the CURRENT frontier,
+        # not the remaining work: under dynamic expansion the two grow together
+        # and their difference sits near-constant. Measured on a 369-case sweep,
+        # it held ~36,500 for six minutes while the plan went 41,755 -> 212,187,
+        # and the bar advertised ~2 minutes for hours.
+        #
+        # The goal count does not have this problem: it is known exactly and up
+        # front (it comes from the program's structure, not from unrolling) and
+        # only ever rises. Extrapolating elapsed time over the fraction of goals
+        # closed gives a figure that is wrong early -- the first goals carry the
+        # per-case prologue -- and converges as the run proceeds, which is the
+        # opposite of, and strictly better than, being confidently wrong forever.
+        goals_done = self._progress.n or 0
+        goals_total = self._progress.total or 0
+        if goals_done > 0 and goals_total > goals_done:
+            eta = tqdm.format_interval(elapsed * (goals_total - goals_done) / goals_done)
+        elif rate > 1e-9 and remaining_nodes > 0:
+            # No goal has closed yet: the node frontier is all there is to go on.
+            eta = tqdm.format_interval(remaining_nodes / rate)
+        else:
+            eta = "?"
         known_str = f"{known:,}"
         done_str = f"{self._nodes_done:,}"
         w = len(known_str)
