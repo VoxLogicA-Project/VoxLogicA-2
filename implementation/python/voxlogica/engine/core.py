@@ -153,6 +153,9 @@ class ComputationEngine:
         # see _flush_progress. Samples are (perf_counter, _nodes_done) pairs,
         # trimmed to the last _RATE_WINDOW_S seconds on every refresh.
         self._rate_samples: deque[tuple[float, int]] = deque()
+        # Goals already satisfied when the bar first refreshed (warm store);
+        # they are not this run's work and must not drive its ETA.
+        self._eta_goals_base: int | None = None
 
         # ── The four parts (all event-loop owned; see module docstrings) ──
         self.graph = DependencyGraph(self.table)
@@ -992,10 +995,21 @@ class ComputationEngine:
         # closed gives a figure that is wrong early -- the first goals carry the
         # per-case prologue -- and converges as the run proceeds, which is the
         # opposite of, and strictly better than, being confidently wrong forever.
+        #
+        # Only goals THIS run earned may drive it. On a warm store a re-run
+        # satisfies goals from cache before the bar's first refresh -- observed:
+        # 312 of 748 already closed at 1:59 elapsed -- and counting those as
+        # work done in that elapsed time claims the remaining 436 will take
+        # three minutes. The inherited count is recorded once and subtracted.
         goals_done = self._progress.n or 0
         goals_total = self._progress.total or 0
-        if goals_done > 0 and goals_total > goals_done:
-            eta = tqdm.format_interval(elapsed * (goals_total - goals_done) / goals_done)
+        if self._eta_goals_base is None:
+            self._eta_goals_base = goals_done
+        earned = goals_done - self._eta_goals_base
+        # Two, not one: a single goal gives a rate built on one sample, and the
+        # first one closed still carries whatever prologue preceded it.
+        if earned >= 2 and goals_total > goals_done:
+            eta = tqdm.format_interval(elapsed * (goals_total - goals_done) / earned)
         elif rate > 1e-9 and remaining_nodes > 0:
             # No goal has closed yet: the node frontier is all there is to go on.
             eta = tqdm.format_interval(remaining_nodes / rate)
