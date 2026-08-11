@@ -1058,21 +1058,38 @@ class ComputationEngine:
         goal_cutoff = now - goal_window
         while len(self._goal_samples) > 2 and self._goal_samples[1][0] <= goal_cutoff:
             self._goal_samples.popleft()
-        gt0, gd0 = self._goal_samples[0]
-        gtn, gdn = self._goal_samples[-1]
-        goals_in_window = gdn - gd0
-        goal_span = gtn - gt0
-        if goals_in_window >= 1 and goal_span > 0 and goals_total > goals_done:
-            eta = tqdm.format_interval(
-                (goals_total - goals_done) * goal_span / goals_in_window)
-            if goals_in_window < 3:
-                eta = "~" + eta   # one or two goals: a direction, not a figure
-        elif rate > 1e-9 and remaining_nodes > 0:
-            # Nothing closed yet. The node frontier under-reads badly while the
-            # plan is still unrolling, so it is marked as the guess it is.
-            eta = "~" + tqdm.format_interval(remaining_nodes / rate)
+        # MEDIAN of the per-goal intervals, not their mean. Goals are not
+        # interchangeable -- one case can take many times another -- so with the
+        # handful of samples available early a single slow goal drags a mean
+        # anywhere it likes: observed, two samples turned a run tracking eleven
+        # hours into a confident 25:26:52. The median ignores that goal until
+        # half the sample agrees with it.
+        spans = [(self._goal_samples[i][0] - self._goal_samples[i - 1][0])
+                 / max(1, self._goal_samples[i][1] - self._goal_samples[i - 1][1])
+                 for i in range(1, len(self._goal_samples))]
+        if spans and goals_total > goals_done:
+            spans.sort()
+            mid = len(spans) // 2
+            per_goal = spans[mid] if len(spans) % 2 else 0.5 * (spans[mid - 1] + spans[mid])
+            secs = (goals_total - goals_done) * per_goal
+            # PRECISION MATCHED TO EVIDENCE. Printing 25:26:52 off two samples
+            # claims a second's accuracy from data that cannot place the hour;
+            # the false precision is what makes the figure read as broken when
+            # it moves. Coarse while the evidence is thin, exact once it is not.
+            if len(spans) < 3:
+                secs = round(secs / 3600.0) * 3600.0
+            elif len(spans) < 10:
+                secs = round(secs / 300.0) * 300.0
+            eta = tqdm.format_interval(secs)
+            if len(spans) < 10:
+                eta = "~" + eta
         else:
-            eta = "?"
+            # No goal has closed yet, so there is nothing to extrapolate from.
+            # The node frontier is NOT used here: it is the estimator this
+            # replaced, and it answered "00:40" on a run with seven hours to go.
+            # A placeholder for the minute or two until the first goal lands
+            # beats a number that will have to be retracted.
+            eta = "--:--"
         known_str = f"{known:,}"
         done_str = f"{self._nodes_done:,}"
         w = len(known_str)
