@@ -61,6 +61,7 @@ from typing import Any, Callable
 
 from voxlogica.engine.expander import Expander, Expansion
 from voxlogica.engine.graph import DependencyGraph
+from voxlogica.engine.plan_size import PlanSizeEstimator
 from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.buffer_pool import trim_pool
 from voxlogica.engine.ready import ReadyQueue
@@ -126,6 +127,8 @@ class LoopAdmission:
         self._aborted: BaseException | None = None
         self.expanded_loops = 0
         self.expanded_bodies = 0
+        # Projected size of the finished plan; the ETA's only honest input.
+        self.plan_size = PlanSizeEstimator()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -148,6 +151,9 @@ class LoopAdmission:
             if expansion is None:
                 raise RuntimeError(f"cannot expand loop node {nid[:12]} ({node.operator})")
             loop = asyncio.get_running_loop()
+            owner = self._body_owner.get(nid)
+            self.plan_size.open_loop(nid, owner.loop_id if owner else None,
+                                     expansion.total, self.graph.registered_total)
             cursor = 0
             # PRODUCTION IS DECOUPLED FROM ADMISSION. Reducing a chunk of big
             # bodies can take seconds (pure-Python, one thread); if reduction
@@ -167,6 +173,7 @@ class LoopAdmission:
                     ids = await loop.run_in_executor(
                         self._reducer, self.expander.reduce_chunk, expansion, cursor, stop)
                     cursor = stop
+                    self.plan_size.note_reduced(nid, cursor)
                     for body in ids:  # stage pin: value must survive until the sequence holds it
                         self.graph.pin(body)
                         self.liveness.staged.add(body)
@@ -179,6 +186,7 @@ class LoopAdmission:
         except Exception as exc:  # noqa: BLE001
             self._fail_node(nid, exc)
         finally:
+            self.plan_size.close_loop(nid)
             self._release_captures(node)
             self._jobs.pop(nid, None)
             self.ready.end_unit()

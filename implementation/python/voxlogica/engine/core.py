@@ -70,21 +70,9 @@ _PROGRESS_BATCH = 64  # completions folded into one progress-bar refresh
 #: rather than averaging it in for the rest of the run.
 _RATE_WINDOW_S = 60.0
 
-#: The ETA window GROWS with the run, between these bounds. A span fixed at the
-#: lower bound holds only a handful of goals on a large sweep -- they are minutes
-#: apart -- so each new one visibly shifts the estimate, which is wrong for a
-#: process measured in hours: the longer it has run, the more history there is
-#: to average and the less any single goal should move the answer. Taking a
-#: fraction of the elapsed run keeps it responsive in the first minutes and
-#: steady later, without ever reverting to a fixed origin.
-_ETA_GOAL_WINDOW_MIN_S = 900.0
-_ETA_GOAL_WINDOW_MAX_S = 7200.0
-_ETA_GOAL_WINDOW_FRACTION = 0.5
-
-#: Goals closing in ONE refresh that mark a cache burst rather than progress.
-#: Refreshes are sub-second, so computed goals never arrive this fast; a warm
-#: store answering hundreds at once does.
-_ETA_GOAL_JUMP = 8
+#: How often the displayed ETA is recomputed, in seconds. The estimate itself
+#: is continuous; this is only about being readable.
+_ETA_REFRESH_S = 5.0
 
 
 _EVICT_SWEEP = 256      # candidates examined per _reclaim_memory call (bounds the work)
@@ -170,9 +158,8 @@ class ComputationEngine:
         # see _flush_progress. Samples are (perf_counter, _nodes_done) pairs,
         # trimmed to the last _RATE_WINDOW_S seconds on every refresh.
         self._rate_samples: deque[tuple[float, int]] = deque()
-        # (perf_counter, goals completed) over the ETA window; see _flush_progress.
-        self._goal_samples: deque[tuple[float, int]] = deque()
-        self._goal_epoch = 0.0         # when the ETA window last restarted
+        self._eta_text: str | None = None   # last rendered ETA, held between refreshes
+        self._eta_at = 0.0
 
         # ── The four parts (all event-loop owned; see module docstrings) ──
         self.graph = DependencyGraph(self.table)
@@ -999,97 +986,34 @@ class ComputationEngine:
         # plain counter (done / known), never as a fraction, so it never dances.
         known = self.graph.registered_total
         remaining_nodes = known - self._nodes_done
-        # ETA FROM GOALS, not from nodes. `known` counts nodes discovered so far
-        # and grows as loops unroll, so `known - done` is the CURRENT frontier,
-        # not the remaining work: under dynamic expansion the two grow together
-        # and their difference sits near-constant. Measured on a 369-case sweep,
-        # it held ~36,500 for six minutes while the plan went 41,755 -> 212,187,
-        # and the bar advertised ~2 minutes for hours.
+        # ---- ETA -------------------------------------------------------------
+        # Two quantities, both measured: how big the finished plan will be, and
+        # how fast nodes are completing. The first comes from PlanSizeEstimator
+        # (see that module for why neither the counters nor the program text can
+        # give it alone); the second is the sliding-window rate above.
         #
-        # The goal count does not have this problem: it is known exactly and up
-        # front (it comes from the program's structure, not from unrolling) and
-        # only ever rises. Extrapolating elapsed time over the fraction of goals
-        # closed gives a figure that is wrong early -- the first goals carry the
-        # per-case prologue -- and converges as the run proceeds, which is the
-        # opposite of, and strictly better than, being confidently wrong forever.
-        #
-        # It must also measure only goals THIS run is closing, over a SLIDING
-        # window. A warm store satisfies hundreds of goals from cache in the
-        # first seconds; anchoring at a fixed origin cannot exclude them, because
-        # the bar's first refresh lands at 0/748 BEFORE that burst arrives (seen
-        # in the log: "goals: 0/748 | 00:00", then 305/748 by 00:32, and an
-        # anchored estimate duly promised the remaining 443 in 48 seconds). A
-        # window has no origin to be wrong about: the burst ages out of it.
-        #
-        # Something is always shown. Withholding a figure until the estimate is
-        # solid sounds honest and is not: on a warm restart the cache burst
-        # arrives in chunks (measured: 43, 107, 171, 235, 289, 299, 310, all in
-        # one second), each restarting the window, after which a single real
-        # goal took five minutes -- so "?" stayed lit with no end in sight while
-        # the reader learned nothing. A rough number beats no number, provided
-        # its roughness is visible: estimates built on fewer than three real
-        # goals, and the node-frontier reading used before any has closed, are
-        # prefixed "~".
-        # A cache burst is a DISCONTINUITY, not a rate, and waiting for it to age
-        # out of the window leaves a quarter of an hour of wrong readings. Goals
-        # arriving many-at-once in a single refresh are therefore treated as what
-        # they are -- work that did not happen here -- and the window restarts
-        # from after them, so a true rate is available within two real goals.
-        goals_done = self._progress.n or 0
-        goals_total = self._progress.total or 0
-        if self._goal_samples and goals_done - self._goal_samples[-1][1] >= _ETA_GOAL_JUMP:
-            self._goal_samples.clear()
-            self._goal_epoch = now
-        # Sample only when the count actually MOVES. Recording every refresh
-        # makes the newest sample "now", so between two goals the span grows
-        # while the count does not and the estimate inflates by one second per
-        # second -- measured on the live bar, 7:45:19 climbing to 7:45:51 over
-        # 32 idle seconds, then collapsing when the next goal landed. A sawtooth
-        # that is arithmetically correct and unreadable. Spanning goal EVENTS
-        # instead holds the figure still between them.
-        if not self._goal_samples:
-            self._goal_epoch = self._goal_epoch or now
-            self._goal_samples.append((now, goals_done))
-        elif goals_done != self._goal_samples[-1][1]:
-            self._goal_samples.append((now, goals_done))
-        goal_window = min(_ETA_GOAL_WINDOW_MAX_S,
-                          max(_ETA_GOAL_WINDOW_MIN_S,
-                              (now - self._goal_epoch) * _ETA_GOAL_WINDOW_FRACTION))
-        goal_cutoff = now - goal_window
-        while len(self._goal_samples) > 2 and self._goal_samples[1][0] <= goal_cutoff:
-            self._goal_samples.popleft()
-        # MEDIAN of the per-goal intervals, not their mean. Goals are not
-        # interchangeable -- one case can take many times another -- so with the
-        # handful of samples available early a single slow goal drags a mean
-        # anywhere it likes: observed, two samples turned a run tracking eleven
-        # hours into a confident 25:26:52. The median ignores that goal until
-        # half the sample agrees with it.
-        spans = [(self._goal_samples[i][0] - self._goal_samples[i - 1][0])
-                 / max(1, self._goal_samples[i][1] - self._goal_samples[i - 1][1])
-                 for i in range(1, len(self._goal_samples))]
-        if spans and goals_total > goals_done:
-            spans.sort()
-            mid = len(spans) // 2
-            per_goal = spans[mid] if len(spans) % 2 else 0.5 * (spans[mid - 1] + spans[mid])
-            secs = (goals_total - goals_done) * per_goal
-            # PRECISION MATCHED TO EVIDENCE. Printing 25:26:52 off two samples
-            # claims a second's accuracy from data that cannot place the hour;
-            # the false precision is what makes the figure read as broken when
-            # it moves. Coarse while the evidence is thin, exact once it is not.
-            if len(spans) < 3:
-                secs = round(secs / 3600.0) * 3600.0
-            elif len(spans) < 10:
-                secs = round(secs / 300.0) * 300.0
-            eta = tqdm.format_interval(secs)
-            if len(spans) < 10:
-                eta = "~" + eta
+        # Goals are deliberately not used. A goal closes only when its whole
+        # cone is done, and on a shared plan the cones finish together at the
+        # end: a 748-goal sweep sat at 2/748 for sixteen minutes and then closed
+        # 739 in the last hour. The same is true of any count of finished units,
+        # loop bodies included -- the engine keeps a wide frontier open, so they
+        # clump. Node completions are the only quantity that moves smoothly, and
+        # a projected total is what makes them into a forecast.
+        projected = self.admission.plan_size.estimate(known)
+        if projected is not None and rate > 1e-9:
+            eta_seconds = max(0.0, projected - self._nodes_done) / rate
         else:
-            # No goal has closed yet, so there is nothing to extrapolate from.
-            # The node frontier is NOT used here: it is the estimator this
-            # replaced, and it answered "00:40" on a run with seven hours to go.
-            # A placeholder for the minute or two until the first goal lands
-            # beats a number that will have to be retracted.
-            eta = "--:--"
+            eta_seconds = None
+
+        # Recomputed on a timer, not on every frame: the inputs move
+        # continuously and a figure that changes several times a second cannot
+        # be read. Between refreshes the last value simply stands.
+        if eta_seconds is not None and (self._eta_text is None
+                                        or now - self._eta_at >= _ETA_REFRESH_S):
+            self._eta_text = tqdm.format_interval(eta_seconds)
+            self._eta_at = now
+        eta = self._eta_text if self._eta_text is not None else "--:--"
+
         known_str = f"{known:,}"
         done_str = f"{self._nodes_done:,}"
         w = len(known_str)
