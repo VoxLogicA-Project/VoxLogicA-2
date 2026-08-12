@@ -128,6 +128,7 @@ class EngineExecutionStrategy:
     def __init__(self, registry: PrimitiveRegistry | None = None, results_database: StorageBackend | None = None,
                  threads: int = 0, debug: bool = False, threads_auto: str = "balanced"):
         self.registry = registry or PrimitiveRegistry()
+        self._serializer_cache: dict[str, dict] | None = None
         self.results_database = results_database
         self.threads = threads
         self.debug = debug
@@ -337,10 +338,55 @@ class EngineExecutionStrategy:
                     for item in value.iter_values()]
         return value
 
+    def _serializers(self) -> dict[str, dict]:
+        """Extension -> {type: writer}, contributed by the primitive namespaces.
+
+        The simpleitk namespace has published writers for .nii.gz/.png/.mha and
+        the rest since it was written, but nothing ever asked it for them, so
+        ``save "x.nii.gz"`` wrote str(volume) into a file named like an image.
+        Namespaces are asked generically rather than importing simpleitk here:
+        a namespace that adds a format should not require editing this file.
+        """
+        if self._serializer_cache is None:
+            table: dict[str, dict] = {}
+            modules = getattr(self.registry, "_namespace_modules", {}) or {}
+            for module in modules.values():
+                getter = getattr(module, "get_serializers", None)
+                if getter is None:
+                    continue
+                try:
+                    for extension, writers in (getter() or {}).items():
+                        table.setdefault(str(extension).lower(), {}).update(writers)
+                except Exception:  # noqa: BLE001 - a broken namespace must not sink save
+                    continue
+            self._serializer_cache = table
+        return self._serializer_cache
+
     def _save(self, filename: str, value: Any) -> None:
         """Write a goal value to disk by extension."""
         path = Path(filename)
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Compound extensions first: ".nii.gz" is one format, not gzip of ".nii",
+        # and Path.suffix alone reports ".gz".
+        suffixes = [s.lower() for s in path.suffixes]
+        candidates = ["".join(suffixes[-2:]), "".join(suffixes[-1:])] if suffixes else []
+        serializers = self._serializers()
+        for extension in candidates:
+            writers = serializers.get(extension)
+            if not writers:
+                continue
+            # Volumes travel as PolyArray; the writers duck-type on the sitk
+            # image API, so hand them the image view rather than the wrapper.
+            payload = value
+            to_sitk = getattr(value, "sitk", None)
+            if callable(to_sitk):
+                payload = to_sitk()
+            for writer in writers.values():
+                try:
+                    writer(payload, path)
+                    return
+                except TypeError:
+                    continue  # this writer does not accept this value; try the next
         suffix = path.suffix.lower()
         if suffix == ".json":
             path.write_text(json.dumps(value, indent=2), encoding="utf-8")
