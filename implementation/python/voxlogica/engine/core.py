@@ -74,6 +74,16 @@ _RATE_WINDOW_S = 60.0
 #: is continuous; this is only about being readable.
 _ETA_REFRESH_S = 5.0
 
+#: The goal window grows with the run, between these bounds: long enough to hold
+#: several goals, short enough to forget a warm store's opening burst.
+_ETA_GOAL_WINDOW_MIN_S = 900.0
+_ETA_GOAL_WINDOW_MAX_S = 7200.0
+_ETA_GOAL_WINDOW_FRACTION = 0.5
+#: Goals closing in ONE refresh that mark a cache burst rather than progress.
+#: Refreshes are sub-second, so computed goals never arrive this fast; a warm
+#: store answering hundreds at once does.
+_ETA_GOAL_JUMP = 8
+
 
 _EVICT_SWEEP = 256      # candidates examined per _reclaim_memory call (bounds the work)
 
@@ -160,6 +170,9 @@ class ComputationEngine:
         self._rate_samples: deque[tuple[float, int]] = deque()
         self._eta_text: str | None = None   # last rendered ETA, held between refreshes
         self._eta_at = 0.0
+        # (perf_counter, goals completed), sampled when the count MOVES.
+        self._goal_samples: deque[tuple[float, int]] = deque()
+        self._goal_epoch = 0.0
 
         # ── The four parts (all event-loop owned; see module docstrings) ──
         self.graph = DependencyGraph(self.table)
@@ -987,27 +1000,52 @@ class ComputationEngine:
         known = self.graph.registered_total
         remaining_nodes = known - self._nodes_done
         # ---- ETA -------------------------------------------------------------
-        # Two quantities, both measured: how big the finished plan will be, and
-        # how fast nodes are completing. The first comes from PlanSizeEstimator
-        # (see that module for why neither the counters nor the program text can
-        # give it alone); the second is the sliding-window rate above.
+        # From GOALS, because their denominator is exact and known from the
+        # start, where a node total has to be projected and can be wrong.
         #
-        # Goals are deliberately not used. A goal closes only when its whole
-        # cone is done, and on a shared plan the cones finish together at the
-        # end: a 748-goal sweep sat at 2/748 for sixteen minutes and then closed
-        # 739 in the last hour. The same is true of any count of finished units,
-        # loop bodies included -- the engine keeps a wide frontier open, so they
-        # clump. Node completions are the only quantity that moves smoothly, and
-        # a projected total is what makes them into a forecast.
-        projected = self.admission.plan_size.estimate(known)
-        if projected is not None and rate > 1e-9:
-            eta_seconds = max(0.0, projected - self._nodes_done) / rate
-        else:
-            eta_seconds = None
+        # This was abandoned once, wrongly. Goals appeared never to close -- a
+        # 748-goal sweep sat at 2/748 for ninety minutes -- and three node-based
+        # estimators were built to replace them, each worse than the last. The
+        # cause was not the signal: the generated driver printed each case as
+        # `index(scores, N)`, and that sequence gates on EVERY case, so no
+        # per-case goal could complete before the run was over. With the driver
+        # printing its own case, goals advance smoothly (24 at 29 minutes, 100
+        # at 2:09 of the same run) and predict correctly.
+        #
+        # Sampled when the count MOVES, and spanned between those events: taking
+        # the span up to `now` inflates the estimate by one second per second
+        # while nothing closes, which reads as a figure that will not sit still.
+        goals_done = self._progress.n or 0
+        goals_total = self._progress.total or 0
+        if self._goal_samples and goals_done - self._goal_samples[-1][1] >= _ETA_GOAL_JUMP:
+            # A warm store answering many goals at once is a discontinuity, not
+            # a rate; the window restarts after it.
+            self._goal_samples.clear()
+            self._goal_epoch = now
+        if not self._goal_samples:
+            self._goal_epoch = self._goal_epoch or now
+            self._goal_samples.append((now, goals_done))
+        elif goals_done != self._goal_samples[-1][1]:
+            self._goal_samples.append((now, goals_done))
+        goal_window = min(_ETA_GOAL_WINDOW_MAX_S,
+                          max(_ETA_GOAL_WINDOW_MIN_S,
+                              (now - self._goal_epoch) * _ETA_GOAL_WINDOW_FRACTION))
+        while len(self._goal_samples) > 2 and self._goal_samples[1][0] <= now - goal_window:
+            self._goal_samples.popleft()
+        gt0, gd0 = self._goal_samples[0]
+        gtn, gdn = self._goal_samples[-1]
 
-        # Recomputed on a timer, not on every frame: the inputs move
-        # continuously and a figure that changes several times a second cannot
-        # be read. Between refreshes the last value simply stands.
+        eta_seconds = None
+        if gdn > gd0 and gtn > gt0 and goals_total > goals_done:
+            eta_seconds = (goals_total - goals_done) * (gtn - gt0) / (gdn - gd0)
+        else:
+            # Before any goal closes, the projected plan size is all there is.
+            projected = self.admission.plan_size.estimate(known)
+            if projected is not None and rate > 1e-9:
+                eta_seconds = max(0.0, projected - self._nodes_done) / rate
+
+        # Recomputed on a timer, not every frame: the inputs move continuously
+        # and a figure that changes several times a second cannot be read.
         if eta_seconds is not None and (self._eta_text is None
                                         or now - self._eta_at >= _ETA_REFRESH_S):
             self._eta_text = tqdm.format_interval(eta_seconds)
