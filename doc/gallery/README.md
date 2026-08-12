@@ -60,7 +60,7 @@ instructions for producing it.
 |---|---|
 | [`simpleitk/sitk-brats-fixed-segmentation`](programs/simpleitk/sitk-brats-fixed-segmentation.imgql) | The published BraTS recipe at fixed thresholds |
 | [`simpleitk/sitk-threshold-sweep-overlay`](programs/simpleitk/sitk-threshold-sweep-overlay.imgql) | Sweep one threshold, produce an overlay per value |
-| [`simpleitk/brats-threshold-sweep-aiim`](programs/simpleitk/brats-threshold-sweep-aiim.imgql) | **The full study**: per-case arg-best threshold, distribution statistics, worst-case export with and without ground truth |
+| [`simpleitk/brats-threshold-sweep-aiim`](programs/simpleitk/brats-threshold-sweep-aiim.imgql) | **The full study**: per-case arg-best threshold, distribution statistics, worst-case export at equator and tropics, with and without ground truth |
 
 ## 6 — External tools
 

@@ -14,7 +14,7 @@ Current runtime architecture:
 Runnable, commented programs live in the [example gallery](doc/gallery/README.md),
 ordered as a reading path from the language basics to a complete study: a BraTS
 threshold sweep that scores every case, reports the distribution of the per-case
-best threshold, and exports the worst cases with and without ground truth.
+best threshold, and exports the worst cases at three anatomical levels, with and without ground truth.
 
 ## Quick Start
 

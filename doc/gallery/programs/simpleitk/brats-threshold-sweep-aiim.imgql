@@ -119,11 +119,31 @@ print "outlier_cases" outliers
 print "outlier_dice"  for i in outliers do index(best_dice, i)
 
 // ---------------------------------------------------- significant slices ---
-// The slice worth looking at is the one where the tumour is largest. Asking for
-// it is again an argmax, this time over the per-plane volume of the mask.
+// One slice per case is not enough to judge a segmentation: the middle of a
+// tumour almost always looks right, and the error lives towards the poles. So
+// three planes are exported per case -- an EQUATOR and two TROPICS.
+//
+//   equator  the plane where the mask is largest
+//   extent   the first and last plane the mask reaches; beyond them the tumour
+//            is only background, which is what makes them the poles
+//   tropics  halfway from the equator to each pole
 plane(img, zi) = and(img, eq_sv(zi, z(img)))
 
-best_axial_z(seg) = argmax(for zi in range(0, z_planes) do volume(plane(seg, zi)))
+// The poles come from the mask itself rather than from a scan over planes:
+// `z(m)` is the plane index as an image, so masking it by the segmentation and
+// taking the extremes gives the extent directly. For the minimum, the outside
+// is first pushed above every real plane so it cannot win.
+pole_high(m) = max(mask(z(m), m))
+pole_low(m)  = min(mask(z(m), m) + mask(constant(z_planes), not(m)))
+
+equator_z(m) = argmax(for zi in range(0, z_planes) do volume(plane(m, zi)))
+
+// floor, because a midpoint between two planes is generally not a plane.
+tropics_and_equator(m) =
+  let e = equator_z(m) in
+  [ floor((pole_low(m) + e) / 2), e, floor((e + pole_high(m)) / 2) ]
+
+plane_names = ["tropic_low", "equator", "tropic_high"]
 
 // White where the mask is, the ranked FLAIR everywhere else: the anatomy stays
 // visible around the region under judgement.
@@ -143,20 +163,27 @@ png_of(pflair, m, zi) = to_png(extract_axial(overlay_mask(pflair, m, zi), zi))
 
 case_name(i) = concat("case_", format_string("{:03.0f}", i))
 
-// For every outlier, the same plane three ways: the image alone, the automatic
-// segmentation, and the ground truth. Same slice index in all three, so they
-// can be read side by side -- that comparison is the reason this program exists.
+// Every outlier, at three planes, three ways: the image alone, the automatic
+// segmentation, and the ground truth. Same plane index across the three, so
+// they can be read side by side -- that comparison is why this program exists.
 //
 // `save` is a top-level command taking a literal path, so a per-case path is
 // produced by calling the writer as an ordinary expression: WriteImage returns
 // the path it wrote, which makes the exports a value like any other.
+export_plane(pflair, seg, truth, stem, zi, plane_name) =
+  let base = concat(stem, "_", plane_name) in
+  [ WriteImage(to_png(extract_axial(pflair, zi)), concat(base, "_flair.png")),
+    WriteImage(png_of(pflair, seg,   zi),         concat(base, "_predicted.png")),
+    WriteImage(png_of(pflair, truth, zi),         concat(base, "_truth.png")) ]
+
 export_case(i) =
   let pflair = pflair_of(i) in
+  let truth  = truth_of(i) in
   let seg    = segment(pflair, index(best_vi_thr, i)) in
-  let zi     = best_axial_z(seg) in
+  let zs     = tropics_and_equator(seg) in
   let stem   = concat(output_dir, "/", case_name(i)) in
-  [ WriteImage(to_png(extract_axial(pflair, zi)), concat(stem, "_flair.png")),
-    WriteImage(png_of(pflair, seg, zi),           concat(stem, "_predicted.png")),
-    WriteImage(png_of(pflair, truth_of(i), zi),   concat(stem, "_truth.png")) ]
+  for k in range(0, 3) do
+    export_plane(pflair, seg, truth, stem, index(zs, k), index(plane_names, k))
 
-print "exported" for i in outliers do export_case(i)
+print "exported_planes" for i in outliers do tropics_and_equator(segment(pflair_of(i), index(best_vi_thr, i)))
+print "exported"        for i in outliers do export_case(i)
