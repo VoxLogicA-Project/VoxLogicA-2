@@ -29,6 +29,97 @@ from voxlogica.primitives.registry import PrimitiveRegistry
 from voxlogica.storage import StorageBackend
 
 
+def _unresolved_goal_context(engine: ComputationEngine, goal: Any) -> dict[str, str]:
+    """Everything known about a goal the scheduler left without a value.
+
+    An unresolved goal is a scheduling failure, and the message alone cannot be
+    acted on: it names the goal, but the goal is usually only the victim. The
+    node that actually stalled is somewhere in its dependency cone, and by the
+    time the run ends the frontier is empty and that information is gone unless
+    it is captured here.
+
+    So this walks the cone to the FIRST incomplete node whose own dependencies
+    are all complete -- the node that was ready, or should have been, and never
+    ran -- and reports it alongside the engine's terminal counters. Everything
+    is wrapped: a diagnostic helper that raises would replace the failure being
+    reported with its own, which is how a scheduling bug becomes unreproducible.
+    """
+    ctx: dict[str, str] = {}
+
+    def note(key: str, produce) -> None:
+        try:
+            value = produce()
+        except Exception as exc:  # noqa: BLE001 - never sink the report
+            value = f"<unavailable: {type(exc).__name__}: {exc}>"
+        ctx[key] = str(value)
+
+    # Even these two reads go through the guard. A scheduling failure can leave
+    # the engine in a state where plain attribute access raises, and a helper
+    # that dies here would erase the very report it exists to produce.
+    try:
+        graph = engine.graph
+        table = graph.table
+    except Exception as exc:  # noqa: BLE001
+        ctx["engine_state"] = f"<unreadable: {type(exc).__name__}: {exc}>"
+        note("goal_id", lambda: goal.id)
+        note("goal_name", lambda: getattr(goal, "name", None))
+        return ctx
+
+    note("goal_id", lambda: goal.id)
+    note("goal_name", lambda: getattr(goal, "name", None))
+    note("goal_operation", lambda: getattr(goal, "operation", None))
+    note("goal_completed", lambda: goal.id in table.completed)
+    note("goal_has_value", lambda: table.has_value(goal.id))
+    note("goal_persisted", lambda: table.persisted(goal.id))
+    note("goal_protected", lambda: goal.id in graph.protected)
+    note("goal_on_frontier", lambda: goal.id in graph.incomplete)
+    note("goal_unmet_deps", lambda: graph.pending.get(goal.id))
+
+    # The stall itself: nearest incomplete ancestor with every dependency done.
+    def find_stalled() -> str:
+        seen: set = set()
+        stack = [goal.id]
+        stalled: list[str] = []
+        scanned = 0
+        while stack and scanned < 100000:
+            nid = stack.pop()
+            if nid in seen:
+                continue
+            seen.add(nid)
+            scanned += 1
+            if nid in table.completed:
+                continue
+            deps = graph.deps(nid)
+            unmet = [d for d in deps if d not in table.completed]
+            if not unmet:
+                spec = table.nodes.get(nid)
+                stalled.append(
+                    f"{nid[:12]} op={getattr(spec, 'operator', '?')} "
+                    f"deps={len(deps)} pending={graph.pending.get(nid)} "
+                    f"value={table.has_value(nid)} persisted={table.persisted(nid)}"
+                )
+                if len(stalled) >= 5:
+                    break
+            else:
+                stack.extend(unmet)
+        ctx["unresolved_cone_size"] = str(len(seen))
+        return " | ".join(stalled) if stalled else "<none: every ancestor has unmet deps>"
+
+    note("stalled_nodes", find_stalled)
+
+    # Terminal engine state. `in_flight == 0 and ready == 0` with a goal still
+    # open means the engine drained rather than wedged -- a different bug from
+    # a deadlock, and the counters are the only way to tell them apart later.
+    note("engine_snapshot", lambda: json.dumps(
+        {k: v for k, v in engine._memory_snapshot().items()
+         if k not in ("resident_by_op", "census", "bandwidth")}, default=str))
+    note("resident_by_op", lambda: json.dumps(engine.table.resident_by_operator(), default=str))
+    note("registered_total", lambda: graph.registered_total)
+    note("frontier_size", lambda: len(graph.incomplete))
+    note("completed_total", lambda: len(table.completed))
+    return ctx
+
+
 class EngineExecutionStrategy:
     """Evaluates a plan as a batch of engine queries (one per goal)."""
 
@@ -74,12 +165,16 @@ class EngineExecutionStrategy:
         failures: dict[NodeId, str] = {}
         diagnostics = []
 
-        def record_failure(exc: BaseException, *, fallback_node_id: NodeId | None = None) -> None:
+        def record_failure(exc: BaseException, *, fallback_node_id: NodeId | None = None,
+                           context: dict[str, str] | None = None) -> None:
             """Turn every terminal engine/query failure into a CLI diagnostic."""
             node_id = getattr(exc, "node_id", None) or fallback_node_id
             locations = plan.provenance.get(node_id, ()) if node_id else ()
             report = build_report(exc, locations=locations, source_text=plan.source_text)
             diagnostic = replace(report.diagnostic, details_id=store_report(report))
+            if context:
+                diagnostic = replace(diagnostic,
+                                     safe_context={**diagnostic.safe_context, **context})
             diagnostics.append(diagnostic)
             failures[node_id or "<engine>"] = diagnostic.message
 
@@ -138,6 +233,7 @@ class EngineExecutionStrategy:
                             "a scheduling failure, not a successful empty result"
                         ),
                         fallback_node_id=goal.id,
+                        context=_unresolved_goal_context(engine, goal),
                     )
                     continue
                 try:
