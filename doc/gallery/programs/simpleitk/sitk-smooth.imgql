@@ -1,7 +1,12 @@
+// Smoothing, and writing a result to disk. `save` takes a literal path; when
+// the path must be COMPUTED, call the writer as an ordinary expression instead.
+// `$stem` is the program's own file name, so two different programs cannot
+// overwrite each other's output.
 import "simpleitk"
 import "strings"
 
-img = ReadImage("tests/data/chris_t1.nii.gz")
+img    = ReadImage("tests/data/chris_t1.nii.gz")
 smooth = CurvatureFlow(img, 0.15, 4)
-output_path = concat("output/", $stem, "/smoothed_chris_t1.nii.gz")
-result = WriteImage(smooth, output_path)
+
+written = WriteImage(smooth, concat("output/", $stem, "/smoothed_chris_t1.nii.gz"))
+print "written" written

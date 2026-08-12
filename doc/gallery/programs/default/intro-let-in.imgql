@@ -1,2 +1,7 @@
-normalized(x,minv,maxv) = let span = maxv - minv in (x - minv) / span
-scaled = normalized(42,10,50)
+// Functions and local bindings. `let ... in` names a subexpression so it is
+// written once and read clearly; it does not introduce mutable state.
+normalized(x, minv, maxv) =
+  let span = maxv - minv in
+  (x - minv) / span
+
+print "scaled" normalized(42, 10, 50)     // 42 rescaled from [10,50] to [0,1]

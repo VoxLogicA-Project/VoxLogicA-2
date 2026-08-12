@@ -1,2 +1,0 @@
-import "test"
-enqueue_plan = test.enqueue("segment", "patient-42")

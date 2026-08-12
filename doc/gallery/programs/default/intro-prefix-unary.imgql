@@ -1,2 +1,5 @@
+// A one-argument all-caps name may be written in PREFIX position, without
+// parentheses: `NEG 11` rather than `NEG(11)`.
 NEG(x) = 0 - x
-negated = NEG 11
+
+print "negated" NEG 11

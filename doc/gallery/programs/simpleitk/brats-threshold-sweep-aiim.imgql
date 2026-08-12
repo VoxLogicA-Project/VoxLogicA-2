@@ -1,0 +1,162 @@
+// BraTS whole-tumour: sweep one threshold, keep the best per case, then look
+// at what the sweep learned. This is the AIIM study written as one declarative
+// program -- the sweep, the scoring, the statistics over the chosen thresholds,
+// and the export of the cases that went worst.
+//
+// The published recipe segments FLAIR with TWO percentile thresholds: a strict
+// one (hiThr) seeds the tumour, a permissive one (viThr) defines how far the
+// seed may grow. hiThr is held fixed at its published value and viThr is swept,
+// because viThr is the parameter the paper reports as case-dependent.
+//
+// WHAT TO NOTICE, as a piece of declarative programming:
+//
+//  * Nothing here iterates. `for` builds a whole sequence at once; the engine
+//    chooses the evaluation order and may run every case, and every threshold
+//    within a case, in parallel.
+//  * `hyper` is defined OUTSIDE the viThr sweep. Because equal expressions are
+//    the same node in the graph, the strict threshold and the preprocessing
+//    behind it are computed once per case and shared by all 21 sweep points --
+//    the sweep costs far less than 21 segmentations.
+//  * The interesting questions are asked directly of the results: `argmax` for
+//    the best threshold, `tally` for which thresholds keep winning, `argsort`
+//    for which cases went worst. No accumulation, no bookkeeping.
+
+import "simpleitk"
+import "vox1"
+import "strings"
+
+// ---------------------------------------------------------------- inputs ---
+dataset_root = "tests/data/datasets/BraTS_2019_HGG"
+output_dir   = "output/aiim-sweep"
+case_count   = 20        // cases to score
+outlier_count = 10       // worst cases to export
+z_planes     = 155       // axial planes in a BraTS volume
+
+// `dir` lists matching files in a stable order, so the two lists line up
+// index-for-index: case i is flair_paths[i] together with gt_paths[i].
+flair_paths = subsequence(dir(dataset_root, "*_flair.nii.gz", true, true), 0, case_count)
+gt_paths    = subsequence(dir(dataset_root, "*_seg.nii.gz",   true, true), 0, case_count)
+
+// ------------------------------------------------------------ parameters ---
+hi_thr = 0.93                                   // fixed, as published
+
+// Thresholds are written as integer ticks and divided, so the sweep is exact
+// and the printed values are the ones a reader recognises (0.72 … 0.92).
+tick_to_threshold(tick) = tick / 100
+vi_thresholds = map(tick_to_threshold, range(72, 93))
+
+// ----------------------------------------------------------- the pipeline ---
+// Percentile ranking is what makes a FIXED threshold meaningful across scans:
+// it replaces each voxel's intensity by its rank within the brain, so 0.93
+// means "brighter than 93% of this brain" rather than an absolute value.
+preprocess(flair) =
+  let background = touch(leq_sv(0.1, flair), border(flair)) in
+  percentiles(flair, not(background), 0)
+
+// Seed and grow: keep the permissive region only where it is CONNECTED to a
+// strict-threshold seed. This is the spatial-logic step that a pure threshold
+// cannot express, and the reason the pair of thresholds works at all.
+segment(pflair, vi_thr) =
+  let hyper = smoothen(geq_sv(hi_thr, pflair), 5.0) in
+  let very  = smoothen(geq_sv(vi_thr, pflair), 2.0) in
+  grow(hyper, very)
+
+// Dice spelled out, rather than called from a library, because the whole study
+// rests on it: twice the agreement, over the two volumes.
+dice(a, b) = 2 * volume(and(a, b)) / (volume(a) + volume(b))
+
+// BraTS labels every tumour tissue class with a positive integer, so the whole
+// tumour is simply "labelled at all".
+whole_tumour(gt_image) = geq_sv(1.0, gt_image)
+
+// --------------------------------------------------- per-case evaluation ---
+pflair_of(i) = preprocess(intensity(ReadImage(index(flair_paths, i))))
+truth_of(i)  = whole_tumour(intensity(ReadImage(index(gt_paths, i))))
+
+// The sweep for one case: one Dice per candidate threshold.
+sweep_of(i) =
+  let pflair = pflair_of(i) in
+  let truth  = truth_of(i) in
+  for vi_thr in vi_thresholds do dice(segment(pflair, vi_thr), truth)
+
+cases = range(0, case_count)
+
+// Per case: the best Dice, and the threshold that achieved it. `argmax` gives
+// the POSITION of the best score, which indexes the threshold list -- the two
+// sequences were built in the same order, so position is the link between them.
+best_dice     = for i in cases do let s = sweep_of(i) in index(s, argmax(s))
+best_vi_thr   = for i in cases do index(vi_thresholds, argmax(sweep_of(i)))
+
+// A baseline to compare against: the single published viThr, applied to all.
+fixed_dice = for i in cases do dice(segment(pflair_of(i), 0.88), truth_of(i))
+
+// ------------------------------------------------------------ statistics ---
+print "n_cases"            case_count
+print "dice_fixed_mean"    mean(fixed_dice)
+print "dice_best_mean"     mean(best_dice)
+print "dice_best_median"   median(best_dice)
+print "dice_best_stdev"    stdev(best_dice)
+
+// The point of the study: how much the best threshold moves from case to case.
+// If `tally` showed one threshold winning nearly always, a fixed value would be
+// justified; a spread means the parameter is genuinely case-dependent.
+print "vi_thr_mean"        mean(best_vi_thr)
+print "vi_thr_median"      median(best_vi_thr)
+print "vi_thr_stdev"       stdev(best_vi_thr)
+print "vi_thr_distribution" tally(best_vi_thr)      // [threshold, how often it won]
+
+print "best_dice"          best_dice
+print "best_vi_thr"        best_vi_thr
+
+// -------------------------------------------------------------- outliers ---
+// `argsort` returns positions ordered by ascending score, so the first few are
+// the cases the method handled worst -- selected by description, not by sorting
+// a table by hand.
+ranked   = argsort(best_dice)
+outliers = subsequence(ranked, 0, outlier_count)
+
+print "outlier_cases" outliers
+print "outlier_dice"  for i in outliers do index(best_dice, i)
+
+// ---------------------------------------------------- significant slices ---
+// The slice worth looking at is the one where the tumour is largest. Asking for
+// it is again an argmax, this time over the per-plane volume of the mask.
+plane(img, zi) = and(img, eq_sv(zi, z(img)))
+
+best_axial_z(seg) = argmax(for zi in range(0, z_planes) do volume(plane(seg, zi)))
+
+// White where the mask is, the ranked FLAIR everywhere else: the anatomy stays
+// visible around the region under judgement.
+overlay_mask(pflair, m, zi) =
+  let p = plane(m, zi) in
+  mask(constant(255.0), p) + mask(pflair, not(p))
+
+extract_axial(img, zi) =
+  Extract(img,
+          vector_uint32([max(x(img)) + 1, max(y(img)) + 1, 1]),
+          vector_uint32([0, 0, zi]))
+
+to_png(img) =
+  Cast(RescaleIntensity(img, 0, 65535), GetPixelIDValueFromString("sitkUInt16"))
+
+png_of(pflair, m, zi) = to_png(extract_axial(overlay_mask(pflair, m, zi), zi))
+
+case_name(i) = concat("case_", format_string("{:03.0f}", i))
+
+// For every outlier, the same plane three ways: the image alone, the automatic
+// segmentation, and the ground truth. Same slice index in all three, so they
+// can be read side by side -- that comparison is the reason this program exists.
+//
+// `save` is a top-level command taking a literal path, so a per-case path is
+// produced by calling the writer as an ordinary expression: WriteImage returns
+// the path it wrote, which makes the exports a value like any other.
+export_case(i) =
+  let pflair = pflair_of(i) in
+  let seg    = segment(pflair, index(best_vi_thr, i)) in
+  let zi     = best_axial_z(seg) in
+  let stem   = concat(output_dir, "/", case_name(i)) in
+  [ WriteImage(to_png(extract_axial(pflair, zi)), concat(stem, "_flair.png")),
+    WriteImage(png_of(pflair, seg, zi),           concat(stem, "_predicted.png")),
+    WriteImage(png_of(pflair, truth_of(i), zi),   concat(stem, "_truth.png")) ]
+
+print "exported" for i in outliers do export_case(i)

@@ -9,6 +9,13 @@ Current runtime architecture:
 - Modular results database API (`~/.voxlogica/results.db` by default)
 - Interactive REPL session runtime (CLI today, GUI-ready integration point)
 
+## Examples
+
+Runnable, commented programs live in the [example gallery](doc/gallery/README.md),
+ordered as a reading path from the language basics to a complete study: a BraTS
+threshold sweep that scores every case, reports the distribution of the per-case
+best threshold, and exports the worst cases with and without ground truth.
+
 ## Quick Start
 
 Run from repo root:
@@ -164,7 +171,7 @@ For command-specific flags:
 - Module docs: `doc/dev/modules/`
 - Python package docs: `implementation/python/README.md`
 - API usage notes: `doc/user/api-usage.md`
-- Example gallery (programs + manifest): `doc/gallery/`
+- **Example gallery** (runnable, commented programs): [`doc/gallery/README.md`](doc/gallery/README.md)
 - Language guide (narrative index): `doc/user/language-gallery.md`
 - Serve studio dashboards: `doc/user/serve-studio.md`
 - VS Code MCP setup for the UI inspector: `doc/user/vscode-mcp-ui-inspector.md`

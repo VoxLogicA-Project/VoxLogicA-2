@@ -1,5 +1,10 @@
+// String building, for labels and computed output paths. `format_string` takes
+// the same format specifiers as Python, so numbers can be rendered exactly as a
+// report needs them.
 import "strings"
+
 patient = "P-1024"
-score = 0.8732
-label = concat("patient=", patient)
-pretty_score = format_string("{:.2%}", score)
+score   = 0.8732
+
+print "label"        concat("patient=", patient)
+print "pretty_score" format_string("{:.2%}", score)     // -> 87.32%

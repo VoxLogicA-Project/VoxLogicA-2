@@ -1,4 +1,7 @@
-values = range(0,20)
+// `range` builds a sequence and `map` applies a function to every element.
+// Neither iterates: they describe the whole result at once, and the engine is
+// free to evaluate the elements in any order, in parallel.
+values = range(0, 20)
 square(x) = x * x
-squares = map(square, values)
-count = 20
+
+print "squares" map(square, values)

@@ -1,7 +1,14 @@
+// Any SimpleITK filter is callable by its own name once "simpleitk" is
+// imported. Here the threshold bounds are DERIVED from the image's own range
+// rather than hardcoded, so the program adapts to whatever it is given.
 import "simpleitk"
+
 img = ReadImage("tests/data/chris_t1.nii.gz")
-mm = MinimumMaximum(img)
-lo = index(mm,0)
-hi = index(mm,1)
-thr = BinaryThreshold(img, lo + (hi-lo)/3, hi, 255, 0)
-threshold_stats = Statistics(thr)
+mm  = MinimumMaximum(img)
+lo  = index(mm, 0)
+hi  = index(mm, 1)
+
+// Keep the brightest two thirds of the intensity range.
+thr = BinaryThreshold(img, lo + (hi - lo) / 3, hi, 255, 0)
+
+print "threshold_stats" Statistics(thr)

@@ -1,1 +1,5 @@
+// The smallest possible program: bind a name to an expression, print it.
+// A VoxLogicA program is a set of DECLARATIONS, not a sequence of steps --
+// nothing is computed until a `print` or `save` demands it.
 answer = 1 + 2
+print "answer" answer
