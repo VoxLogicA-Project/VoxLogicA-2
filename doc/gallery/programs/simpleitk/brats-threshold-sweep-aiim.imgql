@@ -13,10 +13,12 @@
 //  * Nothing here iterates. `for` builds a whole sequence at once; the engine
 //    chooses the evaluation order and may run every case, and every threshold
 //    within a case, in parallel.
-//  * `hyper` is defined OUTSIDE the viThr sweep. Because equal expressions are
-//    the same node in the graph, the strict threshold and the preprocessing
-//    behind it are computed once per case and shared by all 21 sweep points --
-//    the sweep costs far less than 21 segmentations.
+//  * Repeating an expression is free, so nothing is hoisted for speed. `hyper`
+//    inside `segment` does not depend on viThr, so all 21 sweep points share
+//    ONE strict threshold and one preprocessing -- not because it was lifted
+//    out of the sweep, but because equal expressions are the same node in the
+//    graph whatever scope they are written in. Write what a value IS, where it
+//    is clearest to read, and let the engine decide what to compute twice.
 //  * The interesting questions are asked directly of the results: `argmax` for
 //    the best threshold, `tally` for which thresholds keep winning, `argsort`
 //    for which cases went worst. No accumulation, no bookkeeping.
@@ -30,7 +32,6 @@ dataset_root = "tests/data/datasets/BraTS_2019_HGG"
 output_dir   = "output/aiim-sweep"
 case_count   = 20        // cases to score
 outlier_count = 10       // worst cases to export
-z_planes     = 155       // axial planes in a BraTS volume
 
 // `dir` lists matching files in a stable order, so the two lists line up
 // index-for-index: case i is flair_paths[i] together with gt_paths[i].
@@ -38,7 +39,8 @@ flair_paths = subsequence(dir(dataset_root, "*_flair.nii.gz", true, true), 0, ca
 gt_paths    = subsequence(dir(dataset_root, "*_seg.nii.gz",   true, true), 0, case_count)
 
 // ------------------------------------------------------------ parameters ---
-hi_thr = 0.93                                   // fixed, as published
+hi_thr           = 0.93        // strict threshold, fixed at its published value
+published_vi_thr = 0.88        // the single permissive value the paper settled on
 
 // Thresholds are written as integer ticks and divided, so the sweep is exact
 // and the printed values are the ones a reader recognises (0.72 … 0.92).
@@ -84,11 +86,11 @@ cases = range(0, case_count)
 // Per case: the best Dice, and the threshold that achieved it. `argmax` gives
 // the POSITION of the best score, which indexes the threshold list -- the two
 // sequences were built in the same order, so position is the link between them.
-best_dice     = for i in cases do let s = sweep_of(i) in index(s, argmax(s))
-best_vi_thr   = for i in cases do index(vi_thresholds, argmax(sweep_of(i)))
+best_dice   = for i in cases do let s = sweep_of(i) in index(s, argmax(s))
+best_vi_thr = for i in cases do index(vi_thresholds, argmax(sweep_of(i)))
 
 // A baseline to compare against: the single published viThr, applied to all.
-fixed_dice = for i in cases do dice(segment(pflair_of(i), 0.88), truth_of(i))
+fixed_dice = for i in cases do dice(segment(pflair_of(i), published_vi_thr), truth_of(i))
 
 // ------------------------------------------------------------ statistics ---
 print "n_cases"            case_count
@@ -117,6 +119,9 @@ outliers = subsequence(ranked, 0, outlier_count)
 
 print "outlier_cases" outliers
 print "outlier_dice"  for i in outliers do index(best_dice, i)
+// Positions are meaningless outside this run: print the files they refer to, so
+// a reader can open the case that scored worst.
+print "outlier_paths" for i in outliers do index(flair_paths, i)
 
 // ---------------------------------------------------- significant slices ---
 // One slice per case is not enough to judge a segmentation: the middle of a
@@ -131,12 +136,21 @@ plane(img, zi) = and(img, eq_sv(zi, z(img)))
 
 // The poles come from the mask itself rather than from a scan over planes:
 // `z(m)` is the plane index as an image, so masking it by the segmentation and
-// taking the extremes gives the extent directly. For the minimum, the outside
-// is first pushed above every real plane so it cannot win.
+// taking the extremes gives the extent directly. For the minimum the outside
+// must first be pushed above every real plane so it cannot win; `above_all` is
+// derived from the image, so it cannot drift out of step with the data the way
+// a written-in constant would.
 pole_high(m) = max(mask(z(m), m))
-pole_low(m)  = min(mask(z(m), m) + mask(constant(z_planes), not(m)))
+pole_low(m)  =
+  let above_all = max(z(m)) + 1 in
+  min(mask(z(m), m) + mask(constant(above_all), not(m)))
 
-equator_z(m) = argmax(for zi in range(0, z_planes) do volume(plane(m, zi)))
+// Only planes between the poles can hold the largest section, so the search
+// runs over the extent rather than the whole volume. `argmax` returns a
+// position within that range, which the offset turns back into a plane index.
+equator_z(m) =
+  let lo = pole_low(m) in
+  lo + argmax(for zi in range(lo, pole_high(m) + 1) do volume(plane(m, zi)))
 
 // floor, because a midpoint between two planes is generally not a plane.
 tropics_and_equator(m) =
