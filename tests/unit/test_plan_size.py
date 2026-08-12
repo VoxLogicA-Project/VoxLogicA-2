@@ -84,3 +84,41 @@ def test_describe_exposes_the_terms(estimator):
     assert described["units_reduced"] == 4
     assert described["base"] == 100
     assert described["estimate"] == 100 + 8 * 10
+
+
+def test_incremental_unit_count_matches_a_full_scan():
+    """The maintained sum must equal the scan it replaced, including a rebase.
+
+    The scan was O(loops) per progress frame; the sum is O(1) per report. They
+    can only diverge through a bookkeeping slip, which is exactly what this
+    checks -- across a nesting rebase, where the qualifying set changes.
+    """
+    estimator = PlanSizeEstimator()
+
+    def scan() -> int:
+        return sum(loop.reduced for loop in estimator._loops.values()
+                   if loop.chain == estimator._deepest)
+
+    estimator.open_loop("outer", None, cardinality=6, registered_now=100)
+    for reduced in (1, 3, 6):
+        estimator.note_reduced("outer", reduced)
+        assert estimator._units_reduced == scan()
+
+    # Two sibling inner loops: the rebase drops the outer bodies from the count.
+    estimator.open_loop("in_a", "outer", cardinality=4, registered_now=200)
+    assert estimator._units_reduced == scan() == 0
+    estimator.open_loop("in_b", "outer", cardinality=4, registered_now=210)
+    for loop_id, reduced in (("in_a", 2), ("in_b", 1), ("in_a", 4), ("in_b", 4)):
+        estimator.note_reduced(loop_id, reduced)
+        assert estimator._units_reduced == scan()
+
+    estimator.close_loop("in_a")
+    assert estimator._units_reduced == scan() == 8
+
+
+def test_closing_a_loop_twice_does_not_double_count():
+    estimator = PlanSizeEstimator()
+    estimator.open_loop("L", None, cardinality=5, registered_now=10)
+    estimator.close_loop("L")
+    estimator.close_loop("L")
+    assert estimator._units_reduced == 5

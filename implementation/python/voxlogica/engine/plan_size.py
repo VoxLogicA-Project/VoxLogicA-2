@@ -56,6 +56,11 @@ class PlanSizeEstimator:
         self._loops: dict[NodeId, _Loop] = {}
         self._base: int | None = None       # registered nodes before the deepest level
         self._deepest = 0                   # largest chain seen
+        # Bodies reduced at the deepest level, maintained as they are reported.
+        # Summing the loops on demand would be a full scan per progress frame:
+        # 6,300 loops on a BraTS sweep is only ~130 us, but it is a scan whose
+        # cost grows with the plan to compute a number that changes by one.
+        self._units_reduced = 0
 
     def open_loop(self, loop_id: NodeId, parent_id: NodeId | None,
                   cardinality: int, registered_now: int) -> None:
@@ -67,46 +72,48 @@ class PlanSizeEstimator:
         self._loops[loop_id] = _Loop(cardinality=cardinality, chain=chain)
         if chain > self._deepest:
             # A deeper level than any seen: everything registered so far is
-            # shared setup with respect to it, so the baseline moves here.
+            # shared setup with respect to it, so the baseline moves here. No
+            # loop can already sit at this depth -- the chain is strictly
+            # greater -- so the reduced count starts from nothing.
             self._deepest = chain
             self._base = registered_now
+            self._units_reduced = 0
 
     def note_reduced(self, loop_id: NodeId, reduced: int) -> None:
         """Record how many of a loop's bodies have been reduced so far."""
         loop = self._loops.get(loop_id)
-        if loop is not None:
-            loop.reduced = reduced
+        if loop is None:
+            return
+        if loop.chain == self._deepest:
+            self._units_reduced += reduced - loop.reduced
+        loop.reduced = reduced
 
     def close_loop(self, loop_id: NodeId) -> None:
         """A loop finished unrolling; its bodies stay counted."""
         loop = self._loops.get(loop_id)
         if loop is not None:
-            loop.reduced = loop.cardinality
+            self.note_reduced(loop_id, loop.cardinality)
 
     def estimate(self, registered_now: int) -> int | None:
         """Projected node count of the finished plan, or None if unknown yet."""
         if self._base is None or self._deepest <= 0:
             return None
-        units_reduced = sum(loop.reduced for loop in self._loops.values()
-                            if loop.chain == self._deepest)
-        if units_reduced <= 0:
+        if self._units_reduced <= 0:
             return None
         marginal = registered_now - self._base
         if marginal <= 0:
             return None
-        cost_per_unit = marginal / units_reduced
+        cost_per_unit = marginal / self._units_reduced
         # Never below what is already registered: the estimate is a forecast of
         # the total, and the total cannot be smaller than the part.
         return max(registered_now, int(self._base + self._deepest * cost_per_unit))
 
     def describe(self, registered_now: int) -> dict[str, int]:
         """Internals, for the memory log and for tests."""
-        units_reduced = sum(loop.reduced for loop in self._loops.values()
-                            if loop.chain == self._deepest)
         return {
             "loops": len(self._loops),
             "units_total": self._deepest,
-            "units_reduced": units_reduced,
+            "units_reduced": self._units_reduced,
             "base": self._base or 0,
             "estimate": self.estimate(registered_now) or 0,
         }
