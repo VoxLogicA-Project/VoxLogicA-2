@@ -129,6 +129,14 @@ class LoopAdmission:
         self.expanded_bodies = 0
         # Projected size of the finished plan; the ETA's only honest input.
         self.plan_size = PlanSizeEstimator()
+        # loop id -> the loop whose body was being reduced when it was interned.
+        # Nesting cannot be read off the graph later: a loop node sits somewhere
+        # inside its parent body's cone, never at its root, so asking whether it
+        # IS a body (which is what _body_owner answers) says no every time, and
+        # the projection loses every level of nesting.
+        self._loop_parent: dict[NodeId, NodeId] = {}
+        self._reducing: NodeId | None = None
+        self.graph.table.nodes.on_loop = self._note_loop_interned
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -151,8 +159,7 @@ class LoopAdmission:
             if expansion is None:
                 raise RuntimeError(f"cannot expand loop node {nid[:12]} ({node.operator})")
             loop = asyncio.get_running_loop()
-            owner = self._body_owner.get(nid)
-            self.plan_size.open_loop(nid, owner.loop_id if owner else None,
+            self.plan_size.open_loop(nid, self._loop_parent.get(nid),
                                      expansion.total, self.graph.registered_total)
             cursor = 0
             # PRODUCTION IS DECOUPLED FROM ADMISSION. Reducing a chunk of big
@@ -170,8 +177,14 @@ class LoopAdmission:
                 self._admit(job)
                 if cursor < expansion.total and len(job.staged) < self.window:
                     stop = min(cursor + self.chunk, expansion.total)
-                    ids = await loop.run_in_executor(
-                        self._reducer, self.expander.reduce_chunk, expansion, cursor, stop)
+                    # One reducer thread, so exactly one body is being reduced
+                    # at a time and any loop interned meanwhile belongs to it.
+                    self._reducing = nid
+                    try:
+                        ids = await loop.run_in_executor(
+                            self._reducer, self.expander.reduce_chunk, expansion, cursor, stop)
+                    finally:
+                        self._reducing = None
                     cursor = stop
                     self.plan_size.note_reduced(nid, cursor)
                     for body in ids:  # stage pin: value must survive until the sequence holds it
@@ -208,6 +221,11 @@ class LoopAdmission:
             self.liveness.staged.discard(body)
             self.graph.release(body)
         self._on_spliced(nid, seq_id, priority)
+
+    def _note_loop_interned(self, node_id: NodeId) -> None:
+        """Record the loop a newly interned loop node was produced inside."""
+        if self._reducing is not None:
+            self._loop_parent[node_id] = self._reducing
 
     # ── Windowed admission ────────────────────────────────────────────────────
 

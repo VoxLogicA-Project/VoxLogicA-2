@@ -122,3 +122,40 @@ def test_closing_a_loop_twice_does_not_double_count():
     estimator.close_loop("L")
     estimator.close_loop("L")
     assert estimator._units_reduced == 5
+
+
+def test_loop_nodes_are_reported_on_direct_dict_insertion():
+    """The reducer writes into table.nodes DIRECTLY, bypassing intern().
+
+    WorkPlan is handed the mapping and inserts through it, so a hook on intern()
+    never sees the loop nodes produced while a body is being reduced -- which is
+    the only moment a loop's enclosing loop is knowable. A first attempt hooked
+    intern() and detected no nesting at all: every loop looked top-level, the
+    projection lost the outer cardinality, and the ETA collapsed to draining the
+    frontier it already knew about.
+    """
+    from voxlogica.engine.node_table import NodeTable
+    from voxlogica.lazy.ir import NodeSpec
+
+    table = NodeTable()
+    seen: list[str] = []
+    table.nodes.on_loop = seen.append
+
+    loop = NodeSpec(kind="primitive", operator="default.for_loop", args=("seq", "body"))
+    plain = NodeSpec(kind="primitive", operator="vox1.dt", args=("x",))
+
+    table.nodes["a_loop"] = loop
+    table.nodes["a_node"] = plain
+    assert seen == ["a_loop"], "only loop nodes are reported"
+
+    table.nodes["a_loop"] = loop          # re-insertion is not a new node
+    assert seen == ["a_loop"]
+
+
+def test_nested_cardinalities_multiply_through_the_recorded_parent():
+    """6 bodies each holding 7 is 42 units, not 7."""
+    estimator = PlanSizeEstimator()
+    estimator.open_loop("outer", None, cardinality=6, registered_now=100)
+    estimator.open_loop("inner", "outer", cardinality=7, registered_now=120)
+    estimator.note_reduced("inner", 7)
+    assert estimator.describe(190)["units_total"] == 42

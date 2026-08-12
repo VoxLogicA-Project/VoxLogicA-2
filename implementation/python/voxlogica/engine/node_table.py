@@ -62,6 +62,33 @@ class DoubleComputationError(RuntimeError):
     """Raised when a node would be computed twice — content addressing forbids it."""
 
 
+#: Operators the expander unrolls. Duplicated from expander._EXPANDABLE rather
+#: than imported, because the table must not depend on the scheduler.
+_LOOP_OPERATORS = frozenset({"for_loop", "default.for_loop", "map", "default.map"})
+
+
+class _LoopWatchingNodes(dict):
+    """The node mapping, reporting loop nodes as they are first inserted.
+
+    Nesting is only observable while it is being built: a loop node lands in a
+    shared DAG somewhere inside its parent body's cone, never at its root, so
+    afterwards nothing distinguishes it from any other node. Watching the
+    insertion is the one point that sees it. The overridden __setitem__ costs a
+    membership test per node, and fires the callback for a few thousand loops
+    out of millions of nodes.
+    """
+
+    on_loop: Any = None
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        if key not in self:
+            super().__setitem__(key, value)
+            if self.on_loop is not None and getattr(value, "operator", None) in _LOOP_OPERATORS:
+                self.on_loop(key)
+        else:
+            super().__setitem__(key, value)
+
+
 class NodeTable:
     """Hash-consed nodes plus their materialized values and optional disk tier.
 
@@ -73,7 +100,12 @@ class NodeTable:
     """
 
     def __init__(self, backend: StorageBackend | None = None):
-        self.nodes: dict[NodeId, NodeSpec] = {}
+        # A dict, but one that reports loop nodes as they appear. The reducer
+        # writes into this mapping DIRECTLY -- WorkPlan is handed `table.nodes`
+        # and inserts through it -- so a hook on intern() never sees the nodes
+        # produced while a loop body is being reduced, which is the only moment
+        # a loop's enclosing loop is knowable.
+        self.nodes: dict[NodeId, NodeSpec] = _LoopWatchingNodes()
         self.values: dict[NodeId, Any] = {}
         self._running: set[NodeId] = set()
         self.completed: set[NodeId] = set()
@@ -203,6 +235,7 @@ class NodeTable:
         node_id = hash_node(node)
         if node_id not in self.nodes:
             self.nodes[node_id] = node
+
             # Record the DAG row HERE, not at completion: interning is the one
             # point every node passes through exactly once. Hooking _finish
             # instead lost constants, closures and fusion-completed members --
