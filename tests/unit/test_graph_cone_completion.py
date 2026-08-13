@@ -76,3 +76,41 @@ def test_ordinary_completion_is_unchanged():
     graph.register("c")
     assert graph.on_complete("a") == [], "one dependency still unmet"
     assert graph.on_complete("b") == ["c"]
+
+
+@pytest.mark.unit
+def test_a_cone_never_frees_a_buffer_a_dispatch_is_reading():
+    """complete_cone drops a refcount unconditionally, so it must ask about pins.
+
+    Every other eviction path decrements a count, which makes "a reader is a
+    registered consumer, so the count cannot reach zero" a sufficient argument.
+    This path pops the entry outright, and a member rematerialized as a
+    dependency by a concurrent dispatch was freed mid-kernel: SIGSEGV inside
+    SimpleITK's MakeUnique, 69 minutes into a 369-case sweep.
+    """
+    graph = _graph_with({
+        "interior": NodeSpec(kind="primitive", operator="vox1.or", args=()),
+    })
+    graph.register("interior")
+    graph.table.set_value("interior", object())
+
+    deferred: list[str] = []
+    graph.pinned = lambda nid: nid == "interior"
+    graph.defer = deferred.append
+
+    graph.complete_cone(["interior"], frozenset({"interior"}), frozenset({"interior"}))
+    assert "interior" in graph.table.values, "a value being read must not be freed"
+    assert deferred == ["interior"], "and must be handed on for a later sweep"
+
+
+@pytest.mark.unit
+def test_an_unpinned_cone_member_is_still_freed():
+    """The deferral must not become a leak for the ordinary case."""
+    graph = _graph_with({
+        "interior": NodeSpec(kind="primitive", operator="vox1.or", args=()),
+    })
+    graph.register("interior")
+    graph.table.set_value("interior", object())
+
+    graph.complete_cone(["interior"], frozenset({"interior"}), frozenset({"interior"}))
+    assert "interior" not in graph.table.values

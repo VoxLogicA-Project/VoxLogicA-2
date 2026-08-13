@@ -50,6 +50,11 @@ class DependencyGraph:
         self._dependents: dict[NodeId, list[NodeId]] = defaultdict(list)
         self._deps_memo: dict[NodeId, frozenset[NodeId]] = {}
         self.registered_total = 0                     # monotone, for progress totals
+        # Installed by ComputationEngine: "is a dispatch reading this value?"
+        # and "hold this unreferenced value for a later sweep". Defaults keep a
+        # bare graph (tests, --no-cache paths) behaving exactly as before.
+        self.pinned = lambda nid: False
+        self.defer = lambda nid: None
 
     # ── Structure ─────────────────────────────────────────────────────────────
 
@@ -197,8 +202,27 @@ class DependencyGraph:
             # exactly the operators fusion folds into cones (vox1.dt 8.6 GB,
             # vox1.mask 8.6 GB). Evicting here is free when there is no value.
             if self.consumers.pop(member, None) is not None or member in self.table.values:
-                if member not in self.protected:
-                    self.table.evict(member)
+                if member in self.protected:
+                    continue
+                if self.pinned(member):
+                    # A POOL THREAD IS READING THIS BUFFER RIGHT NOW. Every
+                    # eviction path in the engine checks dispatch pins before
+                    # freeing (ComputationEngine._reclaim_memory,
+                    # _drop_ownerless); this one did not, and it is the one
+                    # path that drops a refcount UNCONDITIONALLY instead of
+                    # decrementing it, so the usual "a reader is a registered
+                    # consumer, the count cannot reach zero" argument does not
+                    # protect it. A member rematerialized as a dependency by a
+                    # concurrent dispatch was therefore freed mid-kernel:
+                    # SIGSEGV inside SimpleITK's MakeUnique, reached through
+                    # arrays.pinned_view, 69 minutes into a 369-case sweep at
+                    # 14 of 17 goals. A pin is transient, so this is a
+                    # deferral, not a leak: `defer` hands the value to the
+                    # engine's free-garbage queue, which collects it on a later
+                    # sweep once the read has finished.
+                    self.defer(member)
+                    continue
+                self.table.evict(member)
 
     # ── Value lifetime ────────────────────────────────────────────────────────
 

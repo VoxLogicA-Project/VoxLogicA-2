@@ -182,6 +182,11 @@ class ComputationEngine:
         # ── The four parts (all event-loop owned; see module docstrings) ──
         self.graph = DependencyGraph(self.table)
         self.ready = ReadyQueue()
+        # complete_cone drops a member's refcount unconditionally, so it cannot
+        # rely on "a reader is a registered consumer" to know the value is
+        # safe to free — it has to ask (see DependencyGraph.complete_cone).
+        self.graph.pinned = lambda nid: self._dispatch_pins.get(nid, 0) > 0
+        self.graph.defer = self._track_ownerless
         self.liveness = LivenessProbe(self.graph)
         self.liveness.install(self.table._backend)
         self.admission = LoopAdmission(
