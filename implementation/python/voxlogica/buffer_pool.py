@@ -17,6 +17,11 @@ import weakref
 
 
 _STATE_ATTR = "_voxlogica_buffer_pool_state"
+#: Where arrays.pinned_view caches the numpy view built over a sitk image.
+#: Owned there, cleared HERE: a recycled image keeps its Python identity, so a
+#: view built during its previous life would otherwise still be reachable from
+#: it and would describe the wrong value.
+VIEW_ATTR = "_voxlogica_pinned_view"
 _LOCK = threading.RLock()
 _POOLS: dict[tuple[Any, ...], list["BufferState"]] = defaultdict(list)
 _POOLED_BYTES = 0
@@ -232,14 +237,22 @@ def acquire_sitk(reference: Any, pixel_id: int) -> Any:
             import SimpleITK as sitk
 
             image = sitk.Image(size, pixel_id)
-            itemsize = _sitk_pixel_itemsize(pixel_id)
+            itemsize = sitk_itemsize(pixel_id)
             state = BufferState("sitk", key, image, _product(size) * itemsize)
             setattr(image, _STATE_ATTR, state)
             _STATS["allocations"] += 1
             _STATS["sitk_allocations"] += 1
         else:
             _state, image = pooled
-    image.CopyInformation(reference)
+            # The image object is REUSED, not reallocated, so anything keyed on
+            # its identity survives into the next value and must go.
+            try:
+                delattr(image, VIEW_ATTR)
+            except AttributeError:
+                pass
+        # Inside the lock: this mutates an ITK object that was, an instant ago,
+        # reachable from the shared pool.
+        image.CopyInformation(reference)
     return image
 
 
@@ -250,16 +263,41 @@ def _product(values: Iterable[int]) -> int:
     return result
 
 
-def _sitk_pixel_itemsize(pixel_id: int) -> int:
-    import SimpleITK as sitk
+_PIXEL_ITEMSIZE: dict[int, int] | None = None
 
-    sizes = {
-        sitk.sitkInt8: 1, sitk.sitkUInt8: 1,
-        sitk.sitkInt16: 2, sitk.sitkUInt16: 2,
-        sitk.sitkInt32: 4, sitk.sitkUInt32: 4, sitk.sitkFloat32: 4,
-        sitk.sitkInt64: 8, sitk.sitkUInt64: 8, sitk.sitkFloat64: 8,
-    }
-    return sizes[int(pixel_id)]
+
+def sitk_itemsize(pixel_id: int, default: int | None = None) -> int:
+    """Bytes per scalar component of a SimpleITK pixel type.
+
+    The one table. It lived here for the pool's own sizing and again in
+    arrays.py for the engine's byte accounting, which is two chances for a
+    pixel type to be added to one and not the other and for resident bytes to
+    be misreported by a factor of two.
+
+    ``default`` distinguishes the two callers: accounting must never crash on
+    an unknown type (it passes a fallback), while allocating a buffer of an
+    unknown size must (it does not).
+    """
+    global _PIXEL_ITEMSIZE
+    if _PIXEL_ITEMSIZE is None:
+        import SimpleITK as sitk
+
+        _PIXEL_ITEMSIZE = {
+            sitk.sitkInt8: 1, sitk.sitkUInt8: 1, sitk.sitkLabelUInt8: 1,
+            sitk.sitkVectorInt8: 1, sitk.sitkVectorUInt8: 1,
+            sitk.sitkInt16: 2, sitk.sitkUInt16: 2, sitk.sitkLabelUInt16: 2,
+            sitk.sitkVectorInt16: 2, sitk.sitkVectorUInt16: 2,
+            sitk.sitkInt32: 4, sitk.sitkUInt32: 4, sitk.sitkLabelUInt32: 4,
+            sitk.sitkVectorInt32: 4, sitk.sitkVectorUInt32: 4,
+            sitk.sitkFloat32: 4, sitk.sitkVectorFloat32: 4, sitk.sitkComplexFloat32: 8,
+            sitk.sitkInt64: 8, sitk.sitkUInt64: 8, sitk.sitkLabelUInt64: 8,
+            sitk.sitkVectorInt64: 8, sitk.sitkVectorUInt64: 8,
+            sitk.sitkFloat64: 8, sitk.sitkVectorFloat64: 8, sitk.sitkComplexFloat64: 16,
+        }
+    size = _PIXEL_ITEMSIZE.get(int(pixel_id), default)
+    if size is None:
+        raise KeyError(f"unsupported SimpleITK pixel id for allocation: {pixel_id}")
+    return size
 
 
 def state_of(value: Any) -> BufferState | None:

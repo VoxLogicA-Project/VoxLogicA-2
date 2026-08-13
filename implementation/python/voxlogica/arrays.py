@@ -29,10 +29,12 @@ from __future__ import annotations
 
 import os
 import threading
+import weakref
 from dataclasses import dataclass
 from typing import Any
 
-from voxlogica.buffer_pool import acquire_sitk, state_of
+from voxlogica.buffer_pool import (VIEW_ATTR as _VIEW_ATTR, acquire_sitk,
+                                   sitk_itemsize, state_of)
 
 _sitk = None
 
@@ -45,25 +47,9 @@ def _simpleitk():
     return _sitk
 
 
-# GetPixelID() -> bytes per scalar component. Built lazily (needs the sitk
-# module) so a scalar/vector pixel type never needs GetArrayViewFromImage
-# just to learn its itemsize (see PolyArray.nbytes).
-_PIXEL_ITEMSIZE: dict[int, int] | None = None
-
-
 def _sitk_itemsize(image: Any) -> int:
-    global _PIXEL_ITEMSIZE
-    if _PIXEL_ITEMSIZE is None:
-        sitk = _simpleitk()
-        _PIXEL_ITEMSIZE = {
-            sitk.sitkInt8: 1, sitk.sitkUInt8: 1, sitk.sitkLabelUInt8: 1, sitk.sitkVectorInt8: 1, sitk.sitkVectorUInt8: 1,
-            sitk.sitkInt16: 2, sitk.sitkUInt16: 2, sitk.sitkLabelUInt16: 2, sitk.sitkVectorInt16: 2, sitk.sitkVectorUInt16: 2,
-            sitk.sitkInt32: 4, sitk.sitkUInt32: 4, sitk.sitkLabelUInt32: 4, sitk.sitkVectorInt32: 4, sitk.sitkVectorUInt32: 4,
-            sitk.sitkFloat32: 4, sitk.sitkVectorFloat32: 4, sitk.sitkComplexFloat32: 8,
-            sitk.sitkInt64: 8, sitk.sitkUInt64: 8, sitk.sitkLabelUInt64: 8, sitk.sitkVectorInt64: 8, sitk.sitkVectorUInt64: 8,
-            sitk.sitkFloat64: 8, sitk.sitkVectorFloat64: 8, sitk.sitkComplexFloat64: 16,
-        }
-    return _PIXEL_ITEMSIZE.get(image.GetPixelID(), 4)  # unknown type: 4-byte fallback, never crash accounting
+    """Bytes per scalar component; 4 on an unknown type, never crash accounting."""
+    return sitk_itemsize(image.GetPixelID(), default=4)
 
 
 def _sitk_nbytes(image: Any) -> int:
@@ -102,17 +88,59 @@ def _pinned_cls() -> Any:
     return _PINNED_CLS
 
 
+#: The cache is a WEAK reference: strong would close a cycle (image -> view ->
+#: _src -> image) and hand every volume to the cycle collector instead of
+#: letting it die on its last release. The attribute name lives in buffer_pool
+#: because that is where a recycled image has to forget it (see acquire_sitk).
+#: Serialises view CONSTRUCTION only; cache hits never take it.
+_VIEW_LOCK = threading.Lock()
+
+
 def pinned_view(image: Any) -> Any:
     """Zero-copy, read-only numpy view of ``image`` that pins it alive.
 
     Prefer this over a bare ``GetArrayViewFromImage`` whenever the view may
     outlive the expression that produced the image. Read-only: writing through
     it would corrupt the sitk-owned buffer, so a writer must take a copy.
+
+    BUILT AT MOST ONCE PER IMAGE, AND UNDER A LOCK, BECAUSE THIS IS A WRITE.
+    ``GetArrayViewFromImage`` calls ``image.MakeUnique()``, which detaches
+    SimpleITK's copy-on-write buffer and reassigns the internal smart pointer —
+    a mutation, however much the call reads like a read. Kernels call this
+    straight on their INPUTS (``pinned_view(left)``, 22 sites), and an input is
+    a shared, table-resident value that every worker needing it reads at the
+    same moment. With the GIL gone nothing serialised those calls, so N threads
+    ran MakeUnique on one image concurrently. Measured twice in one day, both
+    with the same stack: SIGSEGV inside MakeUnique 69 minutes into a sweep, and
+    `corrupted size vs prev_size` — glibc's double-free signature — 2 minutes
+    into a program whose only difference was reading each cached input from ~28
+    places at once instead of one. The time-to-crash fell 30x as the number of
+    concurrent readers per value rose, which is what a race proportional to
+    sharing looks like.
+
+    Caching also makes the common path cheaper than it was: a repeat reader now
+    pays one attribute lookup instead of a fresh view construction.
     """
-    sitk = _simpleitk()
-    view = sitk.GetArrayViewFromImage(image).view(_pinned_cls())
-    view._src = image
-    return view
+    cached_ref = getattr(image, _VIEW_ATTR, None)
+    if cached_ref is not None:
+        cached = cached_ref()
+        if cached is not None:
+            return cached
+    with _VIEW_LOCK:
+        # Re-check: another thread may have built it while we waited.
+        cached_ref = getattr(image, _VIEW_ATTR, None)
+        if cached_ref is not None:
+            cached = cached_ref()
+            if cached is not None:
+                return cached
+        sitk = _simpleitk()
+        view = sitk.GetArrayViewFromImage(image).view(_pinned_cls())
+        view._src = image
+        try:
+            setattr(image, _VIEW_ATTR, weakref.ref(view))
+        except (AttributeError, TypeError):
+            pass  # an image that refuses attributes still gets a correct view
+        return view
 
 
 # ── Fresh SimpleITK output -> writable NumPy alias ──────────────────────────
