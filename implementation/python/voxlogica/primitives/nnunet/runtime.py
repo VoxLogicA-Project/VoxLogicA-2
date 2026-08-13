@@ -53,18 +53,38 @@ def require_nnunet() -> None:
         raise ValueError("nnunetv2 not installed")
 
 
+def _emit(line: str) -> None:
+    """Put one child line on the engine's own output, above the progress bar.
+
+    Training runs for minutes inside a single node, so its output is the only
+    sign of life there is; losing it means watching a bar that cannot move. A
+    plain write races the bar and gets overwritten on the next refresh, which
+    is why this goes through ``tqdm.write`` when a bar exists -- that is the
+    documented way to print without corrupting it. Without tqdm installed, or
+    with no bar active, it is an ordinary write.
+    """
+    text = f"[nnunet] {line.rstrip()}"
+    try:
+        from tqdm import tqdm
+
+        tqdm.write(text, file=sys.stdout)
+        return
+    except Exception:  # noqa: BLE001 -- output must never break a training run
+        pass
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
+
+
 def run_cli(command: list[str], *, cwd: Path, env: dict[str, str], step: str) -> None:
+    _emit(f"{step}: {' '.join(command)}")
     logger.info("Starting %s: %s", step, " ".join(command))
     child_env = dict(env)
     child_env.setdefault("PYTHONUNBUFFERED", "1")
 
-    if sys.stdout.isatty():
-        result = subprocess.run(command, cwd=str(cwd), env=child_env)
-        if result.returncode != 0:
-            raise ValueError(f"{step} failed with exit code {result.returncode}")
-        logger.info("Completed %s", step)
-        return
-
+    # ALWAYS capture and forward, never inherit the terminal. Inheriting was
+    # the isatty branch, and under a pty (how long runs are launched) it let
+    # the child write straight into the same terminal the progress bar owns:
+    # the two interleave and the bar erases whatever landed on its line.
     process = subprocess.Popen(
         command,
         cwd=str(cwd),
@@ -77,12 +97,12 @@ def run_cli(command: list[str], *, cwd: Path, env: dict[str, str], step: str) ->
     assert process.stdout is not None
     for line in process.stdout:
         captured.append(line)
-        sys.stdout.write(line)
-        sys.stdout.flush()
+        _emit(line)
     returncode = process.wait()
     if returncode != 0:
         tail = "".join(captured[-80:]).strip()
         raise ValueError(f"{step} failed with exit code {returncode}:\n{tail or 'unknown error'}")
+    _emit(f"{step}: done")
     logger.info("Completed %s", step)
 
 
