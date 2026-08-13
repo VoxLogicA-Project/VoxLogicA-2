@@ -35,13 +35,16 @@ def _sitk_image_from_volume(value: Any) -> Any:
     if isinstance(value, sitk.Image):
         return value
     array = np.asarray(value)
-    if array.ndim != 2:
+    # 2D and 3D both, because the only caller sorts the two apart itself
+    # (volumes_to_nnunet_array) -- rejecting 3D here made that branch dead for
+    # anything that was not already a SimpleITK image.
+    if array.ndim not in (2, 3):
         raise ValueError(
-            f"expected 2D image data, got shape {array.shape} from a "
+            f"expected 2D or 3D image data, got shape {array.shape} from a "
             f"{type(value).__name__}: {_describe(value)}")
     image = sitk.GetImageFromArray(array.astype(np.float32))
-    image.SetSpacing((1.0, 1.0))
-    image.SetOrigin((0.0, 0.0))
+    image.SetSpacing((1.0,) * array.ndim)
+    image.SetOrigin((0.0,) * array.ndim)
     return image
 
 
@@ -120,27 +123,32 @@ def _describe(value: Any) -> str:
 
 
 def write_nifti(value: Any, destination: Path) -> None:
-    """Write a 2D numpy/SimpleITK volume as nnUNet-compatible NIfTI."""
+    """Write a 2D or 3D numpy/SimpleITK volume as nnUNet-compatible NIfTI."""
     np, _nib = _require_numpy_nibabel()
     import SimpleITK as sitk  # type: ignore
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     array, reference = _to_array(value)
-    if array.ndim != 2:
+    if array.ndim not in (2, 3):
         # Name what arrived, not just its shape. A bare "got shape ()" cost a
         # day: shape () is what np.asarray returns for a string AND for a
         # scalar, so the message could not distinguish a mis-delivered sequence
         # slot from a kernel that returned a number -- two very different bugs.
         raise ValueError(
-            f"expected 2D image data for {destination.name}, got shape "
+            f"expected 2D or 3D image data for {destination.name}, got shape "
             f"{array.shape} from a {type(value).__name__}: {_describe(value)}")
 
+    # 3D is not a new capability, it is the one this function was missing: the
+    # prediction path (volumes_to_nnunet_array) has always accepted both, and
+    # write_label right below never restricted dimensionality at all. Rejecting
+    # 3D here made the training half of nnU-Net unreachable for volumetric data,
+    # so `3d_fullres` on a real dataset could not be expressed.
     image = sitk.GetImageFromArray(array.astype(np.float32))
     if reference is not None:
         image.CopyInformation(reference)
     else:
-        image.SetSpacing((1.0, 1.0))
-        image.SetOrigin((0.0, 0.0))
+        image.SetSpacing((1.0,) * array.ndim)
+        image.SetOrigin((0.0,) * array.ndim)
     sitk.WriteImage(image, str(destination))
 
 
