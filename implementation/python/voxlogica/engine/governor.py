@@ -15,15 +15,26 @@ own buffers, numpy temporaries inside a kernel, the buffer pool, interpreter
 overhead. Modelling those terms one by one is hopeless and unnecessary. RSS is
 directly observable, so the fix is to close the loop on it: measure what the
 process actually occupies, measure what the engine accounts for, and let the
-ratio between them tell the engine how much accounting it may afford.
+difference between them tell the engine how much accounting it may afford.
 
-    budget = ceiling_rss / overhead_ratio
+    budget = ceiling_rss - (RSS - accounted)
 
-``overhead_ratio`` is measured, not assumed, so a workload whose kernels hold
-little outside the table gets nearly the whole ceiling, and one like the BraTS
-sweep — where every dt/mask dispatch carries invisible ITK memory — is throttled
-in proportion to the invisibility. No disturbance model, no per-term census, no
-env var: the same controller handles a term that has not been thought of yet.
+The correction is SUBTRACTED, not divided. A ratio was tried first and is wrong
+in exactly the case an unfamiliar workload presents: when accounted is small the
+ratio diverges. Measured on a run that had merely imported torch, 0.0 MB
+accounted against 313 MB resident gave an overhead of 37,715 and slammed the
+budget onto its floor — a controller reacting violently to a plan of twelve
+nodes that was using no memory at all. Subtracting the measured gap is right
+there (the process holds 313 MB of interpreter, so 313 MB less is available for
+values) and still right in the case this exists for (55.5 GB resident against
+24.98 GB accounted is 30.5 GB of memory the engine cannot see, and the budget
+has to come down by exactly that).
+
+The gap is measured, not assumed, so a workload whose kernels hold little
+outside the table gets nearly the whole ceiling, and one like the BraTS sweep —
+where every dt/mask dispatch carries invisible ITK memory — is throttled in
+proportion to the invisibility. No disturbance model, no per-term census, no env
+var: the same controller handles a term that has not been thought of yet.
 
 DIRECTION IS ASYMMETRIC. The governor may only shrink the configured budget,
 never raise it. That is not timidity, it is a measurement: raising the budget
@@ -82,9 +93,9 @@ _FLOOR_FRACTION = 0.25
 #: Seconds between readings. RSS via /proc/self/statm is a single short read,
 #: but this is called from every worker turn, so it is rate-limited anyway.
 _SAMPLE_S = 1.0
-#: Smoothing on the overhead ratio. The ratio jumps when a batch of kernels
-#: allocates at once; reacting to each spike would make the budget oscillate
-#: and evict work that a moment later there was room for.
+#: Smoothing on the measured gap. It jumps when a batch of kernels allocates at
+#: once; reacting to each spike would make the budget oscillate and evict work
+#: that a moment later there was room for.
 _EMA_ALPHA = 0.25
 #: Fraction of the ceiling at which the sacrifice bar starts to rise.
 _PRESSURE_ONSET = 0.85
@@ -137,7 +148,7 @@ class MemoryGovernor:
         self._floor = max(int(self._configured * _FLOOR_FRACTION), 1 * _GB)
         self._budget = self._configured
         self._hard = self._configured_hard
-        self._overhead = 1.0
+        self._gap = 0
         self._pressure = 0.0
         self._rss = 0
         self._ceiling = int(self._ram * _RSS_SHARE)
@@ -218,14 +229,13 @@ class MemoryGovernor:
             ceiling = share_ceiling
         self._ceiling = max(ceiling, self._floor)
 
-        # Measured overhead: resident bytes per accounted byte. Never below 1
-        # (accounting can lag a free, and a ratio under 1 would license a
-        # budget above the ceiling).
-        if accounted > 0:
-            observed = max(1.0, rss / accounted)
-            self._overhead += _EMA_ALPHA * (observed - self._overhead)
+        # The measured gap: resident bytes the engine does not account for.
+        # Never below zero -- accounting can momentarily lead a free, and a
+        # negative gap would license a budget above the ceiling.
+        observed = max(0, rss - accounted)
+        self._gap += _EMA_ALPHA * (observed - self._gap)
 
-        target = int(self._ceiling / max(self._overhead, 1.0))
+        target = int(self._ceiling - self._gap)
         # ONLY SHRINK: the configured budget is an upper bound, never a target
         # to grow towards (see the module docstring's asymmetry note).
         self._budget = max(self._floor, min(self._configured, target))
@@ -248,7 +258,7 @@ class MemoryGovernor:
             "gov_budget_mb": round(self._budget / 1024 ** 2, 1),
             "gov_hard_mb": round(self._hard / 1024 ** 2, 1),
             "gov_ceiling_mb": round(self._ceiling / 1024 ** 2, 1),
-            "gov_overhead": round(self._overhead, 2),
+            "gov_gap_mb": round(self._gap / 1024 ** 2, 1),
             "gov_pressure": round(self._pressure, 3),
             "gov_sacrifice_ms": round(self.sacrifice_ms, 1),
             "gov_trims": self._trims,

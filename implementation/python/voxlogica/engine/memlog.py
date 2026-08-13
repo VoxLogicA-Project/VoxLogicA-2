@@ -74,7 +74,7 @@ class MemoryLogger:
             self._file.write("elapsed_s\tcompleted\tlive_mb\tbacklog_mb\taccounted_mb"
                              "\tbudget_mb\thard_mb\trss_mb\tin_flight\tready\tparked"
                              "\tevicted_early\tevict_cand\tspill_pending"
-                             "\tbw_gbs\tbw_util\tgov_overhead\tgov_pressure\tgov_sac_ms"
+                             "\tbw_gbs\tbw_util\tgov_gap_mb\tgov_pressure\tgov_sac_ms"
                              "\tgov_trims\tresident_by_op\tcensus\n")
         except OSError:
             self._file = None
@@ -120,7 +120,7 @@ class MemoryLogger:
                 # resident bytes each accounted byte is really costing, how close
                 # RSS is to its ceiling, and the two valves that follow from it.
                 # Reading budget_mb without these cannot explain why it moved.
-                f"{gov.get('gov_overhead', 0.0)}\t{gov.get('gov_pressure', 0.0)}\t"
+                f"{gov.get('gov_gap_mb', 0.0)}\t{gov.get('gov_pressure', 0.0)}\t"
                 f"{gov.get('gov_sacrifice_ms', 0.0)}\t{gov.get('gov_trims', 0)}\t"
                 # Which operators hold the live tier, largest first: the direct
                 # answer to "what is memory full OF" at any moment.

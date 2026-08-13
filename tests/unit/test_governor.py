@@ -48,21 +48,36 @@ def test_starts_at_the_configured_budget():
     assert gov.pressure == 0.0
 
 
-def test_a_two_to_one_overhead_halves_the_budget():
-    """The measured case: 55.5 GB resident against 25 GB accounted.
+def test_the_unaccounted_gap_comes_off_the_budget():
+    """The measured case: 50 GB resident against 25 GB accounted.
 
-    The engine may then afford only half the ceiling in accounting, because
-    every accounted byte is costing it two.
+    25 GB of that is memory the engine cannot see, so 25 GB less of the
+    ceiling is available to hold values.
     """
     machine = _Machine(rss_gb=50.0, available_gb=8.0)
     gov = _governor(machine)
-    for _ in range(40):                 # let the EMA settle on the true ratio
+    for _ in range(40):                 # let the EMA settle on the true gap
         machine.tick()
         gov.sample(accounted=25 * _GB)
-    assert gov._overhead == pytest.approx(2.0, abs=0.05)
-    # ceiling is the tighter of 0.75*61 GB and rss + available - reserve
+    assert gov._gap == pytest.approx(25 * _GB, rel=0.02)
     assert gov.budget < 25 * _GB
-    assert gov.budget == pytest.approx(gov._ceiling / 2.0, rel=0.02)
+    assert gov.budget == pytest.approx(gov._ceiling - 25 * _GB, rel=0.02)
+
+
+def test_an_idle_process_is_not_throttled_by_its_own_interpreter():
+    """A ratio diverges when accounted is small; a difference does not.
+
+    Measured: a run that had merely imported torch reported 0.0 MB accounted
+    against 313 MB resident. Under the ratio form that was an overhead of
+    37,715 and the budget hit its floor, for a plan of twelve nodes using no
+    memory at all.
+    """
+    machine = _Machine(rss_gb=0.31, available_gb=55.0)
+    gov = _governor(machine)
+    for _ in range(20):
+        machine.tick()
+        gov.sample(accounted=0)
+    assert gov.budget == 25 * _GB, "nothing is being held; nothing to claw back"
 
 
 def test_never_grows_past_the_configured_budget():
@@ -95,12 +110,12 @@ def test_a_co_tenant_pushes_the_budget_down():
 
 
 def test_the_budget_has_a_floor():
-    """A pathological overhead must not drive the engine to a standstill."""
+    """A pathological gap must not drive the engine to a standstill."""
     machine = _Machine(rss_gb=45.0, available_gb=1.0)
     gov = _governor(machine)
     for _ in range(60):
         machine.tick()
-        gov.sample(accounted=1 * _GB)   # 45:1 overhead
+        gov.sample(accounted=1 * _GB)   # 44 GB unaccounted
     assert gov.budget >= int(25 * _GB * 0.25)
 
 
