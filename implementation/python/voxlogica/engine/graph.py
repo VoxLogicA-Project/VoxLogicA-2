@@ -123,6 +123,20 @@ class DependencyGraph:
                 self.release(dep)
         fired: list[NodeId] = []
         for child in self._dependents.pop(nid, ()):
+            if child not in self.pending:
+                # Already complete, so it is waiting for nothing. This is not a
+                # defensive `get` around a suspected bug: a fusion cone
+                # completes its interiors as a BATCH (`complete_cone`) before
+                # its exits go through the normal path here, and an interior is
+                # allowed to consume an exit — an exit is merely a member with
+                # a consumer OUTSIDE the cone, which does not stop it having
+                # in-cone consumers too. The interior's `pending` entry is gone
+                # by the time the exit it depended on is finished, and this
+                # decrement used to raise KeyError and abort the whole run
+                # (observed: `vox1.eq_sv failed ... KeyError` two minutes into a
+                # 369-case sweep). Which cones form depends on scheduling, so
+                # the crash appears and disappears with memory pressure.
+                continue
             self.pending[child] -= 1
             if self.pending[child] == 0:
                 fired.append(child)
