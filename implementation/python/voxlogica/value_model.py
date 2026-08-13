@@ -296,7 +296,22 @@ class VoxImageValue(VoxValue):
         return payload
 
     def to_json_native(self) -> Any:
-        return self.describe()
+        # An image has no JSON-native form, and returning its DESCRIPTOR here was
+        # silent data loss. The only callers are the sequence and mapping
+        # encoders, so a training case [id, [flair], mask] was persisted with
+        # {"vox_type": "image", "navigation": ...} in place of each volume, and
+        # the next run handed those dicts back AS THE VALUES: nnU-Net received a
+        # descriptor where a volume belonged ("expected 2D or 3D image data, got
+        # shape () from a dict"). Between two floats the same round-trip would
+        # have returned a plausible wrong number instead of failing.
+        #
+        # Raising keeps the whole container OUT of the store
+        # (can_serialize_value reports it as unserializable), so it stays in the
+        # in-memory tier and is recomputed on a later run -- a cost, never a
+        # wrong value. Persisting sequences of images losslessly is a separate,
+        # larger change: it needs a payload per element, not one JSON blob.
+        raise UnsupportedVoxValueError(self.raw)
+
 
 def restore_runtime_image(payload_json: dict[str, Any], array: Any) -> Any:
     metadata = dict(payload_json.get("metadata") or {})
