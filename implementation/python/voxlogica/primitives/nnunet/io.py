@@ -36,7 +36,9 @@ def _sitk_image_from_volume(value: Any) -> Any:
         return value
     array = np.asarray(value)
     if array.ndim != 2:
-        raise ValueError(f"expected 2D image data, got shape {array.shape}")
+        raise ValueError(
+            f"expected 2D image data, got shape {array.shape} from a "
+            f"{type(value).__name__}: {_describe(value)}")
     image = sitk.GetImageFromArray(array.astype(np.float32))
     image.SetSpacing((1.0, 1.0))
     image.SetOrigin((0.0, 0.0))
@@ -108,6 +110,15 @@ def segmentation_to_sitk(segmentation: Any, properties: dict[str, Any]) -> Any:
     return image
 
 
+def _describe(value: Any) -> str:
+    """A short, safe repr for an unexpected value in an error message."""
+    try:
+        text = repr(value)
+    except Exception:  # noqa: BLE001 -- an error path must not raise
+        return "<unreprable>"
+    return text if len(text) <= 120 else text[:117] + "..."
+
+
 def write_nifti(value: Any, destination: Path) -> None:
     """Write a 2D numpy/SimpleITK volume as nnUNet-compatible NIfTI."""
     np, _nib = _require_numpy_nibabel()
@@ -116,7 +127,13 @@ def write_nifti(value: Any, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     array, reference = _to_array(value)
     if array.ndim != 2:
-        raise ValueError(f"expected 2D image data, got shape {array.shape}")
+        # Name what arrived, not just its shape. A bare "got shape ()" cost a
+        # day: shape () is what np.asarray returns for a string AND for a
+        # scalar, so the message could not distinguish a mis-delivered sequence
+        # slot from a kernel that returned a number -- two very different bugs.
+        raise ValueError(
+            f"expected 2D image data for {destination.name}, got shape "
+            f"{array.shape} from a {type(value).__name__}: {_describe(value)}")
 
     image = sitk.GetImageFromArray(array.astype(np.float32))
     if reference is not None:
