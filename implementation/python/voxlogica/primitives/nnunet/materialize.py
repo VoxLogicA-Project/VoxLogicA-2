@@ -75,6 +75,11 @@ def _set_nnunet_env(work_root: Path) -> dict[str, Path]:
     os.environ["nnUNet_raw"] = str(roots["nnunet_raw"])
     os.environ["nnUNet_preprocessed"] = str(roots["nnunet_preprocessed"])
     os.environ["nnUNet_results"] = str(roots["nnunet_results"])
+    # In-process prediction compiles the network too, and a compiled graph that
+    # silently does not train is a compiled graph one should not trust to
+    # predict either. See nnunet_env() in runtime.py for the measurement that
+    # made this the default (0.0 vs 0.854 validation Dice).
+    os.environ.setdefault("nnUNet_compile", "f")
     return roots
 
 

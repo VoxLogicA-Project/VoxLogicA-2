@@ -428,9 +428,18 @@ class ComputationEngine:
         seconds it decides whether this is a genuine deadlock (nothing executing,
         nothing ready, no loop mid-expansion — so no amount of waiting will help)
         or merely a very slow kernel, dumping the stuck frontier and raising only
-        in the former case. A generous absolute backstop catches a single wedged
-        kernel too. Tunable via VOXLOGICA_STALL_TIMEOUT_S (deadlock, default 180)
-        and VOXLOGICA_HANG_TIMEOUT_S (wedged-kernel backstop, default 3600).
+        in the former case. A generous absolute backstop catches work left
+        outstanding with NOTHING executing. Tunable via
+        VOXLOGICA_STALL_TIMEOUT_S (deadlock, default 180) and
+        VOXLOGICA_HANG_TIMEOUT_S (backstop, default 3600).
+
+        The backstop deliberately does not fire while a kernel is executing. It
+        used to, and it killed a legitimate run: an nnU-Net training is a single
+        node that takes two hours, so no node completed for 3600 s with
+        in_flight=1, ready=0 -- the engine was not stalled, it was waiting for a
+        kernel that was doing exactly what the program asked. A long primitive is
+        a property of the program, never an engine fault, so this reports it and
+        keeps waiting instead of raising.
         """
         join = asyncio.ensure_future(self.ready.wait_idle())
         stall = float(os.environ.get("VOXLOGICA_STALL_TIMEOUT_S", "180"))
@@ -449,7 +458,17 @@ class ComputationEngine:
             self._maintain()  # belt: memory-parked work must never be forgotten
             deadlocked = (self._in_flight == 0 and self.ready.qsize() == 0
                           and self.admission.active_jobs == 0)
-            if (idle >= stall and deadlocked) or idle >= hard:
+            if idle >= hard and self._in_flight > 0:
+                # Something IS executing: say so, once per backstop period, and
+                # keep waiting. Silence here would be the old 0%-CPU freeze all
+                # over again; raising would kill a two-hour training.
+                print(f"[watchdog] {idle:.0f}s without a completion, but "
+                      f"{self._in_flight} kernel(s) still executing — waiting. "
+                      f"({cur} done, ready={self.ready.qsize()}, "
+                      f"jobs={self.admission.active_jobs})", file=sys.stderr)
+                idle = 0.0
+                continue
+            if (idle >= stall and deadlocked) or (idle >= hard and self._in_flight == 0):
                 join.cancel()
                 self._dump_stuck()
                 raise RuntimeError(

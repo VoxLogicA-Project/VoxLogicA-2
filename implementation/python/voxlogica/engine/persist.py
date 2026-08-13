@@ -25,7 +25,7 @@ from typing import Any
 from voxlogica.buffer_pool import buffer_states, release_states, retain_states
 from voxlogica.lazy.ir import NodeId
 from voxlogica.storage import StorageBackend
-from voxlogica.value_model import PayloadSnapshot
+from voxlogica.value_model import PayloadSnapshot, UnsupportedVoxValueError
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +316,14 @@ class AsyncPersister:
                                 nid, value, metadata, compute_ms = entry[0], entry[1], entry[2], entry[3]
                                 self._backend.put_success(nid, value, metadata=metadata,
                                                           compute_ms=compute_ms)
+                        except UnsupportedVoxValueError as exc:
+                            # Not a failure: voxpod/1 cannot represent this value
+                            # (a sequence holding images, say), so it stays in
+                            # the in-memory tier and a later run recomputes it.
+                            # Logging it as an exception buried 73 real lines of
+                            # a run's output in noise.
+                            logger.debug("not persistable, kept in memory: %s (%s)",
+                                         entry[0], exc)
                         except Exception:  # noqa: BLE001
                             logger.exception("async persistence failed for node %s", entry[0])
             if self._persisted_ids is not None:

@@ -36,6 +36,18 @@ def nnunet_env() -> dict[str, str]:
         env["VIRTUAL_ENV"] = venv
         impl_python = str(_PROJECT_ROOT / "implementation" / "python")
         env["PYTHONPATH"] = f"{impl_python}:{env.get('PYTHONPATH', '')}".rstrip(":")
+    # nnU-Net compiles the network with torch.compile by default, and on this
+    # stack (torch 2.10 + cu128, RTX PRO 5000 Blackwell, sm_120) the compiled
+    # graph silently does not train: 250 epochs on 30 BraTS FLAIR cases ended at
+    # train_loss -0.17, pseudo dice 0.0, and ZERO predicted foreground voxels on
+    # every validation case. The identical dataset, plans and preprocessing with
+    # compilation off reached validation Dice 0.854 in TEN epochs. Nothing about
+    # the data or the configuration differed -- only this switch.
+    #
+    # Defaulting it off costs about 20% of epoch time (27 s -> 35 s here) and
+    # buys a model that learns. Set nnUNet_compile explicitly to opt back in
+    # once the stack is known good.
+    env.setdefault("nnUNet_compile", "f")
     return env
 
 
