@@ -43,6 +43,7 @@ from voxlogica.engine.calibration import load_cached_itk_threads
 from voxlogica.buffer_pool import pool_stats, set_limit_bytes, trim_pool
 from voxlogica.diagnostics.exceptions import NodeExecutionError
 from voxlogica.engine.fusion import FusionPlanner
+from voxlogica.engine.governor import MemoryGovernor
 from voxlogica.engine.itk_threads import apply_itk_threads
 from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
@@ -133,6 +134,10 @@ class ComputationEngine:
         if itk_threads is not None:
             apply_itk_threads(itk_threads)
         self.config = EngineConfig.from_env(self.max_concurrency, max_live_bytes)
+        # The configured budget is now an UPPER BOUND that the governor narrows
+        # from live RSS readings; nothing in the engine reads
+        # `config.max_live_bytes` as a set point any more (engine/governor.py).
+        self.governor = MemoryGovernor(self.config)
         self.executor = Executor(self.registry, self.max_concurrency)
         self.expander = Expander(self.table, self.registry)
         self.fusion = FusionPlanner(self.registry)
@@ -193,6 +198,7 @@ class ComputationEngine:
             on_spliced=self._on_spliced,
             fail_node=self._fail_node,
             reclaim=self._reclaim_memory,
+            blocked=lambda: self.governor.blocking,
         )
         # Pool sized from the memory budget (10%) instead of a fixed 512 MB.
         # This workload is nearly single-shaped, so the flat 16-per-key count,
@@ -513,7 +519,7 @@ class ComputationEngine:
         admitted before the workers could ever starve.
         """
         priority = self._priority.get(nid, 0)
-        if (self.table.accounted_bytes > self.config.max_live_bytes
+        if (self.table.accounted_bytes > self.governor.budget
                 and self.ready.qsize() >= self.max_concurrency):
             self.ready.park(nid, priority)
         else:
@@ -527,8 +533,8 @@ class ComputationEngine:
             "live_bytes": self.table.live_bytes,
             "backlog_bytes": backlog,
             "accounted_bytes": self.table.accounted_bytes,
-            "budget_bytes": self.config.max_live_bytes,
-            "hard_bytes": self.config.hard_live_bytes,
+            "budget_bytes": self.governor.budget,
+            "hard_bytes": self.governor.hard,
             "in_flight": self._in_flight,
             "ready": self.ready.qsize(),
             "parked": self.ready.parked_count,
@@ -538,6 +544,7 @@ class ComputationEngine:
             "resident_by_op": self.table.resident_by_operator(),
             "bandwidth": self._bandwidth.sample(self.max_concurrency),
             "census": self._resident_census(),
+            "governor": self.governor.describe(),
         }
 
     def _resident_census(self) -> dict[str, int]:
@@ -608,14 +615,27 @@ class ComputationEngine:
         would otherwise starve — bounded by the same hard ceiling as loop bodies,
         with the true-wedge escape so it can never deadlock.
         """
-        if self.table.accounted_bytes > self.config.max_live_bytes:
+        accounted = self.table.accounted_bytes
+        # Re-derive the budgets from what the process actually occupies before
+        # any decision is taken against them. Rate-limited inside the governor,
+        # so this costs one clock read on the turns in between.
+        self.governor.sample(accounted)
+        self.admission.soft_live_bytes = self.governor.budget
+        self.admission.hard_live_bytes = self.governor.hard
+        if accounted > self.governor.budget:
             trim_pool(0)
         self._reclaim_memory()
         if self.ready.parked_count:
             accounted = self.table.accounted_bytes
-            over = accounted > self.config.max_live_bytes and self._first_error is None
+            over = accounted > self.governor.budget and self._first_error is None
             starving = self.ready.qsize() < self.max_concurrency
-            if over and accounted >= self.config.hard_live_bytes and not self._idle():
+            if self.governor.blocking and not self._idle():
+                # RSS is at the ceiling. Nothing parked may be admitted until
+                # it comes down, whatever the queue depth says: this is the
+                # backpressure half of the pair, and it is the only answer when
+                # what is resident is expensive and cannot simply be discarded.
+                starving = False
+            elif over and accounted >= self.governor.hard and not self._idle():
                 starving = False  # at the ceiling: hold parked work back, let memory drain
             self.ready.unpark(over_budget=over, starving=starving)
         # Paused unrolls are normally woken by completions, but a worker turn
@@ -675,8 +695,16 @@ class ComputationEngine:
         # pool's global lock, the same lock every worker needs to allocate or
         # return a buffer. This runs on every worker turn, so that put the event
         # loop in contention with all 16 workers hundreds of times a second.
-        budget = self.config.max_live_bytes
+        budget = self.governor.budget
         over_budget = self.table.accounted_bytes > budget
+        # How expensive a value may be and still be DROPPED rather than
+        # written (PASS 2). At rest this is the configured worth-it threshold —
+        # a sub-millisecond value was never going to be written anyway. It
+        # rises with RSS pressure, because near the ceiling the alternative to
+        # sacrificing a 200 ms recompute is not keeping it: it is being killed
+        # and losing every undurable byte at once (14.8 GB, measured).
+        sacrifice_ms = max(self.config.persist_min_compute_ms,
+                           self.governor.sacrifice_ms)
         # PASS 0 — free garbage first. An ownerless value costs nothing to
         # release: no write, and no future read to satisfy. Every byte taken
         # here is a byte NOT bought by evicting a value that still has a
@@ -748,7 +776,7 @@ class ComputationEngine:
             if self.table.persisted(nid):
                 self.table.evict(nid)
                 self._evicted_early += 1
-            elif (self.table.compute_ms_of(nid) < self.config.persist_min_compute_ms
+            elif (self.table.compute_ms_of(nid) < sacrifice_ms
                   and self._recomputable(nid)):
                 # Cheap and not durable: DROP IT — this is the design's actual
                 # valve ("a miss falls back to recompute", manuscripts/
@@ -762,6 +790,9 @@ class ComputationEngine:
                 # tail's cheap masks were structurally unreclaimable and the
                 # eval-30 tail held 36.6 GB against a 25 GB budget (369 cases:
                 # grew past 42 GB until killed).
+                # The bar itself is pressure-scaled (`sacrifice_ms` above), so
+                # the disk tier keeps doing its job — holding what is worth
+                # reusing — until RSS says there is no room to be choosy.
                 self.table.evict(nid)
                 self._evicted_early += 1
             elif self.table.spill(nid):
@@ -1128,7 +1159,7 @@ class ComputationEngine:
             # So: keep it while there is room (free RAM is the best cache we
             # have), drop it the moment there is not — at the point of
             # creation, where no queue latency can let it accumulate.
-            over_budget = self.table.accounted_bytes > self.config.max_live_bytes
+            over_budget = self.table.accounted_bytes > self.governor.budget
             for child in scaffolding:
                 if over_budget:
                     self._drop_ownerless(child)
@@ -1394,7 +1425,7 @@ class ComputationEngine:
             "saturation": round(
                 self._probe.saturation(self.max_concurrency), 3) if self._probe else 0.0,
             "peak_live_mb": round(self.table.peak_live_bytes / 1024 ** 2, 1),
-            "live_budget_mb": round(self.config.max_live_bytes / 1024 ** 2, 1),
+            "live_budget_mb": round(self.governor.budget / 1024 ** 2, 1),
             "peak_frontier": self._peak_frontier,
             "loop_window": self.config.loop_window,
             "kernels_executed": self._kernels_executed,

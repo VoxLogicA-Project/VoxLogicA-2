@@ -166,8 +166,15 @@ def _engine_stub(table: NodeTable, *, max_live_bytes: int) -> ComputationEngine:
     engine = ComputationEngine.__new__(ComputationEngine)  # bypass __init__
     engine.table = table
     engine.graph = types.SimpleNamespace(consumers={})
-    engine.config = types.SimpleNamespace(max_live_bytes=max_live_bytes,
-                                          persist_min_compute_ms=1.0)
+    engine.config = types.SimpleNamespace(persist_min_compute_ms=1.0)
+    # The effective budget now comes from the memory governor, which derives it
+    # from live RSS rather than from a number fixed at startup (see
+    # engine/governor.py). These tests drive the mechanism, not the controller,
+    # so they pin the governor's outputs directly: no pressure, no sacrifice
+    # beyond the worth-it threshold, and whatever budget the case needs.
+    engine.governor = types.SimpleNamespace(budget=max_live_bytes, hard=max_live_bytes,
+                                            sacrifice_ms=1.0, blocking=False,
+                                            pressure=0.0)
     engine.expander = types.SimpleNamespace(can_expand=lambda node: False)
     engine._evict_candidates = deque()
     engine._spill_pending = deque()
@@ -544,7 +551,7 @@ def test_free_garbage_is_collected_before_anything_costing_a_recompute(tmp_path)
 
         # Budget with room for exactly one of the two: freeing the garbage must
         # be enough, so the value with a pending consumer never pays a recompute.
-        engine.config.max_live_bytes = table.live_bytes - table._sizeof["garbage"]
+        engine.governor.budget = table.live_bytes - table._sizeof["garbage"]
 
         engine._reclaim_memory()
 
@@ -596,7 +603,7 @@ def test_speculative_cache_cannot_squat_the_whole_budget() -> None:
         table.set_value(nid, index.to_bytes(2, "big") * 500)
         engine.graph.consumers[nid] = 0
         engine._track_ownerless(nid)
-    assert table.accounted_bytes < engine.config.max_live_bytes, "not over budget"
+    assert table.accounted_bytes < engine.governor.budget, "not over budget"
     assert engine._ownerless_bytes > 100_000 * engine._ownerless_share, "over its share"
 
     engine._reclaim_memory()
@@ -1079,7 +1086,7 @@ def test_recompute_scaffolding_is_freed_not_stranded() -> None:
     # rebuilt the same values moments later (19,066 recomputes in 83,701 nodes
     # against a 1.4% baseline). Free RAM is the best cache available.
     table.values.pop("parent", None)
-    engine.config.max_live_bytes = 1_000_000_000
+    engine.governor.budget = 1_000_000_000
     ComputationEngine._rematerialize(engine, "parent")
     assert "child" in table.values, "with room to spare, scaffolding is cached"
     assert "child" in engine._ownerless, "on the free-garbage queue, collected first"

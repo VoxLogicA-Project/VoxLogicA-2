@@ -74,7 +74,8 @@ class MemoryLogger:
             self._file.write("elapsed_s\tcompleted\tlive_mb\tbacklog_mb\taccounted_mb"
                              "\tbudget_mb\thard_mb\trss_mb\tin_flight\tready\tparked"
                              "\tevicted_early\tevict_cand\tspill_pending"
-                             "\tbw_gbs\tbw_util\tresident_by_op\tcensus\n")
+                             "\tbw_gbs\tbw_util\tgov_overhead\tgov_pressure\tgov_sac_ms"
+                             "\tgov_trims\tresident_by_op\tcensus\n")
         except OSError:
             self._file = None
             return
@@ -98,6 +99,7 @@ class MemoryLogger:
             bw_rate, bw_util = s.get("bandwidth", (0.0, 0.0))
             by_op = ";".join(f"{op}={size / 1024 ** 3:.1f}G"
                              for op, size in s.get("resident_by_op", ()))
+            gov = s.get("governor", {})
             c = s.get("census", {})
             census = ";".join(
                 f"{key}={val / 1024 ** 3:.1f}G" if not key.endswith("_n") else f"{key}={val}"
@@ -114,6 +116,12 @@ class MemoryLogger:
                 # measured copy ceiling — the evidence any "we are bandwidth
                 # bound" claim has to rest on (see engine/bandwidth.py).
                 f"{bw_rate / 1024 ** 3:.2f}\t{bw_util:.2f}\t"
+                # The memory governor's own terms (engine/governor.py): how many
+                # resident bytes each accounted byte is really costing, how close
+                # RSS is to its ceiling, and the two valves that follow from it.
+                # Reading budget_mb without these cannot explain why it moved.
+                f"{gov.get('gov_overhead', 0.0)}\t{gov.get('gov_pressure', 0.0)}\t"
+                f"{gov.get('gov_sacrifice_ms', 0.0)}\t{gov.get('gov_trims', 0)}\t"
                 # Which operators hold the live tier, largest first: the direct
                 # answer to "what is memory full OF" at any moment.
                 f"{by_op}\t"

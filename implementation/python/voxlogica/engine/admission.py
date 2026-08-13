@@ -82,6 +82,11 @@ class _Job:
 class LoopAdmission:
     """Owns every active loop unroll; all state mutation on the event loop."""
 
+    #: RSS backpressure predicate, as a CLASS default so a partially built
+    #: instance (the memory tests construct one without __init__, to drive
+    #: _has_room directly) still answers "not blocked" rather than raising.
+    _blocked = staticmethod(lambda: False)
+
     def __init__(self, expander: Expander, graph: DependencyGraph, ready: ReadyQueue,
                  liveness: LivenessProbe, *, window: int, chunk: int, workers: int,
                  hard_live_bytes: int, soft_live_bytes: int = 0,
@@ -91,7 +96,8 @@ class LoopAdmission:
                  idle: Callable[[], bool],
                  on_spliced: Callable[[NodeId, NodeId, int], None],
                  fail_node: Callable[[NodeId, BaseException], None],
-                 reclaim: Callable[[], None] | None = None):
+                 reclaim: Callable[[], None] | None = None,
+                 blocked: Callable[[], bool] | None = None):
         self.expander = expander
         self.graph = graph
         self.ready = ready
@@ -110,6 +116,12 @@ class LoopAdmission:
         self._on_spliced = on_spliced
         self._fail_node = fail_node
         self._reclaim = reclaim or (lambda: None)
+        # RSS backpressure (engine/governor.py). The byte budgets above are
+        # ACCOUNTED bytes, which on this workload ran at less than half of what
+        # the process actually occupied; this asks the governor directly
+        # whether the machine has room, and no accounting error can hide from
+        # it. Default False keeps every existing caller's behaviour.
+        self._blocked = blocked or (lambda: False)
         # One-shot token for the at-the-ceiling wedge-breaker (see _has_room);
         # cleared by any completion, so the escape can never run away.
         self._escape_spent = False
@@ -261,6 +273,14 @@ class LoopAdmission:
         """
         if job.in_flight >= self._live_window():
             return False
+        if self._blocked():
+            # The process is at its RSS ceiling. Opening another body adds
+            # resident bytes the engine has no way to release in time, and the
+            # accounted total cannot be trusted to notice — this is what the
+            # OOM kill walked through, one admission at a time.
+            self._reclaim()
+            if self._blocked():
+                return self._wedge_escape()
         accounted = self.graph.table.accounted_bytes
         if accounted >= self.hard_live_bytes:
             trim_pool(0)
