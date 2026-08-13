@@ -216,3 +216,48 @@ def test_a_squeezed_budget_does_not_change_the_answer(tmp_path, monkeypatch, cap
     for trial in range(8):
         assert _run_with_store(_TYPED_PROGRAM, tmp_path / f"tiny{trial}.db", capsys) == reference, (
             f"answer changed under memory pressure on trial {trial}")
+
+
+# ── The same triple, with real ITK images in it ────────────────────────────
+#
+# Everything above is floats and strings. The failure being chased carried
+# IMAGES, which travel a different road entirely: the buffer pool, the pinned
+# numpy view, the codec's image branch. A swap between a string slot and an
+# image slot is what was observed, so the test that would have caught it has
+# to have both kinds in one sequence.
+
+_IMAGE_TRIPLE = """
+import "geom"
+import "strings"
+sizes = [9.0, 8.0, 7.0, 6.0, 5.0, 4.0]
+cost(i) = test.timewaste(index(sizes, i), 60)
+tag(i) = i + (cost(i) * 0.0)
+img(i)  = geom.circle(geom.blank(64, 64, 0), 16, 16, 8 + tag(i), 200)
+lab(i)  = geom.circle(geom.blank(64, 64, 0), 32, 32, 4 + tag(i), 1)
+case(i) = [concat("case_", format_string("{:.0f}", tag(i))), [img(i)], lab(i)]
+cases = for i in range(0, 6) do case(i)
+print "ids"  for c in cases do index(c, 0)
+print "vols" for c in cases do volume(index(index(c, 1), 0))
+print "labs" for c in cases do volume(index(c, 2))
+"""
+
+
+@pytest.mark.unit
+def test_a_triple_of_string_and_images_keeps_its_slots(capsys):
+    """`volume` of a string raises, so a slot swap cannot come back as a number.
+
+    The radii grow with the index, so the volumes must be strictly increasing:
+    a permutation shows up as an ordering violation even between two images.
+    """
+    reference = None
+    for trial in range(6):
+        out = _run(_IMAGE_TRIPLE, capsys)
+        ids = out["ids"].replace("'", "").replace('"', "").strip("[]").split(", ")
+        assert ids == [f"case_{i}" for i in range(6)], f"trial {trial}: {ids}"
+        vols = [float(v) for v in out["vols"].strip("[]").split(",")]
+        labs = [float(v) for v in out["labs"].strip("[]").split(",")]
+        assert vols == sorted(vols) and len(set(vols)) == 6, f"trial {trial}: {vols}"
+        assert labs == sorted(labs) and len(set(labs)) == 6, f"trial {trial}: {labs}"
+        if reference is None:
+            reference = (vols, labs)
+        assert (vols, labs) == reference, f"trial {trial} differs from the first run"
