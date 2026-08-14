@@ -1,0 +1,177 @@
+"""The action vocabulary: one list, three consumers.
+
+Everything that can change a workspace is named here, once, as data. The browser
+calls these actions, the MCP server exposes these actions, and neither owns the
+list -- which is the only way two front ends stay able to do the same things a
+year from now. A test asserts the TypeScript facade covers every entry, so an
+action cannot quietly exist on one side only.
+
+The namespace is the shape of the user's work (`board`, `card`, `view`,
+`workspace`), not the shape of this module. Someone looking for "how do I move a
+card" should find `board.moveCard` without knowing what a Document is.
+
+See doc/dev/ui-workspace.md sections 3 and 5.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable
+
+#: Parameter types are deliberately few: they have to survive JSON, a TypeScript
+#: signature and an MCP tool schema without a type system in the middle.
+JSON_TYPES = {"string": "string", "int": "integer", "number": "number", "bool": "boolean"}
+
+
+@dataclass(frozen=True)
+class Action:
+    name: str
+    params: dict[str, str]
+    required: tuple[str, ...]
+    doc: str
+    apply: Callable[["Workspace", dict[str, Any]], Any]  # noqa: F821
+
+
+def _move(workspace, params):
+    return workspace.document.place(params["id"], x=params["x"], y=params["y"])
+
+
+def _resize(workspace, params):
+    return workspace.document.place(params["id"], w=params["w"], h=params["h"])
+
+
+def _add(workspace, params):
+    return workspace.document.add_card(
+        params["id"],
+        params.get("kind", "code"),
+        x=params.get("x", 0),
+        y=params.get("y", 0),
+        w=params.get("w"),
+        h=params.get("h"),
+        page=params.get("page"),
+        node=params.get("node"),
+        title=params.get("title"),
+    )
+
+
+def _remove(workspace, params):
+    return workspace.document.remove_card(params["id"])
+
+
+def _set_page(workspace, params):
+    return workspace.document.set_attr(params["id"], "page", params["page"])
+
+
+def _set_title(workspace, params):
+    return workspace.document.set_attr(params["id"], "title", params["title"])
+
+
+def _set_source(workspace, params):
+    return workspace.document.set_source(params["id"], params["text"])
+
+
+def _bind_node(workspace, params):
+    return workspace.document.set_attr(params["id"], "node", params["node"])
+
+
+def _set_kind(workspace, params):
+    return workspace.document.set_attr(params["id"], "kind", params["kind"])
+
+
+def _set_view_mode(workspace, params):
+    return workspace.document.set_attr(params["id"], "view", params["view"])
+
+
+def _go_to_page(workspace, params):
+    workspace.view["page"] = params["page"]
+    return True
+
+
+def _set_zoom(workspace, params):
+    workspace.view["zoom"] = params["zoom"]
+    return True
+
+
+def _select(workspace, params):
+    workspace.view["selection"] = params.get("id")
+    return True
+
+
+def _export(workspace, _params):
+    return workspace.document.to_imgql()
+
+
+def _save(workspace, params):
+    return workspace.save(params.get("path"))
+
+
+def _open(workspace, params):
+    return workspace.open(params["path"])
+
+
+def _action(name, params, required, doc, apply):
+    return Action(name=name, params=params, required=tuple(required), doc=doc, apply=apply)
+
+
+ACTIONS: dict[str, Action] = {
+    action.name: action
+    for action in (
+        _action("board.moveCard", {"id": "string", "x": "int", "y": "int"},
+                ("id", "x", "y"), "Move a card to a cell position.", _move),
+        _action("board.resizeCard", {"id": "string", "w": "int", "h": "int"},
+                ("id", "w", "h"), "Resize a card, in cells.", _resize),
+        _action("board.addCard",
+                {"id": "string", "kind": "string", "x": "int", "y": "int", "w": "int",
+                 "h": "int", "page": "int", "node": "string", "title": "string"},
+                ("id",), "Add a card to the board.", _add),
+        _action("board.removeCard", {"id": "string"}, ("id",),
+                "Remove a card and its contents.", _remove),
+        _action("board.setPage", {"id": "string", "page": "int"}, ("id", "page"),
+                "Move a card to another page of the board.", _set_page),
+        _action("card.setTitle", {"id": "string", "title": "string"}, ("id", "title"),
+                "Rename a card.", _set_title),
+        _action("card.setSource", {"id": "string", "text": "string"}, ("id", "text"),
+                "Replace the program text of a code card.", _set_source),
+        _action("card.bindNode", {"id": "string", "node": "string"}, ("id", "node"),
+                "Point a result card at a node of the program.", _bind_node),
+        _action("card.setKind", {"id": "string", "kind": "string"}, ("id", "kind"),
+                "Switch what a card is: code, result or note.", _set_kind),
+        _action("card.setViewMode", {"id": "string", "view": "string"}, ("id", "view"),
+                "Switch how a result card renders: its state or its content.", _set_view_mode),
+        _action("view.goToPage", {"page": "int"}, ("page",),
+                "Show a page of the board.", _go_to_page),
+        _action("view.setZoom", {"zoom": "number"}, ("zoom",),
+                "Scale the board.", _set_zoom),
+        _action("view.select", {"id": "string"}, (),
+                "Select a card, or nothing.", _select),
+        _action("workspace.open", {"path": "string"}, ("path",),
+                "Open an .imgql file as the workspace document.", _open),
+        _action("workspace.export", {}, (),
+                "The document as .imgql text, exactly as it would be saved.", _export),
+        _action("workspace.save", {"path": "string"}, (),
+                "Write the document back to disk.", _save),
+    )
+}
+
+
+def manifest() -> list[dict[str, Any]]:
+    """The vocabulary as plain data, for MCP tool schemas and for tests."""
+    return [
+        {
+            "name": action.name,
+            "doc": action.doc,
+            "params": dict(action.params),
+            "required": list(action.required),
+        }
+        for action in ACTIONS.values()
+    ]
+
+
+def json_schema(action: Action) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            name: {"type": JSON_TYPES[kind]} for name, kind in action.params.items()
+        },
+        "required": list(action.required),
+    }

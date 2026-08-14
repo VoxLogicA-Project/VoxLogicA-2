@@ -16,7 +16,20 @@
    * and a drop onto occupied or out-of-bounds cells snaps back to where it came
    * from. Nothing is committed to the model until the pointer is released.
    */
-  let { card, pitch, gutter, cols, rows, canPlace, onchange, children } = $props();
+  let {
+    card,
+    /** The card's effective size in cells: given, or last measured. */
+    size,
+    pitch,
+    gutter,
+    cols,
+    rows,
+    canPlace,
+    onmove,
+    onresize,
+    onmeasure,
+    children,
+  } = $props();
 
   let root = $state(null);
   let headerEl = $state(null);
@@ -25,7 +38,7 @@
   let preview = $state(null);
   let gesture = null;
 
-  const at = $derived(preview ?? card);
+  const at = $derived(preview ?? { x: card.x, y: card.y, w: size.w, h: size.h });
   const invalid = $derived(
     preview !== null && !canPlace(card.id, preview.x, preview.y, preview.w, preview.h),
   );
@@ -73,10 +86,7 @@
       Math.ceil((box.width + border + gutter) / pitch),
       Math.ceil((box.height + chrome + gutter) / pitch),
     );
-    if (w !== card.w || h !== card.h) {
-      card.w = w;
-      card.h = h;
-    }
+    if (w !== size.w || h !== size.h) onmeasure?.(w, h);
   }
 
   $effect(() => {
@@ -106,7 +116,7 @@
       pointerId: event.pointerId,
       x: event.clientX,
       y: event.clientY,
-      from: { x: card.x, y: card.y, w: card.w, h: card.h },
+      from: { x: card.x, y: card.y, w: size.w, h: size.h },
     };
     preview = { ...gesture.from };
   }
@@ -137,15 +147,12 @@
     preview = null;
     if (!next) return;
     if (!canPlace(card.id, next.x, next.y, next.w, next.h)) return; // snaps back
-    card.x = next.x;
-    card.y = next.y;
-    if (next.w !== card.w || next.h !== card.h) {
-      card.w = next.w;
-      card.h = next.h;
-      // A card the user has sized is no longer the content's to size.
-      card.auto = false;
-    }
-    onchange?.();
+    // Reported, not applied: the card draws a layout, it does not own one. The
+    // change comes back as a prop once whoever owns it has accepted it.
+    if (next.x !== card.x || next.y !== card.y) onmove?.(next.x, next.y);
+    // Resizing by hand is also what ends auto-sizing, and the owner records
+    // that by the card having a w/h at all.
+    if (next.w !== size.w || next.h !== size.h) onresize?.(next.w, next.h);
   }
 
   /** The same two gestures from the keyboard, which is the only way some people
@@ -158,25 +165,19 @@
     event.preventDefault();
     const [dx, dy] = step;
     if (event.shiftKey) {
-      const [w, h] = clamp(card.w + dx, card.h + dy);
-      if (canPlace(card.id, card.x, card.y, w, h)) {
-        card.w = w;
-        card.h = h;
-        card.auto = false;
-        onchange?.();
-      }
+      const [w, h] = clamp(size.w + dx, size.h + dy);
+      if (canPlace(card.id, card.x, card.y, w, h)) onresize?.(w, h);
       return;
     }
-    if (canPlace(card.id, card.x + dx, card.y + dy, card.w, card.h)) {
-      card.x += dx;
-      card.y += dy;
-      onchange?.();
+    if (canPlace(card.id, card.x + dx, card.y + dy, size.w, size.h)) {
+      onmove?.(card.x + dx, card.y + dy);
     }
   }
 </script>
 
 <article
   bind:this={root}
+  data-card-id={card.id}
   class="card"
   class:dragging={preview !== null}
   class:invalid

@@ -1,0 +1,91 @@
+"""The workspace: the one place a document and a view actually live.
+
+Server-side on purpose. An MCP client is not a browser, and "an agent can see and
+do what the user sees and does" is only true by construction if the state is not
+in a tab: with no tab open there would be nothing to look at, and with two tabs
+open there would be two answers. The browser holds a replica of what is here.
+
+Every change goes through `apply`, which is the whole mutation surface: one name,
+one place, one broadcast. See doc/dev/ui-workspace.md section 3.
+"""
+
+from __future__ import annotations
+
+import threading
+from pathlib import Path
+from typing import Any
+
+from .actions import ACTIONS
+from .document import Document, parse
+
+
+class Workspace:
+    def __init__(self, *, hub=None, path: str | Path | None = None) -> None:
+        self._hub = hub
+        self._lock = threading.RLock()
+        self.path: Path | None = Path(path) if path else None
+        text = self.path.read_text() if self.path and self.path.exists() else ""
+        self.document: Document = parse(text)
+        #: Not part of the document: which page you are on is not a property of
+        #: the program, and a diff that changes because someone scrolled is a
+        #: diff nobody wants to review.
+        self.view: dict[str, Any] = {"page": 0, "zoom": 1.0, "selection": None}
+
+    # ------------------------------------------------------------------ state
+
+    def snapshot(self) -> dict[str, Any]:
+        """Everything the user sees, which is exactly what MCP reads."""
+        with self._lock:
+            return {
+                "path": str(self.path) if self.path else None,
+                "board": self.document.board,
+                "cards": self.document.cards,
+                "view": dict(self.view),
+                "dirty": self.document.dirty,
+            }
+
+    # ---------------------------------------------------------------- actions
+
+    def apply(self, name: str, params: dict[str, Any] | None = None) -> Any:
+        action = ACTIONS.get(name)
+        if action is None:
+            raise KeyError(f"no such action: {name}")
+        params = params or {}
+        missing = [key for key in action.required if key not in params]
+        if missing:
+            raise ValueError(f"{name} needs {', '.join(missing)}")
+        with self._lock:
+            result = action.apply(self, params)
+        self.publish()
+        return result
+
+    def open(self, path: str) -> bool:
+        target = Path(path)
+        text = target.read_text()
+        with self._lock:
+            self.path = target
+            self.document = parse(text)
+        return True
+
+    def save(self, path: str | None = None) -> str:
+        with self._lock:
+            target = Path(path) if path else self.path
+            if target is None:
+                raise ValueError("no path to save to")
+            target.write_text(self.document.to_imgql())
+            self.path = target
+            return str(target)
+
+    # -------------------------------------------------------------- broadcast
+
+    def publish(self) -> None:
+        """Push the new state to every client, browser and agent alike.
+
+        Sticky, so a tab that connects later gets the workspace as part of
+        connecting rather than having to ask for it.
+        """
+        if self._hub is None:
+            return
+        self._hub.publish(
+            {"type": "workspace", "workspace": self.snapshot()}, sticky_key="workspace"
+        )

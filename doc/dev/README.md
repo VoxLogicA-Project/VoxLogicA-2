@@ -32,7 +32,7 @@ Each module documentation includes:
 
 ## Browser UI
 
-Every `voxlogica run` serves its own UI in-process. Two documents, and both are
+Every `voxlogica run` serves its own UI in-process. Four documents, and all are
 normative rather than descriptive — they state rules and the reason for each:
 
 - **[ui-architecture.md](ui-architecture.md)** — how a browser ends up looking at
@@ -43,6 +43,13 @@ normative rather than descriptive — they state rules and the reason for each:
 - **[ui-design-system.md](ui-design-system.md)** — the front-end rules: two tiers
   of design tokens, the four-component library, and the dev page whose
   gallery *is* the library rather than a set of examples of it.
+- **[ui-bento.md](ui-bento.md)** — the board the workspace is arranged on: why
+  positions are integer cells rather than pixels, how a card sizes itself to its
+  content, and what the lattice refuses to do.
+- **[ui-workspace.md](ui-workspace.md)** — the store, the document and its
+  lossless `.imgql` round-trip, the action vocabulary shared by the browser and
+  by agents, and the MCP server that registers itself with the tools on your
+  machine.
 - **[ui-editor-requirements-and-testing-strategy.md](ui-editor-requirements-and-testing-strategy.md)**
   — earlier requirements work on the program editor.
 

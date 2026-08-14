@@ -1,7 +1,8 @@
 import Bento from "./Bento.svelte";
+import harness from "./Bento.harness.svelte";
 
-/** Each specimen needs its own card array: the board mutates what it is given,
- * and two specimens sharing one array would drag each other's cards. */
+/** Cards that were sized by hand rather than by their content. The harness takes
+ * its own copy, so specimens cannot drag each other's cards. */
 const board = (cards) => cards.map((card) => ({ auto: false, ...card }));
 
 export default {
@@ -9,6 +10,9 @@ export default {
   summary:
     "The board: cards placed on a lattice of cells, moved by their header, resized by their corner, sized to their content unless told otherwise. Positions are integer cells, never pixels.",
   component: Bento,
+  // The board reports gestures and renders what it is given, so a specimen needs
+  // a controller to be a specimen of anything (see Bento.harness.svelte).
+  harness,
   axes: ["cards", "cols", "rows", "zoom", "page"],
   layout: "stack",
   variants: [

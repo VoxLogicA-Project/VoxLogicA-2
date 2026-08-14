@@ -24,35 +24,35 @@
   import BentoCard from "./BentoCard.svelte";
 
   let {
-    /** Initial layout: `[{ id, x, y, w, h, page?, auto?, minW?, minH?, maxW?, maxH?, aspect?, title? }]` */
+    /** `[{ id, x, y, w?, h?, page?, auto?, minW?, minH?, maxW?, maxH?, aspect?, title? }]` */
     cards = [],
     cols = 12,
     rows = 8,
-    page = $bindable(0),
+    page = 0,
     zoom = 1,
     label = "Board",
-    /** Called with the whole layout after every committed move or resize. */
-    onchange = undefined,
+    /** A gesture finished. The board does not apply it -- the owner of the
+     * layout does, and the new layout comes back through `cards`. */
+    onmove = undefined,
+    onresize = undefined,
+    onpage = undefined,
     /** Snippet rendering a card's content; receives the card. */
     children,
   } = $props();
 
-  /** The board owns the layout after mount.
+  /** The board renders a layout; it does not own one.
    *
-   * Seeded from the prop and reactive from then on: a card is dragged by
-   * mutating it, and that only redraws anything if the object is a `$state`
-   * proxy. Requiring every caller -- including a gallery entry, which is plain
-   * JSON in a plain module -- to have made one would be a rule that is broken
-   * silently, by a board that moves nothing. Persistence goes through
-   * `onchange` instead of through a two-way binding.
+   * Everything it knows arrives as props and every gesture leaves as a callback,
+   * so the one copy of the truth is wherever the caller keeps it -- in the app,
+   * the workspace replica, which the server owns. A board that also kept state
+   * would be a second copy, and two copies of a layout is one bug waiting for
+   * the day they disagree.
    */
-  // Capturing the initial value is the intent, not an oversight: `cards` is a
-  // seed, and later changes to it are the caller's copy of a layout this board
-  // has since moved on from.
-  // svelte-ignore state_referenced_locally
-  let items = $state(
-    cards.map((card) => ({ page: 0, auto: false, w: 1, h: 1, ...card })),
-  );
+  const items = $derived(cards.map((card) => ({ page: 0, auto: false, ...card })));
+
+  /** Measured sizes for auto cards, which have no w/h of their own. Kept here
+   * because occupancy is a question about the whole board. */
+  let measured = $state({});
 
   let board = $state(null);
   /** Resolved pixel pitch and gutter, measured rather than parsed from CSS. */
@@ -61,6 +61,11 @@
 
   const pageCount = $derived(Math.max(1, ...items.map((card) => card.page + 1)));
   const visible = $derived(items.filter((card) => card.page === page));
+
+  /** A card's effective size: what it was given, or what it measured. */
+  function sizeOf(card) {
+    return { w: card.w ?? measured[card.id]?.w ?? 1, h: card.h ?? measured[card.id]?.h ?? 1 };
+  }
 
   // The grid owns the geometry; JS asks it what it did rather than recomputing
   // it from the tokens. Two sources for one number is two chances to disagree,
@@ -84,14 +89,13 @@
   /** Cells [x, x+w) x [y, y+h) are inside the page and free of other cards. */
   function canPlace(id, x, y, w, h) {
     if (x < 0 || y < 0 || x + w > cols || y + h > rows) return false;
-    return !visible.some(
-      (other) =>
-        other.id !== id &&
-        x < other.x + other.w &&
-        other.x < x + w &&
-        y < other.y + other.h &&
-        other.y < y + h,
-    );
+    return !visible.some((other) => {
+      if (other.id === id) return false;
+      const size = sizeOf(other);
+      return (
+        x < other.x + size.w && other.x < x + w && y < other.y + size.h && other.y < y + h
+      );
+    });
   }
 </script>
 
@@ -111,7 +115,10 @@
         {cols}
         {rows}
         {canPlace}
-        onchange={() => onchange?.($state.snapshot(items))}
+        size={sizeOf(card)}
+        onmove={(x, y) => onmove?.(card.id, x, y)}
+        onresize={(w, h) => onresize?.(card.id, w, h)}
+        onmeasure={(w, h) => (measured = { ...measured, [card.id]: { w, h } })}
       >
         {@render children?.(card)}
       </BentoCard>
@@ -120,18 +127,12 @@
 
   {#if pageCount > 1}
     <nav class="pager" aria-label="Board pages">
-      <button
-        type="button"
-        disabled={page === 0}
-        onclick={() => (page = Math.max(0, page - 1))}
-      >
-        ‹
-      </button>
+      <button type="button" disabled={page === 0} onclick={() => onpage?.(page - 1)}>‹</button>
       <span class="numeric">page {page + 1} / {pageCount}</span>
       <button
         type="button"
         disabled={page >= pageCount - 1}
-        onclick={() => (page = Math.min(pageCount - 1, page + 1))}
+        onclick={() => onpage?.(page + 1)}
       >
         ›
       </button>

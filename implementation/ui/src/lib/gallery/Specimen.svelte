@@ -8,7 +8,10 @@
    */
   let { entry } = $props();
 
-  const Component = $derived(entry.component);
+  /** A controlled component needs somebody to control it before it can be shown
+   * behaving; `harness` is that somebody, and it wraps the real component
+   * rather than reimplementing it (see Bento.harness.svelte). */
+  const Component = $derived(entry.harness ?? entry.component);
 </script>
 
 <article class="specimen">

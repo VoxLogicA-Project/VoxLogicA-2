@@ -87,8 +87,15 @@ component, invisible to both.
 
 ## 4. The component library
 
-Four components carry the interface: `Button`, `Toggle`, `ContextMenu`, `Card`.
-A fifth has to earn its place by removing something.
+Five components carry the interface: `Button`, `Toggle`, `ContextMenu`, `Card`,
+and `Bento`. A sixth has to earn its place by removing something.
+
+`Bento` is the one that earned it: it is the frame the workspace is arranged in,
+not a widget ([ui-bento.md](ui-bento.md)). It is also the first *controlled*
+component here -- it renders a layout and reports gestures rather than owning
+anything -- which is why its gallery entry carries a `harness`: a controlled
+component with nobody controlling it would demonstrate the opposite of how it
+works. The harness wraps the real component; it does not reimplement it.
 
 `ContextMenu` opens on right-click (or Shift+F10) over the region it wraps, and
 that is all it does. A menu-button variant existed briefly, for a dev menu that
