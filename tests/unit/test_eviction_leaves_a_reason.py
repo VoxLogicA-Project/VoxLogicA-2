@@ -44,8 +44,9 @@ def status_of(store, node_id: str) -> str | None:
 
 def eviction_record(store, node_id: str) -> dict:
     row = store._connection.execute(
-        "SELECT metadata_json FROM results WHERE node_id = ?", (node_id,)).fetchone()
-    return json.loads(row[0])["eviction"]
+        "SELECT eviction_tier, eviction_reason, eviction_bytes, eviction_at, compute_ms, gd_key "
+        "FROM results WHERE node_id = ?", (node_id,)).fetchone()
+    return dict(zip(("tier", "reason", "bytes", "at", "compute_ms", "gd_key"), row))
 
 
 def test_the_row_survives_the_value(store):
@@ -65,11 +66,11 @@ def test_the_reason_and_the_numbers_that_decided_it_are_kept(store):
     assert record["tier"] == "evicted_live"
     assert record["reason"] == "over budget, no dead value left"
     assert record["compute_ms"] == pytest.approx(1234.5)   # what a rebuild costs
-    assert record["payload_bytes"] > 0                     # what keeping it cost
+    assert record["bytes"] > 0                             # what keeping it cost
     assert record["at"] > 0
 
 
-def test_the_original_metadata_is_not_lost(store):
+def test_the_original_metadata_is_not_touched(store):
     put(store, "n1", b"x" * 4096)
 
     evict(store, "n1")
@@ -109,9 +110,9 @@ def test_recomputing_restores_the_value_and_clears_the_tombstone(store):
 
     assert status_of(store, "n1") == MATERIALIZED_STATUS
     assert store.has("n1") is True
-    row = store._connection.execute(
-        "SELECT metadata_json FROM results WHERE node_id = ?", ("n1",)).fetchone()
-    assert "eviction" not in json.loads(row[0])
+    record = eviction_record(store, "n1")
+    assert record["tier"] is None and record["reason"] is None
+    assert record["bytes"] == 0 and record["at"] is None
 
 
 def test_tombstones_are_not_counted_as_entries(store):

@@ -38,7 +38,7 @@ PLANNED_STATUS = "planned"
 # MATERIALIZED_STATUS, _load_from_backend refuses anything else), so a tombstone
 # is invisible to lookups and visible only to whoever asks why.
 EVICTED_STATUS = "evicted"
-STORE_SCHEMA_VERSION = 4
+STORE_SCHEMA_VERSION = 5
 # The persistent result store is a bounded cache: once its payloads exceed this
 # many bytes, entries are evicted (rows + payload files deleted) until back under
 # budget. Eviction follows GreedyDual-Size: the eviction key is
@@ -103,8 +103,25 @@ _RESULTS_TABLE_COLUMNS = frozenset(
         "payload_bytes",
         "compute_ms",
         "gd_key",
+        # Why a value that WAS here is not here any more (see _evict_row).
+        "eviction_tier",
+        "eviction_reason",
+        "eviction_bytes",
+        "eviction_at",
     }
 )
+
+#: Columns that a store from an older schema can GAIN without losing anything.
+#: Each carries a default, so existing rows are valid the moment it appears --
+#: which is what lets the schema grow by ALTER TABLE (O(1) in SQLite) instead of
+#: by DROP. The distinction matters: rebuilding this cache costs hours, and
+#: before this every added column cost exactly that.
+_ADDABLE_COLUMNS = {
+    "eviction_tier": "TEXT",
+    "eviction_reason": "TEXT",
+    "eviction_bytes": "INTEGER NOT NULL DEFAULT 0",
+    "eviction_at": "REAL",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -261,16 +278,51 @@ class SQLiteResultsDatabase:
         self._stats = {"writes": 0, "evictions": 0, "evicted_bytes": 0, "hits": 0,
                        "evicted_dead": 0, "evicted_live": 0}
 
-    def _results_table_matches_schema(self) -> bool:
+    def _results_columns(self) -> set[str]:
         rows = self._connection.execute("PRAGMA table_info(results)").fetchall()
-        if not rows:
-            return False
-        return {str(row[1]) for row in rows} == _RESULTS_TABLE_COLUMNS
+        return {str(row[1]) for row in rows}
+
+    def _results_table_matches_schema(self) -> bool:
+        columns = self._results_columns()
+        return bool(columns) and columns == _RESULTS_TABLE_COLUMNS
+
+    def _migrate_results_table(self) -> bool:
+        """Grow an older table in place, or report that it cannot be grown.
+
+        Rebuilding this cache costs hours, so a schema that can only be
+        RECREATED makes every future column a choice between an improvement and
+        a user's day of compute. SQLite adds a column in O(1), and every column
+        this store adds carries a default, so an existing row is valid the
+        instant it appears. Only a column that VANISHED or changed meaning is a
+        real incompatibility, and only that drops the table.
+        """
+        columns = self._results_columns()
+        if not columns:
+            return False                                   # no table: create it
+        missing = _RESULTS_TABLE_COLUMNS - columns
+        if columns - _RESULTS_TABLE_COLUMNS:
+            return False                                   # unknown column: not ours to keep
+        if not missing.issubset(_ADDABLE_COLUMNS):
+            return False                                   # a column we cannot fabricate
+        for name in sorted(missing):
+            self._connection.execute(
+                f"ALTER TABLE results ADD COLUMN {name} {_ADDABLE_COLUMNS[name]}")
+        self._connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
+        self._connection.commit()
+        if missing:
+            logger.info("results schema migrated in place, added: %s", ", ".join(sorted(missing)))
+        return True
 
     def _initialize_schema(self) -> None:
         with self._lock:
             version = int((self._connection.execute("PRAGMA user_version").fetchone() or [0])[0])
             if version != STORE_SCHEMA_VERSION or not self._results_table_matches_schema():
+                # Grow in place when the difference is only columns this store
+                # knows how to add; the payloads and the DAG survive untouched.
+                migrated = self._migrate_results_table()
+            else:
+                migrated = True
+            if not migrated:
                 self._connection.execute("DROP TABLE IF EXISTS results")
                 # A schema reset abandons every old payload file; clear them so
                 # they don't linger uncounted against the byte budget.
@@ -297,14 +349,22 @@ class SQLiteResultsDatabase:
                         accessed_at REAL NOT NULL,
                         payload_bytes INTEGER NOT NULL DEFAULT 0,
                         compute_ms REAL NOT NULL DEFAULT 0,
-                        gd_key REAL NOT NULL DEFAULT 0
+                        gd_key REAL NOT NULL DEFAULT 0,
+                        eviction_tier TEXT,
+                        eviction_reason TEXT,
+                        eviction_bytes INTEGER NOT NULL DEFAULT 0,
+                        eviction_at REAL
                     )
                     """
                 )
-                self._connection.execute("CREATE INDEX idx_results_status ON results(status)")
-                # Eviction scans by GreedyDual key among rows that hold payload bytes.
-                self._connection.execute("CREATE INDEX idx_results_evict ON results(gd_key) WHERE payload_bytes > 0")
                 self._connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
+            # Idempotent, and outside the reset branch: a table that was grown
+            # in place still needs them, and IF NOT EXISTS makes saying so free.
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_results_status ON results(status)")
+            # Eviction scans by GreedyDual key among rows that hold payload bytes.
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_results_evict ON results(gd_key) WHERE payload_bytes > 0")
             # LINEAGE, added additively: never inside the version-reset branch,
             # because bumping the results schema drops every payload and the
             # DAG must survive that. Keyed by the raw 32-byte content hash, not
@@ -539,6 +599,11 @@ class SQLiteResultsDatabase:
                 accessed_at = excluded.accessed_at,
                 payload_bytes = excluded.payload_bytes,
                 compute_ms = excluded.compute_ms,
+                -- the value is back: its eviction record is history, not state
+                eviction_tier = NULL,
+                eviction_reason = NULL,
+                eviction_bytes = 0,
+                eviction_at = NULL,
                 gd_key = excluded.gd_key
             """,
             (
@@ -663,8 +728,10 @@ class SQLiteResultsDatabase:
         """Free one payload + its file, leaving a tombstone that says why.
 
         The row survives as ``status='evicted'`` carrying its lineage
-        (expression, dependencies), its cost (``compute_ms``) and the size and
-        key that decided its fate. That record is the difference between a
+        (expression, dependencies), its rebuild cost (``compute_ms``) and the
+        GreedyDual key that ranked it (``gd_key``) -- both already columns of
+        this row -- plus the tier, the reason and the bytes that keeping it
+        cost, which are recorded here. That record is the difference between a
         policy that can be audited and one that can only be postulated: a
         DELETE leaves a store in which "computed then dropped" and "never
         computed" are the same state.
@@ -676,21 +743,12 @@ class SQLiteResultsDatabase:
         """
         if payload_file:
             (self.payload_dir / str(payload_file)).unlink(missing_ok=True)
-        row = self._connection.execute(
-            "SELECT metadata_json, compute_ms FROM results WHERE node_id = ?", (node_id,)).fetchone()
-        metadata = loads_json(row[0]) if row is not None else {}
-        metadata["eviction"] = {
-            "tier": tier,                                   # evicted_dead | evicted_live
-            "reason": reason or tier,
-            "payload_bytes": int(nbytes or 0),              # what it cost to keep
-            "compute_ms": float(row[1]) if row is not None else 0.0,  # what it costs to rebuild
-            "gd_key": float(gd_key),
-            "at": time.time(),
-        }
+        now = time.time()
         self._connection.execute(
             "UPDATE results SET status = ?, payload_file = NULL, payload_json = '{}', "
-            "payload_bytes = 0, metadata_json = ?, updated_at = ? WHERE node_id = ?",
-            (EVICTED_STATUS, dumps_json(metadata), time.time(), node_id),
+            "payload_bytes = 0, eviction_tier = ?, eviction_reason = ?, eviction_bytes = ?, "
+            "eviction_at = ?, updated_at = ? WHERE node_id = ?",
+            (EVICTED_STATUS, tier, reason or tier, int(nbytes or 0), now, now, node_id),
         )
         if self._id_index is not None:
             self._id_index.discard(node_id)  # keep the engine's membership index truthful
