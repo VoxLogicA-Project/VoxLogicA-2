@@ -137,6 +137,8 @@ size.
 | Drag the header | Move. The card snaps cell to cell. |
 | Drag any edge or corner | Resize, clamped by the card's constraints. |
 | Double-click the header | Maximize into the free room around it; again to restore. |
+| Hover free cells | A faint plus on the cell; click it for a card there. |
+| Drag across free cells | Draw a card's rectangle; release to make it. |
 | Right-click a free cell | New card there, of the kinds that fit. |
 | Right-click a card | That card's menu: maximize, focus, send to a page, remove. |
 | Focus the header, arrows | Move one cell. |
@@ -144,6 +146,7 @@ size.
 | Focus the header, `f` | Focus this card alone; `Escape` leaves. |
 | Focus the header, `m` / Enter | Maximize. |
 | Focus the header, Delete | Remove the card. |
+| Double-click a card's name | Rename it in place. Enter keeps, Escape abandons. |
 | ⌘/Ctrl `+` `-` `0`, ctrl+wheel | Zoom the lattice: bigger cells, same coordinates. |
 
 **Resizing pulls edges, not a handle.** All eight: four sides, four corners,
@@ -233,8 +236,12 @@ Cards move between pages from their own menu.
 
 ## 6. What the board does not do
 
-- It does not scroll. If a page's worth of cells does not fit, the answer is
-  zoom or a smaller page, not a scrollbar that hides half the lattice.
+- **It does not scroll, ever.** Zoom is a wish, not a command: cells grow until
+  a card would fall off the page and no further, and shrinking the window
+  shrinks the cells rather than hiding anything. A bounded page you can see all
+  of is what makes a position mean something; half a board behind an edge is
+  worse than a small board. The floor is a quarter of the base pitch, which no
+  realistic layout reaches.
 - It does not know what is in a card. Content is a snippet the caller renders;
   the board supplies geometry and gestures.
 - It does not persist anything, and it does not apply its own gestures.

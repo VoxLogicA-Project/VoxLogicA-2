@@ -84,14 +84,53 @@
 
   let board = $state(null);
   let canvas = $state(null);
-  /** Resolved pixel pitch and gutter, measured rather than parsed from CSS. */
-  let pitch = $state(0);
+  /** Cell pitch at zoom 1, and the room the board has, both measured. */
+  let basePitch = $state(0);
   let gutter = $state(0);
-  /** Whole cells the canvas has room for; the props are the floor, not the cap. */
-  let fit = $state({ cols: 0, rows: 0 });
+  let room_ = $state({ width: 0, height: 0 });
 
-  const width = $derived(Math.max(cols, fit.cols));
-  const height = $derived(Math.max(rows, fit.rows));
+  /** The cells the cards on this page actually reach. */
+  const needed = $derived(
+    visible.reduce(
+      (acc, card) => {
+        const box = { ...sizeOf(card), x: card.x, y: card.y };
+        return {
+          cols: Math.max(acc.cols, box.x + box.w),
+          rows: Math.max(acc.rows, box.y + box.h),
+        };
+      },
+      { cols: 1, rows: 1 },
+    ),
+  );
+
+  /** The largest cell size that still shows every card on this page.
+   *
+   * This board does not scroll, and that is a decision rather than an omission:
+   * a bounded page you can see all of is the thing that makes a position mean
+   * something, and half a board behind an edge is worse than a small board.
+   * So zoom is a *wish* -- the cells grow until something would fall off, and
+   * shrinking the window shrinks the cells rather than hiding a card.
+   */
+  const fitZoom = $derived(
+    basePitch === 0
+      ? 1
+      : Math.min(
+          (room_.width + gutter) / (needed.cols * basePitch),
+          (room_.height + gutter) / (needed.rows * basePitch),
+        ),
+  );
+
+  /** What the board is actually drawn at: the wish, capped by what fits. */
+  const applied = $derived(Math.max(Math.min(zoom, fitZoom), 0.25));
+  const pitch = $derived(basePitch * applied);
+
+  /** The lattice is what fits, and never less than the cards reach. */
+  const width = $derived(
+    Math.max(needed.cols, pitch ? Math.floor((room_.width + gutter) / pitch) : cols),
+  );
+  const height = $derived(
+    Math.max(needed.rows, pitch ? Math.floor((room_.height + gutter) / pitch) : rows),
+  );
 
   /** Pages exist because cards are on them -- plus the empty one you are
    * standing on, if you asked for it.
@@ -125,15 +164,11 @@
       // a block and may be wider than its own tracks, and dividing that width
       // by `cols` would then hand the drag maths a pitch the grid never used.
       const step = (parseFloat(style.gridTemplateColumns) || 0) + gutter;
-      pitch = step;
-      if (!step) return;
-      // How many whole cells the space around the board could hold. Whole ones
-      // only: half a cell is somewhere a card can be dropped and not fit.
+      // Divided back out by the zoom it was drawn at, so the number kept here
+      // is the one thing that does not move when the board is scaled.
+      if (step) basePitch = step / applied;
       const box = canvas.getBoundingClientRect();
-      fit = {
-        cols: Math.floor((box.width + gutter) / step),
-        rows: Math.floor((box.height + gutter) / step),
-      };
+      room_ = { width: box.width, height: box.height };
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -372,7 +407,11 @@
   const ZOOMS = [0.6, 0.75, 0.875, 1, 1.25, 1.5, 2];
 
   function stepZoom(direction) {
-    const index = ZOOMS.findIndex((value) => value >= zoom - 0.001);
+    // Stepping from what is on screen, not from the stored wish: after the
+    // board has been capped to fit, one press of zoom-out should visibly zoom
+    // out rather than walk back down a wish nobody can see.
+    const from = Math.min(zoom, fitZoom);
+    const index = ZOOMS.findIndex((value) => value >= from - 0.001);
     const next = ZOOMS[Math.min(Math.max(index + direction, 0), ZOOMS.length - 1)];
     if (next !== zoom) onzoom?.(next);
   }
@@ -450,7 +489,7 @@
    */
   let hovered = $state(null);
 
-  function onBoardPointerMove(event) {
+  function onBoardHover(event) {
     if (!pitch || drag || focus) {
       hovered = null;
       return;
@@ -459,15 +498,8 @@
       hovered = null;
       return;
     }
-    const box = board.getBoundingClientRect();
-    const cell = {
-      x: Math.floor((event.clientX - box.left) / pitch),
-      y: Math.floor((event.clientY - box.top) / pitch),
-    };
-    hovered =
-      cell.x >= 0 && cell.y >= 0 && cell.x < width && cell.y < height && canPlace(null, cell.x, cell.y, 1, 1)
-        ? cell
-        : null;
+    const cell = cellAt(event);
+    hovered = cell && canPlace(null, cell.x, cell.y, 1, 1) ? cell : null;
   }
 
   /** The plus makes the first kind that fits, because a menu that opens onto a
@@ -483,6 +515,69 @@
         return;
       }
     }
+  }
+
+  // ------------------------------------------------- drawing a card's outline
+
+  /** The rectangle being drawn on empty lattice, in cells. */
+  let sketch = $state(null);
+  let sketchFrom = null;
+
+  /** Dragging across free cells says how big the card should be, which is the
+   * one thing a click cannot say. Same gesture as selecting a range in a
+   * spreadsheet, and it means the same thing: this rectangle, these cells. */
+  function onBoardPointerDown(event) {
+    if (event.button !== 0 || !pitch || focus || !onadd) return;
+    if (event.target.closest(".card") || event.target.closest(".add")) return;
+    const cell = cellAt(event);
+    if (!cell || !canPlace(null, cell.x, cell.y, 1, 1)) return;
+    event.preventDefault();
+    try {
+      // Keeps the sketch alive when the pointer leaves the board mid-drag.
+      board.setPointerCapture(event.pointerId);
+    } catch {
+      /* no active pointer with this id; the sketch still works, just leakier */
+    }
+    sketchFrom = cell;
+    sketch = { ...cell, w: 1, h: 1 };
+  }
+
+  function onBoardPointerMove(event) {
+    if (sketchFrom) {
+      const cell = cellAt(event);
+      if (!cell) return;
+      const rect = {
+        x: Math.min(sketchFrom.x, cell.x),
+        y: Math.min(sketchFrom.y, cell.y),
+        w: Math.abs(cell.x - sketchFrom.x) + 1,
+        h: Math.abs(cell.y - sketchFrom.y) + 1,
+      };
+      // Grown only as far as it stays on free cells: the outline never promises
+      // a card that could not be made.
+      if (canPlace(null, rect.x, rect.y, rect.w, rect.h)) sketch = rect;
+      return;
+    }
+    onBoardHover(event);
+  }
+
+  function onBoardPointerUp() {
+    const rect = sketch;
+    sketchFrom = null;
+    sketch = null;
+    if (!rect) return;
+    // A click is a 1x1 sketch, and that is the plus's job -- it knows the size
+    // each kind wants.
+    if (rect.w === 1 && rect.h === 1) return;
+    onadd?.(kinds[0].kind, rect.x, rect.y, rect.w, rect.h);
+  }
+
+  function cellAt(event) {
+    const box = board.getBoundingClientRect();
+    const cell = {
+      x: Math.floor((event.clientX - box.left) / pitch),
+      y: Math.floor((event.clientY - box.top) / pitch),
+    };
+    return cell.x >= 0 && cell.y >= 0 && cell.x < width && cell.y < height ? cell : null;
   }
 
   function onBoardContextMenu(event) {
@@ -541,13 +636,26 @@
         bind:this={board}
         class="board"
         class:arranging={drag !== null}
+        onpointerdown={onBoardPointerDown}
         onpointermove={onBoardPointerMove}
+        onpointerup={onBoardPointerUp}
+        onpointercancel={onBoardPointerUp}
         onpointerleave={() => (hovered = null)}
         role="group"
         aria-label={label}
-        style="--cols: {width}; --rows: {height}; --zoom: {zoom};"
+        style="--cols: {width}; --rows: {height}; --zoom: {applied};"
       >
-        {#if hovered && onadd}
+        {#if sketch}
+          <div
+            class="sketch"
+            style="transform: translate3d({sketch.x * pitch}px, {sketch.y * pitch}px, 0);
+                   width: {sketch.w * pitch - gutter}px; height: {sketch.h * pitch - gutter}px;"
+          >
+            <span class="numeric">{sketch.w}×{sketch.h}</span>
+          </div>
+        {/if}
+
+        {#if hovered && !sketch && onadd}
           <button
             type="button"
             class="add"
@@ -672,6 +780,21 @@
 
   .board.arranging::before {
     opacity: 1;
+  }
+
+  /* The outline of a card that does not exist yet, so it is drawn as an
+   * intention: the card's own shape, in the accent, with the size it would be. */
+  .sketch {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: grid;
+    place-items: center;
+    border-radius: var(--radius-lg);
+    background: var(--color-accent-subtle);
+    color: var(--color-text-muted);
+    font-size: var(--text-2xs);
+    pointer-events: none;
   }
 
   /* Faint until you are on it: an invitation, not a control panel. */
