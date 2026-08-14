@@ -99,6 +99,13 @@
   --space-7: 3rem;
   --space-8: 4rem;
 
+  /* The bento lattice. `--bento-pitch` is cell + gutter, so a card `w` cells
+   * wide is exactly `w * pitch - gutter`. In rem, not px: the board then scales
+   * with the user's text size instead of turning into stamps beside large type,
+   * and zoom is a single multiplier on top. See doc/dev/ui-bento.md. */
+  --bento-pitch: 4rem;
+  --bento-gutter: var(--space-2);
+
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 10px;

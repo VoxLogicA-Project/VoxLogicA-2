@@ -5,6 +5,7 @@
  * callers. Everything exported here appears in the dev gallery, because the
  * gallery is generated from these same modules' `.gallery.js` siblings.
  */
+export { default as Bento } from "./Bento/Bento.svelte";
 export { default as Button } from "./Button/Button.svelte";
 export { default as Card } from "./Card/Card.svelte";
 export { default as ContextMenu } from "./ContextMenu/ContextMenu.svelte";
