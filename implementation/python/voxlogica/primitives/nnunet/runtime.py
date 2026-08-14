@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from voxlogica.primitives.nnunet.predictor_registry import load as load_predictor
+from voxlogica.primitives.nnunet.predictor_registry import lock_for as predictor_lock
 from voxlogica.primitives.nnunet.predictor_registry import reset_runtime_state as reset_predictor_registry
 from voxlogica.primitives.nnunet.predictor_registry import store as store_predictor
 from voxlogica.primitives.nnunet.cases import DEFAULT_TRAINER, PREDICTOR_KIND, build_model
@@ -321,7 +322,10 @@ def predict_image(predictor_handle: dict[str, Any], volumes: Any) -> Any:
         name="image",
     )
     array, properties = volumes_to_nnunet_array(modality_volumes)
-    segmentation = predictor.predict_single_npy_array(array, properties, None, None, False)
+    # Held across the whole inference: see predictor_registry._LOCKS for the
+    # crash this prevents. Preparing the input above needs no lock.
+    with predictor_lock(predictor_id):
+        segmentation = predictor.predict_single_npy_array(array, properties, None, None, False)
     return segmentation_to_sitk(segmentation, properties)
 
 

@@ -37,6 +37,7 @@ from voxlogica.engine.admission import LoopAdmission
 from voxlogica.engine.bandwidth import BandwidthMeter, measure_ceiling_bytes_per_s
 from voxlogica.engine.concurrency_probe import ConcurrencyProbe
 from voxlogica.engine.config import EngineConfig
+from voxlogica.engine import inflight
 from voxlogica.engine.executor import Executor
 from voxlogica.engine.expander import Expander
 from voxlogica.engine.calibration import load_cached_itk_threads
@@ -569,6 +570,12 @@ class ComputationEngine:
             "bandwidth": self._bandwidth.sample(self.max_concurrency),
             "census": self._resident_census(),
             "governor": self.governor.describe(),
+            # What each worker thread is INSIDE right now. faulthandler cannot
+            # dump other threads on a free-threaded interpreter ("<Cannot show
+            # all threads while the GIL is disabled>"), so after a native crash
+            # this column is the only record of what was running beside the
+            # thread that died. See engine/inflight.py.
+            "executing": inflight.render(),
         }
 
     def _resident_census(self) -> dict[str, int]:

@@ -29,6 +29,7 @@ import numpy as np
 
 from voxlogica.arrays import PolyArray
 from voxlogica.buffer_pool import acquire_numpy, buffer_states, recycle_unleased_states
+from voxlogica.engine.inflight import executing
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.engine.numba_fusion import resolve_out_dtype, shape_of
 from voxlogica.lazy.ir import NodeId
@@ -227,7 +228,9 @@ class Executor:
 
     def _compute(self, table: NodeTable, node_id: NodeId) -> Any:
         """Gather already-materialized inputs and invoke the kernel."""
-        return _wrap(self._compute_node(table.nodes[node_id], lambda dep_id: table.values[dep_id]))
+        node = table.nodes[node_id]
+        with executing(node_id, node.operator):
+            return _wrap(self._compute_node(node, lambda dep_id: table.values[dep_id]))
 
     def _compute_node(self, node, lookup: Callable[[NodeId], Any]) -> Any:
         """Gather one node's inputs via ``lookup`` and invoke its kernel.

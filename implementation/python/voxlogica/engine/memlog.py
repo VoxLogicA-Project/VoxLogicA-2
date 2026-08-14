@@ -75,7 +75,7 @@ class MemoryLogger:
                              "\tbudget_mb\thard_mb\trss_mb\tin_flight\tready\tparked"
                              "\tevicted_early\tevict_cand\tspill_pending"
                              "\tbw_gbs\tbw_util\tgov_gap_mb\tgov_pressure\tgov_sac_ms"
-                             "\tgov_trims\tresident_by_op\tcensus\n")
+                             "\tgov_trims\tresident_by_op\tcensus\texecuting\n")
         except OSError:
             self._file = None
             return
@@ -127,7 +127,12 @@ class MemoryLogger:
                 f"{by_op}\t"
                 # WHY none of it can leave: resident bytes by reclaim-blocking
                 # reason (see ComputationEngine._resident_census).
-                f"{census}\n")
+                f"{census}\t"
+                # What every worker thread is executing, as op@node#thread. On a
+                # free-threaded interpreter faulthandler can only dump the thread
+                # that faulted, so after a native crash this is the sole record
+                # of what the others were doing (see engine/inflight.py).
+                f"{s.get('executing', '-')}\n")
         except Exception:  # noqa: BLE001 — observ. must never break the run
             pass
 
