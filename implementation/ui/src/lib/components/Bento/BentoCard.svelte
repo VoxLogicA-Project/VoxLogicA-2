@@ -305,7 +305,6 @@
       onkeydown={onKeydown}
     >
       <span class="title">{card.title ?? card.id}</span>
-      <span class="size numeric">{at.w ?? size.w}×{at.h ?? size.h}</span>
     </header>
 
     <div class="body">
@@ -389,7 +388,6 @@
   header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: var(--space-3);
     padding: var(--space-2) var(--space-3) var(--space-1);
     cursor: grab;
@@ -410,19 +408,6 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  /* The size read-out is for arranging, so it appears while you arrange. */
-  .size {
-    font-size: var(--text-2xs);
-    color: var(--color-text-subtle);
-    opacity: 0;
-    transition: opacity var(--motion-fast) var(--easing-standard);
-  }
-
-  .card:hover .size,
-  .card.dragging .size {
-    opacity: 1;
   }
 
   .body {

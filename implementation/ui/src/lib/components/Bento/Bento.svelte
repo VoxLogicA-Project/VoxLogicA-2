@@ -140,15 +140,28 @@
     return () => observer.disconnect();
   });
 
+  /** Where a card actually is: a spot committed a moment ago counts, even
+   * though the layout has not come back from the server yet. Asking the props
+   * alone is how a second card was allowed to grow over the first one's new
+   * cells -- the answer was a round trip out of date. */
+  function rectOf(card) {
+    const size = sizeOf(card);
+    const spot = pending[card.id];
+    return {
+      x: spot?.x ?? card.x,
+      y: spot?.y ?? card.y,
+      w: spot?.w ?? size.w,
+      h: spot?.h ?? size.h,
+    };
+  }
+
   /** Cells [x, x+w) x [y, y+h) are inside the page and free of other cards. */
   function canPlace(id, x, y, w, h) {
     if (x < 0 || y < 0 || x + w > width || y + h > height) return false;
     return !visible.some((other) => {
       if (other.id === id) return false;
-      const size = sizeOf(other);
-      return (
-        x < other.x + size.w && other.x < x + w && y < other.y + size.h && other.y < y + h
-      );
+      const box = rectOf(other);
+      return x < box.x + box.w && box.x < x + w && y < box.y + box.h && box.y < y + h;
     });
   }
 
@@ -175,7 +188,7 @@
     const fixed = [];
     const homeless = [];
     for (const card of others) {
-      const box = { ...sizeOf(card), x: card.x, y: card.y };
+      const box = rectOf(card);
       (overlaps(box, rect) ? homeless : fixed).push({ card, box });
     }
     if (homeless.length === 0) return new Map();
@@ -310,9 +323,17 @@
     const size = sizeOf(card);
     const before = restored[card.id];
     if (before) {
+      // Only if the old spot is still empty. A card that was maximized, then
+      // dragged, then double-clicked would otherwise teleport back onto
+      // whatever has since moved in -- which is exactly how two cards ended up
+      // on the same cells.
       restored = { ...restored, [card.id]: undefined };
-      onarrange?.([{ id: card.id, ...before }]);
-      return;
+      if (canPlace(card.id, before.x, before.y, before.w, before.h)) {
+        pending = { ...pending, [card.id]: before };
+        pendingSince = Date.now();
+        onarrange?.([{ id: card.id, ...before }]);
+        return;
+      }
     }
     let rect = { x: card.x, y: card.y, w: size.w, h: size.h };
     let grew = true;
@@ -395,6 +416,8 @@
     pending = { ...pending, ...spots };
     pendingSince = Date.now();
     drag = null;
+    // Whatever this card used to be restored to, it is not that card now.
+    if (restored[card.id]) restored = { ...restored, [card.id]: undefined };
 
     const changed = Object.entries(spots)
       .map(([id, spot]) => {
