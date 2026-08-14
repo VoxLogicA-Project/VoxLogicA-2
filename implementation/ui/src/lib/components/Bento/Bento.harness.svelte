@@ -19,23 +19,33 @@
 
   const find = (id) => cards.find((card) => card.id === id);
 
-  function move(id, x, y) {
-    const card = find(id);
-    if (card) {
-      card.x = x;
-      card.y = y;
+  /** One gesture, one layout: the card that moved and everyone it displaced,
+   * applied together exactly as the app applies them. */
+  function arrange(placements) {
+    for (const spot of placements) {
+      const card = find(spot.id);
+      if (!card) continue;
+      if (spot.x !== undefined) card.x = spot.x;
+      if (spot.y !== undefined) card.y = spot.y;
+      if (spot.w !== undefined) {
+        card.w = spot.w;
+        // The app records this by writing w/h to the document; here the flag is
+        // the whole record.
+        card.auto = false;
+      }
+      if (spot.h !== undefined) card.h = spot.h;
     }
   }
 
-  function resize(id, w, h) {
-    const card = find(id);
-    if (card) {
-      card.w = w;
-      card.h = h;
-      // The app records this by writing w/h to the document; here the flag is
-      // the whole record.
-      card.auto = false;
-    }
+  function remove(id) {
+    cards = cards.filter((card) => card.id !== id);
+  }
+
+  let added = 0;
+
+  function add(kind, x, y, w, h) {
+    added += 1;
+    cards.push({ id: `${kind}${added}`, title: kind, kind, x, y, w, h, page });
   }
 </script>
 
@@ -43,8 +53,9 @@
   {...rest}
   {cards}
   {page}
-  onmove={move}
-  onresize={resize}
+  onarrange={arrange}
+  onadd={add}
+  onremove={remove}
   onpage={(next) => (page = next)}
 >
   {#snippet children(card)}

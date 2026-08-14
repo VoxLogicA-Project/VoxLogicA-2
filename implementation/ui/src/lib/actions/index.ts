@@ -14,6 +14,9 @@ import { invoke } from "./dispatch.svelte.ts";
 export const board = {
   moveCard: (id: string, x: number, y: number) => invoke("board.moveCard", { id, x, y }),
   resizeCard: (id: string, w: number, h: number) => invoke("board.resizeCard", { id, w, h }),
+  /** One drag that displaced others is one change, not a burst of moves. */
+  arrange: (cards: Array<{ id: string; x?: number; y?: number; w?: number; h?: number }>) =>
+    invoke("board.arrange", { cards }),
   addCard: (id: string, params: Record<string, unknown> = {}) =>
     invoke("board.addCard", { id, ...params }),
   removeCard: (id: string) => invoke("board.removeCard", { id }),

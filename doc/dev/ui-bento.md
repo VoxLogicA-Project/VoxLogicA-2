@@ -134,32 +134,63 @@ size.
 
 | Gesture | Effect |
 |---|---|
-| Drag the header | Move. The card follows the lattice live. |
+| Drag the header | Move. The card snaps cell to cell. |
 | Drag the corner grip | Resize, clamped by the card's constraints. |
+| Right-click a free cell | New card there, of the kinds that fit. |
+| Right-click a card | That card's own menu (remove). |
 | Focus the header, arrows | Move one cell. |
 | Focus the header, shift+arrows | Resize one cell. |
+| Focus the header, Delete | Remove the card. |
 
-Rounded, not floored: the card changes cell when the pointer passes the halfway
-mark, which is where the eye already thinks it moved. Nothing is committed until
-the pointer is released, and the header is focusable because a board only a
-pointer can arrange is a board some people cannot arrange.
+**The card snaps; it does not glide.** It moves a whole cell when the pointer
+passes the halfway mark, rounded rather than floored, so the card is always
+standing exactly where releasing it would leave it. A card that follows the
+pointer in pixels and jumps on release spends the whole gesture showing you a
+position that is not a position.
 
-**Collisions are refused, not resolved.** A drop onto occupied or out-of-bounds
-cells snaps back, and the card is outlined in the danger colour while the pointer
-holds it there. Cards that shove each other around produce a layout nobody can
-predict, and predictability is the reason for having a lattice at all.
-Auto-packing, if it is ever wanted, belongs behind an explicit action ("tidy"),
-where the user asked for it.
+Cards are placed by `transform`, not by grid lines. Two reasons, both visible: a
+transform does not re-lay-out the board on every pointer move — doing that made
+dragging flicker — and a transform is the only thing here that can be
+transitioned, which is what lets a displaced card *slide*. The card under the
+pointer has transitions off; easing a snap only blurs where it landed.
+
+### Making room
+
+Cards that the dragged card is on top of **step aside**, and step back the moment
+it moves away. The arrangement is a pure function of (layout, dragged rectangle),
+recomputed each frame from the untouched layout — so there is no "put it back"
+path to get wrong and no drift after a long drag. A displaced card is shoved in
+the direction of travel first and to its nearest free cell second; the shove is
+what makes it read as sliding tiles rather than as cards teleporting to wherever
+there happened to be room. If somebody cannot be housed at all, the whole
+arrangement is refused and the dragged card is outlined in the danger colour.
+
+**A drop keeps the arrangement.** Everyone who stepped aside stays where they
+stepped: cards that avoid a drag and then snap back the instant it ends are
+cards that overlap. The whole thing lands as one `board.arrange` action, not a
+burst of moves — sent separately, the document really does hold an overlapping
+layout between the first move and the last, and a save, a reload or an agent
+reading the workspace at that moment sees it broken.
+
+Out-of-bounds is still refused outright, and a card is never pushed onto another
+page.
 
 ---
 
 ## 5. Pages
 
-A page is a fixed rectangle of `cols × rows` cells. The board extends past what
-a viewport can hold by paging, not by growing without limit: a bounded page lets
-a position keep its meaning ("top-left of page 2") instead of being a coordinate
-somewhere in an unbounded plane. The pager appears only when a second page has
-cards on it.
+A page is a bounded rectangle of cells that **fills the window**. The document's
+`cols`/`rows` are a *minimum*: the board adds whatever further whole cells fit on
+this screen, so the lattice is the viewport (less the pager's line), a card can
+be dragged and grown to the edge of it, and a layout authored on a small screen
+still opens intact on a large one — every cell it used is still there, with more
+beside it. Whole cells only: half a cell is somewhere a card could be dropped and
+not fit.
+
+The board extends past what a viewport can hold by paging, not by growing without
+limit: a bounded page lets a position keep its meaning ("top-left of page 2")
+instead of being a coordinate somewhere in an unbounded plane. The pager appears
+only when a second page has cards on it.
 
 ---
 
@@ -169,8 +200,12 @@ cards on it.
   zoom or a smaller page, not a scrollbar that hides half the lattice.
 - It does not know what is in a card. Content is a snippet the caller renders;
   the board supplies geometry and gestures.
-- It does not persist anything. `onchange` hands the layout out; the document
-  store owns it ([ui-workspace.md](ui-workspace.md)).
+- It does not persist anything, and it does not apply its own gestures.
+  `onarrange`, `onadd` and `onremove` hand out what the user did; the document
+  store decides what happens ([ui-workspace.md](ui-workspace.md)) and the new
+  layout arrives back through `cards`. A board that also kept state would be a
+  second copy of the layout, and two copies is one bug waiting for the day they
+  disagree.
 
 ---
 
@@ -178,9 +213,11 @@ cards on it.
 
 - **Moving a card between pages.** Dragging to the edge is the obvious gesture
   and is not implemented.
-- **Creating and deleting cards.** The board has no affordance for either yet;
-  they are actions on the document, not on the board.
-- **Tidy/pack.** Deliberately absent (§4). If it lands it is an action.
+- **Tidy/pack.** Still absent, and still an action if it lands: making room for a
+  drag is one thing, rearranging a board nobody asked to rearrange is another.
+- **A card creating itself where there is no room.** The menu says "no room"
+  rather than finding a spot elsewhere; offering to place a card somewhere the
+  user is not pointing is a guess.
 - **Zoom UI.** The `zoom` prop exists and nothing sets it.
 - **Overflow inside a card** is a plain scroll container today. Whether a card
   that cannot fit its content should say so is a content question, not a board

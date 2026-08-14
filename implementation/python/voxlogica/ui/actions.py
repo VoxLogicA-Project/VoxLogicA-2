@@ -20,7 +20,13 @@ from typing import Any, Callable
 
 #: Parameter types are deliberately few: they have to survive JSON, a TypeScript
 #: signature and an MCP tool schema without a type system in the middle.
-JSON_TYPES = {"string": "string", "int": "integer", "number": "number", "bool": "boolean"}
+JSON_TYPES = {
+    "string": "string",
+    "int": "integer",
+    "number": "number",
+    "bool": "boolean",
+    "placements": "array",
+}
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,28 @@ def _move(workspace, params):
 
 def _resize(workspace, params):
     return workspace.document.place(params["id"], w=params["w"], h=params["h"])
+
+
+def _arrange(workspace, params):
+    """Place several cards at once, or none of them.
+
+    Dragging a card that pushes others out of the way is one intention, and it
+    has to reach the document as one change. Sent as separate moves it is not
+    just chattier: between the first and the last the board really does hold an
+    overlapping layout, and anything watching -- another browser, an agent,
+    whoever saves the file next -- can see it. Refusing the whole batch when one
+    id is unknown is the same argument from the other side.
+    """
+    placements = params.get("cards") or []
+    ids = [str(spot["id"]) for spot in placements]
+    if any(workspace.document.find(card_id) is None for card_id in ids):
+        return False
+    for spot in placements:
+        workspace.document.place(
+            str(spot["id"]),
+            **{key: int(spot[key]) for key in ("x", "y", "w", "h") if key in spot},
+        )
+    return True
 
 
 def _add(workspace, params):
@@ -120,6 +148,9 @@ ACTIONS: dict[str, Action] = {
                 ("id", "x", "y"), "Move a card to a cell position.", _move),
         _action("board.resizeCard", {"id": "string", "w": "int", "h": "int"},
                 ("id", "w", "h"), "Resize a card, in cells.", _resize),
+        _action("board.arrange", {"cards": "placements"}, ("cards",),
+                "Place several cards at once: [{id, x, y, w, h}]. All or none.",
+                _arrange),
         _action("board.addCard",
                 {"id": "string", "kind": "string", "x": "int", "y": "int", "w": "int",
                  "h": "int", "page": "int", "node": "string", "title": "string"},

@@ -15,6 +15,16 @@
   import { app } from "./lib/state.svelte.js";
   import { workspace } from "./lib/store/workspace.svelte.ts";
   import { board, view } from "./lib/actions/index.ts";
+
+  /** A new card needs a name before it has anything else. Short, readable in the
+   * .imgql file it will be written to, and unique among what is already there. */
+  function nameFor(kind) {
+    const taken = new Set(workspace.cards.map((card) => card.id));
+    for (let n = 1; ; n += 1) {
+      const id = `${kind}${n}`;
+      if (!taken.has(id)) return id;
+    }
+  }
 </script>
 
 <main>
@@ -30,9 +40,11 @@
       page={workspace.view.page}
       zoom={workspace.view.zoom}
       label="Workspace"
-      onmove={(id, x, y) => board.moveCard(id, x, y)}
-      onresize={(id, w, h) => board.resizeCard(id, w, h)}
+      onarrange={(placements) => board.arrange(placements)}
       onpage={(page) => view.goToPage(page)}
+      onadd={(kind, x, y, w, h) =>
+        board.addCard(nameFor(kind), { kind, x, y, w, h, page: workspace.view.page })}
+      onremove={(id) => board.removeCard(id)}
     >
       {#snippet children(card)}
         {#if card.kind === "code"}
@@ -53,8 +65,12 @@
   main {
     display: flex;
     flex-direction: column;
-    gap: var(--space-5);
-    padding: var(--space-5);
+    gap: var(--space-3);
+    /* The board is the application: it gets the window, less its own margin and
+     * whatever the pager needs. `dvh` and not `vh` so a mobile browser's
+     * disappearing toolbar does not leave a strip of board underneath it. */
+    height: 100dvh;
+    padding: var(--space-3);
   }
 
   .source {

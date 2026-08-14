@@ -46,6 +46,9 @@
 
   function onContextMenu(event) {
     event.preventDefault();
+    // The innermost menu wins. Without this, right-clicking a card inside a
+    // board would open the card's menu and then the board's on top of it.
+    event.stopPropagation();
     openAt(event.clientX, event.clientY);
   }
 

@@ -102,3 +102,35 @@ def test_saving_writes_exactly_what_export_returns(workspace, tmp_path):
     target = tmp_path / "out.imgql"
     workspace.apply("workspace.save", {"path": str(target)})
     assert target.read_text() == workspace.apply("workspace.export", {})
+
+
+def test_one_drag_reaches_the_document_as_one_change(workspace):
+    """A card that displaces others is a single arrangement, not a burst of moves.
+
+    Sent separately there is a moment when the document really does hold two
+    cards on the same cells, and a save, a reload or an agent reading the
+    workspace at that moment sees a broken layout.
+    """
+    assert workspace.apply("board.arrange", {"cards": [
+        {"id": "a", "x": 4, "y": 0},
+        {"id": "b", "x": 0, "y": 0},
+    ]}) is True
+    placed = {card["id"]: (card["x"], card["y"]) for card in workspace.snapshot()["cards"]}
+    assert placed == {"a": (4, 0), "b": (0, 0)}
+
+
+def test_an_arrangement_naming_an_unknown_card_moves_nothing(workspace):
+    before = {card["id"]: (card["x"], card["y"]) for card in workspace.snapshot()["cards"]}
+    assert workspace.apply("board.arrange", {"cards": [
+        {"id": "a", "x": 7, "y": 7},
+        {"id": "ghost", "x": 0, "y": 0},
+    ]}) is False
+    after = {card["id"]: (card["x"], card["y"]) for card in workspace.snapshot()["cards"]}
+    assert after == before
+
+
+def test_an_arrangement_can_move_and_resize_in_the_same_breath(workspace):
+    assert workspace.apply("board.arrange", {"cards": [
+        {"id": "a", "x": 1, "y": 1, "w": 2, "h": 2},
+    ]}) is True
+    assert "//@card id=a kind=code x=1 y=1 w=2 h=2" in workspace.document.to_imgql()

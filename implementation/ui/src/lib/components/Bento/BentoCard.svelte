@@ -3,8 +3,15 @@
    * One card on the board: placed by cell, moved by its header, resized by its
    * corner, and sized to its own content when nothing says otherwise.
    *
-   * Internal to `Bento` -- it needs the board's pitch, bounds and occupancy test
-   * to do anything correct, so it is not exported from the library on its own.
+   * Internal to `Bento` -- it needs the board's pitch and the arrangement the
+   * board computes, so it is not exported from the library on its own.
+   *
+   * Positioned by transform, not by grid lines. Two reasons, both visible: a
+   * transform does not relayout the board on every pointer move, which is what
+   * made dragging flicker, and a transform is the only thing here that can be
+   * transitioned, which is what makes a displaced card *slide* out of the way
+   * instead of teleporting. The card under the pointer has transitions off: it
+   * snaps cell to cell, and easing a snap only blurs where it landed.
    *
    * Auto-sizing measures the content at `max-content` for a single frame and
    * rounds up to whole cells, which is why it can shrink as well as grow: a
@@ -12,36 +19,57 @@
    * held. The measurement is bounded by the card's own max constraints, so a
    * long line wraps instead of asking for a card wider than the page.
    *
-   * Dragging is live and reverts: the card follows the pointer on the lattice,
-   * and a drop onto occupied or out-of-bounds cells snaps back to where it came
-   * from. Nothing is committed to the model until the pointer is released.
+   * The card reports gestures and renders what it is told. It never applies a
+   * move to itself: the board decides what the whole arrangement becomes, and
+   * the owner of the layout decides whether that is what happens.
    */
+  import ContextMenu from "../ContextMenu/ContextMenu.svelte";
+
   let {
     card,
     /** The card's effective size in cells: given, or last measured. */
     size,
+    /** Where the board says this card sits right now, in cells. */
+    at,
     pitch,
     gutter,
     cols,
     rows,
-    canPlace,
-    onmove,
-    onresize,
+    /** True when the board could not arrange the drag this card is leading. */
+    invalid = false,
+    /** `(rect | null)` while a gesture runs; the board arranges around it. */
+    onpreview,
+    /** `(rect)` when the gesture is released and should be kept. */
+    oncommit,
     onmeasure,
+    onremove,
     children,
   } = $props();
+
+  /** The card's own menu. Right-clicking a card is about *this* card, which is
+   * why it stops there and never reaches the board's "new card here". */
+  const menu = $derived(
+    onremove ? [{ label: "Remove card", danger: true, onselect: onremove }] : [],
+  );
 
   let root = $state(null);
   let headerEl = $state(null);
   let content = $state(null);
-  /** Live position while dragging; `null` when the model is the truth. */
-  let preview = $state(null);
+  /** True while a pointer owns this card. The card does not follow the pointer
+   * in pixels: it snaps, cell by cell, as the pointer crosses each half-way
+   * mark. A card that glides freely and then jumps on release shows you a
+   * position that was never real; a card that snaps is always standing exactly
+   * where dropping it would leave it. */
+  let dragging = $state(false);
   let gesture = null;
 
-  const at = $derived(preview ?? { x: card.x, y: card.y, w: size.w, h: size.h });
-  const invalid = $derived(
-    preview !== null && !canPlace(card.id, preview.x, preview.y, preview.w, preview.h),
-  );
+  /** The drawn rectangle: whatever the board says, in pixels. */
+  const px = $derived({
+    x: at.x * pitch,
+    y: at.y * pitch,
+    w: (at.w ?? size.w) * pitch - gutter,
+    h: (at.h ?? size.h) * pitch - gutter,
+  });
 
   function clamp(w, h) {
     let cw = Math.min(Math.max(w, card.minW ?? 1), card.maxW ?? cols, cols);
@@ -57,12 +85,10 @@
 
   function autoSize() {
     if (!card.auto || !content || !pitch) return;
-    // One synchronous layout read against `max-content`, out of flow so the
-    // grid track cannot constrain the answer we are trying to obtain from it.
     // Written straight to the node, not through a reactive class: Svelte flushes
     // the DOM on a microtask, so a `measuring = true` on the line above would
     // still be pending when the rect is read, and what came back would be the
-    // size of the track we are trying to compute. This is a measurement, not
+    // size of the box we are trying to compute. This is a measurement, not
     // rendering; it is put back before anything can paint.
     const style = content.getAttribute("style");
     Object.assign(content.style, {
@@ -116,48 +142,58 @@
       pointerId: event.pointerId,
       x: event.clientX,
       y: event.clientY,
-      from: { x: card.x, y: card.y, w: size.w, h: size.h },
+      from: { x: at.x, y: at.y, w: size.w, h: size.h },
+      rect: { x: at.x, y: at.y, w: size.w, h: size.h },
     };
-    preview = { ...gesture.from };
+    dragging = true;
+    onpreview?.(gesture.rect);
   }
 
   function move(event) {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
+    const dx = event.clientX - gesture.x;
+    const dy = event.clientY - gesture.y;
+    const from = gesture.from;
     // Rounded, not floored: the card changes cell when the pointer passes the
     // half-way mark, which is where the eye already thinks it moved.
-    const dx = Math.round((event.clientX - gesture.x) / pitch);
-    const dy = Math.round((event.clientY - gesture.y) / pitch);
-    const from = gesture.from;
     if (gesture.mode === "move") {
-      preview = {
+      gesture.rect = {
         ...from,
-        x: Math.min(Math.max(from.x + dx, 0), cols - from.w),
-        y: Math.min(Math.max(from.y + dy, 0), rows - from.h),
+        x: Math.min(Math.max(from.x + Math.round(dx / pitch), 0), cols - from.w),
+        y: Math.min(Math.max(from.y + Math.round(dy / pitch), 0), rows - from.h),
       };
     } else {
-      const [w, h] = clamp(from.w + dx, from.h + dy);
-      preview = { ...from, w: Math.min(w, cols - from.x), h: Math.min(h, rows - from.y) };
+      const [w, h] = clamp(from.w + Math.round(dx / pitch), from.h + Math.round(dy / pitch));
+      gesture.rect = { ...from, w: Math.min(w, cols - from.x), h: Math.min(h, rows - from.y) };
     }
+    onpreview?.(gesture.rect);
   }
 
   function end(event) {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
-    const next = preview;
+    const { rect, from } = gesture;
     gesture = null;
-    preview = null;
-    if (!next) return;
-    if (!canPlace(card.id, next.x, next.y, next.w, next.h)) return; // snaps back
-    // Reported, not applied: the card draws a layout, it does not own one. The
-    // change comes back as a prop once whoever owns it has accepted it.
-    if (next.x !== card.x || next.y !== card.y) onmove?.(next.x, next.y);
-    // Resizing by hand is also what ends auto-sizing, and the owner records
-    // that by the card having a w/h at all.
-    if (next.w !== size.w || next.h !== size.h) onresize?.(next.w, next.h);
+    dragging = false;
+    // Committed before the preview is dropped, not after: the arrangement the
+    // board is holding -- who moved aside, and to where -- exists only while the
+    // gesture does. Clearing first threw it away and left the dragged card on
+    // top of cards that had politely stepped out of its way.
+    if (rect.x !== from.x || rect.y !== from.y || rect.w !== from.w || rect.h !== from.h) {
+      oncommit?.(rect);
+    }
+    onpreview?.(null);
   }
 
-  /** The same two gestures from the keyboard, which is the only way some people
-   * have of arranging anything at all. */
+  /** The same gestures from the keyboard, which is the only way some people have
+   * of arranging anything at all. */
   function onKeydown(event) {
+    if (onremove && (event.key === "Delete" || (event.key === "Backspace" && event.altKey))) {
+      // Delete, or Alt+Backspace for keyboards without one. Plain Backspace is
+      // not enough: it is one stray keystroke away from losing a card.
+      event.preventDefault();
+      onremove();
+      return;
+    }
     const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[
       event.key
     ];
@@ -166,64 +202,71 @@
     const [dx, dy] = step;
     if (event.shiftKey) {
       const [w, h] = clamp(size.w + dx, size.h + dy);
-      if (canPlace(card.id, card.x, card.y, w, h)) onresize?.(w, h);
+      oncommit?.({ x: at.x, y: at.y, w, h });
       return;
     }
-    if (canPlace(card.id, card.x + dx, card.y + dy, size.w, size.h)) {
-      onmove?.(card.x + dx, card.y + dy);
-    }
+    oncommit?.({
+      x: Math.min(Math.max(at.x + dx, 0), cols - size.w),
+      y: Math.min(Math.max(at.y + dy, 0), rows - size.h),
+      w: size.w,
+      h: size.h,
+    });
   }
 </script>
 
-<article
-  bind:this={root}
-  data-card-id={card.id}
-  class="card"
-  class:dragging={preview !== null}
-  class:invalid
-  style="grid-column: {at.x + 1} / span {at.w}; grid-row: {at.y + 1} / span {at.h};"
-  aria-label={card.title ?? card.id}
->
-  <!-- The header is the drag handle, and it is focusable: a card you can only
-       move with a pointer is a card some people cannot move. -->
-  <header
-    bind:this={headerEl}
-    role="button"
-    tabindex="0"
-    aria-label="{card.title ?? card.id} — move with arrows, resize with shift+arrows"
-    onpointerdown={(event) => begin(event, "move")}
-    onpointermove={move}
-    onpointerup={end}
-    onpointercancel={end}
-    onkeydown={onKeydown}
+<ContextMenu label="{card.title ?? card.id} actions" items={menu}>
+  <article
+    bind:this={root}
+    data-card-id={card.id}
+    class="card"
+    class:dragging
+    class:invalid
+    style="transform: translate3d({px.x}px, {px.y}px, 0); width: {px.w}px; height: {px.h}px;"
+    aria-label={card.title ?? card.id}
   >
-    <span class="title">{card.title ?? card.id}</span>
-    <span class="size numeric">{at.w}×{at.h}</span>
-  </header>
+    <!-- The header is the drag handle, and it is focusable: a card you can only
+         move with a pointer is a card some people cannot move. -->
+    <header
+      bind:this={headerEl}
+      role="button"
+      tabindex="0"
+      aria-label="{card.title ?? card.id} — move with arrows, resize with shift+arrows"
+      onpointerdown={(event) => begin(event, "move")}
+      onpointermove={move}
+      onpointerup={end}
+      onpointercancel={end}
+      onkeydown={onKeydown}
+    >
+      <span class="title">{card.title ?? card.id}</span>
+      <span class="size numeric">{at.w ?? size.w}×{at.h ?? size.h}</span>
+    </header>
 
-  <div class="body">
-    <div bind:this={content} class="content">
-      {@render children?.()}
+    <div class="body">
+      <div bind:this={content} class="content">
+        {@render children?.()}
+      </div>
     </div>
-  </div>
 
-  <button
-    type="button"
-    class="grip"
-    aria-label="Resize {card.title ?? card.id}"
-    onpointerdown={(event) => begin(event, "resize")}
-    onpointermove={move}
-    onpointerup={end}
-    onpointercancel={end}
-    onkeydown={onKeydown}
-  ></button>
-</article>
+    <button
+      type="button"
+      class="grip"
+      aria-label="Resize {card.title ?? card.id}"
+      onpointerdown={(event) => begin(event, "resize")}
+      onpointermove={move}
+      onpointerup={end}
+      onpointercancel={end}
+      onkeydown={onKeydown}
+    ></button>
+  </article>
+</ContextMenu>
 
 <style>
   .card {
+    position: absolute;
+    top: 0;
+    left: 0;
     display: flex;
     flex-direction: column;
-    position: relative;
     min-width: 0;
     min-height: 0;
     background: var(--color-surface);
@@ -231,9 +274,17 @@
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-sm);
     overflow: hidden;
+    /* Displaced cards slide; the one under the finger does not (see below). */
+    transition:
+      transform var(--motion-fast) var(--easing-standard),
+      width var(--motion-fast) var(--easing-standard),
+      height var(--motion-fast) var(--easing-standard);
   }
 
   .card.dragging {
+    /* No easing on the card being dragged: it snaps to the cell the pointer is
+     * over, and interpolating that reads as lag. */
+    transition: none;
     /* Lifted while it is in the air, and only then: a shadow that is always on
      * says everything is floating, which says nothing. */
     box-shadow: var(--shadow-overlay);
@@ -242,6 +293,12 @@
 
   .card.invalid {
     border-color: var(--color-danger);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .card {
+      transition: none;
+    }
   }
 
   header {
@@ -296,22 +353,20 @@
     touch-action: none;
     /* Two short strokes rather than an icon: at 16px an icon is noise, and the
      * corner is discoverable by being the corner. */
-    background:
-      linear-gradient(
-        135deg,
-        transparent 0 45%,
-        var(--color-border-strong) 45% 55%,
-        transparent 55%
-      );
+    background: linear-gradient(
+      135deg,
+      transparent 0 45%,
+      var(--color-border-strong) 45% 55%,
+      transparent 55%
+    );
   }
 
   .grip:hover {
-    background:
-      linear-gradient(
-        135deg,
-        transparent 0 45%,
-        var(--color-text-muted) 45% 55%,
-        transparent 55%
-      );
+    background: linear-gradient(
+      135deg,
+      transparent 0 45%,
+      var(--color-text-muted) 45% 55%,
+      transparent 55%
+    );
   }
 </style>
