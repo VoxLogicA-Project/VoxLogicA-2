@@ -56,6 +56,36 @@ _KEY_ORDER = (
 
 _GEOMETRY = ("x", "y", "w", "h", "page")
 
+#: A note's text is prose, and prose is not a program. It is stored commented so
+#: that the invariant this whole format exists for -- *the document is always a
+#: valid .imgql program* -- survives somebody writing a sentence in a card. The
+#: UI never sees the prefix: it is added on the way in and taken off on the way
+#: out, in one place, here.
+_NOTE_PREFIX = "// "
+
+
+def _uncomment(text: str) -> str:
+    lines = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("//"):
+            indent = line[: len(line) - len(stripped)]
+            body = stripped[2:]
+            lines.append(indent + (body[1:] if body.startswith(" ") else body))
+        else:
+            lines.append(line)
+    return "".join(lines)
+
+
+def _comment(text: str) -> str:
+    out = []
+    for line in text.splitlines(keepends=True):
+        if line.strip() == "" or line.lstrip().startswith("//"):
+            out.append(line)
+        else:
+            out.append(_NOTE_PREFIX + line)
+    return "".join(out)
+
 
 def _quote(value: str) -> str:
     """Quote only when the value could not be read back as one token."""
@@ -186,10 +216,12 @@ class Document:
             # exactly what the board calls `auto`.
             card["auto"] = attrs.get("auto", "true" if "w" not in attrs else "false") == "true"
             # Whatever is under the directive belongs to the card, whatever the
-            # card is: a note's text lives there exactly as a program's does, and
-            # only exposing it for code cards would make a note's own content
-            # invisible to the UI that has to render it.
-            card["source"] = segment.body
+            # card is. A note's prose is stored commented so the file still runs,
+            # and is handed to the UI without the prefix -- nobody types `//` to
+            # write a sentence.
+            card["source"] = (
+                _uncomment(segment.body) if card["kind"] == "note" else segment.body
+            )
             cards.append(card)
         return cards
 
@@ -276,7 +308,7 @@ class Document:
         return True
 
     def set_source(self, card_id: str, text: str) -> bool:
-        """Replace a code card's body. Only that card's text moves."""
+        """Replace a card's body. Only that card's text moves."""
         segment = self.find(card_id)
         if segment is None:
             if not self.annotated and card_id == "program":
@@ -284,7 +316,8 @@ class Document:
                 segment = self.find(card_id)
             if segment is None:
                 return False
-        segment.body = text
+        kind = segment.directive.attrs.get("kind", "code") if segment.directive else "code"
+        segment.body = _comment(text) if kind == "note" else text
         self.dirty = True
         return True
 

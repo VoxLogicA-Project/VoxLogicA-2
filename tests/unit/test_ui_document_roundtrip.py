@@ -111,3 +111,36 @@ def test_editing_one_card_moves_only_that_card_s_text():
     assert "let mask" not in out
     assert "//@card id=todo kind=note x=0 y=4 w=5 h=2" in out
     assert "// sweep the threshold before trusting this" in out
+
+
+NOTES = """\
+//@board cols=6 rows=4
+//@card id=n kind=note x=0 y=0 w=3 h=2
+// prose, stored as a comment so the file still runs
+//@card id=c kind=code x=3 y=0 w=3 h=2
+let a = 1
+"""
+
+
+def test_a_note_reaches_the_ui_without_the_comment_prefix():
+    cards = {card["id"]: card for card in doc.parse(NOTES).cards}
+    assert cards["n"]["source"] == "prose, stored as a comment so the file still runs\n"
+    # Code is handed over exactly as written; only prose is un-commented.
+    assert cards["c"]["source"] == "let a = 1\n"
+
+
+def test_editing_a_note_keeps_the_document_a_runnable_program():
+    document = doc.parse(NOTES)
+    document.set_source("n", "a sentence\nand another\n")
+    out = document.to_imgql()
+    assert "// a sentence\n// and another\n" in out
+    # Nothing outside a comment except the program itself.
+    code = [line for line in out.splitlines() if line and not line.lstrip().startswith("//")]
+    assert code == ["let a = 1"]
+
+
+def test_a_note_survives_the_round_trip_through_the_ui():
+    document = doc.parse(NOTES)
+    text = next(card for card in document.cards if card["id"] == "n")["source"]
+    document.set_source("n", text)
+    assert doc.parse(document.to_imgql()).cards[0]["source"] == text
