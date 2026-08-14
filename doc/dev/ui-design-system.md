@@ -90,6 +90,13 @@ component, invisible to both.
 Four components carry the interface: `Button`, `Toggle`, `ContextMenu`, `Card`.
 A fifth has to earn its place by removing something.
 
+`ContextMenu` covers both a pointed-at region (`children` + right-click) and a
+menu button (a `trigger` snippet, handed the attributes that make your own
+`Button` open it). That is deliberately *not* two components: what a menu is — a
+list of actions with a keyboard model and a panel that stays on screen — does not
+change with what opened it, and a separate `Menu` would mean maintaining that
+model twice and watching the two drift.
+
 That is a design position, not laziness. Every additional way to express
 "clickable" is another thing for the interface to be inconsistent about, and
 every component that exists must be maintained, themed, made accessible and kept
@@ -146,7 +153,15 @@ one: a broken gallery entry must fail loudly in dev, not render a blank panel.
 
 ## 5. The dev design panel
 
-Every section is a place, so every section has a URL:
+**The way in is a menu.** Bottom-right of any dev run there is a `Design ▾`
+button; it opens a menu with one item per section, so every section is one click
+away and none is buried behind a front page. The menu is a `ContextMenu` and the
+button is a `Button` — the dev affordance is built from the library it documents,
+because a bespoke widget here would be the first component outside the system.
+Once the panel is open its left-hand nav reaches every section, so nothing in the
+design system is ever more than one step from anything else.
+
+Every section is also a place, so every section has a URL:
 
 | Section | URL |
 |---|---|
@@ -156,8 +171,7 @@ Every section is a place, so every section has a URL:
 | Components (the library) | `…/#design/components` |
 
 `#design` alone opens the last section you looked at. `⌘.` / `Ctrl+.` toggles the
-panel, `Escape` closes it, and the "Design" link sits bottom-right of any dev
-run. A dev UI also prints the link on startup:
+panel and `Escape` closes it. A dev UI also prints the link on startup:
 
 ```
 [voxlogica] UI at http://127.0.0.1:10001/

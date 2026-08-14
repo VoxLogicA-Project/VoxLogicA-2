@@ -8,8 +8,16 @@
    * Shift+F10 opens it from the keyboard, a click anywhere else dismisses it,
    * focus returns to where it came from, and the panel is clamped into the
    * viewport instead of hanging off the edge.
+   *
+   * Two ways in, one menu. Pass `children` and right-clicking that region opens
+   * it; pass a `trigger` snippet and it is handed the attributes that turn your
+   * own control into a menu button, opened by a plain click. Both are the same
+   * component on purpose: what a menu *is* -- a
+   * list of actions with a keyboard model and a panel that stays on screen --
+   * does not change with what opened it, and splitting it in two would mean
+   * maintaining that model twice and having it diverge.
    */
-  let { items = [], label = "Actions", children } = $props();
+  let { items = [], label = "Actions", trigger = undefined, children } = $props();
 
   let open = $state(false);
   let position = $state({ x: 0, y: 0 });
@@ -47,6 +55,18 @@
   function onContextMenu(event) {
     event.preventDefault();
     openAt(event.clientX, event.clientY);
+  }
+
+  function onTriggerClick(event) {
+    if (open) {
+      close();
+      return;
+    }
+    // Anchored under the button's left edge, the way a menu button behaves
+    // everywhere. If there is no room below, the clamp effect lifts the panel
+    // over the button rather than letting it hang off the viewport.
+    const box = event.currentTarget.getBoundingClientRect();
+    openAt(box.left, box.bottom + 4);
   }
 
   function onAnchorKeydown(event) {
@@ -136,6 +156,16 @@
   onresize={() => close({ restoreFocus: false })}
   onblur={() => close({ restoreFocus: false })}
 />
+
+<!-- The trigger is rendered by the caller and handed the attributes that make it
+     a menu button, rather than being wrapped in a button of our own: the caller
+     almost always wants a Button there, and a <button> inside a <button> is
+     invalid markup that browsers repair by dropping one of them. -->
+{@render trigger?.({
+  onclick: onTriggerClick,
+  "aria-haspopup": "menu",
+  "aria-expanded": open,
+})}
 
 <!-- The wrapper is a passive region: it owns no behaviour of its own beyond
      "right-clicking in here opens my menu", which is exactly a context menu. -->

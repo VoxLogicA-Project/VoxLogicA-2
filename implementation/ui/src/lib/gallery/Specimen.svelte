@@ -6,6 +6,8 @@
    * the app imports, mounted with the props from `entry.variants`, so a
    * specimen that looks wrong *is* a component that is wrong.
    */
+  import { Button } from "../components/index.js";
+
   let { entry } = $props();
 
   const Component = $derived(entry.component);
@@ -28,7 +30,18 @@
       <div class="variant">
         <span class="variant-label">{variant.label}</span>
         <div class="stage">
-          <Component {...variant.props}>
+          <!-- `trigger` is a snippet prop, so it cannot come from a plain
+               object in the entry; the entry asks for one by label and the
+               specimen renders the same Button a caller would. -->
+          {#snippet triggerButton(attrs)}
+            <Button {...attrs} size="sm">{variant.triggerLabel}</Button>
+          {/snippet}
+
+          <Component
+            {...(variant.triggerLabel
+              ? { ...variant.props, trigger: triggerButton }
+              : variant.props)}
+          >
             {#if variant.stage === "region"}
               <!-- The dashed box is rendered *inside* the component, not around
                    it: a component that wraps a region (ContextMenu) must receive

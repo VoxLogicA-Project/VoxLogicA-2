@@ -10,6 +10,7 @@
    * Never present in a production bundle: `main.js` imports this module only
    * behind `if (__DEV__)`, which esbuild resolves to `false` and drops.
    */
+  import { Button, ContextMenu } from "../components/index.js";
   import Components from "./sections/Components.svelte";
   import Moodboard from "./sections/Moodboard.svelte";
   import Palette from "./sections/Palette.svelte";
@@ -75,9 +76,10 @@
     return `${location.pathname}${location.search}#design/${id}`;
   }
 
-  function show() {
+  function show(id = active) {
+    remember(id);
     // Pushed, not replaced: Back closes the panel, which is what Back means.
-    location.hash = `#design/${active}`;
+    location.hash = `#design/${id}`;
   }
 
   function select(id) {
@@ -93,6 +95,15 @@
     history.replaceState(null, "", `${location.pathname}${location.search}`);
     open = false;
   }
+
+  /** One entry per section: the menu goes where you meant, not to a front page. */
+  const menuItems = $derived([
+    ...SECTIONS.map((section) => ({
+      label: section.title,
+      hint: `#design/${section.id}`,
+      onselect: () => show(section.id),
+    })),
+  ]);
 
   function onKeydown(event) {
     if (event.key === "Escape" && open) {
@@ -112,9 +123,16 @@
 <svelte:window onkeydown={onKeydown} onhashchange={applyRoute} />
 
 {#if !open}
-  <!-- A real link, not a button: it goes to a URL, so it can be middle-clicked,
-       copied, and read by anyone wondering how to get back here. -->
-  <a class="trigger" href={href(active)} title="Design system (⌘.)">Design</a>
+  <!-- The way in is a menu, and it is built from the library it opens: the dev
+       affordance is not allowed a private widget of its own. Each item lands on
+       a section directly, so nothing here is two clicks deep. -->
+  <div class="dock">
+    <ContextMenu label="Design system" items={menuItems}>
+      {#snippet trigger(attrs)}
+        <Button {...attrs} size="sm" title="Design system (⌘.)">Design ▾</Button>
+      {/snippet}
+    </ContextMenu>
+  </div>
 {:else}
   <div class="sheet" role="dialog" aria-modal="true" aria-label="Design system, read only">
     <nav aria-label="Design system sections">
@@ -151,31 +169,21 @@
 {/if}
 
 <style>
-  .trigger {
+  /* The dock only positions; the control inside it is a plain library Button,
+   * which is the point -- a bespoke pill here would be the first component
+   * outside the system. Bottom-right: out of the way of the app's own content. */
+  .dock {
     position: fixed;
-    /* Bottom-right, because that is where an out-of-band dev affordance lives
-     * without ever sitting on top of the app's own content. */
     right: var(--space-4);
     bottom: var(--space-4);
     z-index: var(--layer-dev);
-    padding: var(--space-1) var(--space-3);
-    background: var(--color-surface);
-    border: var(--border-width) solid var(--color-border-strong);
-    border-radius: var(--radius-full);
     box-shadow: var(--shadow-md);
-    font-size: var(--text-xs);
-    color: var(--color-text-muted);
+    border-radius: var(--radius-md);
   }
 
-  .trigger,
   .nav-item {
     text-decoration: none;
     display: block;
-  }
-
-  .trigger:hover {
-    color: var(--color-text);
-    background: var(--color-surface-hover);
   }
 
   .sheet {
