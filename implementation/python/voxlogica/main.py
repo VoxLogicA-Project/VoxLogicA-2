@@ -210,6 +210,9 @@ def _start_ui(args: argparse.Namespace, *, program: str | None):
         logger.warning("Could not start the UI (%s); continuing without it", exc)
         return None
     print(f"[voxlogica] UI at {session.url}", file=sys.stderr)
+    if session.design_url is not None:
+        print(f"[voxlogica] design system at {session.design_url} (or press Cmd/Ctrl+.)",
+              file=sys.stderr)
     return session
 
 
@@ -345,6 +348,9 @@ def serve_command(args: argparse.Namespace) -> int:
         instance_info={"version": __version__, "program": None, "storeDb": args.store_db},
     )
     print(f"[voxlogica] UI at {session.url} (Ctrl-C to stop)", file=sys.stderr)
+    if session.design_url is not None:
+        print(f"[voxlogica] design system at {session.design_url} (or press Cmd/Ctrl+.)",
+              file=sys.stderr)
     session.serve_forever()
     return 0
 

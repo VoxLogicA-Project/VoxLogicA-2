@@ -146,8 +146,27 @@ one: a broken gallery entry must fail loudly in dev, not render a blank panel.
 
 ## 5. The dev design panel
 
-Reachable at `⌘.` / `Ctrl+.` (or the "Design" button, bottom right) in any dev
-run. Four sections: **Moodboard**, **Palette**, **Typography**, **Components**.
+Every section is a place, so every section has a URL:
+
+| Section | URL |
+|---|---|
+| Moodboard | `http://127.0.0.1:<port>/#design/moodboard` |
+| Palette | `…/#design/palette` |
+| Typography | `…/#design/typography` |
+| Components (the library) | `…/#design/components` |
+
+`#design` alone opens the last section you looked at. `⌘.` / `Ctrl+.` toggles the
+panel, `Escape` closes it, and the "Design" link sits bottom-right of any dev
+run. A dev UI also prints the link on startup:
+
+```
+[voxlogica] UI at http://127.0.0.1:10001/
+[voxlogica] design system at http://127.0.0.1:10001/#design (or press Cmd/Ctrl+.)
+```
+
+That is not decoration. A panel reachable only by a keystroke cannot be sent to
+a colleague, bookmarked, or found again after a reload — and the one surface that
+documents the design system is the last place that should be a secret.
 
 Three properties make it worth having:
 

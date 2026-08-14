@@ -24,8 +24,18 @@
 
   const STORAGE_KEY = "voxlogica.dev-panel.section";
 
+  /** Each section is a place, so each section has a URL.
+   *
+   * `#design`, `#design/palette`, … A panel reachable only by a keystroke is a
+   * panel you cannot send to somebody, cannot bookmark, and cannot find again
+   * after a reload — which for the one surface that documents the design system
+   * is the difference between a tool and a secret. The hash is also what the CLI
+   * prints when it starts a dev UI.
+   */
+  const ROUTE = /^#\/?design(?:\/([a-z-]+))?$/;
+
   let open = $state(false);
-  let active = $state(read() ?? SECTIONS[0].id);
+  let active = $state(SECTIONS[0].id);
 
   const Section = $derived(
     (SECTIONS.find((section) => section.id === active) ?? SECTIONS[0]).component,
@@ -39,8 +49,7 @@
     }
   }
 
-  function select(id) {
-    active = id;
+  function remember(id) {
     try {
       localStorage.setItem(STORAGE_KEY, id);
     } catch {
@@ -48,26 +57,64 @@
     }
   }
 
+  /** The URL is the source of truth for "is the panel open, and where". */
+  function applyRoute() {
+    const match = ROUTE.exec(location.hash);
+    if (match === null) {
+      open = false;
+      return;
+    }
+    const wanted = SECTIONS.find((section) => section.id === match[1]);
+    active = wanted?.id ?? read() ?? SECTIONS[0].id;
+    open = true;
+  }
+
+  applyRoute();
+
+  function href(id) {
+    return `${location.pathname}${location.search}#design/${id}`;
+  }
+
+  function show() {
+    // Pushed, not replaced: Back closes the panel, which is what Back means.
+    location.hash = `#design/${active}`;
+  }
+
+  function select(id) {
+    remember(id);
+    // Replaced: walking the four sections should not fill the history with
+    // steps the user has to press Back through to leave.
+    history.replaceState(null, "", href(id));
+    applyRoute();
+  }
+
+  function close() {
+    // Drop our hash without adding an entry, so Back does not reopen the panel.
+    history.replaceState(null, "", `${location.pathname}${location.search}`);
+    open = false;
+  }
+
   function onKeydown(event) {
     if (event.key === "Escape" && open) {
       event.preventDefault();
-      open = false;
+      close();
       return;
     }
     // Cmd/Ctrl+. — near Escape, unclaimed by browsers and by the app.
     if (event.key === "." && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
-      open = !open;
+      if (open) close();
+      else show();
     }
   }
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onhashchange={applyRoute} />
 
 {#if !open}
-  <button class="trigger" onclick={() => (open = true)} title="Design system (⌘.)">
-    Design
-  </button>
+  <!-- A real link, not a button: it goes to a URL, so it can be middle-clicked,
+       copied, and read by anyone wondering how to get back here. -->
+  <a class="trigger" href={href(active)} title="Design system (⌘.)">Design</a>
 {:else}
   <div class="sheet" role="dialog" aria-modal="true" aria-label="Design system, read only">
     <nav aria-label="Design system sections">
@@ -79,18 +126,22 @@
       <ul role="list">
         {#each SECTIONS as section (section.id)}
           <li>
-            <button
+            <a
               class="nav-item"
               class:current={section.id === active}
               aria-current={section.id === active ? "page" : undefined}
-              onclick={() => select(section.id)}
+              href={href(section.id)}
+              onclick={(event) => {
+                event.preventDefault();
+                select(section.id);
+              }}
             >
               {section.title}
-            </button>
+            </a>
           </li>
         {/each}
       </ul>
-      <button class="close" onclick={() => (open = false)}>Close <kbd>esc</kbd></button>
+      <button class="close" onclick={close}>Close <kbd>esc</kbd></button>
     </nav>
 
     <div class="content">
@@ -102,6 +153,8 @@
 <style>
   .trigger {
     position: fixed;
+    /* Bottom-right, because that is where an out-of-band dev affordance lives
+     * without ever sitting on top of the app's own content. */
     right: var(--space-4);
     bottom: var(--space-4);
     z-index: var(--layer-dev);
@@ -112,6 +165,12 @@
     box-shadow: var(--shadow-md);
     font-size: var(--text-xs);
     color: var(--color-text-muted);
+  }
+
+  .trigger,
+  .nav-item {
+    text-decoration: none;
+    display: block;
   }
 
   .trigger:hover {
