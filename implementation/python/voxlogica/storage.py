@@ -29,6 +29,15 @@ from voxlogica.value_model import VOX_FORMAT_VERSION
 
 MATERIALIZED_STATUS = "materialized"
 PLANNED_STATUS = "planned"
+# An eviction is not a failure and not an absence: it is a value that WAS here,
+# is reachable again by recomputation, and left on purpose. Recording it as a
+# state rather than a DELETE is what makes the decision auditable -- a deleted
+# row and a never-computed node are indistinguishable, so "was this dropped, or
+# never written?" had no answer at all. Every read path already treats a
+# non-materialized row as a miss (has() and the id index filter on
+# MATERIALIZED_STATUS, _load_from_backend refuses anything else), so a tombstone
+# is invisible to lookups and visible only to whoever asks why.
+EVICTED_STATUS = "evicted"
 STORE_SCHEMA_VERSION = 4
 # The persistent result store is a bounded cache: once its payloads exceed this
 # many bytes, entries are evicted (rows + payload files deleted) until back under
@@ -649,11 +658,40 @@ class SQLiteResultsDatabase:
         except Exception:  # noqa: BLE001 — a guard error must not break eviction
             return False
 
-    def _evict_row(self, node_id: str, payload_file: str | None, nbytes: int, gd_key: float, tier: str) -> None:
-        """Delete one payload row + its file and update byte/clock/stat counters."""
+    def _evict_row(self, node_id: str, payload_file: str | None, nbytes: int, gd_key: float, tier: str,
+                   reason: str | None = None) -> None:
+        """Free one payload + its file, leaving a tombstone that says why.
+
+        The row survives as ``status='evicted'`` carrying its lineage
+        (expression, dependencies), its cost (``compute_ms``) and the size and
+        key that decided its fate. That record is the difference between a
+        policy that can be audited and one that can only be postulated: a
+        DELETE leaves a store in which "computed then dropped" and "never
+        computed" are the same state.
+
+        Tombstones are cheap (a few hundred bytes, no payload) but not free, so
+        a run that evicts tens of millions of values will eventually want them
+        aged out. That purge is a separate policy; keeping them is the default
+        because the information is unrecoverable once gone.
+        """
         if payload_file:
             (self.payload_dir / str(payload_file)).unlink(missing_ok=True)
-        self._connection.execute("DELETE FROM results WHERE node_id = ?", (node_id,))
+        row = self._connection.execute(
+            "SELECT metadata_json, compute_ms FROM results WHERE node_id = ?", (node_id,)).fetchone()
+        metadata = loads_json(row[0]) if row is not None else {}
+        metadata["eviction"] = {
+            "tier": tier,                                   # evicted_dead | evicted_live
+            "reason": reason or tier,
+            "payload_bytes": int(nbytes or 0),              # what it cost to keep
+            "compute_ms": float(row[1]) if row is not None else 0.0,  # what it costs to rebuild
+            "gd_key": float(gd_key),
+            "at": time.time(),
+        }
+        self._connection.execute(
+            "UPDATE results SET status = ?, payload_file = NULL, payload_json = '{}', "
+            "payload_bytes = 0, metadata_json = ?, updated_at = ? WHERE node_id = ?",
+            (EVICTED_STATUS, dumps_json(metadata), time.time(), node_id),
+        )
         if self._id_index is not None:
             self._id_index.discard(node_id)  # keep the engine's membership index truthful
         self._payload_bytes -= int(nbytes or 0)
@@ -730,15 +768,21 @@ class SQLiteResultsDatabase:
     def stats(self) -> dict[str, Any]:
         """Cache statistics: live entries/bytes, cumulative work banked, activity."""
         with self._lock:
-            entries, payload_rows, total_ms = self._connection.execute(
-                "SELECT COUNT(*), COUNT(payload_file), COALESCE(SUM(compute_ms), 0) FROM results"
+            # Tombstones are rows without a value, so they must not be counted
+            # as entries -- "entries" answers "what can this cache still give
+            # you", and an evicted row can give you nothing but its reason.
+            entries, payload_rows, total_ms, tombstones = self._connection.execute(
+                "SELECT SUM(status = ?), COUNT(payload_file), COALESCE(SUM(compute_ms), 0), "
+                "SUM(status = ?) FROM results",
+                (MATERIALIZED_STATUS, EVICTED_STATUS),
             ).fetchone()
             top = self._connection.execute(
                 "SELECT node_id, compute_ms, payload_bytes FROM results "
                 "WHERE payload_bytes > 0 ORDER BY compute_ms DESC LIMIT 5"
             ).fetchall()
         return {
-            "entries": int(entries),
+            "entries": int(entries or 0),
+            "tombstones": int(tombstones or 0),
             "payload_entries": int(payload_rows),
             "payload_bytes": self._payload_bytes,
             "max_bytes": self._max_bytes,

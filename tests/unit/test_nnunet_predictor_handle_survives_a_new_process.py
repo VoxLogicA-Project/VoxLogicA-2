@@ -88,6 +88,31 @@ def test_a_live_predictor_is_never_reloaded(monkeypatch):
     assert engine.calls == 1
 
 
+def test_concurrent_first_use_reloads_the_weights_exactly_once(monkeypatch):
+    import threading
+
+    builds = []
+    engine = FakeEngine()
+
+    def fake_load(model, device, folds):
+        builds.append(device)
+        return engine
+
+    monkeypatch.setattr(runtime, "_load_predictor_engine", fake_load)
+    handle = handle_for("deadbeef")
+
+    threads = [threading.Thread(target=runtime.predict_image, args=(handle, an_image()))
+               for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    # Six predictions, one load of the weights: reloading is under the lock.
+    assert engine.calls == 6
+    assert len(builds) == 1
+
+
 def test_a_handle_without_an_id_is_still_an_error():
     with pytest.raises(ValueError, match="predictor_id"):
         runtime.predict_image({"vox_kind": "nnunet_predictor", "predictor_id": " ",
