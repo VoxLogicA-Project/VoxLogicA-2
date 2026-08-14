@@ -90,18 +90,11 @@ component, invisible to both.
 Four components carry the interface: `Button`, `Toggle`, `ContextMenu`, `Card`.
 A fifth has to earn its place by removing something.
 
-`ContextMenu` covers both a pointed-at region (`children` + right-click) and a
-menu button (a `trigger` snippet, handed the attributes that make your own
-`Button` open it). That is deliberately *not* two components: what a menu is — a
-list of actions with a keyboard model and a panel that stays on screen — does not
-change with what opened it, and a separate `Menu` would mean maintaining that
-model twice and watching the two drift.
-
-The `trigger` half currently has no caller in the app — the dev button goes
-straight to the page rather than opening a menu — and is exercised only by its
-gallery specimen. It is kept because the first real app menu will want it and it
-is fifteen lines under test; if that menu does not arrive, delete it rather than
-let it rot.
+`ContextMenu` opens on right-click (or Shift+F10) over the region it wraps, and
+that is all it does. A menu-button variant existed briefly, for a dev menu that
+turned out not to be wanted; it was deleted the moment it had no caller rather
+than kept "for later". API with no users is not an asset — it is something that
+has to keep working, keep being tested, and keep being read, for nobody.
 
 That is a design position, not laziness. Every additional way to express
 "clickable" is another thing for the interface to be inconsistent about, and
