@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from voxlogica.primitives.nnunet.predictor_registry import load as load_predictor
+from voxlogica.primitives.nnunet.predictor_registry import has as predictor_registered
 from voxlogica.primitives.nnunet.predictor_registry import lock_for as predictor_lock
 from voxlogica.primitives.nnunet.predictor_registry import reset_runtime_state as reset_predictor_registry
 from voxlogica.primitives.nnunet.predictor_registry import store as store_predictor
@@ -264,20 +265,15 @@ def _torch_device(device: str) -> Any:
     return torch.device(device)
 
 
-def create_predictor(
-    model: dict[str, Any],
-    *,
-    device: str | None = None,
-    folds: list[int] | None = None,
-) -> dict[str, Any]:
-    """Load an nnU-Net predictor once for repeated image inference."""
+def _load_predictor_engine(model: dict[str, Any], resolved_device: str,
+                           fold_list: tuple[int, ...]) -> Any:
+    """Build the nnU-Net predictor object itself (no registry, no handle)."""
     require_nnunet()
     from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor  # type: ignore
 
     work_root = Path(model["work_root"])
     _set_nnunet_env(work_root)
 
-    resolved_device = str(device or model.get("device", "cpu")).lower()
     torch_device = _torch_device(resolved_device)
     perform_on_device = torch_device.type == "cuda"
 
@@ -291,12 +287,24 @@ def create_predictor(
         verbose_preprocessing=False,
         allow_tqdm=False,
     )
-    fold_list = tuple(folds if folds is not None else model.get("trained_folds", (0,)))
     predictor.initialize_from_trained_model_folder(
         str(model["trainer_dir"]),
         use_folds=fold_list,
         checkpoint_name="checkpoint_final.pth",
     )
+    return predictor
+
+
+def create_predictor(
+    model: dict[str, Any],
+    *,
+    device: str | None = None,
+    folds: list[int] | None = None,
+) -> dict[str, Any]:
+    """Load an nnU-Net predictor once for repeated image inference."""
+    resolved_device = str(device or model.get("device", "cpu")).lower()
+    fold_list = tuple(folds if folds is not None else model.get("trained_folds", (0,)))
+    predictor = _load_predictor_engine(model, resolved_device, fold_list)
     return {
         "vox_kind": PREDICTOR_KIND,
         "predictor_id": store_predictor(predictor),
@@ -306,14 +314,35 @@ def create_predictor(
     }
 
 
+def _predictor_engine(handle: dict[str, Any]) -> Any:
+    """The live predictor for a handle, rebuilding it if this process lacks it.
+
+    A handle names process-local state by id, but it is also a VALUE: the engine
+    content-addresses it, persists it, and hands it back on a later run -- where
+    the registry is empty and every predict died with "predictor <id> is not
+    available in this process". The id alone was never the point: the handle
+    also carries the model (trainer directory, folds, device), which is all it
+    takes to load the predictor again. So a miss reloads and re-registers under
+    the SAME id, and the handle means the same thing in any process.
+    """
+    predictor_id = str(handle.get("predictor_id", "")).strip()
+    if not predictor_id:
+        raise ValueError("predictor handle is missing predictor_id")
+    if not predictor_registered(predictor_id):
+        model = handle["model"]
+        resolved_device = str(handle.get("device") or model.get("device", "cpu")).lower()
+        fold_list = tuple(handle.get("folds") or model.get("trained_folds", (0,)))
+        logger.info("Reloading nnU-Net predictor %s from %s", predictor_id, model["trainer_dir"])
+        store_predictor(_load_predictor_engine(model, resolved_device, fold_list), predictor_id)
+    return load_predictor(predictor_id)
+
+
 def predict_image(predictor_handle: dict[str, Any], volumes: Any) -> Any:
     """Run nnU-Net inference on one case and return a segmentation image."""
     from voxlogica.primitives.nnunet.cases import normalize_modality_volumes
 
-    predictor_id = str(predictor_handle.get("predictor_id", "")).strip()
-    if not predictor_id:
-        raise ValueError("predictor handle is missing predictor_id")
-    predictor = load_predictor(predictor_id)
+    predictor = _predictor_engine(predictor_handle)
+    predictor_id = str(predictor_handle["predictor_id"]).strip()
 
     model = predictor_handle["model"]
     modality_volumes = normalize_modality_volumes(

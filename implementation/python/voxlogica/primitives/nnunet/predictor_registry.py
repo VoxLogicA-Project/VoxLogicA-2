@@ -22,9 +22,9 @@ _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 
 
-def store(predictor: Any) -> str:
-    """Store a predictor engine and return an opaque process-local id."""
-    predictor_id = uuid.uuid4().hex
+def store(predictor: Any, predictor_id: str | None = None) -> str:
+    """Store a predictor engine under a given id, or a fresh one."""
+    predictor_id = predictor_id or uuid.uuid4().hex
     _REGISTRY[predictor_id] = predictor
     return predictor_id
 
@@ -35,6 +35,10 @@ def load(predictor_id: str) -> Any:
         return _REGISTRY[predictor_id]
     except KeyError as exc:
         raise ValueError(f"nnUNet predictor {predictor_id!r} is not available in this process") from exc
+
+
+def has(predictor_id: str) -> bool:
+    return predictor_id in _REGISTRY
 
 
 def lock_for(predictor_id: str) -> threading.Lock:
