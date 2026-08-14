@@ -164,6 +164,19 @@ def fold_complete(trainer_path: Path, fold: int) -> bool:
     return (trainer_path / f"fold_{fold}" / "checkpoint_final.pth").is_file()
 
 
+def fold_resumable(trainer_path: Path, fold: int) -> bool:
+    """A training that stopped part-way and nnU-Net can pick up.
+
+    nnU-Net writes checkpoint_latest.pth every 50 epochs and takes `--c` to
+    continue from it. Without that flag an interrupted run silently starts again
+    at epoch 0 -- on the 1000-epoch schedule this dataset needs, a machine
+    hiccup at hour nine costs all nine hours.
+    """
+    fold_dir = trainer_path / f"fold_{fold}"
+    return ((fold_dir / "checkpoint_latest.pth").is_file()
+            and not (fold_dir / "checkpoint_final.pth").is_file())
+
+
 def train_model(
     *,
     layout: dict[str, Any],
@@ -224,6 +237,9 @@ def train_model(
         ]
         if trainer_class and trainer_class != DEFAULT_TRAINER:
             train_cmd.extend(["-tr", trainer_class])
+        if current_trainer is not None and fold_resumable(current_trainer, fold):
+            logger.info("Resuming train fold %s from checkpoint_latest", fold)
+            train_cmd.append("--c")
         run_cli(train_cmd, cwd=work_root, env=env, step=f"train fold {fold}")
         trained_folds.append(fold)
 
@@ -317,6 +333,9 @@ def create_predictor(
 def _predictor_engine(handle: dict[str, Any]) -> Any:
     """The live predictor for a handle, rebuilding it if this process lacks it.
 
+    Call this holding ``predictor_lock(predictor_id)``: the rebuild must be as
+    exclusive as the inference it precedes.
+
     A handle names process-local state by id, but it is also a VALUE: the engine
     content-addresses it, persists it, and hands it back on a later run -- where
     the registry is empty and every predict died with "predictor <id> is not
@@ -341,8 +360,9 @@ def predict_image(predictor_handle: dict[str, Any], volumes: Any) -> Any:
     """Run nnU-Net inference on one case and return a segmentation image."""
     from voxlogica.primitives.nnunet.cases import normalize_modality_volumes
 
-    predictor = _predictor_engine(predictor_handle)
-    predictor_id = str(predictor_handle["predictor_id"]).strip()
+    predictor_id = str(predictor_handle.get("predictor_id", "")).strip()
+    if not predictor_id:
+        raise ValueError("predictor handle is missing predictor_id")
 
     model = predictor_handle["model"]
     modality_volumes = normalize_modality_volumes(
@@ -351,9 +371,13 @@ def predict_image(predictor_handle: dict[str, Any], volumes: Any) -> Any:
         name="image",
     )
     array, properties = volumes_to_nnunet_array(modality_volumes)
-    # Held across the whole inference: see predictor_registry._LOCKS for the
-    # crash this prevents. Preparing the input above needs no lock.
+    # The lock covers the RELOAD as well as the inference. Reloading outside it
+    # let two workers that both found the registry empty each build a predictor
+    # and load a second copy of the weights onto the GPU -- the same "who is
+    # inside this object" question the lock exists to answer. Preparing the
+    # input above needs no lock.
     with predictor_lock(predictor_id):
+        predictor = _predictor_engine(predictor_handle)
         segmentation = predictor.predict_single_npy_array(array, properties, None, None, False)
     return segmentation_to_sitk(segmentation, properties)
 
