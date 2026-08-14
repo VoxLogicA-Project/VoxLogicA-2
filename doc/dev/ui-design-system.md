@@ -24,8 +24,8 @@ Everything below follows from that sentence.
 ```
 implementation/ui/src/
 ├── app.css                  # delegates to the design layer; holds nothing itself
-├── main.js                  # mounts App, and (dev only) the design panel
-├── App.svelte               # composition only: library components + store values
+├── main.js                  # mounts App, and (dev only) the dev page
+├── App.svelte               # the app page: empty by design (see §5)
 └── lib/
     ├── design/              # the design layer — global, and the only global CSS
     │   ├── index.css        #   single entry point; import order is load-bearing
@@ -37,7 +37,7 @@ implementation/ui/src/
     │   └── <Name>/
     │       ├── <Name>.svelte
     │       └── <Name>.gallery.js   # the entry that makes it appear in the gallery
-    ├── gallery/             # the dev-only design panel (§5) — absent in production
+    ├── gallery/             # the dev-only dev page (§5) — absent in production
     ├── state.svelte.js      # the store: one $state singleton, no store library
     └── connection.js        # the WebSocket to the run's own server
 ```
@@ -97,6 +97,12 @@ list of actions with a keyboard model and a panel that stays on screen — does 
 change with what opened it, and a separate `Menu` would mean maintaining that
 model twice and watching the two drift.
 
+The `trigger` half currently has no caller in the app — the dev button goes
+straight to the page rather than opening a menu — and is exercised only by its
+gallery specimen. It is kept because the first real app menu will want it and it
+is fifteen lines under test; if that menu does not arrive, delete it rather than
+let it rot.
+
 That is a design position, not laziness. Every additional way to express
 "clickable" is another thing for the interface to be inconsistent about, and
 every component that exists must be maintained, themed, made accessible and kept
@@ -109,8 +115,8 @@ A component in this library:
 1. **Lives in its own folder** with its `.gallery.js` sibling.
 2. **Names only tier-2 tokens** in its `<style>` block.
 3. **Scopes all of its CSS.** Svelte scopes by default; `:global` needs a
-   comment saying why (there is exactly one in the app today, in `App.svelte`,
-   and it is explained in place).
+   comment saying why (there is exactly one today, in the Debug section, and it
+   is explained in place).
 4. **Uses the right element.** `Button` is a real `<button>`; `Toggle` is
    `role="switch"` with `aria-checked`, not a checkbox, because a checkbox says
    "this will be true when you submit" and a switch says "this is true now".
@@ -151,35 +157,45 @@ one: a broken gallery entry must fail loudly in dev, not render a blank panel.
 
 ---
 
-## 5. The dev design panel
+## 5. The dev page
 
-**The way in is a menu.** Bottom-right of any dev run there is a `Design ▾`
-button; it opens a menu with one item per section, so every section is one click
-away and none is buried behind a front page. The menu is a `ContextMenu` and the
-button is a `Button` — the dev affordance is built from the library it documents,
-because a bespoke widget here would be the first component outside the system.
-Once the panel is open its left-hand nav reaches every section, so nothing in the
-design system is ever more than one step from anything else.
+Everything that is *about* the software lives here, so that the application's own
+page can hold only what a user of VoxLogicA came for. **The app page is empty on
+purpose**, and stays empty until it has content of its own; the state of the
+machinery — instance, run, event log — is a development instrument and is the
+`Debug` section of this page, not the product's front page.
 
-Every section is also a place, so every section has a URL:
+**The way in is one button.** Bottom-right of any dev run there is a `dev`
+button, and it goes to the dev page — no menu in front of it, because the page
+already has a nav and a menu would be a second copy of that nav to keep in step.
+It is a library `Button`: the dev affordance is not allowed a private widget of
+its own, or it would be the first component outside the system it documents.
 
-| Section | URL |
-|---|---|
-| Moodboard | `http://127.0.0.1:<port>/#design/moodboard` |
-| Palette | `…/#design/palette` |
-| Typography | `…/#design/typography` |
-| Components (the library) | `…/#design/components` |
+Every section is a place, so every section has a URL:
 
-`#design` alone opens the last section you looked at. `⌘.` / `Ctrl+.` toggles the
-panel and `Escape` closes it. A dev UI also prints the link on startup:
+| Section | URL | |
+|---|---|---|
+| Moodboard | `http://127.0.0.1:<port>/#dev/moodboard` | documentation |
+| Palette | `…/#dev/palette` | documentation |
+| Typography | `…/#dev/typography` | documentation |
+| Components (the library) | `…/#dev/components` | documentation |
+| Debug | `…/#dev/debug` | **live** — reads the store |
+
+The four design sections would render identically in a dead process; `Debug` is
+meaningless without a live connection. That is why it is set apart in the nav and
+behind a separator in the menu: a different *kind* of page, not a more important
+one. It is also the only section that touches `state.svelte.js`.
+
+`#dev` alone opens the last section you looked at. `⌘.` / `Ctrl+.` toggles the
+page and `Escape` closes it. A dev UI also prints the link on startup:
 
 ```
 [voxlogica] UI at http://127.0.0.1:10001/
-[voxlogica] design system at http://127.0.0.1:10001/#design (or press Cmd/Ctrl+.)
+[voxlogica] dev page at http://127.0.0.1:10001/#dev (or press Cmd/Ctrl+.)
 ```
 
-That is not decoration. A panel reachable only by a keystroke cannot be sent to
-a colleague, bookmarked, or found again after a reload — and the one surface that
+That is not decoration. A page reachable only by a keystroke cannot be sent to a
+colleague, bookmarked, or found again after a reload — and the one surface that
 documents the design system is the last place that should be a secret.
 
 Three properties make it worth having:
@@ -197,16 +213,18 @@ vanish, with no second edit anywhere. A manifest beside `tokens.css` would be
 the one artefact in this system able to quietly disagree with it.
 
 **It is the library, not a picture of it.** Each specimen mounts
-`entry.component` — the same module `App.svelte` imports — with
+`entry.component` — the same module its callers import — with
 `entry.variants[i].props`. A specimen that looks wrong *is* a component that is
-wrong. There is no second copy that can be right while the app is broken.
+wrong. There is no second copy that can be right while the real one is broken.
 
-**It does not exist in production.** `main.js` reaches the panel through a
-dynamic `import()` inside `if (__DEV__)`. `build.mjs` defines `__DEV__` to the
-literal `false` for a production build, so esbuild drops the branch and with it
-the panel, its four sections, the registry and all of their CSS. Measured on the
-current tree: dev bundle 1.5 MB (inline source map), production bundle 76 KB JS
-+ 12 KB CSS with no trace of the gallery.
+**It does not exist in production.** `main.js` reaches the page through a dynamic
+`import()` inside `if (__DEV__)`. `build.mjs` defines `__DEV__` to the literal
+`false` for a production build, so esbuild drops the branch and with it the page,
+its five sections, the registry and all of their CSS. Measured on the current
+tree: dev bundle 1.5 MB (inline source map), production bundle 51 KB JS + 6 KB
+CSS with no trace of it. The library itself is tree-shaken out along with it,
+because the app page does not use a component yet — which is the correct outcome,
+not a regression: nothing is shipped that nothing renders.
 
 ---
 

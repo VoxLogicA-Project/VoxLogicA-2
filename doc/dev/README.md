@@ -41,7 +41,7 @@ normative rather than descriptive — they state rules and the reason for each:
   the constraints that are not negotiable (no `uvicorn --reload`, no `watchdog`
   on a free-threaded build, no postponed annotations in `app.py`).
 - **[ui-design-system.md](ui-design-system.md)** — the front-end rules: two tiers
-  of design tokens, the four-component library, and the dev design panel whose
+  of design tokens, the four-component library, and the dev page whose
   gallery *is* the library rather than a set of examples of it.
 - **[ui-editor-requirements-and-testing-strategy.md](ui-editor-requirements-and-testing-strategy.md)**
   — earlier requirements work on the program editor.

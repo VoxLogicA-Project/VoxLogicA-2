@@ -1,39 +1,45 @@
 <script>
   /**
-   * The development design panel: moodboard, palette, typography, library.
+   * The dev page: moodboard, palette, typography, the component library, and
+   * the live state of this process.
    *
-   * Read-only, deliberately. It is a mirror held up to the design system, not a
-   * theme editor -- if a colour is wrong you fix `tokens.css`, and this panel
-   * shows the result on the next reload. A panel that could override tokens at
-   * runtime would let the app look right while the source stayed wrong.
+   * This is where everything that is *about* the software lives, so that the
+   * application's own page can hold only what a user of VoxLogicA came for. The
+   * four design sections are read-only by design -- a mirror held up to the
+   * system, not a theme editor. If a colour is wrong you fix `tokens.css` and
+   * the panel shows the result on the next reload; a panel that could override
+   * tokens at runtime would let the app look right while the source stayed
+   * wrong. Debug is the one live section, and reads the store.
    *
    * Never present in a production bundle: `main.js` imports this module only
    * behind `if (__DEV__)`, which esbuild resolves to `false` and drops.
    */
-  import { Button, ContextMenu } from "../components/index.js";
+  import { Button } from "../components/index.js";
   import Components from "./sections/Components.svelte";
+  import Debug from "./sections/Debug.svelte";
   import Moodboard from "./sections/Moodboard.svelte";
   import Palette from "./sections/Palette.svelte";
   import Typography from "./sections/Typography.svelte";
 
+  // Design first, then the live instrument. The order is the reading order of
+  // the system: what it should look like, then what it is currently doing.
   const SECTIONS = [
     { id: "moodboard", title: "Moodboard", component: Moodboard },
     { id: "palette", title: "Palette", component: Palette },
     { id: "typography", title: "Typography", component: Typography },
     { id: "components", title: "Components", component: Components },
+    { id: "debug", title: "Debug", component: Debug, live: true },
   ];
 
   const STORAGE_KEY = "voxlogica.dev-panel.section";
 
   /** Each section is a place, so each section has a URL.
    *
-   * `#design`, `#design/palette`, … A panel reachable only by a keystroke is a
-   * panel you cannot send to somebody, cannot bookmark, and cannot find again
-   * after a reload — which for the one surface that documents the design system
-   * is the difference between a tool and a secret. The hash is also what the CLI
-   * prints when it starts a dev UI.
+   * `#dev`, `#dev/palette`, … A page reachable only by a keystroke is a page you
+   * cannot send to somebody, cannot bookmark, and cannot find again after a
+   * reload. The hash is also what the CLI prints when it starts a dev UI.
    */
-  const ROUTE = /^#\/?design(?:\/([a-z-]+))?$/;
+  const ROUTE = /^#\/?dev(?:\/([a-z-]+))?$/;
 
   let open = $state(false);
   let active = $state(SECTIONS[0].id);
@@ -73,18 +79,18 @@
   applyRoute();
 
   function href(id) {
-    return `${location.pathname}${location.search}#design/${id}`;
+    return `${location.pathname}${location.search}#dev/${id}`;
   }
 
   function show(id = active) {
     remember(id);
     // Pushed, not replaced: Back closes the panel, which is what Back means.
-    location.hash = `#design/${id}`;
+    location.hash = `#dev/${id}`;
   }
 
   function select(id) {
     remember(id);
-    // Replaced: walking the four sections should not fill the history with
+    // Replaced: walking the sections should not fill the history with
     // steps the user has to press Back through to leave.
     history.replaceState(null, "", href(id));
     applyRoute();
@@ -95,15 +101,6 @@
     history.replaceState(null, "", `${location.pathname}${location.search}`);
     open = false;
   }
-
-  /** One entry per section: the menu goes where you meant, not to a front page. */
-  const menuItems = $derived([
-    ...SECTIONS.map((section) => ({
-      label: section.title,
-      hint: `#design/${section.id}`,
-      onselect: () => show(section.id),
-    })),
-  ]);
 
   function onKeydown(event) {
     if (event.key === "Escape" && open) {
@@ -123,23 +120,21 @@
 <svelte:window onkeydown={onKeydown} onhashchange={applyRoute} />
 
 {#if !open}
-  <!-- The way in is a menu, and it is built from the library it opens: the dev
-       affordance is not allowed a private widget of its own. Each item lands on
-       a section directly, so nothing here is two clicks deep. -->
+  <!-- One button, no menu: the dev page has a nav of its own, and a menu in
+       front of it would be a second copy of that nav to keep in step. It is a
+       library Button -- the dev affordance is not allowed a private widget. -->
   <div class="dock">
-    <ContextMenu label="Design system" items={menuItems}>
-      {#snippet trigger(attrs)}
-        <Button {...attrs} size="sm" title="Design system (⌘.)">Design ▾</Button>
-      {/snippet}
-    </ContextMenu>
+    <Button size="sm" title="Dev page (⌘.)" onclick={() => show()}>dev</Button>
   </div>
 {:else}
-  <div class="sheet" role="dialog" aria-modal="true" aria-label="Design system, read only">
-    <nav aria-label="Design system sections">
+  <div class="sheet" role="dialog" aria-modal="true" aria-label="Dev page">
+    <nav aria-label="Dev sections">
       <div class="brand">
         <span class="kicker">dev</span>
-        <h2>Design system</h2>
-        <p class="readonly">Read-only. Edit <code>tokens.css</code> to change anything here.</p>
+        <h2>Dev</h2>
+        <p class="readonly">
+          The design system is read-only — edit <code>tokens.css</code>. Debug is live.
+        </p>
       </div>
       <ul role="list">
         {#each SECTIONS as section (section.id)}
@@ -147,6 +142,7 @@
             <a
               class="nav-item"
               class:current={section.id === active}
+              class:live={section.live}
               aria-current={section.id === active ? "page" : undefined}
               href={href(section.id)}
               onclick={(event) => {
@@ -246,6 +242,14 @@
   .nav-item:hover {
     background: var(--color-surface-hover);
     color: var(--color-text);
+  }
+
+  /* The live section is set apart from the four documentation ones by a rule,
+   * not by a colour: it is a different kind of page, not a more important one. */
+  .nav-item.live {
+    margin-top: var(--space-2);
+    padding-top: var(--space-3);
+    border-top: var(--border-width) solid var(--color-border);
   }
 
   .nav-item.current {

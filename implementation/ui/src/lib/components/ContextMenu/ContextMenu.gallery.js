@@ -10,14 +10,14 @@ export default {
   variants: [
     {
       // The same component with a trigger instead of a region: one keyboard
-      // model, two ways in. The dev design panel is opened by exactly this.
+      // model, two ways in. A menu button like this is what an app menu will use.
       label: "as a menu button",
       triggerLabel: "Menu ▾",
       props: {
         label: "Example menu",
         items: [
-          { label: "Moodboard", hint: "#design/moodboard" },
-          { label: "Palette", hint: "#design/palette" },
+          { label: "Moodboard", hint: "#dev/moodboard" },
+          { label: "Palette", hint: "#dev/palette" },
           { separator: true },
           { label: "Reset layout", danger: true },
         ],

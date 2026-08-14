@@ -176,10 +176,10 @@ def test_an_install_without_sources_or_a_prebuilt_bundle_says_so(monkeypatch) ->
         Bundler().ensure()
 
 
-def test_the_design_panel_is_only_advertised_when_it_exists(tmp_path, monkeypatch) -> None:
-    """The CLI prints a deep link to the dev design panel, and must not print
-    one when serving a wheel -- the panel is compiled out of a production
-    bundle, so that link would 404 on the only thing it points at."""
+def test_the_dev_page_is_only_advertised_when_it_exists(tmp_path, monkeypatch) -> None:
+    """The CLI prints a deep link to the dev page, and must not print one when
+    serving a wheel -- the page is compiled out of a production bundle, so that
+    link would land on nothing."""
     from voxlogica.ui import UISession
 
     class _Server:
@@ -189,7 +189,7 @@ def test_the_design_panel_is_only_advertised_when_it_exists(tmp_path, monkeypatc
             pass
 
     dev = UISession(_Server(), Hub(), Bundler(source_root=_ui_tree(tmp_path / "ui")), None)
-    assert dev.design_url == "http://127.0.0.1:10001/#design"
+    assert dev.dev_url == "http://127.0.0.1:10001/#dev"
 
     # A wheel has no implementation/ui beside the package; this checkout does,
     # so the absence has to be arranged rather than assumed.
@@ -198,4 +198,4 @@ def test_the_design_panel_is_only_advertised_when_it_exists(tmp_path, monkeypatc
     monkeypatch.setattr(bundler_module, "_source_root", lambda: None)
     shipped = UISession(_Server(), Hub(), Bundler(), None)
     assert shipped.bundler.is_dev is False
-    assert shipped.design_url is None
+    assert shipped.dev_url is None

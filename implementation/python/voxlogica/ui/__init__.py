@@ -49,14 +49,14 @@ class UISession:
         return self.server.url
 
     @property
-    def design_url(self) -> str | None:
-        """Deep link to the dev design panel, or ``None`` when serving a wheel.
+    def dev_url(self) -> str | None:
+        """Deep link to the dev page, or ``None`` when serving a wheel.
 
-        The panel does not exist in a production bundle, so there is nothing to
+        The page does not exist in a production bundle, so there is nothing to
         link to there. In a checkout the CLI prints this next to the app URL:
         a design system nobody can find is a design system nobody follows.
         """
-        return f"{self.server.url}#design" if self.bundler.is_dev else None
+        return f"{self.server.url}#dev" if self.bundler.is_dev else None
 
     def publish(self, event: dict, *, sticky_key: str | None = None) -> None:
         self.hub.publish(event, sticky_key=sticky_key)

@@ -2,7 +2,7 @@
  *
  * `__DEV__` is replaced by a literal at build time (see build.mjs), so the
  * `import()` below is unreachable in a shipped bundle and esbuild removes the
- * design panel, its four sections and all of their CSS. The gallery is a
+ * dev page, its five sections and all of their CSS. The gallery is a
  * development instrument, and paying for it in production would be the first
  * step towards it drifting out of date.
  */
@@ -22,5 +22,5 @@ if (__DEV__) {
   // user actually came for.
   import("./lib/gallery/dev.js")
     .then(({ mountDevPanel }) => mountDevPanel())
-    .catch((error) => console.error("dev design panel failed to mount", error));
+    .catch((error) => console.error("the dev page failed to mount", error));
 }
