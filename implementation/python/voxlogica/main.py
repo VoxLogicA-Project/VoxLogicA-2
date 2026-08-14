@@ -83,12 +83,14 @@ if __name__ == "__main__":
 import argparse
 import faulthandler
 import io
+import time
 from pathlib import Path
 import json
 import logging
 from typing import Any
 from dataclasses import replace
 
+from voxlogica import __version__
 from voxlogica.converters.dot_converter import to_dot
 from voxlogica.converters.json_converter import WorkPlanJSONEncoder, to_json
 from voxlogica.execution import ExecutionEngine
@@ -104,6 +106,9 @@ from voxlogica.diagnostics.render import (
     render_report_json,
 )
 from voxlogica.diagnostics.store import load_report, store_report
+# Imports nothing heavier than the stdlib: fastapi/uvicorn are pulled in only
+# when a UI is actually started.
+from voxlogica.ui.server import DEFAULT_PORT as UI_DEFAULT_PORT
 
 logger = logging.getLogger("voxlogica.main")
 
@@ -178,6 +183,36 @@ def _delete_cache_if_requested(args: argparse.Namespace) -> int | None:
     return None
 
 
+def _start_ui(args: argparse.Namespace, *, program: str | None):
+    """Bring the browser UI up, or return None if it is disabled or unavailable.
+
+    The UI is never allowed to break a run: a failure to bind a port or import
+    the server is logged and the computation proceeds without it.
+    """
+    if not getattr(args, "serve", False) or os.environ.get("VOXLOGICA_NO_UI"):
+        return None
+    try:
+        from voxlogica.ui import start_ui
+    except ImportError as exc:  # fastapi/uvicorn absent in a minimal install
+        logger.warning("UI unavailable (%s); continuing without it", exc)
+        return None
+    try:
+        session = start_ui(
+            port=args.ui_port,
+            open_browser=getattr(args, "open_browser", False),
+            instance_info={
+                "version": __version__,
+                "program": program,
+                "storeDb": getattr(args, "store_db", None),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - the UI is optional, the run is not
+        logger.warning("Could not start the UI (%s); continuing without it", exc)
+        return None
+    print(f"[voxlogica] UI at {session.url}", file=sys.stderr)
+    return session
+
+
 def run_command(args: argparse.Namespace) -> int:
     """Implement the ``run`` subcommand."""
     _configure_logging(args.debug)
@@ -185,6 +220,40 @@ def run_command(args: argparse.Namespace) -> int:
     if cancelled is not None:
         return cancelled
 
+    ui = _start_ui(args, program=args.filename)
+    aborted = False
+    try:
+        return _run_command_inner(args, ui)
+    except BaseException as exc:
+        aborted = True
+        # An unhandled error is rendered by main()'s CLI boundary -- which is
+        # downstream of the finally below. Waiting for a browser there would
+        # leave the terminal silent and apparently hung, with the UI still
+        # showing "running", until someone thought to close the tab.
+        _publish(ui, {"status": "failed", "program": args.filename,
+                      "finishedAt": time.time(),
+                      "error": "interrupted" if isinstance(exc, KeyboardInterrupt)
+                               else f"{type(exc).__name__}: {exc}"})
+        raise
+    finally:
+        if ui is not None:
+            if aborted:
+                # Ctrl-C, or a crash, means "stop now".
+                ui.stop()
+            else:
+                # Exit now if nobody is watching; otherwise keep serving until
+                # the last browser disconnects, so a run you were looking at
+                # does not disappear the moment it ends.
+                ui.serve_until_idle()
+
+
+def _publish(ui, run: dict) -> None:
+    """Push a run state change to the UI, if one is up."""
+    if ui is not None:
+        ui.publish({"type": "run", "run": run}, sticky_key="run")
+
+
+def _run_command_inner(args: argparse.Namespace, ui) -> int:
     try:
         program_text = Path(args.filename).read_text(encoding="utf-8")
     except OSError as exc:
@@ -217,6 +286,8 @@ def run_command(args: argparse.Namespace) -> int:
         storage = NoCacheStorageBackend() if args.no_cache else SQLiteResultsDatabase(
             db_path=args.store_db,
             max_bytes=int(args.cache_max_gb * 1024 ** 3) if args.cache_max_gb else None)
+        _publish(ui, {"status": "running", "program": args.filename,
+                      "startedAt": time.time(), "summary": None, "elapsed": None})
         execution_result = ExecutionEngine(
             storage_backend=storage,
             no_cache=args.no_cache,
@@ -235,8 +306,15 @@ def run_command(args: argparse.Namespace) -> int:
                         print(stored, file=sys.stderr)
             if not execution_result.diagnostics:
                 _render_exception(RuntimeError("DAG execution failed"), args)
+            _publish(ui, {"status": "failed", "program": args.filename,
+                          "finishedAt": time.time(),
+                          "elapsed": execution_result.execution_time})
             return 1
-        print(json.dumps(_summary_payload(workplan, execution_result), indent=2))
+        summary = _summary_payload(workplan, execution_result)
+        _publish(ui, {"status": "completed", "program": args.filename,
+                      "finishedAt": time.time(), "summary": summary,
+                      "elapsed": execution_result.execution_time})
+        print(json.dumps(summary, indent=2))
         print(f"Execution time: {execution_result.execution_time:.2f} seconds")
 
     return 0
@@ -251,6 +329,25 @@ def list_primitives_command(_args: argparse.Namespace) -> int:
     }
     print(json.dumps(payload, indent=2))
     return 0
+
+def serve_command(args: argparse.Namespace) -> int:
+    """Implement the ``serve`` subcommand: the UI with no computation attached.
+
+    Unlike ``run``, this never auto-exits -- there is no computation whose end
+    would be the cue -- so it stops on Ctrl-C.
+    """
+    _configure_logging(args.debug)
+    from voxlogica.ui import start_ui
+
+    session = start_ui(
+        port=args.ui_port,
+        open_browser=args.open_browser,
+        instance_info={"version": __version__, "program": None, "storeDb": args.store_db},
+    )
+    print(f"[voxlogica] UI at {session.url} (Ctrl-C to stop)", file=sys.stderr)
+    session.serve_forever()
+    return 0
+
 
 def shell_command(args: argparse.Namespace) -> int:
     """Implement the ``repl`` subcommand."""
@@ -379,7 +476,27 @@ def build_parser() -> argparse.ArgumentParser:
                                  "Use /usr/bin/time -v's %%CPU and the engine's own saturation / "
                                  "cpu-per-wall figures instead. Kept only for single-threaded "
                                  "debugging of the reducer.")
+    run_parser.add_argument("--serve", action=argparse.BooleanOptionalAction, default=True,
+                            help="Serve the browser UI alongside the run (default). The process "
+                                 "exits when the run ends if no browser is connected, and keeps "
+                                 "serving until the last one disconnects otherwise. Set "
+                                 "VOXLOGICA_NO_UI=1 to disable it for a whole shell.")
+    run_parser.add_argument("--ui-port", type=int, default=UI_DEFAULT_PORT, metavar="PORT",
+                            help=f"First port to try for the UI (default: {UI_DEFAULT_PORT}); "
+                                 "concurrent runs take the next free one, and each prints its URL")
+    run_parser.add_argument("--open", dest="open_browser", action="store_true",
+                            help="Open the UI in a browser once it is up")
     run_parser.set_defaults(handler=run_command)
+
+    serve_parser = subparsers.add_parser(
+        "serve", help="Serve the browser UI with no computation attached (Ctrl-C to stop).")
+    serve_parser.add_argument("--ui-port", type=int, default=UI_DEFAULT_PORT, metavar="PORT",
+                              help=f"First port to try (default: {UI_DEFAULT_PORT})")
+    serve_parser.add_argument("--open", dest="open_browser", action="store_true",
+                              help="Open the UI in a browser once it is up")
+    serve_parser.add_argument("--store-db", help="Path to the persistent results SQLite database")
+    serve_parser.add_argument("--debug", action="store_true")
+    serve_parser.set_defaults(handler=serve_command)
 
     list_parser = subparsers.add_parser("list-primitives", help="List primitive kernels.")
     list_parser.set_defaults(handler=list_primitives_command)

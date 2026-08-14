@@ -54,6 +54,7 @@ doc/gallery/output/**
 # Frontend workspace artifacts
 implementation/ui/node_modules/
 implementation/ui/.vite/
+implementation/ui/dist/
 tests/data/datasets
 .playwright-mcp/
 node_modules
