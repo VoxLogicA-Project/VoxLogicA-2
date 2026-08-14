@@ -13,17 +13,18 @@ and module-level imports keep that failure impossible.
 """
 
 import asyncio
+import contextlib
 import html
 import logging
 import os
 from typing import Callable
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from .bundler import Bundle, BundleError, Bundler
 from .hub import PING_INTERVAL, Hub
-from .mcp import CaptureBroker, mount as mount_mcp, screenshot
+from .mcp import CaptureBroker, build_transport, screenshot
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +42,39 @@ _CONTENT_TYPES = {
 def build_app(
     *, hub: Hub, bundler: Bundler, describe: Callable[[], dict], workspace=None
 ) -> FastAPI:
-    app = FastAPI(title="VoxLogicA UI", docs_url=None, redoc_url=None, openapi_url=None)
-
     # Screenshots an agent asked for and a browser will answer. Held here because
     # the WebSocket that carries the answers is declared in this function.
     captures = CaptureBroker()
-    if workspace is not None:
-        mount_mcp(app, workspace, hub, captures)
+    transport = build_transport(workspace, hub, captures) if workspace is not None else None
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # The MCP session manager's task group must be entered and left by the
+        # same task, on the loop that serves the requests. The lifespan is the
+        # only place that is true.
+        if transport is None:
+            yield
+            return
+        async with transport[1].run():
+            yield
+
+    app = FastAPI(
+        title="VoxLogicA UI",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
+
+    if transport is not None:
+        app.mount("/mcp", transport[0])
+
+        @app.post("/mcp")
+        async def mcp_entry() -> Response:
+            # A mount matches "/mcp/..." but not "/mcp" itself, and the catch-all
+            # below would answer that with a 405. 307 keeps the method and the
+            # body, so a client configured with either URL works.
+            return RedirectResponse("/mcp/", status_code=307)
 
     def bundle_or_error() -> tuple[Bundle | None, BundleError | None]:
         try:

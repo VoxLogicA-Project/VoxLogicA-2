@@ -148,46 +148,39 @@ class WorkspaceMCP:
         return {"ok": True, "result": result, "workspace": self._workspace.snapshot()}
 
 
-def mount(app, workspace, hub, captures: CaptureBroker) -> bool:
-    """Serve MCP at ``/mcp`` on the UI's own app. False if it cannot be built.
+def build_transport(workspace, hub, captures: CaptureBroker):
+    """The ASGI handler for ``/mcp`` and the manager whose lifetime it needs.
+
+    Returns ``(handler, manager)``, or ``None`` if MCP cannot be built at all --
+    a failure here must cost the user their agent tools, never their UI.
+
+    The manager owns a task group, and a task group has to be entered and left by
+    the same task: opening it lazily on the first request is what makes anyio
+    raise "attempted to exit a cancel scope that isn't the current task's". So
+    the caller enters it in the app's lifespan, on the loop that serves the
+    requests, and this function only builds the pieces.
 
     Stateless streamable HTTP: an agent connects, calls tools, and goes away, and
-    nothing about the workspace lives in the session -- the workspace is the
-    session, and it is already here. A stateful transport would add a second
-    lifetime to reason about for no gain.
-
-    A failure here must not cost the user their UI, which is why the caller
-    treats a False as "no MCP" rather than as an error.
+    nothing about the workspace lives in the session -- the workspace *is* the
+    session, and it is already here.
     """
     try:
         from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     except Exception as error:  # noqa: BLE001 - optional surface
         logger.warning("MCP unavailable (%s); the UI is unaffected", error)
-        return False
+        return None
 
     try:
         server = build_server(workspace, hub, captures)
         manager = StreamableHTTPSessionManager(app=server, stateless=True, json_response=True)
     except Exception as error:  # noqa: BLE001
         logger.warning("Could not build the MCP server (%s)", error)
-        return False
-
-    started = {"value": False}
-    lock = asyncio.Lock()
+        return None
 
     async def handle(scope, receive, send) -> None:
-        # The manager's task group has to be entered from the loop that serves
-        # the requests, and there is no startup hook that runs there for a server
-        # embedded in a thread -- so the first request opens it, once.
-        async with lock:
-            if not started["value"]:
-                stack = manager.run()
-                await stack.__aenter__()
-                started["value"] = True
         await manager.handle_request(scope, receive, send)
 
-    app.mount("/mcp", handle)
-    return True
+    return handle, manager
 
 
 def build_server(workspace, hub, captures: CaptureBroker):
