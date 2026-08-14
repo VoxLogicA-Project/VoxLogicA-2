@@ -46,6 +46,7 @@
     onmaximize,
     onfocus,
     onsendtopage,
+    onrename,
     /** True when this card is the one being shown alone. */
     focused = false,
     children,
@@ -56,6 +57,7 @@
   const menu = $derived(
     [
       onmaximize && { label: "Maximize", hint: "double-click", onselect: onmaximize },
+      onrename && { label: "Rename", hint: "double-click the name", onselect: startRename },
       onfocus && {
         label: focused ? "Leave focus" : "Focus",
         hint: focused ? "esc" : "f",
@@ -77,6 +79,28 @@
   );
 
   let headerEl = $state(null);
+  /** The title while it is being edited, or null. Double-clicking the title
+   * renames; double-clicking the rest of the header maximizes. The two never
+   * collide because a card's name and a card's size are different targets. */
+  let renaming = $state(null);
+  let titleInput = $state(null);
+
+  $effect(() => {
+    if (renaming !== null && titleInput) {
+      titleInput.focus();
+      titleInput.select();
+    }
+  });
+
+  function startRename() {
+    if (onrename) renaming = card.title ?? card.id;
+  }
+
+  function endRename(keep) {
+    const text = renaming?.trim();
+    renaming = null;
+    if (keep && text) onrename?.(text);
+  }
   let content = $state(null);
   /** True while a pointer owns this card. The card does not follow the pointer
    * in pixels: it snaps, cell by cell, as the pointer crosses each half-way
@@ -304,7 +328,33 @@
       ondblclick={() => onmaximize?.()}
       onkeydown={onKeydown}
     >
-      <span class="title">{card.title ?? card.id}</span>
+      {#if renaming !== null}
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          bind:this={titleInput}
+          class="title rename"
+          bind:value={renaming}
+          aria-label="Card name"
+          onpointerdown={(event) => event.stopPropagation()}
+          onblur={() => endRename(true)}
+          onkeydown={(event) => {
+            event.stopPropagation();
+            if (event.key === "Enter") endRename(true);
+            if (event.key === "Escape") endRename(false);
+          }}
+        />
+      {:else}
+        <span
+          class="title"
+          role="presentation"
+          ondblclick={(event) => {
+            event.stopPropagation();
+            startRename();
+          }}
+        >
+          {card.title ?? card.id}
+        </span>
+      {/if}
     </header>
 
     <div class="body">
@@ -397,6 +447,16 @@
 
   .card.dragging header {
     cursor: grabbing;
+  }
+
+  .rename {
+    /* The field is the label, in the same place at the same size: renaming
+     * should look like typing over the name, not like opening a dialogue. */
+    min-width: 0;
+    flex: 1;
+    background: none;
+    color: var(--color-text);
+    outline: none;
   }
 
   .title {

@@ -14,7 +14,7 @@
   import BuildError from "./lib/BuildError.svelte";
   import { app } from "./lib/state.svelte.js";
   import { workspace } from "./lib/store/workspace.svelte.ts";
-  import { board, view } from "./lib/actions/index.ts";
+  import { board, card as cardActions, view } from "./lib/actions/index.ts";
 
   /** A new card needs a name before it has anything else. Short, readable in the
    * .imgql file it will be written to, and unique among what is already there. */
@@ -49,6 +49,7 @@
       onadd={(kind, x, y, w, h) =>
         board.addCard(nameFor(kind), { kind, x, y, w, h, page: workspace.view.page })}
       onremove={(id) => board.removeCard(id)}
+      onrename={(id, title) => cardActions.setTitle(id, title)}
     >
       {#snippet children(card)}
         {#if card.kind === "code"}

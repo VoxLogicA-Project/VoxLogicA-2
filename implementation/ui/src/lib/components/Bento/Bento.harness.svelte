@@ -63,6 +63,10 @@
   onpage={(next) => (page = next)}
   onzoom={(next) => (zoom = next)}
   onfocus={(id) => (focus = id)}
+  onrename={(id, title) => {
+    const card = find(id);
+    if (card) card.title = title;
+  }}
   onsendtopage={(id, next) => {
     const card = find(id);
     if (card) card.page = Math.max(0, next);

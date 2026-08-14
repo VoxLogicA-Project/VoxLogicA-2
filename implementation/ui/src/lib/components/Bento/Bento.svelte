@@ -50,6 +50,8 @@
     onremove = undefined,
     /** `(id, page)` — a card was sent to another page. */
     onsendtopage = undefined,
+    /** `(id, title)` — a card was renamed. */
+    onrename = undefined,
     /** `(id | null)` — show one card alone, or the whole board again. */
     onfocus = undefined,
     /** `(zoom)` — the board was scaled. */
@@ -440,6 +442,49 @@
   /** The cell the last right-click landed on; where a new card goes. */
   let target = $state({ x: 0, y: 0 });
 
+  /** The cell the pointer is over on empty lattice, or null over a card.
+   *
+   * A right-click menu is not an affordance: nobody right-clicks a blank area
+   * to find out whether anything happens. Hovering free cells shows a faint
+   * plus there, which is the whole invitation -- click it and a card exists.
+   */
+  let hovered = $state(null);
+
+  function onBoardPointerMove(event) {
+    if (!pitch || drag || focus) {
+      hovered = null;
+      return;
+    }
+    if (event.target.closest(".card")) {
+      hovered = null;
+      return;
+    }
+    const box = board.getBoundingClientRect();
+    const cell = {
+      x: Math.floor((event.clientX - box.left) / pitch),
+      y: Math.floor((event.clientY - box.top) / pitch),
+    };
+    hovered =
+      cell.x >= 0 && cell.y >= 0 && cell.x < width && cell.y < height && canPlace(null, cell.x, cell.y, 1, 1)
+        ? cell
+        : null;
+  }
+
+  /** The plus makes the first kind that fits, because a menu that opens onto a
+   * menu is a menu too many. The other kinds are one right-click away. */
+  function addHere() {
+    if (!hovered) return;
+    target = hovered;
+    for (const kind of kinds) {
+      const size = room(kind);
+      if (size) {
+        onadd?.(kind.kind, target.x, target.y, size.w, size.h);
+        hovered = null;
+        return;
+      }
+    }
+  }
+
   function onBoardContextMenu(event) {
     if (!pitch) return;
     const box = board.getBoundingClientRect();
@@ -491,14 +536,30 @@
     onwheel={onWheel}
   >
     <ContextMenu label="Board" items={addItems}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         bind:this={board}
         class="board"
         class:arranging={drag !== null}
+        onpointermove={onBoardPointerMove}
+        onpointerleave={() => (hovered = null)}
         role="group"
         aria-label={label}
         style="--cols: {width}; --rows: {height}; --zoom: {zoom};"
       >
+        {#if hovered && onadd}
+          <button
+            type="button"
+            class="add"
+            aria-label="New card at column {hovered.x + 1}, row {hovered.y + 1}"
+            style="transform: translate3d({hovered.x * pitch}px, {hovered.y * pitch}px, 0);
+                   width: {pitch - gutter}px; height: {pitch - gutter}px;"
+            onclick={addHere}
+          >
+            +
+          </button>
+        {/if}
+
         {#each visible as card (card.id)}
           <BentoCard
             {card}
@@ -512,6 +573,7 @@
             focused={focus === card.id}
             onremove={onremove ? () => onremove(card.id) : undefined}
             onmaximize={() => maximize(card)}
+            onrename={onrename ? (title) => onrename(card.id, title) : undefined}
             onfocus={onfocus ? (on) => onfocus(on ? card.id : null) : undefined}
             onsendtopage={onsendtopage && !focus
               ? (next) => onsendtopage(card.id, Math.max(0, next))
@@ -610,6 +672,26 @@
 
   .board.arranging::before {
     opacity: 1;
+  }
+
+  /* Faint until you are on it: an invitation, not a control panel. */
+  .add {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: grid;
+    place-items: center;
+    border-radius: var(--radius-md);
+    color: var(--color-text-subtle);
+    font-size: var(--text-md);
+    opacity: 0.5;
+    transition: opacity var(--motion-fast) var(--easing-standard),
+      background var(--motion-fast) var(--easing-standard);
+  }
+
+  .add:hover {
+    opacity: 1;
+    background: var(--color-surface);
   }
 
   .pager {
