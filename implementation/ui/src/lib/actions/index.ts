@@ -20,6 +20,8 @@ export const board = {
   addCard: (id: string, params: Record<string, unknown> = {}) =>
     invoke("board.addCard", { id, ...params }),
   removeCard: (id: string) => invoke("board.removeCard", { id }),
+  duplicateCard: (id: string, newId: string, params: Record<string, unknown> = {}) =>
+    invoke("board.duplicateCard", { id, newId, ...params }),
   setPage: (id: string, page: number) => invoke("board.setPage", { id, page }),
 };
 
@@ -42,6 +44,8 @@ export const workspace = {
   open: (path: string) => invoke<boolean>("workspace.open", { path }),
   export: () => invoke<string>("workspace.export"),
   save: (path?: string) => invoke<string>("workspace.save", path ? { path } : {}),
+  undo: () => invoke<boolean>("workspace.undo"),
+  redo: () => invoke<boolean>("workspace.redo"),
 };
 
 export const actions = { board, card, view, workspace };

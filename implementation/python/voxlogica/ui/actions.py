@@ -36,6 +36,10 @@ class Action:
     required: tuple[str, ...]
     doc: str
     apply: Callable[["Workspace", dict[str, Any]], Any]  # noqa: F821
+    #: Does this change the document? Only these are worth undoing. Turning a
+    #: page is not an edit, and an undo stack that made you step back through
+    #: everything you looked at would be a stack nobody would use twice.
+    mutates: bool = True
 
 
 def _move(workspace, params):
@@ -79,6 +83,16 @@ def _add(workspace, params):
         page=params.get("page"),
         node=params.get("node"),
         title=params.get("title"),
+    )
+
+
+def _duplicate(workspace, params):
+    return workspace.document.duplicate_card(
+        params["id"],
+        params["newId"],
+        x=params.get("x"),
+        y=params.get("y"),
+        page=params.get("page"),
     )
 
 
@@ -149,8 +163,19 @@ def _open(workspace, params):
     return workspace.open(params["path"])
 
 
-def _action(name, params, required, doc, apply):
-    return Action(name=name, params=params, required=tuple(required), doc=doc, apply=apply)
+def _action(name, params, required, doc, apply, *, mutates=True):
+    return Action(
+        name=name, params=params, required=tuple(required), doc=doc, apply=apply,
+        mutates=mutates,
+    )
+
+
+def _undo(workspace, _params):
+    return workspace.undo()
+
+
+def _redo(workspace, _params):
+    return workspace.redo()
 
 
 ACTIONS: dict[str, Action] = {
@@ -167,6 +192,9 @@ ACTIONS: dict[str, Action] = {
                 {"id": "string", "kind": "string", "x": "int", "y": "int", "w": "int",
                  "h": "int", "page": "int", "node": "string", "title": "string"},
                 ("id",), "Add a card to the board.", _add),
+        _action("board.duplicateCard",
+                {"id": "string", "newId": "string", "x": "int", "y": "int", "page": "int"},
+                ("id", "newId"), "Copy a card, its contents included.", _duplicate),
         _action("board.removeCard", {"id": "string"}, ("id",),
                 "Remove a card and its contents.", _remove),
         _action("board.setPage", {"id": "string", "page": "int"}, ("id", "page"),
@@ -182,19 +210,23 @@ ACTIONS: dict[str, Action] = {
         _action("card.setViewMode", {"id": "string", "view": "string"}, ("id", "view"),
                 "Switch how a result card renders: its state or its content.", _set_view_mode),
         _action("view.goToPage", {"page": "int"}, ("page",),
-                "Show a page of the board.", _go_to_page),
+                "Show a page of the board.", _go_to_page, mutates=False),
         _action("view.setZoom", {"zoom": "number"}, ("zoom",),
-                "Scale the board.", _set_zoom),
+                "Scale the board.", _set_zoom, mutates=False),
         _action("view.select", {"id": "string"}, (),
-                "Select a card, or nothing.", _select),
+                "Select a card, or nothing.", _select, mutates=False),
         _action("view.focus", {"id": "string"}, (),
-                "Show one card alone, or -- with no id -- the whole board.", _focus),
+                "Show one card alone, or -- with no id -- the whole board.", _focus, mutates=False),
         _action("workspace.open", {"path": "string"}, ("path",),
                 "Open an .imgql file as the workspace document.", _open),
+        _action("workspace.undo", {}, (), "Undo the last change to the document.",
+                _undo, mutates=False),
+        _action("workspace.redo", {}, (), "Redo the change that was just undone.",
+                _redo, mutates=False),
         _action("workspace.export", {}, (),
-                "The document as .imgql text, exactly as it would be saved.", _export),
+                "The document as .imgql text, exactly as it would be saved.", _export, mutates=False),
         _action("workspace.save", {"path": "string"}, (),
-                "Write the document back to disk.", _save),
+                "Write the document back to disk.", _save, mutates=False),
     )
 }
 

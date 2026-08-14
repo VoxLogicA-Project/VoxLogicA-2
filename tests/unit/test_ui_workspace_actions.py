@@ -134,3 +134,54 @@ def test_an_arrangement_can_move_and_resize_in_the_same_breath(workspace):
         {"id": "a", "x": 1, "y": 1, "w": 2, "h": 2},
     ]}) is True
     assert "//@card id=a kind=code x=1 y=1 w=2 h=2" in workspace.document.to_imgql()
+
+
+def test_undo_puts_the_document_back(workspace):
+    before = workspace.document.to_imgql()
+    workspace.apply("board.moveCard", {"id": "a", "x": 7, "y": 3})
+    assert workspace.document.to_imgql() != before
+    assert workspace.apply("workspace.undo") is True
+    assert workspace.document.to_imgql() == before
+    assert workspace.apply("workspace.redo") is True
+    assert "x=7 y=3" in workspace.document.to_imgql()
+
+
+def test_looking_at_something_is_not_an_edit(workspace):
+    """Turning a page must not be undoable.
+
+    An undo stack that made you step back through everything you had looked at
+    is a stack nobody would use twice.
+    """
+    workspace.apply("view.goToPage", {"page": 3})
+    workspace.apply("view.setZoom", {"zoom": 1.5})
+    assert workspace.apply("workspace.undo") is False
+
+
+def test_an_edit_after_an_undo_closes_the_branch(workspace):
+    workspace.apply("board.moveCard", {"id": "a", "x": 7, "y": 3})
+    workspace.apply("workspace.undo")
+    workspace.apply("board.moveCard", {"id": "a", "x": 1, "y": 1})
+    # Redoing now would restore a document that never existed.
+    assert workspace.apply("workspace.redo") is False
+
+
+def test_undo_is_empty_after_opening_another_document(workspace, tmp_path):
+    workspace.apply("board.moveCard", {"id": "a", "x": 7, "y": 3})
+    other = tmp_path / "other.imgql"
+    other.write_text("let b = 2\n")
+    workspace.apply("workspace.open", {"path": str(other)})
+    assert workspace.apply("workspace.undo") is False
+
+
+def test_a_duplicate_carries_the_card_s_contents(workspace):
+    assert workspace.apply(
+        "board.duplicateCard", {"id": "a", "newId": "a2", "x": 5, "y": 4}
+    ) is True
+    cards = {card["id"]: card for card in workspace.snapshot()["cards"]}
+    assert cards["a2"]["source"] == cards["a"]["source"] == "let a = 1\n"
+    assert (cards["a2"]["x"], cards["a2"]["y"]) == (5, 4)
+    assert cards["a2"]["kind"] == "code"
+
+
+def test_a_duplicate_will_not_take_a_name_that_exists(workspace):
+    assert workspace.apply("board.duplicateCard", {"id": "a", "newId": "b"}) is False

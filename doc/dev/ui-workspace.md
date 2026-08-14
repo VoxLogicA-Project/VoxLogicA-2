@@ -359,3 +359,32 @@ converted as they are touched rather than in one rename, per §7. Type *checking
 is still not wired into the tests -- esbuild strips types without checking them,
 so today TypeScript buys editor help and documentation, not enforcement. That is
 worth stating plainly rather than implying a guarantee that is not there yet.
+
+---
+
+## Undo, and what counts as a change
+
+Undo is a stack of whole documents, as text, kept beside the workspace. The text
+*is* the document — export is concatenation and parsing is lossless — so a
+snapshot cannot drift from what it claims to represent, which a log of inverse
+operations can and eventually does. A board is small; a hundred of them is
+nothing.
+
+Only actions that change the document are pushed. Turning a page, zooming and
+focusing are not edits: an undo stack that made you step back through everything
+you had looked at is a stack nobody would use twice. Each `Action` says which it
+is, so the rule is data rather than a list of exceptions someone has to
+maintain — and `workspace.undo` itself is not an edit, or undo would undo undo.
+
+An edit made after an undo clears the redo stack, because redoing then would
+restore a document that never existed. Opening another file clears both: undoing
+into the previous document would be a trap.
+
+`canUndo`/`canRedo` ride along in the snapshot, so a browser and an agent see the
+same availability.
+
+## Saving
+
+Explicit, on ⌘/Ctrl+S. The document is a program in somebody's repository, and
+rewriting it every time a card is nudged would put noise in a diff they did not
+ask for. `dirty` is in the snapshot for anything that wants to show it.

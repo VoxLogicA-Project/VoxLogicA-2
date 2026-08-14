@@ -47,6 +47,9 @@
     onfocus,
     onsendtopage,
     onrename,
+    onduplicate,
+    onselect,
+    selected = false,
     /** True when this card is the one being shown alone. */
     focused = false,
     children,
@@ -58,6 +61,7 @@
     [
       onmaximize && { label: "Maximize", hint: "double-click", onselect: onmaximize },
       onrename && { label: "Rename", hint: "double-click the name", onselect: startRename },
+      onduplicate && { label: "Duplicate", onselect: onduplicate },
       onfocus && {
         label: focused ? "Leave focus" : "Focus",
         hint: focused ? "esc" : "f",
@@ -310,6 +314,7 @@
     class:dragging
     class:invalid
     class:focused
+    class:selected
     style="transform: translate3d({px.x}px, {px.y}px, 0); width: {px.w}px; height: {px.h}px;"
     aria-label={card.title ?? card.id}
   >
@@ -321,7 +326,10 @@
       role="button"
       tabindex="0"
       aria-label="{card.title ?? card.id} — move with arrows, resize with shift+arrows"
-      onpointerdown={(event) => begin(event, "move")}
+      onpointerdown={(event) => {
+        onselect?.();
+        begin(event, "move");
+      }}
       onpointermove={move}
       onpointerup={end}
       onpointercancel={end}
@@ -420,6 +428,13 @@
 
   .card.focused {
     box-shadow: var(--shadow-overlay);
+  }
+
+  /* The card you are working with, said as quietly as it can be said: a ring
+   * the width of the focus ring, in the accent, and nothing else moves. */
+  .card.selected {
+    outline: var(--ring-width) solid var(--color-accent);
+    outline-offset: calc(var(--ring-width) * -1);
   }
 
   .card.invalid {

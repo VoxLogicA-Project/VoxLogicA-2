@@ -53,6 +53,8 @@ export interface Snapshot {
   cards: Card[];
   view: View;
   dirty: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
 }
 
 class WorkspaceStore {
@@ -61,6 +63,8 @@ class WorkspaceStore {
   view = $state<View>({ page: 0, zoom: 1, selection: null, focus: null });
   path = $state<string | null>(null);
   dirty = $state(false);
+  canUndo = $state(false);
+  canRedo = $state(false);
   /** True once the server has told us anything at all. */
   loaded = $state(false);
 
@@ -81,6 +85,8 @@ class WorkspaceStore {
     this.view = snapshot.view;
     this.path = snapshot.path;
     this.dirty = snapshot.dirty;
+    this.canUndo = snapshot.canUndo ?? false;
+    this.canRedo = snapshot.canRedo ?? false;
     this.loaded = true;
   }
 }

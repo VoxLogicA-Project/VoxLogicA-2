@@ -30,6 +30,14 @@ class Workspace:
         #: the program, and a diff that changes because someone scrolled is a
         #: diff nobody wants to review.
         self.view: dict[str, Any] = {"page": 0, "zoom": 1.0, "selection": None, "focus": None}
+        #: Undo is a stack of whole documents, as text.
+        #:
+        #: The text *is* the document -- export is concatenation and parsing is
+        #: lossless -- so a snapshot cannot drift from what it claims to
+        #: represent, which an inverse-operation log can and eventually does.
+        #: A board is small; a hundred of them is nothing.
+        self._past: list[str] = []
+        self._future: list[str] = []
 
     # ------------------------------------------------------------------ state
 
@@ -42,6 +50,8 @@ class Workspace:
                 "cards": self.document.cards,
                 "view": dict(self.view),
                 "dirty": self.document.dirty,
+                "canUndo": bool(self._past),
+                "canRedo": bool(self._future),
             }
 
     # ---------------------------------------------------------------- actions
@@ -55,9 +65,34 @@ class Workspace:
         if missing:
             raise ValueError(f"{name} needs {', '.join(missing)}")
         with self._lock:
+            if action.mutates:
+                self._past.append(self.document.to_imgql())
+                del self._past[:-100]
+                # A new edit is a new branch: whatever was undone is not coming
+                # back, and offering to redo it would restore a document that
+                # never existed.
+                self._future.clear()
             result = action.apply(self, params)
         self.publish()
         return result
+
+    def undo(self) -> bool:
+        with self._lock:
+            if not self._past:
+                return False
+            self._future.append(self.document.to_imgql())
+            self.document = parse(self._past.pop())
+            self.document.dirty = True
+            return True
+
+    def redo(self) -> bool:
+        with self._lock:
+            if not self._future:
+                return False
+            self._past.append(self.document.to_imgql())
+            self.document = parse(self._future.pop())
+            self.document.dirty = True
+            return True
 
     def open(self, path: str) -> bool:
         target = Path(path)
@@ -65,6 +100,10 @@ class Workspace:
         with self._lock:
             self.path = target
             self.document = parse(text)
+            # A different document, so nothing before it is anything to go back
+            # to: undoing into the previous file would be a trap.
+            self._past.clear()
+            self._future.clear()
         return True
 
     def save(self, path: str | None = None) -> str:

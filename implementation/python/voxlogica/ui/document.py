@@ -291,6 +291,26 @@ class Document:
         self.dirty = True
         return True
 
+    def duplicate_card(self, card_id: str, new_id: str, **attrs: Any) -> bool:
+        """Copy a card, body and all, as a new card.
+
+        A copy that lost the text would not be a copy of anything a user
+        recognises: what they pointed at was the card *with what is in it*.
+        Everything else about it comes along too, so a copy of a constrained,
+        node-bound result card is another one of those.
+        """
+        source = self.find(card_id)
+        if source is None or source.directive is None or self.find(new_id) is not None:
+            return False
+        values = dict(source.directive.attrs)
+        values["id"] = new_id
+        values.update({key: str(value) for key, value in attrs.items() if value is not None})
+        self.segments.append(
+            Segment(Directive(kind="card", attrs=values, raw="", rewritten=True), source.body)
+        )
+        self.dirty = True
+        return True
+
     def remove_card(self, card_id: str) -> bool:
         segment = self.find(card_id)
         if segment is None:

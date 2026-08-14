@@ -52,6 +52,11 @@
     onsendtopage = undefined,
     /** `(id, title)` — a card was renamed. */
     onrename = undefined,
+    /** `(id, {x, y, w, h})` — a copy was asked for, and where it fits. */
+    onduplicate = undefined,
+    /** `(id | null)` — the card the user is working with. */
+    onselect = undefined,
+    selection = null,
     /** `(id | null)` — show one card alone, or the whole board again. */
     onfocus = undefined,
     /** `(zoom)` — the board was scaled. */
@@ -404,6 +409,26 @@
   /** Where a maximized card came from, so double-click can undo itself. */
   let restored = $state({});
 
+  /** The nearest free rectangle the same size as this card, for a copy.
+   *
+   * Beside it if there is room, then anywhere it fits: a duplicate that
+   * refused to appear because the cell to the right was taken would be a copy
+   * the user has to argue with. */
+  function copySpot(card) {
+    const size = sizeOf(card);
+    const box = rectOf(card);
+    for (const [dx, dy] of [[box.w, 0], [0, box.h], [-size.w, 0], [0, -size.h]]) {
+      const spot = { x: box.x + dx, y: box.y + dy, ...size };
+      if (canPlace(null, spot.x, spot.y, spot.w, spot.h)) return spot;
+    }
+    for (let y = 0; y + size.h <= height; y += 1) {
+      for (let x = 0; x + size.w <= width; x += 1) {
+        if (canPlace(null, x, y, size.w, size.h)) return { x, y, ...size };
+      }
+    }
+    return null;
+  }
+
   const ZOOMS = [0.6, 0.75, 0.875, 1, 1.25, 1.5, 2];
 
   function stepZoom(direction) {
@@ -680,6 +705,9 @@
             size={sizeOf(card)}
             focused={focus === card.id}
             onremove={onremove ? () => onremove(card.id) : undefined}
+            selected={selection === card.id}
+            onselect={onselect ? () => onselect(card.id) : undefined}
+            onduplicate={onduplicate ? () => onduplicate(card.id, copySpot(card)) : undefined}
             onmaximize={() => maximize(card)}
             onrename={onrename ? (title) => onrename(card.id, title) : undefined}
             onfocus={onfocus ? (on) => onfocus(on ? card.id : null) : undefined}

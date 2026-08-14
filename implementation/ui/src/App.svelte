@@ -14,7 +14,12 @@
   import BuildError from "./lib/BuildError.svelte";
   import { app } from "./lib/state.svelte.js";
   import { workspace } from "./lib/store/workspace.svelte.ts";
-  import { board, card as cardActions, view } from "./lib/actions/index.ts";
+  import {
+    board,
+    card as cardActions,
+    view,
+    workspace as workspaceActions,
+  } from "./lib/actions/index.ts";
 
   /** A new card needs a name before it has anything else. Short, readable in the
    * .imgql file it will be written to, and unique among what is already there. */
@@ -25,7 +30,34 @@
       if (!taken.has(id)) return id;
     }
   }
+  /** Undo, redo and save belong to the workspace rather than to the board, so
+   * they are handled here: the board should not have to know that a document
+   * exists, let alone that it has a file. */
+  function onKeydown(event) {
+    if (!(event.metaKey || event.ctrlKey)) return;
+    const key = event.key.toLowerCase();
+    if (key === "z") {
+      event.preventDefault();
+      if (event.shiftKey) workspaceActions.redo();
+      else workspaceActions.undo();
+    } else if (key === "s") {
+      // Explicit, not automatic. The document is a program in somebody's
+      // repository, and rewriting it every time a card is nudged would put
+      // noise in a diff they did not ask for.
+      event.preventDefault();
+      workspaceActions.save();
+    }
+  }
+
+  /** A copy of a card, where the board says there is room for one. */
+  function duplicate(id, spot) {
+    const source = workspace.cards.find((entry) => entry.id === id);
+    if (!source || !spot) return;
+    board.duplicateCard(id, nameFor(source.kind), { ...spot, page: source.page });
+  }
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 <main>
   {#if app.buildError}
@@ -49,6 +81,9 @@
       onadd={(kind, x, y, w, h) =>
         board.addCard(nameFor(kind), { kind, x, y, w, h, page: workspace.view.page })}
       onremove={(id) => board.removeCard(id)}
+      onduplicate={duplicate}
+      onselect={(id) => view.select(id)}
+      selection={workspace.view.selection}
       onrename={(id, title) => cardActions.setTitle(id, title)}
     >
       {#snippet children(card)}
