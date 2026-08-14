@@ -118,11 +118,30 @@ def run_cli(command: list[str], *, cwd: Path, env: dict[str, str], step: str) ->
     logger.info("Completed %s", step)
 
 
-def trainer_dir(nnunet_results: Path, dataset_folder: str, configuration: str) -> Path:
+def trainer_dir(nnunet_results: Path, dataset_folder: str, configuration: str,
+                trainer: str | None = None) -> Path:
+    """The results directory of THIS trainer, not of whichever one is there.
+
+    Resolving by shape instead of by identity was wrong in both directions. Two
+    trainers in one dataset folder made it raise "ambiguous trainer
+    directories" and refuse to run; one trainer made it return that one
+    whatever had been asked for, so a request for a ten-epoch model could be
+    answered with a different trainer's checkpoint -- and the caller would then
+    "skip training, checkpoint already exists" and hand back a model nobody
+    asked for. The trainer name is known at every call site; use it.
+    """
     dataset_results = nnunet_results / dataset_folder
     if not dataset_results.is_dir():
         raise ValueError(f"nnUNet results folder not found: {dataset_results}")
     suffix = f"__nnUNetPlans__{configuration}"
+    if trainer:
+        exact = dataset_results / f"{trainer}{suffix}"
+        if exact.is_dir():
+            return exact
+        present = sorted(p.name for p in dataset_results.iterdir() if p.is_dir())
+        raise ValueError(
+            f"no results for trainer {trainer!r} with configuration {configuration!r} "
+            f"under {dataset_results}; present: {present}")
     matches = sorted(
         path for path in dataset_results.iterdir() if path.is_dir() and path.name.endswith(suffix)
     )
@@ -174,14 +193,18 @@ def train_model(
 
     results_root = Path(layout["nnunet_results"])
     folder = str(layout["dataset_folder"])
+    trained_folds: list[int] = []
+    trainer_class = (trainer or DEFAULT_TRAINER).strip()
+
+    # Only THIS trainer's checkpoints may satisfy "already trained": another
+    # trainer's fold_0 is a different model, and reusing it would answer the
+    # program's question with someone else's answer.
     current_trainer: Path | None = None
     try:
-        current_trainer = trainer_dir(results_root, folder, configuration)
+        current_trainer = trainer_dir(results_root, folder, configuration, trainer_class)
     except ValueError:
         pass
 
-    trained_folds: list[int] = []
-    trainer_class = (trainer or DEFAULT_TRAINER).strip()
     train_device = "cpu" if device in {"cpu", "none"} else "cuda"
 
     for fold in range(nfolds):
@@ -202,7 +225,7 @@ def train_model(
         run_cli(train_cmd, cwd=work_root, env=env, step=f"train fold {fold}")
         trained_folds.append(fold)
 
-    resolved_trainer = trainer_dir(results_root, folder, configuration)
+    resolved_trainer = trainer_dir(results_root, folder, configuration, trainer_class)
     state = load_state(work_root) or {}
     state.update(
         {
