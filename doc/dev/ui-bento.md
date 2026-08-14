@@ -135,12 +135,42 @@ size.
 | Gesture | Effect |
 |---|---|
 | Drag the header | Move. The card snaps cell to cell. |
-| Drag the corner grip | Resize, clamped by the card's constraints. |
+| Drag any edge or corner | Resize, clamped by the card's constraints. |
+| Double-click the header | Maximize into the free room around it; again to restore. |
 | Right-click a free cell | New card there, of the kinds that fit. |
-| Right-click a card | That card's own menu (remove). |
+| Right-click a card | That card's menu: maximize, focus, send to a page, remove. |
 | Focus the header, arrows | Move one cell. |
 | Focus the header, shift+arrows | Resize one cell. |
+| Focus the header, `f` | Focus this card alone; `Escape` leaves. |
+| Focus the header, `m` / Enter | Maximize. |
 | Focus the header, Delete | Remove the card. |
+| ⌘/Ctrl `+` `-` `0`, ctrl+wheel | Zoom the lattice: bigger cells, same coordinates. |
+
+**Resizing pulls edges, not a handle.** All eight: four sides, four corners,
+invisible, ~8px wide with the corners winning where they meet. Pulling a top or
+left edge moves the card as it shrinks — that is what pulling *that* edge means,
+and the opposite edge is the one that must not move. When a constraint refuses
+the size, the moving edge stays put instead of sliding the card sideways for
+free.
+
+**Nothing is drawn that is not content.** No border on a card, no rule under its
+header, no grip in its corner: a card is a surface a little above the board, and
+outlining things that space already separates is drawing boxes for their own
+sake. The cursor is the resize affordance, as it is for every window on the
+desktop. The lattice itself fades in only while you are arranging — "where will
+this land" is not a question anyone is asking until they have a card in hand —
+and the size read-out appears on hover. The one line the board will draw is the
+outline on a refused drop.
+
+**Maximize takes only free room.** It grows a cell at a time in each direction
+while the space is empty; it never displaces anyone, because a double-click that
+shoved three cards aside would be a surprise. The previous rectangle is
+remembered, so the same gesture restores it.
+
+**Focus is a way of looking, not a change.** One card fills the board and the
+rest are hidden; the card's real cells are untouched, and `Escape` gives them
+back. It is `view` state on the server, not a browser-local mode, so an agent
+asking what the user is looking at gets the answer the user would give.
 
 **The card snaps; it does not glide.** It moves a whole cell when the pointer
 passes the halfway mark, rounded rather than floored, so the card is always
@@ -189,8 +219,15 @@ not fit.
 
 The board extends past what a viewport can hold by paging, not by growing without
 limit: a bounded page lets a position keep its meaning ("top-left of page 2")
-instead of being a coordinate somewhere in an unbounded plane. The pager appears
-only when a second page has cards on it.
+instead of being a coordinate somewhere in an unbounded plane.
+
+**Pages are not a list.** `pageCount` is derived: one more than the highest page
+any card is on, or the page you are standing on, whichever is greater. That is
+the whole of "add a page" and "remove a page" — walk past the last page with the
+pager's `+` and you are on a new one; send the last card off a page and the page
+is gone when you leave it. There is no collection of pages to keep in step with
+the cards, so a page cannot go missing and an empty one cannot be left behind.
+Cards move between pages from their own menu.
 
 ---
 
@@ -211,14 +248,13 @@ only when a second page has cards on it.
 
 ## 7. Open
 
-- **Moving a card between pages.** Dragging to the edge is the obvious gesture
-  and is not implemented.
+- **Dragging a card to a page.** The card menu sends it; dragging past the edge
+  of the board would be the better gesture and is not implemented.
 - **Tidy/pack.** Still absent, and still an action if it lands: making room for a
   drag is one thing, rearranging a board nobody asked to rearrange is another.
 - **A card creating itself where there is no room.** The menu says "no room"
   rather than finding a spot elsewhere; offering to place a card somewhere the
   user is not pointing is a guess.
-- **Zoom UI.** The `zoom` prop exists and nothing sets it.
 - **Overflow inside a card** is a plain scroll container today. Whether a card
   that cannot fit its content should say so is a content question, not a board
   question.

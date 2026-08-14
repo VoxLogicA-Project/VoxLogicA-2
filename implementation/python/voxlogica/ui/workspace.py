@@ -29,7 +29,7 @@ class Workspace:
         #: Not part of the document: which page you are on is not a property of
         #: the program, and a diff that changes because someone scrolled is a
         #: diff nobody wants to review.
-        self.view: dict[str, Any] = {"page": 0, "zoom": 1.0, "selection": None}
+        self.view: dict[str, Any] = {"page": 0, "zoom": 1.0, "selection": None, "focus": None}
 
     # ------------------------------------------------------------------ state
 

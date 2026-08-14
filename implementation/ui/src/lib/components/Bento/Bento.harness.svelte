@@ -16,6 +16,8 @@
 
   let cards = $state(structuredClone(seed));
   let page = $state(0);
+  let zoom = $state(1);
+  let focus = $state(null);
 
   const find = (id) => cards.find((card) => card.id === id);
 
@@ -53,10 +55,18 @@
   {...rest}
   {cards}
   {page}
+  {zoom}
+  {focus}
   onarrange={arrange}
   onadd={add}
   onremove={remove}
   onpage={(next) => (page = next)}
+  onzoom={(next) => (zoom = next)}
+  onfocus={(id) => (focus = id)}
+  onsendtopage={(id, next) => {
+    const card = find(id);
+    if (card) card.page = Math.max(0, next);
+  }}
 >
   {#snippet children(card)}
     {@render children?.(card)}

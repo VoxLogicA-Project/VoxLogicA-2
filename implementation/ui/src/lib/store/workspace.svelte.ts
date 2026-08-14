@@ -43,6 +43,8 @@ export interface View {
   page: number;
   zoom: number;
   selection: string | null;
+  /** One card shown alone, or null for the whole board. */
+  focus: string | null;
 }
 
 export interface Snapshot {
@@ -56,7 +58,7 @@ export interface Snapshot {
 class WorkspaceStore {
   board = $state<Board>({ cols: 12, rows: 8 });
   cards = $state<Card[]>([]);
-  view = $state<View>({ page: 0, zoom: 1, selection: null });
+  view = $state<View>({ page: 0, zoom: 1, selection: null, focus: null });
   path = $state<string | null>(null);
   dirty = $state(false);
   /** True once the server has told us anything at all. */

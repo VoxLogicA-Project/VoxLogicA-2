@@ -48,6 +48,14 @@
     onadd = undefined,
     /** `(id)` — a card was asked to go away. */
     onremove = undefined,
+    /** `(id, page)` — a card was sent to another page. */
+    onsendtopage = undefined,
+    /** `(id | null)` — show one card alone, or the whole board again. */
+    onfocus = undefined,
+    /** `(zoom)` — the board was scaled. */
+    onzoom = undefined,
+    /** The card being shown alone, if any. */
+    focus = null,
     /** What `onadd` may be asked for, and how big each starts. */
     kinds = [
       { kind: "code", label: "Code card", w: 5, h: 3 },
@@ -83,8 +91,20 @@
   const width = $derived(Math.max(cols, fit.cols));
   const height = $derived(Math.max(rows, fit.rows));
 
-  const pageCount = $derived(Math.max(1, ...items.map((card) => card.page + 1)));
-  const visible = $derived(items.filter((card) => card.page === page));
+  /** Pages exist because cards are on them -- plus the empty one you are
+   * standing on, if you asked for it.
+   *
+   * That is the whole of "add a page" and "remove a page": there is no list of
+   * pages to keep in step with the cards, so a page cannot be missing and an
+   * empty page cannot be left behind. Send the last card off page 3 and page 3
+   * is gone; go to the page after the last and it is there while you are.
+   */
+  const pageCount = $derived(
+    Math.max(1, page + 1, ...items.map((card) => card.page + 1)),
+  );
+  const visible = $derived(
+    focus ? items.filter((card) => card.id === focus) : items.filter((card) => card.page === page),
+  );
 
   /** A card's effective size: what it was given, or what it measured. */
   function sizeOf(card) {
@@ -270,8 +290,98 @@
   /** Where a card is drawn right now: mid-drag arrangement first, then a
    * committed-but-unconfirmed spot, then the layout itself. */
   function placeOf(card) {
+    // Focus is a way of looking, not a change to the layout: the card is drawn
+    // filling the board and its real cells are left exactly as they were.
+    if (focus === card.id) return { x: 0, y: 0, w: width, h: height };
     if (drag?.id === card.id) return drag.rect;
     return displaced?.get(card.id) ?? positionOf(card);
+  }
+
+  // ------------------------------------------------ maximize, focus, zoom
+
+  /** The largest free rectangle this card can grow into, from where it is.
+   *
+   * Grown one cell at a time in each direction, so it takes the room that is
+   * actually free rather than shoving anyone: maximize is not a drag, and a
+   * card that displaced three others because you double-clicked it would be a
+   * surprise. Double-clicking a maximized card puts it back.
+   */
+  function maximize(card) {
+    const size = sizeOf(card);
+    const before = restored[card.id];
+    if (before) {
+      restored = { ...restored, [card.id]: undefined };
+      onarrange?.([{ id: card.id, ...before }]);
+      return;
+    }
+    let rect = { x: card.x, y: card.y, w: size.w, h: size.h };
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const [dx, dy, dw, dh] of [
+        [0, 0, 1, 0], // right
+        [0, 0, 0, 1], // down
+        [-1, 0, 1, 0], // left
+        [0, -1, 0, 1], // up
+      ]) {
+        const next = {
+          x: rect.x + dx,
+          y: rect.y + dy,
+          w: rect.w + dw,
+          h: rect.h + dh,
+        };
+        if (canPlace(card.id, next.x, next.y, next.w, next.h)) {
+          rect = next;
+          grew = true;
+        }
+      }
+    }
+    if (rect.w === size.w && rect.h === size.h && rect.x === card.x && rect.y === card.y) return;
+    restored = { ...restored, [card.id]: { x: card.x, y: card.y, w: size.w, h: size.h } };
+    pending = { ...pending, [card.id]: rect };
+    pendingSince = Date.now();
+    onarrange?.([{ id: card.id, ...rect }]);
+  }
+
+  /** Where a maximized card came from, so double-click can undo itself. */
+  let restored = $state({});
+
+  const ZOOMS = [0.6, 0.75, 0.875, 1, 1.25, 1.5, 2];
+
+  function stepZoom(direction) {
+    const index = ZOOMS.findIndex((value) => value >= zoom - 0.001);
+    const next = ZOOMS[Math.min(Math.max(index + direction, 0), ZOOMS.length - 1)];
+    if (next !== zoom) onzoom?.(next);
+  }
+
+  function onWindowKeydown(event) {
+    if (event.key === "Escape" && focus) {
+      onfocus?.(null);
+      return;
+    }
+    // The platform's own zoom chord, aimed at the board rather than the page:
+    // this *is* what zooming means here, and leaving it to the browser would
+    // scale the chrome around a board that already knows how to scale itself.
+    if (event.metaKey || event.ctrlKey) {
+      if (event.key === "=" || event.key === "+") {
+        event.preventDefault();
+        stepZoom(1);
+      } else if (event.key === "-") {
+        event.preventDefault();
+        stepZoom(-1);
+      } else if (event.key === "0") {
+        event.preventDefault();
+        if (zoom !== 1) onzoom?.(1);
+      }
+    }
+  }
+
+  function onWheel(event) {
+    // Pinch-to-zoom arrives as a ctrl-wheel; anything else is a scroll and is
+    // none of our business.
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    stepZoom(event.deltaY < 0 ? 1 : -1);
   }
 
   function commit(card, rect) {
@@ -345,15 +455,23 @@
   );
 </script>
 
-<div class="bento">
+<svelte:window onkeydown={onWindowKeydown} />
+
+<div class="bento" class:focusing={focus !== null}>
   <!-- The empty lattice is where a card comes from: right-click a free cell and
        the menu offers the kinds that fit there. A toolbar button would have to
        guess where the card goes; the cell you pointed at does not. -->
-  <div bind:this={canvas} class="canvas" oncontextmenucapture={onBoardContextMenu}>
+  <div
+    bind:this={canvas}
+    class="canvas"
+    oncontextmenucapture={onBoardContextMenu}
+    onwheel={onWheel}
+  >
     <ContextMenu label="Board" items={addItems}>
       <div
         bind:this={board}
         class="board"
+        class:arranging={drag !== null}
         role="group"
         aria-label={label}
         style="--cols: {width}; --rows: {height}; --zoom: {zoom};"
@@ -368,7 +486,13 @@
             at={placeOf(card)}
             invalid={refused && drag?.id === card.id}
             size={sizeOf(card)}
+            focused={focus === card.id}
             onremove={onremove ? () => onremove(card.id) : undefined}
+            onmaximize={() => maximize(card)}
+            onfocus={onfocus ? (on) => onfocus(on ? card.id : null) : undefined}
+            onsendtopage={onsendtopage && !focus
+              ? (next) => onsendtopage(card.id, Math.max(0, next))
+              : undefined}
             onpreview={(rect) => preview(card, rect)}
             oncommit={(rect) => commit(card, rect)}
             onmeasure={(w, h) => (measured = { ...measured, [card.id]: { w, h } })}
@@ -380,16 +504,27 @@
     </ContextMenu>
   </div>
 
-  {#if pageCount > 1}
+  {#if focus}
+    <nav class="pager" aria-label="Focus">
+      <button type="button" onclick={() => onfocus?.(null)}>Leave focus <kbd>esc</kbd></button>
+    </nav>
+  {:else if pageCount > 1 || onpage}
     <nav class="pager" aria-label="Board pages">
-      <button type="button" disabled={page === 0} onclick={() => onpage?.(page - 1)}>‹</button>
+      <button
+        type="button"
+        aria-label="Previous page"
+        disabled={page === 0}
+        onclick={() => onpage?.(page - 1)}
+      >
+        ‹
+      </button>
       <span class="numeric">page {page + 1} / {pageCount}</span>
       <button
         type="button"
-        disabled={page >= pageCount - 1}
+        aria-label={page >= pageCount - 1 ? "New page" : "Next page"}
         onclick={() => onpage?.(page + 1)}
       >
-        ›
+        {page >= pageCount - 1 ? "+" : "›"}
       </button>
     </nav>
   {/if}
@@ -429,8 +564,15 @@
      * between cells -- grid lines do not interpolate -- and re-laying out the
      * whole grid on every pointer move is what made dragging flicker. */
     position: relative;
-    /* The lattice is drawn, faintly: an empty board that shows its cells tells
-     * you what dragging will snap to before you drag anything. */
+    /* The lattice is not painted on the board itself: it lives in a layer that
+     * can fade. It answers "where will this land", which is a question nobody
+     * is asking until they have a card in their hand. */
+  }
+
+  .board::before {
+    content: "";
+    position: absolute;
+    inset: 0;
     background-image: radial-gradient(
       circle at 1px 1px,
       var(--color-border) 1px,
@@ -438,6 +580,13 @@
     );
     background-size: var(--pitch) var(--pitch);
     background-position: calc(var(--bento-gutter) / -2) calc(var(--bento-gutter) / -2);
+    opacity: 0;
+    transition: opacity var(--motion-base) var(--easing-standard);
+    pointer-events: none;
+  }
+
+  .board.arranging::before {
+    opacity: 1;
   }
 
   .pager {
@@ -449,11 +598,12 @@
     color: var(--color-text-muted);
   }
 
+  /* No outline: the pager is three quiet words at the foot of the board, and a
+   * bordered button for "next page" would be the loudest thing on screen. */
   .pager button {
     padding: 0 var(--space-2);
-    border: var(--border-width) solid var(--color-border-strong);
     border-radius: var(--radius-sm);
-    color: var(--color-text-muted);
+    color: var(--color-text-subtle);
   }
 
   .pager button:hover:not(:disabled) {

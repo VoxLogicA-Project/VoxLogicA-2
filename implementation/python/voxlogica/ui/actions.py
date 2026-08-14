@@ -125,6 +125,18 @@ def _select(workspace, params):
     return True
 
 
+def _focus(workspace, params):
+    """Show one card and nothing else, or -- with no id -- everything again.
+
+    View state, not document state: what somebody is looking at right now is not
+    part of the workspace they would commit to a repository. It lives here
+    rather than in the browser so that an agent asking "what is the user looking
+    at" gets the same answer the user would give.
+    """
+    workspace.view["focus"] = params.get("id")
+    return True
+
+
 def _export(workspace, _params):
     return workspace.document.to_imgql()
 
@@ -175,6 +187,8 @@ ACTIONS: dict[str, Action] = {
                 "Scale the board.", _set_zoom),
         _action("view.select", {"id": "string"}, (),
                 "Select a card, or nothing.", _select),
+        _action("view.focus", {"id": "string"}, (),
+                "Show one card alone, or -- with no id -- the whole board.", _focus),
         _action("workspace.open", {"path": "string"}, ("path",),
                 "Open an .imgql file as the workspace document.", _open),
         _action("workspace.export", {}, (),

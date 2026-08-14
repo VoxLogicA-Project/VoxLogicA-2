@@ -35,6 +35,7 @@ export const view = {
   goToPage: (page: number) => invoke("view.goToPage", { page }),
   setZoom: (zoom: number) => invoke("view.setZoom", { zoom }),
   select: (id: string | null) => invoke("view.select", id === null ? {} : { id }),
+  focus: (id: string | null) => invoke("view.focus", id === null ? {} : { id }),
 };
 
 export const workspace = {

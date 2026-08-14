@@ -43,16 +43,39 @@
     oncommit,
     onmeasure,
     onremove,
+    onmaximize,
+    onfocus,
+    onsendtopage,
+    /** True when this card is the one being shown alone. */
+    focused = false,
     children,
   } = $props();
 
   /** The card's own menu. Right-clicking a card is about *this* card, which is
    * why it stops there and never reaches the board's "new card here". */
   const menu = $derived(
-    onremove ? [{ label: "Remove card", danger: true, onselect: onremove }] : [],
+    [
+      onmaximize && { label: "Maximize", hint: "double-click", onselect: onmaximize },
+      onfocus && {
+        label: focused ? "Leave focus" : "Focus",
+        hint: focused ? "esc" : "f",
+        onselect: () => onfocus(!focused),
+      },
+      onsendtopage && { separator: true },
+      onsendtopage && {
+        label: "Send to next page",
+        onselect: () => onsendtopage(card.page + 1),
+      },
+      onsendtopage && {
+        label: "Send to previous page",
+        disabled: card.page === 0,
+        onselect: () => onsendtopage(card.page - 1),
+      },
+      onremove && { separator: true },
+      onremove && { label: "Remove card", danger: true, onselect: onremove },
+    ].filter(Boolean),
   );
 
-  let root = $state(null);
   let headerEl = $state(null);
   let content = $state(null);
   /** True while a pointer owns this card. The card does not follow the pointer
@@ -104,13 +127,11 @@
     const box = content.getBoundingClientRect();
     if (style === null) content.removeAttribute("style");
     else content.setAttribute("style", style);
-    // The card is not only its content: the header and the border take cells
-    // too, and a card sized to the content alone clips by exactly that much.
-    const border = 2 * parseFloat(getComputedStyle(root).borderTopWidth || 0);
-    const chrome = (headerEl?.offsetHeight ?? 0) + border;
+    // The card is not only its content: the header takes cells too, and a card
+    // sized to the content alone clips by exactly that much.
     const [w, h] = clamp(
-      Math.ceil((box.width + border + gutter) / pitch),
-      Math.ceil((box.height + chrome + gutter) / pitch),
+      Math.ceil((box.width + gutter) / pitch),
+      Math.ceil((box.height + (headerEl?.offsetHeight ?? 0) + gutter) / pitch),
     );
     if (w !== size.w || h !== size.h) onmeasure?.(w, h);
   }
@@ -126,6 +147,13 @@
   });
 
   // ---------------------------------------------------------------- gestures
+
+  /** Which edges a resize gesture is pulling. `move` pulls none. */
+  const EDGES = {
+    n: { top: 1 }, s: { bottom: 1 }, e: { right: 1 }, w: { left: 1 },
+    ne: { top: 1, right: 1 }, nw: { top: 1, left: 1 },
+    se: { bottom: 1, right: 1 }, sw: { bottom: 1, left: 1 },
+  };
 
   function begin(event, mode) {
     if (event.button !== 0 || !pitch) return;
@@ -144,6 +172,7 @@
       y: event.clientY,
       from: { x: at.x, y: at.y, w: size.w, h: size.h },
       rect: { x: at.x, y: at.y, w: size.w, h: size.h },
+      edges: EDGES[mode] ?? {},
     };
     dragging = true;
     onpreview?.(gesture.rect);
@@ -163,8 +192,34 @@
         y: Math.min(Math.max(from.y + Math.round(dy / pitch), 0), rows - from.h),
       };
     } else {
-      const [w, h] = clamp(from.w + Math.round(dx / pitch), from.h + Math.round(dy / pitch));
-      gesture.rect = { ...from, w: Math.min(w, cols - from.x), h: Math.min(h, rows - from.y) };
+      // A resize is up to four independent pulls. Dragging a top or left edge
+      // moves the card as it shrinks it, which is what "pulling that edge"
+      // means -- the opposite edge is the one that must not move.
+      const { edges } = gesture;
+      const cx = Math.round(dx / pitch);
+      const cy = Math.round(dy / pitch);
+      let { x, y, w, h } = from;
+      if (edges.right) w = from.w + cx;
+      if (edges.left) {
+        w = from.w - cx;
+        x = from.x + cx;
+      }
+      if (edges.bottom) h = from.h + cy;
+      if (edges.top) {
+        h = from.h - cy;
+        y = from.y + cy;
+      }
+      const [cw, ch] = clamp(w, h);
+      // Clamping may have refused the size; the moving edge then stays put
+      // rather than sliding the card sideways for free.
+      if (edges.left) x = from.x + from.w - cw;
+      if (edges.top) y = from.y + from.h - ch;
+      gesture.rect = {
+        x: Math.max(x, 0),
+        y: Math.max(y, 0),
+        w: Math.min(cw, cols - Math.max(x, 0)),
+        h: Math.min(ch, rows - Math.max(y, 0)),
+      };
     }
     onpreview?.(gesture.rect);
   }
@@ -194,6 +249,16 @@
       onremove();
       return;
     }
+    if (event.key === "f" && onfocus) {
+      event.preventDefault();
+      onfocus(!focused);
+      return;
+    }
+    if ((event.key === "m" || event.key === "Enter") && onmaximize) {
+      event.preventDefault();
+      onmaximize();
+      return;
+    }
     const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[
       event.key
     ];
@@ -216,16 +281,17 @@
 
 <ContextMenu label="{card.title ?? card.id} actions" items={menu}>
   <article
-    bind:this={root}
     data-card-id={card.id}
     class="card"
     class:dragging
     class:invalid
+    class:focused
     style="transform: translate3d({px.x}px, {px.y}px, 0); width: {px.w}px; height: {px.h}px;"
     aria-label={card.title ?? card.id}
   >
     <!-- The header is the drag handle, and it is focusable: a card you can only
-         move with a pointer is a card some people cannot move. -->
+         move with a pointer is a card some people cannot move. Double-click
+         fills whatever room the card has around it. -->
     <header
       bind:this={headerEl}
       role="button"
@@ -235,6 +301,7 @@
       onpointermove={move}
       onpointerup={end}
       onpointercancel={end}
+      ondblclick={() => onmaximize?.()}
       onkeydown={onKeydown}
     >
       <span class="title">{card.title ?? card.id}</span>
@@ -247,16 +314,22 @@
       </div>
     </div>
 
-    <button
-      type="button"
-      class="grip"
-      aria-label="Resize {card.title ?? card.id}"
-      onpointerdown={(event) => begin(event, "resize")}
-      onpointermove={move}
-      onpointerup={end}
-      onpointercancel={end}
-      onkeydown={onKeydown}
-    ></button>
+    <!-- Eight invisible pulls: four edges and four corners. Nothing is drawn --
+         the cursor is the affordance, which is how every window on this desktop
+         has behaved for thirty years, and a card with a visible grip in the
+         corner is a card wearing its implementation on the outside. -->
+    {#if !focused}
+      {#each ["n", "s", "e", "w", "ne", "nw", "se", "sw"] as edge (edge)}
+        <span
+          class="pull {edge}"
+          role="presentation"
+          onpointerdown={(event) => begin(event, edge)}
+          onpointermove={move}
+          onpointerup={end}
+          onpointercancel={end}
+        ></span>
+      {/each}
+    {/if}
   </article>
 </ContextMenu>
 
@@ -269,30 +342,42 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+    /* No border, no divider, no grip. A card is a surface that sits slightly
+     * above the board, and that is the whole visual idea: outlines around
+     * things that are already separated by space is the drawing of boxes for
+     * their own sake. Depth and quiet type do the work instead. */
     background: var(--color-surface);
-    border: var(--border-width) solid var(--color-border);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-sm);
     overflow: hidden;
-    /* Displaced cards slide; the one under the finger does not (see below). */
     transition:
       transform var(--motion-fast) var(--easing-standard),
       width var(--motion-fast) var(--easing-standard),
-      height var(--motion-fast) var(--easing-standard);
+      height var(--motion-fast) var(--easing-standard),
+      box-shadow var(--motion-fast) var(--easing-standard);
+  }
+
+  .card:hover {
+    box-shadow: var(--shadow-md);
   }
 
   .card.dragging {
     /* No easing on the card being dragged: it snaps to the cell the pointer is
      * over, and interpolating that reads as lag. */
     transition: none;
-    /* Lifted while it is in the air, and only then: a shadow that is always on
-     * says everything is floating, which says nothing. */
     box-shadow: var(--shadow-overlay);
     z-index: var(--layer-overlay);
   }
 
+  .card.focused {
+    box-shadow: var(--shadow-overlay);
+  }
+
   .card.invalid {
-    border-color: var(--color-danger);
+    /* The one place a line is worth drawing: a refusal has to be unmistakable,
+     * and it lasts only as long as the pointer holds the card there. */
+    outline: var(--border-width) solid var(--color-danger);
+    outline-offset: calc(var(--border-width) * -1);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -306,8 +391,7 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-3);
-    padding: var(--space-1) var(--space-3);
-    border-bottom: var(--border-width) solid var(--color-border);
+    padding: var(--space-2) var(--space-3) var(--space-1);
     cursor: grab;
     touch-action: none; /* the pointer belongs to the drag, not to scrolling */
     user-select: none;
@@ -318,19 +402,27 @@
   }
 
   .title {
-    font-size: var(--text-xs);
+    font-size: var(--text-2xs);
     font-weight: var(--weight-semibold);
     text-transform: uppercase;
     letter-spacing: var(--tracking-caps);
-    color: var(--color-text-muted);
+    color: var(--color-text-subtle);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
+  /* The size read-out is for arranging, so it appears while you arrange. */
   .size {
     font-size: var(--text-2xs);
     color: var(--color-text-subtle);
+    opacity: 0;
+    transition: opacity var(--motion-fast) var(--easing-standard);
+  }
+
+  .card:hover .size,
+  .card.dragging .size {
+    opacity: 1;
   }
 
   .body {
@@ -340,33 +432,48 @@
   }
 
   .content {
-    padding: var(--space-3);
+    padding: var(--space-1) var(--space-3) var(--space-3);
   }
 
-  .grip {
+  /* Invisible, and wide enough to hit without aiming. Corners sit above edges
+   * so the diagonal wins where they meet. */
+  .pull {
     position: absolute;
+    touch-action: none;
+  }
+
+  .pull.n,
+  .pull.s {
+    left: 0;
     right: 0;
+    height: var(--space-2);
+    cursor: ns-resize;
+  }
+
+  .pull.e,
+  .pull.w {
+    top: 0;
     bottom: 0;
+    width: var(--space-2);
+    cursor: ew-resize;
+  }
+
+  .pull.n { top: 0; }
+  .pull.s { bottom: 0; }
+  .pull.e { right: 0; }
+  .pull.w { left: 0; }
+
+  .pull.ne,
+  .pull.nw,
+  .pull.se,
+  .pull.sw {
     width: var(--space-4);
     height: var(--space-4);
-    cursor: nwse-resize;
-    touch-action: none;
-    /* Two short strokes rather than an icon: at 16px an icon is noise, and the
-     * corner is discoverable by being the corner. */
-    background: linear-gradient(
-      135deg,
-      transparent 0 45%,
-      var(--color-border-strong) 45% 55%,
-      transparent 55%
-    );
+    z-index: 1;
   }
 
-  .grip:hover {
-    background: linear-gradient(
-      135deg,
-      transparent 0 45%,
-      var(--color-text-muted) 45% 55%,
-      transparent 55%
-    );
-  }
+  .pull.ne { top: 0; right: 0; cursor: nesw-resize; }
+  .pull.nw { top: 0; left: 0; cursor: nwse-resize; }
+  .pull.se { bottom: 0; right: 0; cursor: nwse-resize; }
+  .pull.sw { bottom: 0; left: 0; cursor: nesw-resize; }
 </style>

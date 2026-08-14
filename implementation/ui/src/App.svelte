@@ -40,8 +40,12 @@
       page={workspace.view.page}
       zoom={workspace.view.zoom}
       label="Workspace"
+      focus={workspace.view.focus}
       onarrange={(placements) => board.arrange(placements)}
       onpage={(page) => view.goToPage(page)}
+      onfocus={(id) => view.focus(id)}
+      onzoom={(zoom) => view.setZoom(zoom)}
+      onsendtopage={(id, page) => board.setPage(id, page)}
       onadd={(kind, x, y, w, h) =>
         board.addCard(nameFor(kind), { kind, x, y, w, h, page: workspace.view.page })}
       onremove={(id) => board.removeCard(id)}
