@@ -7,6 +7,8 @@ the folders themselves, which is the property that makes "put it in git" work.
 
 from __future__ import annotations
 
+import shutil
+
 import pytest
 
 from voxlogica.ui import home, library
@@ -26,7 +28,7 @@ def test_a_folder_is_a_project_and_an_imgql_in_it_is_a_file():
     (library.root() / "Segmentation" / "brats.imgql").write_text("let b = 2\n")
 
     tree = library.tree()
-    assert tree["projects"] == ["Segmentation"]
+    assert [p["name"] for p in tree["projects"]] == ["Segmentation"]
     assert [(f["name"], f["project"]) for f in tree["files"]] == [
         ("loose", None),
         ("brats", "Segmentation"),
@@ -36,7 +38,7 @@ def test_a_folder_is_a_project_and_an_imgql_in_it_is_a_file():
 def test_an_empty_project_is_still_a_project():
     """Somebody made it because they are about to put something in it."""
     library.new_project("Later")
-    assert library.projects() == ["Later"]
+    assert [p["name"] for p in library.projects()] == ["Later"]
     assert library.tree()["files"] == []
 
 
@@ -114,7 +116,7 @@ def test_deleting_a_file_leaves_its_project_alone():
     """A project that has just lost its last file is still a project."""
     made = library.new_file(project="Keep", name="only")
     assert library.delete(made) is True
-    assert library.projects() == ["Keep"]
+    assert [p["name"] for p in library.projects()] == ["Keep"]
 
 
 # ------------------------------------------- the open file follows what happens
@@ -171,5 +173,50 @@ def test_the_library_arrives_in_the_snapshot():
     made = library.new_file(project="Visible", name="here")
     space = Workspace(path=made)
     tree = space.snapshot()["library"]
-    assert tree["projects"] == ["Visible"]
+    assert [p["name"] for p in tree["projects"]] == ["Visible"]
     assert [(f["name"], f["open"]) for f in tree["files"]] == [("here", True)]
+
+
+# ------------------------------------------------- folders from somewhere else
+
+
+def test_an_existing_folder_can_be_shown_as_a_project(tmp_path):
+    """Nothing is moved or copied: a repository somebody already has appears
+    here, and its files are still exactly its files."""
+    elsewhere = tmp_path / "repos" / "brats"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "study.imgql").write_text("let a = 1\n")
+
+    assert library.link(elsewhere) == "brats"
+    tree = library.tree()
+    assert [(p["name"], p["linked"]) for p in tree["projects"]] == [("brats", True)]
+    assert [(f["name"], f["project"]) for f in tree["files"]] == [("study", "brats")]
+    # Still where it was.
+    assert (elsewhere / "study.imgql").exists()
+
+
+def test_a_file_made_in_a_linked_project_lands_in_that_folder(tmp_path):
+    elsewhere = tmp_path / "repos" / "brats"
+    elsewhere.mkdir(parents=True)
+    library.link(elsewhere)
+    made = library.new_file(project="brats", name="new")
+    assert made.parent == elsewhere.resolve()
+
+
+def test_unlinking_a_folder_leaves_the_folder_alone(tmp_path):
+    elsewhere = tmp_path / "repos" / "brats"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "study.imgql").write_text("let a = 1\n")
+    library.link(elsewhere)
+    assert library.unlink(elsewhere) is True
+    assert library.projects() == []
+    assert (elsewhere / "study.imgql").exists()
+
+
+def test_a_linked_folder_that_has_gone_is_simply_not_there(tmp_path):
+    elsewhere = tmp_path / "repos" / "gone"
+    elsewhere.mkdir(parents=True)
+    library.link(elsewhere)
+    shutil.rmtree(elsewhere)
+    # No error, no ghost row: the filesystem is still the truth.
+    assert library.projects() == []

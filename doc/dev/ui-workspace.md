@@ -494,3 +494,38 @@ panel) is the different act: it takes a file **out of the library** entirely —
 typically into a repository — and a folder that existed for that one file goes
 with it. A project holding several files stays where it is; moving one of its
 files must not empty a project somebody is still using.
+
+---
+
+## Which paths a client may name
+
+Every instance binds loopback only, so the only client that can reach it is the
+person sitting at the machine, and the rule is deliberately **empty**: no
+restriction at all. A check that stopped somebody opening their own file would
+protect nobody — they can open it with any other program they have — and it
+would cost them the one thing a local tool is for.
+
+The rule exists anyway, in one place (`guard.py`), because the day this listens
+on anything but loopback the answer has to change in one edit rather than in
+fifteen call sites. Off loopback:
+
+- the boundary is the **launch directory and its subdirectories** — nothing
+  above it, nothing beside it;
+- paths are **resolved before being checked**, because a symlink pointing out of
+  the tree is the oldest way through a check like this one;
+- the **system dialogues are refused**: a file picker that opens on the *host* is
+  not something a remote client gets to have;
+- what widens the boundary is the **user choosing a folder** in one of those
+  dialogues, never a client asking.
+
+`bind_loopback` is where the mode is set, so the socket and the boundary are one
+decision. The remote case is not reachable today and no port is opened for it.
+
+## Projects from elsewhere
+
+*Add folder…* shows a folder you already have — a repository, typically — as a
+project. Nothing is moved or copied: its files are still exactly its files, read
+fresh from disk, and removing it from the list leaves the folder alone. The list
+of linked locations is the one thing the filesystem cannot tell us on its own, so
+it is the one thing stored (`projects.json`, a list of paths and nothing else).
+A linked folder is drawn with a dashed icon and keeps its own name.

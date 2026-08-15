@@ -18,6 +18,7 @@ import logging
 import socket
 import threading
 
+from . import guard
 from .bundler import Bundler
 from .hub import Hub
 
@@ -30,6 +31,10 @@ PORT_ATTEMPTS = 32
 
 def bind_loopback(preferred: int = DEFAULT_PORT, attempts: int = PORT_ATTEMPTS) -> socket.socket:
     """Bind the first free port at or after ``preferred``, on loopback only."""
+    # Loopback, so the only client is whoever is at this machine, and the path
+    # rule is correspondingly empty. The day this binds anything else, this call
+    # is where the boundary comes back. See guard.py.
+    guard.configure(local_only=True)
     last: OSError | None = None
     for port in range(preferred, preferred + attempts):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

@@ -15,8 +15,11 @@ See doc/dev/ui-workspace.md sections 3 and 5.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable
+
+from . import guard
 
 #: Parameter types are deliberately few: they have to survive JSON, a TypeScript
 #: signature and an MCP tool schema without a type system in the middle.
@@ -190,7 +193,8 @@ def _export(workspace, _params):
 
 
 def _save(workspace, params):
-    return workspace.save(params.get("path"))
+    path = params.get("path")
+    return workspace.save(str(guard.permit(path)) if path else None)
 
 
 def _set_text(workspace, params):
@@ -205,7 +209,7 @@ def _set_text(workspace, params):
 
 
 def _library_open(workspace, params):
-    return workspace.open(params["path"])
+    return workspace.open(str(guard.permit(params["path"])))
 
 
 def _library_new_file(workspace, params):
@@ -225,7 +229,7 @@ def _library_new_project(_workspace, params):
 def _library_move(workspace, params):
     from . import library
 
-    moved = library.move(params["path"], params.get("project"))
+    moved = library.move(guard.permit(params["path"]), params.get("project"))
     workspace.follow(params["path"], moved)
     return str(moved)
 
@@ -233,7 +237,7 @@ def _library_move(workspace, params):
 def _library_rename(workspace, params):
     from . import library
 
-    renamed = library.rename(params["path"], params["name"])
+    renamed = library.rename(guard.permit(params["path"]), params["name"])
     workspace.follow(params["path"], renamed)
     return str(renamed)
 
@@ -247,14 +251,54 @@ def _library_rename_project(workspace, params):
     return after
 
 
+def _library_add_folder(workspace, params):
+    """Show a folder that already exists as a project.
+
+    With a path, that path. Without one, the system's own folder chooser, off
+    this thread -- a modal panel must not freeze the board behind it.
+    """
+    from . import library, native
+
+    path = params.get("path")
+    if path:
+        return library.link(guard.permit(path))
+    if not guard.may_open_dialogs():
+        raise guard.Refused("a system dialogue belongs to whoever is at this machine")
+
+    def ask() -> None:
+        chosen = native.choose_folder()
+        if chosen:
+            # Choosing is what widens the boundary; a client asking never does.
+            library.link(guard.approve(chosen))
+            workspace.publish()
+
+    threading.Thread(target=ask, name="voxlogica-folder-dialog", daemon=True).start()
+    return True
+
+
+def _library_forget_folder(_workspace, params):
+    from . import library
+
+    return library.unlink(params["path"])  # a location we already showed
+
+
+def _library_reveal(_workspace, params):
+    from . import native
+
+    if not guard.may_open_dialogs():
+        return False
+    return native.reveal(guard.permit(params["path"]))
+
+
 def _library_delete(workspace, params):
     from . import library
 
-    return library.delete(params["path"]) and workspace.forget(params["path"])
+    path = guard.permit(params["path"])
+    return library.delete(path) and workspace.forget(path)
 
 
 def _move_to(workspace, params):
-    return workspace.move_to(params["path"])
+    return workspace.move_to(str(guard.permit(params["path"])))
 
 
 def _rename_workspace(workspace, params):
@@ -263,6 +307,8 @@ def _rename_workspace(workspace, params):
 
 def _choose_location(workspace, _params):
     """Open the system's own save panel, and move there if it is answered."""
+    if not guard.may_open_dialogs():
+        raise guard.Refused("a system dialogue belongs to whoever is at this machine")
     workspace.choose_location()
     return True
 
@@ -272,7 +318,7 @@ def _reveal(workspace, _params):
 
 
 def _open(workspace, params):
-    return workspace.open(params["path"])
+    return workspace.open(str(guard.permit(params["path"])))
 
 
 def _action(name, params, required, doc, apply, *, mutates=True):
@@ -350,6 +396,14 @@ ACTIONS: dict[str, Action] = {
                 "Rename a file.", _library_rename, mutates=False),
         _action("library.renameProject", {"name": "string", "to": "string"}, ("name", "to"),
                 "Rename a project.", _library_rename_project, mutates=False),
+        _action("library.addFolder", {"path": "string"}, (),
+                "Show an existing folder as a project; nothing is moved or copied.",
+                _library_add_folder, mutates=False),
+        _action("library.forgetFolder", {"path": "string"}, ("path",),
+                "Stop showing a linked folder. The folder itself is untouched.",
+                _library_forget_folder, mutates=False),
+        _action("library.reveal", {"path": "string"}, ("path",),
+                "Show a file or project in the file manager.", _library_reveal, mutates=False),
         _action("library.deleteFile", {"path": "string"}, ("path",),
                 "Delete a file from the library.", _library_delete, mutates=False),
         _action("workspace.open", {"path": "string"}, ("path",),

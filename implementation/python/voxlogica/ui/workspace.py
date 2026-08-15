@@ -325,7 +325,9 @@ class Workspace:
         def ask() -> None:
             chosen = native.choose_save_path(suggested)
             if chosen:
-                self.move_to(chosen)
+                from . import guard
+
+                self.move_to(str(guard.approve(chosen)))
 
         thread = threading.Thread(target=ask, name="voxlogica-save-dialog", daemon=True)
         thread.start()

@@ -89,6 +89,33 @@ def _powershell(suggested: Path) -> str | None:
     return result.stdout.strip() or None if result.returncode == 0 else None
 
 
+def choose_folder() -> str | None:
+    """Ask the system for an existing folder. `None` if cancelled or absent."""
+    try:
+        if sys.platform == "darwin":
+            script = 'POSIX path of (choose folder with prompt "Add a project folder")'
+            result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+            return result.stdout.strip() or None if result.returncode == 0 else None
+        if os.name == "nt":
+            script = (
+                "Add-Type -AssemblyName System.Windows.Forms;"
+                "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
+                "if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }"
+            )
+            result = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                                    capture_output=True, text=True)
+            return result.stdout.strip() or None if result.returncode == 0 else None
+        for tool, args in (("zenity", ["--file-selection", "--directory"]),
+                           ("kdialog", ["--getexistingdirectory", str(Path.home())])):
+            found = shutil.which(tool)
+            if found:
+                result = subprocess.run([found, *args], capture_output=True, text=True)
+                return result.stdout.strip() or None if result.returncode == 0 else None
+    except OSError as exc:
+        logger.debug("no system folder dialogue available (%s)", exc)
+    return None
+
+
 def choose_save_path(suggested: Path) -> str | None:
     """Ask the system where to put this workspace. `None` if cancelled or absent.
 

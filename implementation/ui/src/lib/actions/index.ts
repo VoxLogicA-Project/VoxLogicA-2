@@ -52,6 +52,10 @@ export const library = {
   renameProject: (name: string, to: string) =>
     invoke<string>("library.renameProject", { name, to }),
   deleteFile: (path: string) => invoke<boolean>("library.deleteFile", { path }),
+  /** With no path, the system's own folder chooser opens. */
+  addFolder: (path?: string) => invoke("library.addFolder", path ? { path } : {}),
+  forgetFolder: (path: string) => invoke<boolean>("library.forgetFolder", { path }),
+  reveal: (path: string) => invoke<boolean>("library.reveal", { path }),
 };
 
 export const view = {

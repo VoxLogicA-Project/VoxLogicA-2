@@ -19,6 +19,7 @@ something goes when nobody has said where. They are as real as any other file;
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
@@ -39,6 +40,51 @@ _HIDDEN = {".git", ".svn", "node_modules", "__pycache__", ".DS_Store"}
 
 def root() -> Path:
     return home.workspaces()
+
+
+#: Folders elsewhere on disk that are shown as projects too.
+#:
+#: A list of *locations*, not of content: what is in them is still whatever the
+#: filesystem says, read fresh every time. This is the one thing the filesystem
+#: cannot tell us on its own -- that somebody wants a repository they already
+#: have to appear here -- and it is exactly what a VS Code workspace file is.
+def _links_file() -> Path:
+    return home.data_home() / "projects.json"
+
+
+def links() -> list[Path]:
+    try:
+        raw = json.loads(_links_file().read_text())
+    except (OSError, ValueError):
+        return []
+    seen: list[Path] = []
+    for entry in raw if isinstance(raw, list) else []:
+        path = Path(str(entry)).expanduser()
+        if path.is_dir() and path not in seen:
+            seen.append(path)
+    return seen
+
+
+def link(path: str | Path) -> str:
+    """Show an existing folder as a project. Nothing is moved or copied."""
+    folder = Path(path).expanduser().resolve()
+    if not folder.is_dir():
+        raise NotADirectoryError(str(folder))
+    current = links()
+    if folder not in current:
+        current.append(folder)
+        _links_file().parent.mkdir(parents=True, exist_ok=True)
+        _links_file().write_text(json.dumps([str(item) for item in current], indent=2))
+    return folder.name
+
+
+def unlink(path: str | Path) -> bool:
+    """Stop showing a linked folder. The folder itself is not touched."""
+    folder = Path(path).expanduser().resolve()
+    remaining = [item for item in links() if item != folder]
+    _links_file().parent.mkdir(parents=True, exist_ok=True)
+    _links_file().write_text(json.dumps([str(item) for item in remaining], indent=2))
+    return True
 
 
 def _safe(name: str) -> str:
@@ -70,37 +116,49 @@ class Entry:
         }
 
 
+def _folders() -> list[tuple[str, Path]]:
+    """(name, folder) for every project: the library's own, then linked ones."""
+    base = root()
+    inside = (
+        sorted(
+            (folder.name, folder)
+            for folder in base.iterdir()
+            if folder.is_dir() and folder.name not in _HIDDEN and not folder.name.startswith(".")
+        )
+        if base.is_dir()
+        else []
+    )
+    return inside + [(folder.name, folder) for folder in links()]
+
+
 def scan() -> list[Entry]:
     """Every file in the library, loose ones first, each in file-name order."""
     base = root()
-    if not base.is_dir():
-        return []
-    loose = [Entry(path, None) for path in sorted(base.glob(f"*{SUFFIX}")) if path.is_file()]
+    loose = (
+        [Entry(path, None) for path in sorted(base.glob(f"*{SUFFIX}")) if path.is_file()]
+        if base.is_dir()
+        else []
+    )
     filed: list[Entry] = []
-    for folder in sorted(base.iterdir()):
-        if not folder.is_dir() or folder.name in _HIDDEN or folder.name.startswith("."):
-            continue
+    for name, folder in _folders():
         filed.extend(
-            Entry(path, folder.name) for path in sorted(folder.glob(f"*{SUFFIX}")) if path.is_file()
+            Entry(path, name) for path in sorted(folder.glob(f"*{SUFFIX}")) if path.is_file()
         )
     return loose + filed
 
 
-def projects() -> list[str]:
-    """Every project folder, including ones that hold no files yet.
+def projects() -> list[dict[str, Any]]:
+    """Every project, including ones that hold no files yet.
 
     An empty project is a real thing: somebody made it because they are about to
     put something in it, and a list that hid it until then would be a list that
     forgets what you just did.
     """
-    base = root()
-    if not base.is_dir():
-        return []
-    return sorted(
-        folder.name
-        for folder in base.iterdir()
-        if folder.is_dir() and folder.name not in _HIDDEN and not folder.name.startswith(".")
-    )
+    linked = {str(folder) for folder in links()}
+    return [
+        {"name": name, "path": str(folder), "linked": str(folder) in linked}
+        for name, folder in _folders()
+    ]
 
 
 def tree(open_path: Path | None = None) -> dict[str, Any]:
@@ -113,9 +171,19 @@ def tree(open_path: Path | None = None) -> dict[str, Any]:
     }
 
 
+def folder_of(project: str | None) -> Path:
+    """Where a project's files are: inside the library, or wherever it was linked."""
+    if project is None:
+        return root()
+    for name, folder in _folders():
+        if name == project:
+            return folder
+    return root() / _safe(project)
+
+
 def new_file(project: str | None = None, name: str | None = None) -> Path:
     """A new, empty file -- in a project, or loose at the top of the library."""
-    folder = root() / _safe(project) if project else root()
+    folder = folder_of(project)
     folder.mkdir(parents=True, exist_ok=True)
     stem = _safe(name) if name else datetime.now().strftime("%Y-%m-%d-%H%M%S")
     candidate = folder / f"{stem}{SUFFIX}"
@@ -142,7 +210,7 @@ def move(path: str | Path, project: str | None) -> Path:
     is a different act with different consequences.
     """
     source = Path(path)
-    destination = (root() / _safe(project) if project else root()) / source.name
+    destination = folder_of(project) / source.name
     if source == destination:
         return source
     destination.parent.mkdir(parents=True, exist_ok=True)

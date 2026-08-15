@@ -62,9 +62,16 @@ export interface LibraryFile {
   modified: number;
 }
 
+export interface LibraryProject {
+  name: string;
+  path: string;
+  /** True when the folder lives outside the library and was linked in. */
+  linked: boolean;
+}
+
 export interface Library {
   root: string;
-  projects: string[];
+  projects: LibraryProject[];
   files: LibraryFile[];
 }
 

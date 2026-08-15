@@ -55,7 +55,7 @@
    * asked for: naming a thing before making it is the dialogue this UI does not
    * have, and the name is one double-click away in the sidebar. */
   function newProjectName() {
-    const taken = new Set(workspace.library.projects);
+    const taken = new Set(workspace.library.projects.map((project) => project.name));
     for (let n = 1; ; n += 1) {
       const name = n === 1 ? "Project" : `Project ${n}`;
       if (!taken.has(name)) return name;
@@ -158,6 +158,9 @@
       onmove={(path, project) => libraryActions.moveFile(path, project)}
       onrenamefile={(path, name) => libraryActions.renameFile(path, name)}
       onrenameproject={(name, to) => libraryActions.renameProject(name, to)}
+      onaddfolder={() => libraryActions.addFolder()}
+      onforgetfolder={(path) => libraryActions.forgetFolder(path)}
+      onreveal={(path) => libraryActions.reveal(path)}
       ondelete={(path) => libraryActions.deleteFile(path)}
     />
 
