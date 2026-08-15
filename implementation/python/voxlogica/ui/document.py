@@ -27,7 +27,10 @@ from typing import Any
 # .imgql, and the `@` makes the marker specific enough to grep for and unlikely
 # to collide with prose. Anything else on the line is attributes.
 _DIRECTIVE = re.compile(r"^//@(board|card)\b[ \t]*(.*)$")
-_ATTR = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"]*)"|(\S+))')
+#: A quoted value may contain quotes, escaped with a backslash the way every
+#: other string in this project escapes them. The alternation is ordered so a
+#: quoted value is tried first; a bare value is anything without whitespace.
+_ATTR = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)=(?:"((?:[^"\\]|\\.)*)"|(\S+))')
 
 #: Written in this order when a directive is regenerated, so that moving one card
 #: produces a one-line diff instead of a reshuffled file. Keys not listed keep
@@ -35,6 +38,7 @@ _ATTR = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"]*)"|(\S+))')
 #: not understand still survives a round trip.
 _KEY_ORDER = (
     "id",
+    "title",
     "kind",
     "x",
     "y",
@@ -49,7 +53,7 @@ _KEY_ORDER = (
     "page",
     "node",
     "view",
-    "title",
+    "from",
     "cols",
     "rows",
 )
@@ -87,9 +91,25 @@ def _comment(text: str) -> str:
     return "".join(out)
 
 
-def _quote(value: str) -> str:
-    """Quote only when the value could not be read back as one token."""
-    return f'"{value}"' if value == "" or re.search(r"[\s\"]", value) else value
+#: Always written quoted, whatever they contain. A title is prose -- somebody
+#: will type a space into it within the hour -- and a field that is only
+#: sometimes quoted teaches every reader of the file the wrong rule.
+_ALWAYS_QUOTED = ("title",)
+
+
+def _escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _unescape(value: str) -> str:
+    return re.sub(r"\\(.)", r"\1", value)
+
+
+def _quote(key: str, value: str) -> str:
+    """Quote when the value could not be read back as one token, or always."""
+    if key in _ALWAYS_QUOTED or value == "" or re.search(r'[\s"\\]', value):
+        return f'"{_escape(value)}"'
+    return value
 
 
 @dataclass
@@ -109,7 +129,7 @@ class Directive:
             return self.raw
         known = [key for key in _KEY_ORDER if key in self.attrs]
         rest = [key for key in self.attrs if key not in _KEY_ORDER]
-        pairs = " ".join(f"{key}={_quote(self.attrs[key])}" for key in known + rest)
+        pairs = " ".join(f"{key}={_quote(key, self.attrs[key])}" for key in known + rest)
         return f"//@{self.kind} {pairs}".rstrip()
 
     def set(self, key: str, value: Any) -> None:
@@ -178,7 +198,7 @@ class Document:
                 {
                     "id": "program",
                     "kind": "code",
-                    "title": "program",
+                    "title": "Program",
                     "x": 0,
                     "y": 0,
                     "page": 0,
@@ -193,8 +213,16 @@ class Document:
             if directive is None or directive.kind != "card":
                 continue
             attrs = directive.attrs
+            identity = attrs.get("id") or f"card{index}"
             card: dict[str, Any] = {
-                "id": attrs.get("id") or f"card{index}",
+                #: The reference. Stable, never shown, and what one card names
+                #: another by -- a card that is a view of another finds it here.
+                "id": identity,
+                #: The name. Prose, editable, and free to collide with another
+                #: card's: it is not identity, which is the whole reason the two
+                #: are separate fields. Files written before the split have only
+                #: an id, and it reads as a name because that is what it was.
+                "title": attrs.get("title", identity),
                 "kind": attrs.get("kind", "code"),
                 "x": directive.int_or("x", 0),
                 "y": directive.int_or("y", 0),
@@ -204,7 +232,7 @@ class Document:
                 value = directive.int_or(key, None)
                 if value is not None:
                     card[key] = value
-            for key in ("title", "node", "view"):
+            for key in ("node", "view", "from"):
                 if key in attrs:
                     card[key] = attrs[key]
             if "aspect" in attrs:
@@ -253,7 +281,7 @@ class Document:
         board = Directive("board", {"cols": "12", "rows": "8"}, "", rewritten=True)
         card = Directive(
             "card",
-            {"id": "program", "kind": "code", "x": "0", "y": "0"},
+            {"id": "program", "title": "Program", "kind": "code", "x": "0", "y": "0"},
             "",
             rewritten=True,
         )
@@ -278,6 +306,19 @@ class Document:
         # file says so by carrying w/h at all.
         self.dirty = True
         return True
+
+    def next_id(self, prefix: str = "c") -> str:
+        """A reference nobody has to think about.
+
+        Ids are generated and never shown, which is what lets a title be prose:
+        two cards may both be called "threshold" without either of them losing
+        the thing another card names it by.
+        """
+        taken = {card["id"] for card in self.cards}
+        n = 1
+        while f"{prefix}{n}" in taken:
+            n += 1
+        return f"{prefix}{n}"
 
     def add_card(self, card_id: str, kind: str = "code", **attrs: Any) -> bool:
         """Append a card. Returns False if the id is taken."""
@@ -356,7 +397,7 @@ def parse(text: str) -> Document:
             annotated = True
             attrs: dict[str, str] = {}
             for key, quoted, bare in _ATTR.findall(match.group(2)):
-                attrs[key] = quoted if bare == "" else bare
+                attrs[key] = bare if bare else _unescape(quoted)
             directive = Directive(match.group(1), attrs, line.rstrip("\r\n"))
             current = Segment(directive, "")
             segments.append(current)

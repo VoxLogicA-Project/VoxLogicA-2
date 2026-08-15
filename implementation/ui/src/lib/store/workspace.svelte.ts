@@ -12,7 +12,10 @@
 export type CardKind = "code" | "result" | "note";
 
 export interface Card {
+  /** The reference: stable, never shown, what other cards name this one by. */
   id: string;
+  /** The name: prose, editable, free to collide with another card's. */
+  title: string;
   kind: CardKind;
   x: number;
   y: number;
@@ -26,11 +29,13 @@ export interface Card {
   maxH?: number;
   aspect?: number;
   auto: boolean;
-  title?: string;
   /** Code cards only: the program text this card holds. */
   source?: string;
   /** Result cards only: the node this card is a view of. */
   node?: string;
+  /** The card this one was derived from, by id. A derived card follows its
+   * source: it exists to show something that card produces. */
+  from?: string;
   view?: string;
 }
 

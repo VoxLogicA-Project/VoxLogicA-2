@@ -11,8 +11,10 @@
    * why it stopped updating, and it has to appear wherever you are.
    */
   import { Bento, Button, SHORTCUTS } from "./lib/components/index.js";
+  import { viewerFor } from "./lib/viewers/index.js";
   import BuildError from "./lib/BuildError.svelte";
   import Help from "./lib/Help.svelte";
+  import TextEditor from "./lib/viewers/TextEditor.svelte";
   import { app } from "./lib/state.svelte.js";
   import { workspace } from "./lib/store/workspace.svelte.ts";
   import {
@@ -22,14 +24,24 @@
     workspace as workspaceActions,
   } from "./lib/actions/index.ts";
 
-  /** A new card needs a name before it has anything else. Short, readable in the
-   * .imgql file it will be written to, and unique among what is already there. */
-  function nameFor(kind) {
+  /** A reference nobody has to think about, and a name they can read.
+   *
+   * The id is generated and never shown; the title is what appears on the card
+   * and is free to be changed, or to collide with another card's. Keeping them
+   * apart is what lets a card be renamed without breaking whatever names it. */
+  function nextId() {
     const taken = new Set(workspace.cards.map((card) => card.id));
     for (let n = 1; ; n += 1) {
-      const id = `${kind}${n}`;
-      if (!taken.has(id)) return id;
+      if (!taken.has(`c${n}`)) return `c${n}`;
     }
+  }
+
+  const TITLES = { code: "Program", result: "Result", note: "Note" };
+
+  function titleFor(kind) {
+    const base = TITLES[kind] ?? kind;
+    const taken = workspace.cards.filter((card) => (card.title ?? "").startsWith(base));
+    return taken.length ? `${base} ${taken.length + 1}` : base;
   }
   /** The document, or the cards it is drawn as. Tab swaps them.
    *
@@ -37,6 +49,16 @@
    * board whose file you cannot read would be a board you have to trust. */
   let showing = $state("board");
   let helping = $state(false);
+  /** The card being edited, or "document" for the file itself. Editing is a
+   * property of the shell rather than of a card: only one thing at a time has
+   * the keyboard, and that is easier to be sure of from one place. */
+  let editing = $state(null);
+
+  function commitCard(id, text) {
+    editing = null;
+    const card = workspace.cards.find((entry) => entry.id === id);
+    if (card && text !== (card.source ?? "")) cardActions.setSource(id, text);
+  }
 
   /** Undo and redo belong to the workspace rather than to the board: the board
    * should not have to know that a document exists, let alone that it has a
@@ -48,6 +70,12 @@
       (target.isContentEditable || ["INPUT", "TEXTAREA"].includes(target.tagName));
     if (typing) return;
 
+    if (editing !== null) return; // the viewer has the keyboard
+    if (event.key === "Enter" && showing === "document") {
+      event.preventDefault();
+      editing = "document";
+      return;
+    }
     if (event.key === "Tab") {
       event.preventDefault();
       showing = showing === "board" ? "document" : "board";
@@ -65,11 +93,39 @@
     }
   }
 
+  /** The bindings a program card declares, in order.
+   *
+   * The provisional way to find what a card produces: `let <name> =`. When the
+   * engine can tell us a card's nodes this reads them from there instead, and
+   * the card menu does not change. */
+  function bindingsIn(source) {
+    return [...(source ?? "").matchAll(/^\s*let\s+([A-Za-z_][A-Za-z0-9_]*)/gm)].map(
+      (match) => match[1],
+    );
+  }
+
+  /** A card that shows something another card computes.
+   *
+   * It records where it came from, so renaming or moving the source changes
+   * nothing: the reference is the id, and the id is not the name. */
+  function derive(id, spot) {
+    const source = workspace.cards.find((entry) => entry.id === id);
+    if (!source || !spot) return;
+    const node = bindingsIn(source.source).at(-1);
+    board.deriveCard(id, nextId(), {
+      kind: "result",
+      node,
+      title: node ? `${node}` : titleFor("result"),
+      ...spot,
+      page: spot.page ?? source.page,
+    });
+  }
+
   /** A copy of a card, where the board says there is room for one. */
   function duplicate(id, spot) {
     const source = workspace.cards.find((entry) => entry.id === id);
     if (!source || !spot) return;
-    board.duplicateCard(id, nameFor(source.kind), { ...spot, page: source.page });
+    board.duplicateCard(id, nextId(), { ...spot, page: spot.page ?? source.page });
   }
 </script>
 
@@ -86,7 +142,18 @@
     <!-- The file itself, read-only for now: seeing what the board is means
          seeing the program it writes, in the form it writes it. -->
     <section class="document" aria-label="Document">
-      <pre>{workspace.source}</pre>
+      <!-- The same viewer a code card gets, on the whole file. Editing here and
+           editing a card are the same edit written the same way, because the
+           layout lives in the file's own comments. -->
+      <TextEditor
+        value={workspace.source}
+        editing={editing === "document"}
+        oncommit={(text) => {
+          editing = null;
+          if (text !== workspace.source) workspaceActions.setText(text);
+        }}
+        oncancel={() => (editing = null)}
+      />
     </section>
   {:else}
     <Bento
@@ -102,22 +169,37 @@
       onfocus={(id) => view.focus(id)}
       onzoom={(zoom) => view.setZoom(zoom)}
       onhelp={() => (helping = true)}
+      onactivate={(id) => (editing = id)}
       onsendtopage={(id, page) => board.setPage(id, page)}
       onadd={(kind, x, y, w, h) =>
-        board.addCard(nameFor(kind), { kind, x, y, w, h, page: workspace.view.page })}
+        board.addCard(nextId(), {
+          kind,
+          title: titleFor(kind),
+          x,
+          y,
+          w,
+          h,
+          page: workspace.view.page,
+        })}
       onremove={(id) => board.removeCard(id)}
       onduplicate={duplicate}
+      onderive={derive}
       onselect={(ids) => view.select(ids)}
       selection={workspace.view.selection}
       onrename={(id, title) => cardActions.setTitle(id, title)}
     >
       {#snippet children(card)}
-        {#if card.kind === "code"}
-          <pre class="source">{card.source ?? ""}</pre>
-        {:else if card.kind === "result"}
-          <p class="pending">{card.node ?? "no node"} — results are not wired up yet</p>
+        {@const viewer = viewerFor(card)}
+        {#if card.kind === "result" && !card.node}
+          <p class="pending">Not bound to a node yet.</p>
         {:else}
-          <p class="note">{card.source ?? ""}</p>
+          <viewer.component
+            value={card.kind === "result" ? (card.node ?? "") : (card.source ?? "")}
+            mono={viewer.mono}
+            editing={editing === card.id && viewer.editable}
+            oncommit={(text) => commitCard(card.id, text)}
+            oncancel={() => (editing = null)}
+          />
         {/if}
       {/snippet}
     </Bento>
@@ -147,17 +229,6 @@
     padding: var(--space-3);
   }
 
-  .source {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    white-space: pre;
-  }
-
-  .note {
-    font-size: var(--text-sm);
-  }
-
   .pending {
     color: var(--color-text-subtle);
     font-size: var(--text-sm);
@@ -170,13 +241,6 @@
     padding: var(--space-4);
     background: var(--color-surface);
     border-radius: var(--radius-lg);
-  }
-
-  .document pre {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    white-space: pre-wrap;
   }
 
   /* One line at the foot of the window: where you are, and the way to the list

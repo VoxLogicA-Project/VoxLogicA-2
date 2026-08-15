@@ -18,7 +18,7 @@
   let page = $state(0);
   let zoom = $state(1);
   let focus = $state(null);
-  let selection = $state(null);
+  let selection = $state([]);
 
   const find = (id) => cards.find((card) => card.id === id);
 
@@ -70,7 +70,7 @@
     added += 1;
     cards.push({ ...structuredClone($state.snapshot(source)), id: `${id}-copy${added}`, ...spot });
   }}
-  onselect={(id) => (selection = id)}
+  onselect={(ids) => (selection = ids)}
   {selection}
   onrename={(id, title) => {
     const card = find(id);

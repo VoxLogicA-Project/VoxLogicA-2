@@ -98,7 +98,7 @@ def test_arranging_a_plain_file_annotates_it_but_keeps_the_program():
     out = document.to_imgql()
     assert out.endswith(PLAIN)
     assert out.startswith("//@board ")
-    assert "//@card id=program kind=code x=1 y=2 w=4 h=3" in out
+    assert '//@card id=program title="Program" kind=code x=1 y=2 w=4 h=3' in out
     # And it still round-trips from there.
     assert doc.parse(out).to_imgql() == out
 
@@ -144,3 +144,53 @@ def test_a_note_survives_the_round_trip_through_the_ui():
     text = next(card for card in document.cards if card["id"] == "n")["source"]
     document.set_source("n", text)
     assert doc.parse(document.to_imgql()).cards[0]["source"] == text
+
+
+QUOTED = '''\
+//@board cols=8 rows=6
+//@card id=c1 title="A card with \\"quotes\\" and spaces" kind=code x=0 y=0 w=4 h=2
+let a = 1
+'''
+
+
+def test_a_title_survives_quotes_and_spaces():
+    card = doc.parse(QUOTED).cards[0]
+    assert card["title"] == 'A card with "quotes" and spaces'
+    assert card["id"] == "c1"
+
+
+def test_a_title_is_written_back_quoted_and_escaped():
+    document = doc.parse(QUOTED)
+    document.set_attr("c1", "title", 'say "hello" \\ goodbye')
+    out = document.to_imgql()
+    assert r'title="say \"hello\" \\ goodbye"' in out
+    # And reading it back gives the same string, which is the only test that
+    # matters: the escaping is a detail, the round trip is the contract.
+    assert doc.parse(out).cards[0]["title"] == 'say "hello" \\ goodbye'
+
+
+def test_a_title_is_always_quoted_even_when_it_need_not_be():
+    document = doc.parse(QUOTED)
+    document.set_attr("c1", "title", "plain")
+    assert 'title="plain"' in document.to_imgql()
+
+
+def test_an_old_file_reads_its_id_as_its_name():
+    """Files written before id and title were separate have only an id.
+
+    It reads as a name because that is what it was; the card keeps working, and
+    keeps its reference.
+    """
+    card = doc.parse(ANNOTATED).cards[0]
+    assert card["title"] == card["id"]
+
+
+def test_two_cards_may_share_a_title_but_not_an_id():
+    """A title is a name, and names collide. Identity is what must not."""
+    document = doc.parse(QUOTED)
+    document.set_attr("c1", "title", "threshold")
+    assert document.add_card(document.next_id(), "note", title="threshold")
+    titles = [card["title"] for card in document.cards]
+    ids = [card["id"] for card in document.cards]
+    assert titles == ["threshold", "threshold"]
+    assert len(set(ids)) == 2

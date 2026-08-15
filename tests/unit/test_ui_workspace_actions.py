@@ -214,3 +214,39 @@ def test_looking_at_something_writes_nothing(workspace):
     workspace.apply("view.goToPage", {"page": 2})
     workspace.flush()
     assert workspace.path.stat().st_mtime_ns == before
+
+
+def test_a_derived_card_records_where_it_came_from(workspace):
+    assert workspace.apply("board.deriveCard", {
+        "id": "a", "newId": "c9", "kind": "result", "node": "a", "title": "a", "x": 0, "y": 5,
+    }) is True
+    card = next(c for c in workspace.snapshot()["cards"] if c["id"] == "c9")
+    assert card["from"] == "a"
+    assert card["node"] == "a"
+    assert card["kind"] == "result"
+
+
+def test_deriving_from_a_card_that_is_not_there_makes_nothing(workspace):
+    assert workspace.apply("board.deriveCard", {"id": "ghost", "newId": "c9"}) is False
+    assert all(card["id"] != "c9" for card in workspace.snapshot()["cards"])
+
+
+def test_a_reference_survives_renaming_what_it_points_at(workspace):
+    """The whole reason id and title are different fields.
+
+    A derived card points at an id; renaming the source is a change to its
+    title, and nothing that names it needs to hear about it.
+    """
+    workspace.apply("board.deriveCard", {"id": "a", "newId": "c9", "node": "a"})
+    workspace.apply("card.setTitle", {"id": "a", "title": "Something else entirely"})
+    cards = {card["id"]: card for card in workspace.snapshot()["cards"]}
+    assert cards["c9"]["from"] == "a"
+    assert cards["a"]["title"] == "Something else entirely"
+
+
+def test_editing_the_document_text_is_an_ordinary_change(workspace):
+    text = workspace.document.to_imgql() + '//@card id=z title="Typed" kind=note x=0 y=6\n'
+    assert workspace.apply("workspace.setText", {"text": text}) is True
+    assert any(card["title"] == "Typed" for card in workspace.snapshot()["cards"])
+    assert workspace.apply("workspace.undo") is True
+    assert all(card["title"] != "Typed" for card in workspace.snapshot()["cards"])

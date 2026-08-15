@@ -55,6 +55,8 @@
     onrename = undefined,
     /** `(id, {x, y, w, h})` — a copy was asked for, and where it fits. */
     onduplicate = undefined,
+    /** `(id, {x, y, w, h})` — a card showing what this one produces. */
+    onderive = undefined,
     /** `(ids)` — the cards the user is working with. */
     onselect = undefined,
     selection = [],
@@ -64,6 +66,8 @@
     onzoom = undefined,
     /** The shortcut list was asked for. */
     onhelp = undefined,
+    /** `(id)` — Enter on a selected card: open whatever it holds. */
+    onactivate = undefined,
     /** The card being shown alone, if any. */
     focus = null,
     /** What `onadd` may be asked for, and how big each starts. */
@@ -485,7 +489,10 @@
         if (canPlace(null, x, y, size.w, size.h)) return { x, y, ...size };
       }
     }
-    return null;
+    // A full page is not a refusal. Pages cost nothing and appear when used, so
+    // the copy goes to the next one rather than the menu item quietly doing
+    // nothing -- which is the worst thing a menu item can do.
+    return { x: 0, y: 0, ...size, page: (card.page ?? 0) + 1 };
   }
 
   const ZOOMS = [0.6, 0.75, 0.875, 1, 1.25, 1.5, 2];
@@ -532,6 +539,13 @@
     if (event.key === "Escape") {
       if (focus) onfocus?.(null);
       else if (selection.length) onselect?.([]);
+      return;
+    }
+
+    if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && selection.length === 1) {
+      // Enter opens the card, the way Enter opens anything a selection is on.
+      event.preventDefault();
+      onactivate?.(selection[0]);
       return;
     }
 
@@ -877,6 +891,7 @@
                   )
               : undefined}
             onduplicate={onduplicate ? () => onduplicate(card.id, copySpot(card)) : undefined}
+            onderive={onderive ? () => onderive(card.id, copySpot(card)) : undefined}
             onmaximize={() => maximize(card)}
             onrename={onrename ? (title) => onrename(card.id, title) : undefined}
             onfocus={onfocus ? (on) => onfocus(on ? card.id : null) : undefined}

@@ -388,3 +388,70 @@ same availability.
 Explicit, on ⌘/Ctrl+S. The document is a program in somebody's repository, and
 rewriting it every time a card is nudged would put noise in a diff they did not
 ask for. `dirty` is in the snapshot for anything that wants to show it.
+
+---
+
+## Identity, and the name
+
+A card has two of them, and they are different fields for one reason: a name is
+prose and prose changes.
+
+| Field | What it is |
+|---|---|
+| `id` | The reference. Generated (`c1`, `c2`, …), never shown, never edited. What one card names another by. |
+| `title` | The name. Shown on the card, edited by double-clicking it, free to collide with another card's. |
+
+So a card can be renamed without anything that points at it noticing, and two
+cards may both be called `threshold` without either losing its identity. Files
+written before the split have only an `id`, and it reads as the name, because
+that is what it was.
+
+**Titles are always written quoted**, with `\` and `"` backslash-escaped the way
+every other string in this project escapes them:
+
+```
+//@card id=c2 title="He said \"no\" \\ then left" kind=note x=0 y=3 w=5 h=2
+```
+
+Always, not only when the value needs it: a field that is sometimes quoted
+teaches every reader of the file the wrong rule, and someone will type a space
+into a title within the hour. Reading is the inverse, so the round trip is the
+contract and the escaping is a detail.
+
+## Derived cards
+
+A card that exists to show something another card produces records where it came
+from:
+
+```
+//@card id=c3 title="y" kind=result x=0 y=0 node=y from=c1
+```
+
+`from` is an `id`, which is exactly why `id` is not the name: rename the source,
+move it, retitle it, and everything derived from it still points at it. Made
+from the source card's own menu ("New result from this"), or by an agent through
+`board.deriveCard`.
+
+The relationship is one-directional and named after what it is — a *derived*
+card and its *source* — not after anything owning anything else.
+
+## Viewers
+
+A card does not draw itself. It says what it is, and a viewer is chosen for it
+from its `kind` and, once a result card has a value, from the *type* of that
+value — which is why the choice is a function of both (`lib/viewers/index.js`)
+rather than a field on the card. A card bound to a number and a card bound to an
+image are the same kind of card and are not the same view.
+
+There is one viewer today, and it is deliberately provisional: a plain text
+editor, no syntax colour, no completion, no gutter. Its job is to establish the
+shape every other viewer will have — it renders what the card holds, it says
+when it wants the keyboard, and it hands back text. Everything richer is a
+different viewer, not a bigger one.
+
+**Enter edits, with the cursor at the end.** A card you pressed Enter on is a
+card you want to add to. `mod+Enter` keeps the edit, Escape abandons it, and
+clicking away keeps it. The same viewer, on the same key, edits the whole
+document in the file view (Tab) — editing the file and editing a card are the
+same edit written the same way, because the layout lives in the file's own
+comments.

@@ -96,6 +96,30 @@ def _duplicate(workspace, params):
     )
 
 
+def _derive(workspace, params):
+    """A card that exists to show something another card produces.
+
+    The new card records where it came from in `from`, so the relationship is in
+    the document rather than in somebody's memory: a card can be renamed, moved
+    or re-titled and whatever derives from it still points at it, because it
+    points at the id and the id is not the name.
+    """
+    if workspace.document.find(params["id"]) is None:
+        return False
+    return workspace.document.add_card(
+        params["newId"],
+        params.get("kind", "result"),
+        title=params.get("title"),
+        node=params.get("node"),
+        x=params.get("x"),
+        y=params.get("y"),
+        w=params.get("w"),
+        h=params.get("h"),
+        page=params.get("page"),
+        **{"from": params["id"]},
+    )
+
+
 def _remove(workspace, params):
     return workspace.document.remove_card(params["id"])
 
@@ -169,6 +193,17 @@ def _save(workspace, params):
     return workspace.save(params.get("path"))
 
 
+def _set_text(workspace, params):
+    """Replace the whole document with this text.
+
+    Editing the file directly is editing the workspace, because they are the
+    same thing: the layout is in the file's own comments, so a card moved in the
+    browser and a card moved in a text editor are the same edit written the same
+    way. Undo covers it like any other change.
+    """
+    return workspace.set_text(params["text"])
+
+
 def _open(workspace, params):
     return workspace.open(params["path"])
 
@@ -205,6 +240,12 @@ ACTIONS: dict[str, Action] = {
         _action("board.duplicateCard",
                 {"id": "string", "newId": "string", "x": "int", "y": "int", "page": "int"},
                 ("id", "newId"), "Copy a card, its contents included.", _duplicate),
+        _action("board.deriveCard",
+                {"id": "string", "newId": "string", "kind": "string", "node": "string",
+                 "title": "string", "x": "int", "y": "int", "w": "int", "h": "int",
+                 "page": "int"},
+                ("id", "newId"),
+                "Add a card that shows something another card produces.", _derive),
         _action("board.removeCard", {"id": "string"}, ("id",),
                 "Remove a card and its contents.", _remove),
         _action("board.setPage", {"id": "string", "page": "int"}, ("id", "page"),
@@ -233,6 +274,8 @@ ACTIONS: dict[str, Action] = {
                 _undo, mutates=False),
         _action("workspace.redo", {}, (), "Redo the change that was just undone.",
                 _redo, mutates=False),
+        _action("workspace.setText", {"text": "string"}, ("text",),
+                "Replace the whole document with this .imgql text.", _set_text),
         _action("workspace.export", {}, (),
                 "The document as .imgql text, exactly as it would be saved.", _export, mutates=False),
         _action("workspace.save", {"path": "string"}, (),

@@ -19,6 +19,9 @@ export const board = {
     invoke("board.arrange", { cards }),
   addCard: (id: string, params: Record<string, unknown> = {}) =>
     invoke("board.addCard", { id, ...params }),
+  /** A card that shows something another card produces; it records `from`. */
+  deriveCard: (id: string, newId: string, params: Record<string, unknown> = {}) =>
+    invoke("board.deriveCard", { id, newId, ...params }),
   removeCard: (id: string) => invoke("board.removeCard", { id }),
   duplicateCard: (id: string, newId: string, params: Record<string, unknown> = {}) =>
     invoke("board.duplicateCard", { id, newId, ...params }),
@@ -43,6 +46,7 @@ export const view = {
 export const workspace = {
   open: (path: string) => invoke<boolean>("workspace.open", { path }),
   export: () => invoke<string>("workspace.export"),
+  setText: (text: string) => invoke<boolean>("workspace.setText", { text }),
   save: (path?: string) => invoke<string>("workspace.save", path ? { path } : {}),
   undo: () => invoke<boolean>("workspace.undo"),
   redo: () => invoke<boolean>("workspace.redo"),

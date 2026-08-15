@@ -48,6 +48,7 @@
     onsendtopage,
     onrename,
     onduplicate,
+    onderive,
     onselect,
     selected = false,
     /** True when this card is the one being shown alone. */
@@ -62,9 +63,15 @@
       onmaximize && { label: "Maximize", hint: "double-click", onselect: onmaximize },
       onrename && { label: "Rename", hint: "double-click the name", onselect: startRename },
       onduplicate && { label: "Duplicate", onselect: onduplicate },
+      onderive &&
+        card.kind === "code" && {
+          label: "New result from this",
+          hint: "shows a value this card computes",
+          onselect: onderive,
+        },
       onfocus && {
         label: focused ? "Leave focus" : "Focus",
-        hint: focused ? "esc" : "f",
+        hint: focused ? "esc" : "long press",
         onselect: () => onfocus(!focused),
       },
       onsendtopage && { separator: true },
@@ -122,7 +129,7 @@
   }
 
   function startRename() {
-    if (onrename) renaming = card.title ?? card.id;
+    if (onrename) renaming = card.title;
   }
 
   function endRename(keep) {
@@ -321,7 +328,7 @@
   }
 </script>
 
-<ContextMenu label="{card.title ?? card.id} actions" items={menu}>
+<ContextMenu label="{card.title} actions" items={menu}>
   <article
     data-card-id={card.id}
     class="card"
@@ -330,7 +337,7 @@
     class:focused
     class:selected
     style="transform: translate3d({px.x}px, {px.y}px, 0); width: {px.w}px; height: {px.h}px;"
-    aria-label={card.title ?? card.id}
+    aria-label={card.title}
   >
     <!-- The header is the drag handle, and it is focusable: a card you can only
          move with a pointer is a card some people cannot move. Double-click
@@ -339,7 +346,7 @@
       bind:this={headerEl}
       role="button"
       tabindex="0"
-      aria-label="{card.title ?? card.id} — move with arrows, resize with shift+arrows"
+      aria-label="{card.title} — move with arrows, resize with shift+arrows"
       onpointerdown={(event) => {
         onselect?.(event.shiftKey || event.metaKey || event.ctrlKey);
         startLongPress(event);
@@ -384,7 +391,7 @@
             startRename();
           }}
         >
-          {card.title ?? card.id}
+          {card.title}
         </span>
       {/if}
     </header>

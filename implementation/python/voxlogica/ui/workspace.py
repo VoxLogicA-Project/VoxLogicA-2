@@ -160,6 +160,12 @@ class Workspace:
             self._future.clear()
         return True
 
+    def set_text(self, text: str) -> bool:
+        with self._lock:
+            self.document = parse(text)
+            self.document.dirty = True
+        return True
+
     def save(self, path: str | None = None) -> str:
         with self._lock:
             target = Path(path) if path else self.path
