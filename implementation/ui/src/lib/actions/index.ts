@@ -76,6 +76,7 @@ export const view = {
 
 export const workspace = {
   open: (path: string) => invoke<boolean>("workspace.open", { path }),
+  tidy: () => invoke<boolean>("workspace.tidy"),
   export: () => invoke<string>("workspace.export"),
   setText: (text: string) => invoke<boolean>("workspace.setText", { text }),
   save: (path?: string) => invoke<string>("workspace.save", path ? { path } : {}),

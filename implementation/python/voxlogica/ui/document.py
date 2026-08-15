@@ -365,6 +365,39 @@ class Document:
         self.dirty = True
         return True
 
+    def tidy(self) -> bool:
+        """Put the cards in an order where every name is defined before use.
+
+        Returns whether anything moved. The order is derived from the language
+        itself (see analysis.py), so what this produces is always a program the
+        engine would accept -- and a card can be dragged anywhere on the board
+        without anybody having to think about where its text ends up.
+
+        Only whole cards move, and only relative to each other: the preamble,
+        the board directive and every card's own text stay exactly as they are.
+        """
+        from . import analysis
+
+        cards = self.cards
+        if len(cards) < 2:
+            return False
+        wanted = analysis.dependency_order(cards)
+        current = [card["id"] for card in cards]
+        if wanted == current:
+            return False
+
+        by_id = {}
+        head: list[Segment] = []
+        for segment in self.segments:
+            directive = segment.directive
+            if directive is not None and directive.kind == "card":
+                by_id[directive.attrs.get("id")] = segment
+            else:
+                head.append(segment)
+        self.segments = head + [by_id[card_id] for card_id in wanted if card_id in by_id]
+        self.dirty = True
+        return True
+
     # ------------------------------------------------------ cut and paste
 
     def fragment(self, card_ids: list[str]) -> str:

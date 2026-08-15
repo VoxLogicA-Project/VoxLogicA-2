@@ -584,3 +584,52 @@ binding would show the original's value and look like it had worked.
 
 Cut is copy-then-remove and is a change to the document, so undo covers it. Copy
 is not, so it does not.
+
+---
+
+## Order, and where it comes from
+
+The board arranges cards in *space*, and space says nothing about the order a
+program is read in. So the order is not something anybody arranges: it is
+**derived**, and the file is written with every name defined before it is used.
+Drag a card wherever you like; where its text lands is not your problem.
+
+**It is derived from the language, not guessed at.** `analysis.py` imports
+`voxlogica.parser` — the same front end the engine uses — and walks its AST:
+
+- what a card **defines** is the `identifier` of each `Declaration`;
+- what it **needs** is every identifier its expressions mention (an `ECall`,
+  which is what a bare name parses to), minus everything bound inside: the
+  declaration's own parameters, a local `let`, the variable of a `for` or a
+  `filter`;
+- a `print` or a `save` uses what it names, and defines nothing.
+
+A regular expression could have found the `let` names. It could not have known
+that `t` in `let y = let t = 2 in add(t, x)` is not a dependency, or that `i` in
+`for i in xs` is not — and the day it was wrong, the UI would have been wrong
+about what a program means while the engine was right. There is one front end,
+so there is one answer.
+
+Nothing here asks whether a name is a primitive. It does not need to: a card
+depends on another card only if that card *defines* the name, so `threshold`
+being built in simply means no card provides it.
+
+**Cards that cannot be read are pinned.** Source that does not parse — half
+typed, mid-edit — reports "unknown" rather than a guess, and keeps its position
+while everything around it closes ranks. Reordering text nobody understood is
+how an editor loses work.
+
+**A cycle is reported, not enforced.** Two cards that need each other have no
+order, and that is exactly the state somebody is in *while untangling them*, so
+the document is written as it stands and the pair is named in the UI. Refusing to
+save at that moment would be the worst possible time to be strict. Recursion,
+therefore, is still impossible — but you find out by being told, not by having
+your work refused.
+
+**Duplicate definitions are a fact, not an error.** Two cards defining `mask` are
+listed with both names while you decide which one you meant. Pasting already
+avoids creating them.
+
+The order is stable: cards that do not depend on each other keep the order they
+had, so writing a file back is the smallest change that is still a correct
+program rather than a reshuffle.

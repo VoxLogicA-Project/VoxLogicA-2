@@ -112,9 +112,25 @@ class Workspace:
                 #: one is open. Read from the filesystem each time, because the
                 #: filesystem is the only description of it.
                 "library": library.tree(self.path),
+                #: What is wrong with the program as it stands, if anything.
+                #: Facts rather than errors: somebody halfway through an edit
+                #: has a duplicate name for a few seconds and does not need a
+                #: dialogue about it, but does want to be told which two cards.
+                "issues": self._issues(),
                 "canUndo": bool(self._past),
                 "canRedo": bool(self._future),
             }
+
+    def _issues(self) -> dict[str, Any]:
+        from . import analysis
+
+        cards = self.document.cards
+        try:
+            analysis.dependency_order(cards)
+            cycle: list[str] = []
+        except analysis.Cycle as found:
+            cycle = list(found.ids)
+        return {"cycle": cycle, "duplicates": analysis.duplicates(cards)}
 
     # ---------------------------------------------------------------- actions
 
@@ -170,6 +186,19 @@ class Workspace:
                 # file before there is anything to put in it, and this is the
                 # moment there is.
                 self.path.parent.mkdir(parents=True, exist_ok=True)
+                # Written in an order the language accepts. The board arranges
+                # cards in space and space says nothing about reading order, so
+                # the order is derived from what each card defines and needs --
+                # see analysis.py. A document that cannot be ordered (two cards
+                # that need each other) is written as it stands and reported:
+                # refusing to save somebody's work over a cycle they are in the
+                # middle of resolving would be the worst possible moment to be
+                # strict.
+                try:
+                    self.document.tidy()
+                except Exception:  # noqa: BLE001 - a cycle, or source we cannot read
+                    logger.debug("could not order this document; writing as it is",
+                                 exc_info=True)
                 text = self.document.to_imgql()
                 self.path.write_text(text)
                 # The written text *becomes* the document's own text. Without

@@ -75,6 +75,13 @@ export interface Library {
   files: LibraryFile[];
 }
 
+export interface Issues {
+  /** Cards that need each other. No order satisfies them. */
+  cycle: string[];
+  /** Names defined by more than one card, and which cards define them. */
+  duplicates: Record<string, string[]>;
+}
+
 export interface Snapshot {
   path: string | null;
   /** The workspace's folder name -- what a person calls this piece of work. */
@@ -86,6 +93,7 @@ export interface Snapshot {
   /** The document as it would be written to disk. */
   source: string;
   library: Library;
+  issues: Issues;
   canUndo: boolean;
   canRedo: boolean;
 }
@@ -99,6 +107,7 @@ class WorkspaceStore {
   dirty = $state(false);
   source = $state("");
   library = $state<Library>({ root: "", projects: [], files: [] });
+  issues = $state<Issues>({ cycle: [], duplicates: {} });
   canUndo = $state(false);
   canRedo = $state(false);
   /** True once the server has told us anything at all. */
@@ -124,6 +133,7 @@ class WorkspaceStore {
     this.dirty = snapshot.dirty;
     this.source = snapshot.source ?? "";
     this.library = snapshot.library ?? { root: "", projects: [], files: [] };
+    this.issues = snapshot.issues ?? { cycle: [], duplicates: {} };
     this.canUndo = snapshot.canUndo ?? false;
     this.canRedo = snapshot.canRedo ?? false;
     this.loaded = true;

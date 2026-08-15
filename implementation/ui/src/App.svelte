@@ -81,6 +81,21 @@
     dragging = null;
   }
 
+  /** What is wrong with the program, said in card names rather than ids.
+   *
+   * The ids are what the document uses to point at things; a person reading a
+   * warning wants the name they gave the card. */
+  const named = (id) => workspace.cards.find((card) => card.id === id)?.title ?? id;
+
+  const problems = $derived([
+    ...(workspace.issues.cycle.length
+      ? [`${workspace.issues.cycle.map(named).join(" → ")} need each other`]
+      : []),
+    ...Object.entries(workspace.issues.duplicates).map(
+      ([name, ids]) => `“${name}” is defined by ${ids.map(named).join(" and ")}`,
+    ),
+  ]);
+
   /** Cut, copy and paste for cards, through the system clipboard.
    *
    * What travels is .imgql text -- the file's own format -- so a copied card
@@ -359,6 +374,17 @@
     </div>
   </div>
 
+  {#if problems.length}
+    <!-- Facts, not errors, and not a dialogue: somebody halfway through an edit
+         has a duplicate name for a few seconds. What they want is to be told
+         which cards, not to be interrupted. -->
+    <p class="problems" role="status">
+      {#each problems as problem, index (problem)}
+        {index > 0 ? " · " : ""}{problem}
+      {/each}
+    </p>
+  {/if}
+
   <footer>
     <Button
       tone="quiet"
@@ -409,6 +435,15 @@
   .pending {
     color: var(--color-text-subtle);
     font-size: var(--text-sm);
+  }
+
+  .problems {
+    flex: none;
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    background: var(--color-danger-subtle);
+    font-size: var(--text-2xs);
+    color: var(--color-text);
   }
 
   /* The sidebar and the one file that is open. There is no third thing here,

@@ -215,6 +215,11 @@ def _focus(workspace, params):
     return True
 
 
+def _tidy(workspace, _params):
+    """Put the cards in dependency order now, rather than at the next write."""
+    return workspace.document.tidy()
+
+
 def _export(workspace, _params):
     return workspace.document.to_imgql()
 
@@ -467,6 +472,8 @@ ACTIONS: dict[str, Action] = {
                 _redo, mutates=False),
         _action("workspace.setText", {"text": "string"}, ("text",),
                 "Replace the whole document with this .imgql text.", _set_text),
+        _action("workspace.tidy", {}, (),
+                "Order the cards so every name is defined before it is used.", _tidy),
         _action("workspace.export", {}, (),
                 "The document as .imgql text, exactly as it would be saved.", _export, mutates=False),
         _action("workspace.moveTo", {"path": "string"}, ("path",),
