@@ -38,6 +38,11 @@ class Workspace:
         #: A board is small; a hundred of them is nothing.
         self._past: list[str] = []
         self._future: list[str] = []
+        #: Debounced autosave. A workspace is not a thing you save, any more
+        #: than a drawer is: the file on disk is the document, and an unsaved
+        #: change is only a change nobody has written down yet. Debounced
+        #: because a drag is dozens of changes and the file is one.
+        self._save_timer: threading.Timer | None = None
 
     # ------------------------------------------------------------------ state
 
@@ -73,8 +78,52 @@ class Workspace:
                 # never existed.
                 self._future.clear()
             result = action.apply(self, params)
+        if action.mutates:
+            self._autosave()
         self.publish()
         return result
+
+    # ------------------------------------------------------------ persistence
+
+    def _autosave(self, delay: float = 0.4) -> None:
+        """Write the document soon, and once, however many changes arrive.
+
+        Every mutation restarts the clock, so a drag that reports twenty
+        positions costs one write. There is no save action to forget: the last
+        thing that happened is what is on disk.
+        """
+        if self.path is None:
+            return
+        with self._lock:
+            if self._save_timer is not None:
+                self._save_timer.cancel()
+            self._save_timer = threading.Timer(delay, self._write_now)
+            self._save_timer.daemon = True
+            self._save_timer.start()
+
+    def _write_now(self) -> None:
+        try:
+            with self._lock:
+                # Nothing to write is not the same as writing nothing: touching
+                # the file when only the view changed would show up as work in
+                # every tool that watches it.
+                if self.path is None or not self.document.dirty:
+                    return
+                self.path.write_text(self.document.to_imgql())
+                self.document.dirty = False
+        except OSError:
+            # A read-only file or a vanished directory is not a reason to take
+            # the UI down: the document is still here and still correct.
+            return
+        self.publish()
+
+    def flush(self) -> None:
+        """Write anything pending right now -- on the way out, or before a read."""
+        with self._lock:
+            timer, self._save_timer = self._save_timer, None
+        if timer is not None:
+            timer.cancel()
+        self._write_now()
 
     def undo(self) -> bool:
         with self._lock:
@@ -83,7 +132,8 @@ class Workspace:
             self._future.append(self.document.to_imgql())
             self.document = parse(self._past.pop())
             self.document.dirty = True
-            return True
+        self._autosave()
+        return True
 
     def redo(self) -> bool:
         with self._lock:
@@ -92,7 +142,8 @@ class Workspace:
             self._past.append(self.document.to_imgql())
             self.document = parse(self._future.pop())
             self.document.dirty = True
-            return True
+        self._autosave()
+        return True
 
     def open(self, path: str) -> bool:
         target = Path(path)

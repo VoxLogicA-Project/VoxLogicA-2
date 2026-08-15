@@ -185,3 +185,32 @@ def test_a_duplicate_carries_the_card_s_contents(workspace):
 
 def test_a_duplicate_will_not_take_a_name_that_exists(workspace):
     assert workspace.apply("board.duplicateCard", {"id": "a", "newId": "b"}) is False
+
+
+def test_a_change_reaches_the_file_without_anybody_saving(workspace, tmp_path):
+    """There is no save action to forget.
+
+    A workspace is not a thing you save, any more than a drawer is: the file is
+    the document, and an unsaved change is only a change nobody wrote down yet.
+    """
+    workspace.apply("board.moveCard", {"id": "a", "x": 6, "y": 2})
+    workspace.flush()
+    assert "//@card id=a kind=code x=6 y=2" in workspace.path.read_text()
+    assert workspace.snapshot()["dirty"] is False
+
+
+def test_a_burst_of_changes_costs_one_write(workspace):
+    for x in range(5):
+        workspace.apply("board.moveCard", {"id": "a", "x": x, "y": 0})
+    # Still pending: the clock restarted on each one.
+    assert workspace.snapshot()["dirty"] is True
+    workspace.flush()
+    assert "x=4 y=0" in workspace.path.read_text()
+
+
+def test_looking_at_something_writes_nothing(workspace):
+    workspace.flush()
+    before = workspace.path.stat().st_mtime_ns
+    workspace.apply("view.goToPage", {"page": 2})
+    workspace.flush()
+    assert workspace.path.stat().st_mtime_ns == before

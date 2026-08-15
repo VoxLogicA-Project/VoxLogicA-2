@@ -40,12 +40,6 @@
       event.preventDefault();
       if (event.shiftKey) workspaceActions.redo();
       else workspaceActions.undo();
-    } else if (key === "s") {
-      // Explicit, not automatic. The document is a program in somebody's
-      // repository, and rewriting it every time a card is nudged would put
-      // noise in a diff they did not ask for.
-      event.preventDefault();
-      workspaceActions.save();
     }
   }
 

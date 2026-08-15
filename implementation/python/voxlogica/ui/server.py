@@ -147,6 +147,11 @@ class UIServer:
         await serve
 
     def stop(self, *, timeout: float = 5.0) -> None:
+        # Whatever the autosave was still waiting to write, write it. Losing the
+        # last half-second of somebody's arrangement because they closed the tab
+        # is exactly the failure autosave exists to prevent.
+        if self._workspace is not None:
+            self._workspace.flush()
         if self._server is not None:
             self._server.should_exit = True
         if self._thread is not None:
