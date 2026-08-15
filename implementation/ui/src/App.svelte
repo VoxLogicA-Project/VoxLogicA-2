@@ -14,12 +14,14 @@
   import { viewerFor } from "./lib/viewers/index.js";
   import BuildError from "./lib/BuildError.svelte";
   import Help from "./lib/Help.svelte";
+  import Library from "./lib/Library.svelte";
   import TextEditor from "./lib/viewers/TextEditor.svelte";
   import { app } from "./lib/state.svelte.js";
   import { workspace } from "./lib/store/workspace.svelte.ts";
   import {
     board,
     card as cardActions,
+    library as libraryActions,
     view,
     workspace as workspaceActions,
   } from "./lib/actions/index.ts";
@@ -49,8 +51,16 @@
    * board whose file you cannot read would be a board you have to trust. */
   let showing = $state("board");
   let helping = $state(false);
-  /** The workspace name while it is being typed, or null. */
-  let naming = $state(null);
+  /** A new project needs a name before it is a folder. Numbered rather than
+   * asked for: naming a thing before making it is the dialogue this UI does not
+   * have, and the name is one double-click away in the sidebar. */
+  function newProjectName() {
+    const taken = new Set(workspace.library.projects);
+    for (let n = 1; ; n += 1) {
+      const name = n === 1 ? "Project" : `Project ${n}`;
+      if (!taken.has(name)) return name;
+    }
+  }
 
   /** The card being edited, or "document" for the file itself. Editing is a
    * property of the shell rather than of a card: only one thing at a time has
@@ -139,6 +149,20 @@
     <BuildError error={app.buildError} />
   {/if}
 
+  <div class="workbench">
+    <Library
+      library={workspace.library}
+      onopen={(path) => libraryActions.open(path)}
+      onnewfile={(project) => libraryActions.newFile(project ?? undefined)}
+      onnewproject={() => libraryActions.newProject(newProjectName())}
+      onmove={(path, project) => libraryActions.moveFile(path, project)}
+      onrenamefile={(path, name) => libraryActions.renameFile(path, name)}
+      onrenameproject={(name, to) => libraryActions.renameProject(name, to)}
+      ondelete={(path) => libraryActions.deleteFile(path)}
+    />
+
+    <div class="pane">
+
   {#if !workspace.loaded}
     <p class="pending">No workspace.</p>
   {:else if showing === "document"}
@@ -208,39 +232,14 @@
     </Bento>
   {/if}
 
+    </div>
+  </div>
+
   <footer>
-    <!-- A name, not a path. What somebody calls this piece of work is a word;
-         where it happens to sit is the file manager's business, and a folder
-         path across the bottom of the window is neither readable nor useful. -->
-    {#if naming !== null}
-      <!-- svelte-ignore a11y_autofocus -->
-      <input
-        class="name editing"
-        autofocus
-        bind:value={naming}
-        aria-label="Workspace name"
-        spellcheck="false"
-        onkeydown={(event) => {
-          event.stopPropagation();
-          if (event.key === "Enter" || event.key === "Tab") {
-            const next = naming.trim();
-            naming = null;
-            if (next && next !== workspace.name) workspaceActions.rename(next);
-          }
-          if (event.key === "Escape") naming = null;
-        }}
-        onblur={() => (naming = null)}
-      />
-    {:else}
-      <button
-        class="name"
-        title="Rename this workspace"
-        ondblclick={() => (naming = workspace.name ?? "")}
-        onclick={() => (naming = workspace.name ?? "")}
-      >
-        {workspace.name ?? "no workspace"}
-      </button>
-    {/if}
+    <!-- Naming belongs to the sidebar now: a file has its name there and a
+         project has its own. What is left here is the pair of things the list
+         cannot say -- where this file is on disk, and how to take it out of the
+         library and into a repository. -->
     <Button tone="quiet" size="sm" onclick={() => workspaceActions.reveal()} title="Show in folder">
       ⤢
     </Button>
@@ -248,7 +247,7 @@
       tone="quiet"
       size="sm"
       onclick={() => workspaceActions.chooseLocation()}
-      title="Move this workspace somewhere else"
+      title="Move this file out of the library"
     >
       Move…
     </Button>
@@ -280,6 +279,23 @@
     font-size: var(--text-sm);
   }
 
+  /* The sidebar and the one file that is open. There is no third thing here,
+   * which is the point: no tab strip, no breadcrumb, no second list. */
+  .workbench {
+    display: flex;
+    gap: var(--space-4);
+    flex: 1;
+    min-height: 0;
+  }
+
+  .pane {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+  }
+
   .document {
     flex: 1;
     min-height: 0;
@@ -297,28 +313,6 @@
     gap: var(--space-3);
     font-size: var(--text-2xs);
     color: var(--color-text-subtle);
-  }
-
-  .name {
-    min-width: 0;
-    max-width: 24ch;
-    text-align: left;
-    font-size: var(--text-2xs);
-    color: var(--color-text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .name:hover {
-    color: var(--color-text);
-  }
-
-  .name.editing {
-    background: none;
-    border: none;
-    outline: none;
-    color: var(--color-text);
   }
 
   .where {

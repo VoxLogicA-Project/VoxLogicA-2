@@ -194,3 +194,18 @@ def test_two_cards_may_share_a_title_but_not_an_id():
     ids = [card["id"] for card in document.cards]
     assert titles == ["threshold", "threshold"]
     assert len(set(ids)) == 2
+
+
+def test_the_only_card_of_a_plain_file_can_be_renamed():
+    """A file with no directives is shown as one card, and that card is real.
+
+    Renaming it is the change that turns the plain file into an annotated one.
+    It used to do nothing at all: the rename went to a card the document did
+    not think it had.
+    """
+    document = doc.parse(PLAIN)
+    assert document.set_attr("program", "title", "My analysis") is True
+    out = document.to_imgql()
+    assert 'title="My analysis"' in out
+    assert out.endswith(PLAIN)
+    assert doc.parse(out).cards[0]["title"] == "My analysis"

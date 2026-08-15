@@ -36,6 +36,24 @@ export const card = {
   setViewMode: (id: string, view: string) => invoke("card.setViewMode", { id, view }),
 };
 
+/** The library: the projects and files this instance can open.
+ *
+ * One file is open at a time and the sidebar lists them all, so there are no
+ * tabs -- a tab bar is a second, worse copy of a list you already have. */
+export const library = {
+  open: (path: string) => invoke<boolean>("library.open", { path }),
+  newFile: (project?: string, name?: string) =>
+    invoke<string>("library.newFile", { ...(project ? { project } : {}), ...(name ? { name } : {}) }),
+  newProject: (name: string) => invoke<string>("library.newProject", { name }),
+  moveFile: (path: string, project: string | null) =>
+    invoke<string>("library.moveFile", { path, ...(project ? { project } : {}) }),
+  renameFile: (path: string, name: string) =>
+    invoke<string>("library.renameFile", { path, name }),
+  renameProject: (name: string, to: string) =>
+    invoke<string>("library.renameProject", { name, to }),
+  deleteFile: (path: string) => invoke<boolean>("library.deleteFile", { path }),
+};
+
 export const view = {
   goToPage: (page: number) => invoke("view.goToPage", { page }),
   setZoom: (zoom: number) => invoke("view.setZoom", { zoom }),
@@ -59,4 +77,4 @@ export const workspace = {
   redo: () => invoke<boolean>("workspace.redo"),
 };
 
-export const actions = { board, card, view, workspace };
+export const actions = { board, card, library, view, workspace };

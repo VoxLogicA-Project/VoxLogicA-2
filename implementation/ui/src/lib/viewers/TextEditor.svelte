@@ -27,6 +27,10 @@
   } = $props();
 
   let field = $state(null);
+  // Seeded once and replaced whenever editing starts (below); the prop is not
+  // followed after that, because following it would overwrite what somebody is
+  // in the middle of typing every time the workspace publishes.
+  // svelte-ignore state_referenced_locally
   let draft = $state(value);
 
   $effect(() => {

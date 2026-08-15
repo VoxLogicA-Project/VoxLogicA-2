@@ -58,30 +58,33 @@ def workspaces() -> Path:
     return data_home() / "workspaces"
 
 
-#: The document inside a workspace folder. One fixed name, so a folder is
-#: recognisably a workspace and a tool that finds one knows what to open.
+#: What a workspace file is called when a *folder* was chosen for it -- the
+#: system save panel picks folders as readily as names, and a folder needs a
+#: document inside it.
 DOCUMENT = "workspace.imgql"
+
+SUFFIX = ".imgql"
 
 
 def scratch_path(now: datetime | None = None) -> Path:
-    """A fresh workspace: its own folder, with the document inside it.
+    """A fresh file, loose at the top of the library.
 
-    A folder rather than a bare file, because a workspace accumulates things
-    that belong beside the program -- an image it loads, an output it wrote, a
-    figure someone dropped in. Those want to travel with it, and they can only
-    travel with it if there is an "it" to travel: moving the folder into a
-    repository moves the whole piece of work.
+    The top is the default destination: the place something goes when nobody has
+    said where, and where it stays until somebody drags it into a project.
+    Projects are folders and a folder is what travels into a repository, so a
+    new file does not get one of its own -- an untouched workspace should not
+    leave a directory behind for having been opened once.
 
     Named after when it was started, because the only thing anyone remembers
     about an unnamed workspace is roughly when they were working on it.
     """
     stamp = (now or datetime.now()).strftime("%Y-%m-%d-%H%M%S")
-    directory = workspaces() / stamp
+    candidate = workspaces() / f"{stamp}{SUFFIX}"
     n = 2
-    while directory.exists():
-        directory = workspaces() / f"{stamp}-{n}"
+    while candidate.exists():
+        candidate = workspaces() / f"{stamp}-{n}{SUFFIX}"
         n += 1
-    return directory / DOCUMENT
+    return candidate
 
 
 def recent(limit: int = 20) -> list[Path]:
@@ -89,7 +92,6 @@ def recent(limit: int = 20) -> list[Path]:
     directory = workspaces()
     if not directory.is_dir():
         return []
-    files = [folder / DOCUMENT for folder in directory.iterdir() if folder.is_dir()]
-    files = [path for path in files if path.is_file()]
+    files = [path for path in directory.rglob(f"*{SUFFIX}") if path.is_file()]
     files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
     return files[:limit]

@@ -455,3 +455,42 @@ clicking away keeps it. The same viewer, on the same key, edits the whole
 document in the file view (Tab) — editing the file and editing a card are the
 same edit written the same way, because the layout lives in the file's own
 comments.
+
+---
+
+## The library
+
+A **project is a folder** and a **file is an `.imgql` in it**. That is the entire
+model, and it is deliberately not a model at all: there is no index, no database
+and no manifest, because each of those is a second description of the filesystem
+that can disagree with it. Make a folder in Finder and it is a project; drop a
+file in and it is in that project; put the folder in a repository and git has
+ordinary files to track. Nothing has to be told.
+
+**The sidebar is the tab bar.** One file shows in the pane at a time and the list
+beside it is how you reach another, so there is no tab strip — a strip of tabs is
+a second copy of that list, in a different order, truncated, and it is where
+"which of these nine is the one I mean" comes from.
+
+Files at the top of the library are **loose**, and that is the default
+destination: where a new file goes when nobody has said where, and where it stays
+until it is dragged into a project. "Unfiled" is a location, not a limbo.
+
+| Gesture | Effect |
+|---|---|
+| Click a file | Open it. Whatever the last file still owed to disk is written first. |
+| Drag a file onto a project | Move it into that folder. Onto the top: out of any project. |
+| Double-click a name | Rename the file, or the project. |
+| `+` beside *Files* or a project | A new file there. |
+| Right-click a file | Rename, move to any project, delete. |
+
+The open file **follows what happens to it**: renamed, moved between projects, or
+carried along when its project is renamed. An editor pointing at a path that no
+longer exists would write the next change to a file nobody can find. Deleting the
+open file opens nothing rather than leaving a ghost.
+
+`workspace.moveTo` (the footer's *Move…*, which opens the system's own save
+panel) is the different act: it takes a file **out of the library** entirely —
+typically into a repository — and a folder that existed for that one file goes
+with it. A project holding several files stays where it is; moving one of its
+files must not empty a project somebody is still using.

@@ -288,16 +288,32 @@ class Document:
         self.segments = [Segment(board, ""), Segment(card, self.source)]
         self.annotated = True
 
+    def _writable(self, card_id: str) -> Segment | None:
+        """The segment for a card, annotating the file if that is what it takes.
+
+        A file with no directives is shown as one card called `program`, and
+        that card is as real as any other: it can be moved, renamed, edited. The
+        first such change is what turns the plain file into an annotated one --
+        which is why every mutation goes through here rather than each deciding
+        for itself. `set_attr` did not, and renaming that card silently did
+        nothing at all.
+        """
+        segment = self.find(card_id)
+        if segment is not None and segment.directive is not None:
+            return segment
+        if not self.annotated and card_id == "program":
+            self._annotate()
+            self.dirty = True
+            segment = self.find(card_id)
+            if segment is not None and segment.directive is not None:
+                return segment
+        return None
+
     def place(self, card_id: str, **geometry: int) -> bool:
         """Move or resize a card. Returns False if there is no such card."""
-        segment = self.find(card_id)
-        if segment is None or segment.directive is None:
-            if not self.annotated and card_id == "program":
-                self._annotate()
-                self.dirty = True
-                segment = self.find(card_id)
-            if segment is None or segment.directive is None:
-                return False
+        segment = self._writable(card_id)
+        if segment is None:
+            return False
         for key, value in geometry.items():
             if key not in _GEOMETRY and key not in ("w", "h"):
                 raise ValueError(f"not a geometry attribute: {key}")
@@ -361,8 +377,8 @@ class Document:
         return True
 
     def set_attr(self, card_id: str, key: str, value: Any) -> bool:
-        segment = self.find(card_id)
-        if segment is None or segment.directive is None:
+        segment = self._writable(card_id)
+        if segment is None:
             return False
         segment.directive.set(key, value)
         self.dirty = True
@@ -370,13 +386,9 @@ class Document:
 
     def set_source(self, card_id: str, text: str) -> bool:
         """Replace a card's body. Only that card's text moves."""
-        segment = self.find(card_id)
+        segment = self._writable(card_id)
         if segment is None:
-            if not self.annotated and card_id == "program":
-                self._annotate()
-                segment = self.find(card_id)
-            if segment is None:
-                return False
+            return False
         kind = segment.directive.attrs.get("kind", "code") if segment.directive else "code"
         segment.body = _comment(text) if kind == "note" else text
         self.dirty = True

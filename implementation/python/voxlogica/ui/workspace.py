@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .actions import ACTIONS
+from . import library
 from .document import Document, parse
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,42 @@ class Workspace:
 
     # ------------------------------------------------------------------ state
 
+    def follow(self, before: str | Path, after: Path) -> bool:
+        """The open file moved or was renamed underneath us; keep looking at it.
+
+        The library moves files as files; the workspace is whichever one is
+        open. If that is the one that moved, the open document follows it -- an
+        editor pointing at a path that no longer exists would write the next
+        change to a file nobody can find.
+        """
+        with self._lock:
+            if self.path is None or Path(before) != self.path:
+                return False
+            self.path = Path(after)
+        self.publish()
+        return True
+
+    def follow_folder(self, before: Path, after: Path) -> bool:
+        """The same, for a project folder that was renamed."""
+        with self._lock:
+            path = self.path
+            if path is None or before not in path.parents:
+                return False
+            self.path = after / path.relative_to(before)
+        self.publish()
+        return True
+
+    def forget(self, path: str | Path) -> bool:
+        """A file was deleted. If it was the open one, open nothing."""
+        with self._lock:
+            if self.path is not None and Path(path) == self.path:
+                self.path = None
+                self.document = parse("")
+                self._past.clear()
+                self._future.clear()
+        self.publish()
+        return True
+
     def snapshot(self) -> dict[str, Any]:
         """Everything the user sees, which is exactly what MCP reads."""
         with self._lock:
@@ -71,6 +108,10 @@ class Workspace:
                 #: The file exactly as it would be written, so a client can show
                 #: the document itself without a second round trip.
                 "source": self.document.to_imgql(),
+                #: The library is the tab bar: every file there is, and which
+                #: one is open. Read from the filesystem each time, because the
+                #: filesystem is the only description of it.
+                "library": library.tree(self.path),
                 "canUndo": bool(self._past),
                 "canRedo": bool(self._future),
             }
@@ -172,8 +213,11 @@ class Workspace:
         return True
 
     def open(self, path: str) -> bool:
+        # Whatever the file being left still owed to disk, it is owed now: an
+        # unwritten change must not survive as a change to a different file.
+        self.flush()
         target = Path(path)
-        text = target.read_text()
+        text = target.read_text() if target.exists() else ""
         with self._lock:
             self.path = target
             self.document = parse(text)
@@ -227,8 +271,16 @@ class Workspace:
         from . import home
 
         try:
-            scratch = previous.parent.parent == home.workspaces()
-            if scratch:
+            # Only a folder that existed for this one file follows it out. A
+            # project holding several files is a project: moving one of them
+            # must not empty it.
+            folder = previous.parent
+            dedicated = (
+                folder != home.workspaces()
+                and home.workspaces() in folder.parents
+                and len(list(folder.glob(f"*{home.SUFFIX}"))) == 1
+            )
+            if dedicated:
                 for item in previous.parent.iterdir():
                     if item == previous:
                         continue
@@ -236,8 +288,8 @@ class Workspace:
                     if not goal.exists():
                         shutil.move(str(item), str(goal))
             previous.unlink()
-            if scratch:
-                previous.parent.rmdir()
+            if dedicated:
+                folder.rmdir()
         except OSError:
             # Somebody else's file, a read-only directory, a folder that is not
             # empty for a reason we cannot see. The workspace has moved either

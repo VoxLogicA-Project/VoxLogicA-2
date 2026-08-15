@@ -54,30 +54,31 @@ def test_the_home_can_be_moved_wholesale(monkeypatch, tmp_path):
     assert home.workspaces() == tmp_path / "elsewhere" / "workspaces"
 
 
-def test_a_scratch_is_a_folder_with_the_document_inside(monkeypatch, tmp_path):
+def test_a_new_file_is_loose_at_the_top_of_the_library(monkeypatch, tmp_path):
+    """The top is the default destination: where something goes when nobody
+    has said where, and where it stays until it is dragged into a project."""
     monkeypatch.setenv("VOXLOGICA_HOME", str(tmp_path))
     path = home.scratch_path()
-    assert path.name == home.DOCUMENT
-    assert path.parent.parent == home.workspaces()
+    assert path.parent == home.workspaces()
+    assert path.suffix == home.SUFFIX
 
 
 def test_two_scratches_started_in_the_same_second_do_not_collide(monkeypatch, tmp_path):
     monkeypatch.setenv("VOXLOGICA_HOME", str(tmp_path))
     first = home.scratch_path()
-    first.parent.mkdir(parents=True)
-    second = home.scratch_path()
-    assert first.parent != second.parent
+    first.parent.mkdir(parents=True, exist_ok=True)
+    first.touch()
+    assert home.scratch_path() != first
 
 
 def test_recent_lists_workspaces_newest_first(monkeypatch, tmp_path):
     monkeypatch.setenv("VOXLOGICA_HOME", str(tmp_path))
+    home.workspaces().mkdir(parents=True)
     for index, name in enumerate(("2026-01-01-000000", "2026-01-02-000000")):
-        folder = home.workspaces() / name
-        folder.mkdir(parents=True)
-        document = folder / home.DOCUMENT
+        document = home.workspaces() / f"{name}{home.SUFFIX}"
         document.write_text("let a = 1\n")
         os.utime(document, (1000 + index, 1000 + index))
-    assert [path.parent.name for path in home.recent()] == [
+    assert [path.stem for path in home.recent()] == [
         "2026-01-02-000000", "2026-01-01-000000",
     ]
 

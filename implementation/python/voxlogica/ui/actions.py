@@ -204,6 +204,55 @@ def _set_text(workspace, params):
     return workspace.set_text(params["text"])
 
 
+def _library_open(workspace, params):
+    return workspace.open(params["path"])
+
+
+def _library_new_file(workspace, params):
+    from . import library
+
+    path = library.new_file(params.get("project"), params.get("name"))
+    workspace.open(str(path))
+    return str(path)
+
+
+def _library_new_project(_workspace, params):
+    from . import library
+
+    return library.new_project(params["name"])
+
+
+def _library_move(workspace, params):
+    from . import library
+
+    moved = library.move(params["path"], params.get("project"))
+    workspace.follow(params["path"], moved)
+    return str(moved)
+
+
+def _library_rename(workspace, params):
+    from . import library
+
+    renamed = library.rename(params["path"], params["name"])
+    workspace.follow(params["path"], renamed)
+    return str(renamed)
+
+
+def _library_rename_project(workspace, params):
+    from . import library
+
+    before = library.root() / params["name"]
+    after = library.rename_project(params["name"], params["to"])
+    workspace.follow_folder(before, library.root() / after)
+    return after
+
+
+def _library_delete(workspace, params):
+    from . import library
+
+    return library.delete(params["path"]) and workspace.forget(params["path"])
+
+
 def _move_to(workspace, params):
     return workspace.move_to(params["path"])
 
@@ -286,6 +335,23 @@ ACTIONS: dict[str, Action] = {
                 "Select nothing, one card (id) or several (ids).", _select, mutates=False),
         _action("view.focus", {"id": "string"}, (),
                 "Show one card alone, or -- with no id -- the whole board.", _focus, mutates=False),
+        _action("library.open", {"path": "string"}, ("path",),
+                "Open a file from the library; the pane shows one at a time.",
+                _library_open, mutates=False),
+        _action("library.newFile", {"project": "string", "name": "string"}, (),
+                "Make a file, in a project or loose at the top of the library.",
+                _library_new_file, mutates=False),
+        _action("library.newProject", {"name": "string"}, ("name",),
+                "Make a project, which is a folder.", _library_new_project, mutates=False),
+        _action("library.moveFile", {"path": "string", "project": "string"}, ("path",),
+                "Move a file into a project, or out to the top of the library.",
+                _library_move, mutates=False),
+        _action("library.renameFile", {"path": "string", "name": "string"}, ("path", "name"),
+                "Rename a file.", _library_rename, mutates=False),
+        _action("library.renameProject", {"name": "string", "to": "string"}, ("name", "to"),
+                "Rename a project.", _library_rename_project, mutates=False),
+        _action("library.deleteFile", {"path": "string"}, ("path",),
+                "Delete a file from the library.", _library_delete, mutates=False),
         _action("workspace.open", {"path": "string"}, ("path",),
                 "Open an .imgql file as the workspace document.", _open),
         _action("workspace.undo", {}, (), "Undo the last change to the document.",

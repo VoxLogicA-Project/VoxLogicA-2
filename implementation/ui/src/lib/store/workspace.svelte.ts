@@ -52,6 +52,22 @@ export interface View {
   focus: string | null;
 }
 
+export interface LibraryFile {
+  path: string;
+  /** The file's own name, without the suffix. */
+  name: string;
+  /** The project it is in, or null for a loose file at the top. */
+  project: string | null;
+  open: boolean;
+  modified: number;
+}
+
+export interface Library {
+  root: string;
+  projects: string[];
+  files: LibraryFile[];
+}
+
 export interface Snapshot {
   path: string | null;
   /** The workspace's folder name -- what a person calls this piece of work. */
@@ -62,6 +78,7 @@ export interface Snapshot {
   dirty: boolean;
   /** The document as it would be written to disk. */
   source: string;
+  library: Library;
   canUndo: boolean;
   canRedo: boolean;
 }
@@ -74,6 +91,7 @@ class WorkspaceStore {
   name = $state<string | null>(null);
   dirty = $state(false);
   source = $state("");
+  library = $state<Library>({ root: "", projects: [], files: [] });
   canUndo = $state(false);
   canRedo = $state(false);
   /** True once the server has told us anything at all. */
@@ -98,6 +116,7 @@ class WorkspaceStore {
     this.name = snapshot.name ?? null;
     this.dirty = snapshot.dirty;
     this.source = snapshot.source ?? "";
+    this.library = snapshot.library ?? { root: "", projects: [], files: [] };
     this.canUndo = snapshot.canUndo ?? false;
     this.canRedo = snapshot.canRedo ?? false;
     this.loaded = true;

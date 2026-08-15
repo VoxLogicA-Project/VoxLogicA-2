@@ -263,10 +263,8 @@ def test_a_workspace_with_no_path_still_has_a_file_to_write_to(tmp_path, monkeyp
 
     monkeypatch.setenv("VOXLOGICA_HOME", str(tmp_path / "appdata"))
     path = home.scratch_path()
-    # Its own folder, so whatever the work accumulates -- an image it loads, an
-    # output it writes -- has somewhere to be that travels with it.
-    assert path.parent.parent == tmp_path / "appdata" / "workspaces"
-    assert path.name == home.DOCUMENT
+    assert path.parent == tmp_path / "appdata" / "workspaces"
+    assert path.suffix == home.SUFFIX
     # Nothing is created by asking where it would go: an abandoned session
     # leaves nothing behind.
     assert not path.exists()
@@ -325,22 +323,46 @@ def test_opening_an_existing_file_does_not_rewrite_it(tmp_path):
     assert path.stat().st_mtime_ns == before
 
 
-def test_moving_a_scratch_brings_what_lived_beside_it(tmp_path, monkeypatch):
-    """A workspace is a folder so its images and outputs travel with it."""
+def test_a_folder_that_held_one_file_follows_it_out(tmp_path, monkeypatch):
+    """A folder that existed for one file travels with that file.
+
+    A project holding several does not: moving one of its files must not empty
+    a project somebody is still using.
+    """
     from voxlogica.ui import home
     from voxlogica.ui.workspace import Workspace
 
     monkeypatch.setenv("VOXLOGICA_HOME", str(tmp_path / "appdata"))
-    scratch = home.scratch_path()
-    space = Workspace(path=scratch)
-    (scratch.parent / "case.nii.gz").write_bytes(b"not really an image")
+    folder = home.workspaces() / "one-piece-of-work"
+    folder.mkdir(parents=True)
+    document = folder / "study.imgql"
+    space = Workspace(path=document)
+    (folder / "case.nii.gz").write_bytes(b"not really an image")
 
     target = tmp_path / "repo" / "study"
     space.apply("workspace.moveTo", {"path": str(target)})
 
     assert (target / home.DOCUMENT).exists()
     assert (target / "case.nii.gz").read_bytes() == b"not really an image"
-    assert not scratch.parent.exists()
+    assert not folder.exists()
+
+
+def test_a_project_with_other_files_in_it_stays_put(tmp_path, monkeypatch):
+    from voxlogica.ui import home
+    from voxlogica.ui.workspace import Workspace
+
+    monkeypatch.setenv("VOXLOGICA_HOME", str(tmp_path / "appdata"))
+    folder = home.workspaces() / "shared-project"
+    folder.mkdir(parents=True)
+    document = folder / "study.imgql"
+    (folder / "another.imgql").write_text("let b = 2\n")
+    space = Workspace(path=document)
+
+    space.apply("workspace.moveTo", {"path": str(tmp_path / "repo" / "study.imgql")})
+
+    assert folder.exists()
+    assert (folder / "another.imgql").exists()
+    assert not document.exists()
 
 
 def test_what_was_written_is_what_the_document_says_it_is(tmp_path):

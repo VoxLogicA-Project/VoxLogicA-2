@@ -62,9 +62,11 @@ an `.imgql` file. Nothing is asked on the way in.
 ./voxlogica run program.imgql    # compute, with the UI attached (see below)
 ```
 
-**Where your work lives.** A new workspace gets its own folder in the place your
-platform keeps application data, named after the moment you started it, with the
-document inside as `workspace.imgql`:
+**Where your work lives.** Files live in a library in the place your platform
+keeps application data. A project is a folder in it and a file is an `.imgql`
+inside; new files start loose at the top, and the sidebar lists all of them —
+one opens in the pane at a time, so there are no tabs. Drag a file onto a project
+to move it.
 
 | | |
 |---|---|
@@ -72,18 +74,18 @@ document inside as `workspace.imgql`:
 | Linux | `$XDG_DATA_HOME/voxlogica/workspaces/<timestamp>/` (default `~/.local/share`) |
 | Windows | `%LOCALAPPDATA%\VoxLogicA\workspaces\<timestamp>\` |
 
-Set `VOXLOGICA_HOME` to put that somewhere else. It is a folder rather than a
-bare file so that images you load and outputs you write can sit beside the
-program and travel with it.
+Set `VOXLOGICA_HOME` to put the library somewhere else. Because projects are
+plain folders, a project *is* something you can put under version control as it
+stands.
 
 **Saving.** There is none: the file is the document, written automatically and
 debounced. Nothing is ever "unsaved".
 
-**Moving it into a repository.** Click the path at the bottom of the window; the
-system's own save panel opens, and the whole folder moves — program, layout,
-images and all. The layout lives in the file's own `//@card` comments, so from
-then on it diffs, merges and commits like any other source. The button beside it
-shows the workspace in your file manager.
+**Moving it into a repository.** *Move…* at the bottom of the window opens the
+system's own save panel and takes the file out of the library; a folder that
+existed for that one file goes with it, images and all. The layout lives in the
+file's own `//@card` comments, so from then on it diffs, merges and commits like
+any other source. The button beside it shows the file in your file manager.
 
 **Node.** The UI is built on first use, and if there is no usable Node on `PATH`
 VoxLogicA fetches an official one for your platform into its own data directory
