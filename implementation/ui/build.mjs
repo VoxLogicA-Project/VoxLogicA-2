@@ -10,7 +10,7 @@
 // On failure it prints esbuild's own formatted diagnostics to stderr and exits
 // nonzero; the server turns that into an in-page overlay rather than a 500.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { glob, mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,6 +18,51 @@ import * as esbuild from "esbuild";
 import sveltePlugin from "esbuild-svelte";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Resolves `virtual:gallery` to every `*.gallery.js` beside a component.
+ *
+ * The dev gallery is not a page someone maintains -- it is generated from the
+ * components themselves, so a component cannot exist without appearing in it
+ * and cannot appear in it with stale variants. A hand-written registry would be
+ * one import away from silently drifting; this cannot drift, because the list
+ * is derived at build time and `watchFiles` re-derives it when the set changes.
+ */
+function galleryRegistry() {
+  return {
+    name: "gallery-registry",
+    setup(build) {
+      build.onResolve({ filter: /^virtual:gallery$/ }, () => ({
+        path: "virtual:gallery",
+        namespace: "gallery",
+      }));
+
+      build.onLoad({ filter: /.*/, namespace: "gallery" }, async () => {
+        const root = resolve(here, "src/lib/components");
+        const found = [];
+        for await (const entry of glob("**/*.gallery.js", { cwd: root })) {
+          found.push(entry);
+        }
+        // Sorted so the bundle is byte-identical for identical sources: the
+        // Python side caches builds by source fingerprint, and a registry whose
+        // order depended on directory iteration would defeat that.
+        found.sort();
+        const paths = found.map((entry) => resolve(root, entry));
+        const imports = paths
+          .map((path, index) => `import entry${index} from ${JSON.stringify(path)};`)
+          .join("\n");
+        const list = paths.map((_, index) => `entry${index}`).join(", ");
+        return {
+          contents: `${imports}\nexport default [${list}];\n`,
+          loader: "js",
+          resolveDir: root,
+          watchFiles: paths,
+          watchDirs: [root],
+        };
+      });
+    },
+  };
+}
 
 function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
@@ -47,7 +92,13 @@ const result = await esbuild.build({
   minify: !dev,
   logLevel: "silent",
   metafile: true,
+  // The dev-only design gallery is behind `if (__DEV__)` around a dynamic
+  // import. With this defined to `false` and minification on, esbuild drops the
+  // branch and the gallery, its sections and their styles never reach a
+  // production bundle -- the same source, two honest outputs.
+  define: { __DEV__: String(dev) },
   plugins: [
+    galleryRegistry(),
     sveltePlugin({
       compilerOptions: { dev, css: "external" },
     }),

@@ -1,0 +1,184 @@
+"""The workspace: the one place a document and a view actually live.
+
+Server-side on purpose. An MCP client is not a browser, and "an agent can see and
+do what the user sees and does" is only true by construction if the state is not
+in a tab: with no tab open there would be nothing to look at, and with two tabs
+open there would be two answers. The browser holds a replica of what is here.
+
+Every change goes through `apply`, which is the whole mutation surface: one name,
+one place, one broadcast. See doc/dev/ui-workspace.md section 3.
+"""
+
+from __future__ import annotations
+
+import threading
+from pathlib import Path
+from typing import Any
+
+from .actions import ACTIONS
+from .document import Document, parse
+
+
+class Workspace:
+    def __init__(self, *, hub=None, path: str | Path | None = None) -> None:
+        self._hub = hub
+        self._lock = threading.RLock()
+        self.path: Path | None = Path(path) if path else None
+        text = self.path.read_text() if self.path and self.path.exists() else ""
+        self.document: Document = parse(text)
+        #: Not part of the document: which page you are on is not a property of
+        #: the program, and a diff that changes because someone scrolled is a
+        #: diff nobody wants to review.
+        self.view: dict[str, Any] = {"page": 0, "zoom": 1.0, "selection": [], "focus": None}
+        #: Undo is a stack of whole documents, as text.
+        #:
+        #: The text *is* the document -- export is concatenation and parsing is
+        #: lossless -- so a snapshot cannot drift from what it claims to
+        #: represent, which an inverse-operation log can and eventually does.
+        #: A board is small; a hundred of them is nothing.
+        self._past: list[str] = []
+        self._future: list[str] = []
+        #: Debounced autosave. A workspace is not a thing you save, any more
+        #: than a drawer is: the file on disk is the document, and an unsaved
+        #: change is only a change nobody has written down yet. Debounced
+        #: because a drag is dozens of changes and the file is one.
+        self._save_timer: threading.Timer | None = None
+
+    # ------------------------------------------------------------------ state
+
+    def snapshot(self) -> dict[str, Any]:
+        """Everything the user sees, which is exactly what MCP reads."""
+        with self._lock:
+            return {
+                "path": str(self.path) if self.path else None,
+                "board": self.document.board,
+                "cards": self.document.cards,
+                "view": dict(self.view),
+                "dirty": self.document.dirty,
+                #: The file exactly as it would be written, so a client can show
+                #: the document itself without a second round trip.
+                "source": self.document.to_imgql(),
+                "canUndo": bool(self._past),
+                "canRedo": bool(self._future),
+            }
+
+    # ---------------------------------------------------------------- actions
+
+    def apply(self, name: str, params: dict[str, Any] | None = None) -> Any:
+        action = ACTIONS.get(name)
+        if action is None:
+            raise KeyError(f"no such action: {name}")
+        params = params or {}
+        missing = [key for key in action.required if key not in params]
+        if missing:
+            raise ValueError(f"{name} needs {', '.join(missing)}")
+        with self._lock:
+            if action.mutates:
+                self._past.append(self.document.to_imgql())
+                del self._past[:-100]
+                # A new edit is a new branch: whatever was undone is not coming
+                # back, and offering to redo it would restore a document that
+                # never existed.
+                self._future.clear()
+            result = action.apply(self, params)
+        if action.mutates:
+            self._autosave()
+        self.publish()
+        return result
+
+    # ------------------------------------------------------------ persistence
+
+    def _autosave(self, delay: float = 0.4) -> None:
+        """Write the document soon, and once, however many changes arrive.
+
+        Every mutation restarts the clock, so a drag that reports twenty
+        positions costs one write. There is no save action to forget: the last
+        thing that happened is what is on disk.
+        """
+        if self.path is None:
+            return
+        with self._lock:
+            if self._save_timer is not None:
+                self._save_timer.cancel()
+            self._save_timer = threading.Timer(delay, self._write_now)
+            self._save_timer.daemon = True
+            self._save_timer.start()
+
+    def _write_now(self) -> None:
+        try:
+            with self._lock:
+                # Nothing to write is not the same as writing nothing: touching
+                # the file when only the view changed would show up as work in
+                # every tool that watches it.
+                if self.path is None or not self.document.dirty:
+                    return
+                self.path.write_text(self.document.to_imgql())
+                self.document.dirty = False
+        except OSError:
+            # A read-only file or a vanished directory is not a reason to take
+            # the UI down: the document is still here and still correct.
+            return
+        self.publish()
+
+    def flush(self) -> None:
+        """Write anything pending right now -- on the way out, or before a read."""
+        with self._lock:
+            timer, self._save_timer = self._save_timer, None
+        if timer is not None:
+            timer.cancel()
+        self._write_now()
+
+    def undo(self) -> bool:
+        with self._lock:
+            if not self._past:
+                return False
+            self._future.append(self.document.to_imgql())
+            self.document = parse(self._past.pop())
+            self.document.dirty = True
+        self._autosave()
+        return True
+
+    def redo(self) -> bool:
+        with self._lock:
+            if not self._future:
+                return False
+            self._past.append(self.document.to_imgql())
+            self.document = parse(self._future.pop())
+            self.document.dirty = True
+        self._autosave()
+        return True
+
+    def open(self, path: str) -> bool:
+        target = Path(path)
+        text = target.read_text()
+        with self._lock:
+            self.path = target
+            self.document = parse(text)
+            # A different document, so nothing before it is anything to go back
+            # to: undoing into the previous file would be a trap.
+            self._past.clear()
+            self._future.clear()
+        return True
+
+    def save(self, path: str | None = None) -> str:
+        with self._lock:
+            target = Path(path) if path else self.path
+            if target is None:
+                raise ValueError("no path to save to")
+            target.write_text(self.document.to_imgql())
+            self.path = target
+            return str(target)
+
+    # -------------------------------------------------------------- broadcast
+
+    def publish(self) -> None:
+        """Push the new state to every client, browser and agent alike.
+
+        Sticky, so a tab that connects later gets the workspace as part of
+        connecting rather than having to ask for it.
+        """
+        if self._hub is None:
+            return
+        self._hub.publish(
+            {"type": "workspace", "workspace": self.snapshot()}, sticky_key="workspace"
+        )

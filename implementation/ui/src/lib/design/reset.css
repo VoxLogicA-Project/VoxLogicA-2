@@ -1,0 +1,62 @@
+/* A deliberately small reset: only the browser defaults that fight a design
+ * system. Anything more becomes a second, undocumented layer of styling.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* Form controls inherit type instead of falling back to the platform's 13px
+ * Helvetica -- the single most common source of "why is this text different". */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+
+button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+ul[role="list"],
+ol[role="list"] {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+img,
+svg,
+canvas {
+  display: block;
+  max-width: 100%;
+}
+
+/* Focus is shown for keyboard users only, and it is a ring in the accent
+ * colour everywhere -- one focus idiom for the whole app. */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: var(--ring-width) solid var(--color-focus);
+  outline-offset: var(--ring-offset);
+  border-radius: var(--radius-sm);
+}
+
+[hidden] {
+  display: none !important;
+}

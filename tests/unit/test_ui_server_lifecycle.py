@@ -174,3 +174,28 @@ def test_an_install_without_sources_or_a_prebuilt_bundle_says_so(monkeypatch) ->
     monkeypatch.setattr(bundler_module, "_package_static", lambda: bundler_module.Path("/nonexistent"))
     with pytest.raises(BundleError, match="No UI bundle available"):
         Bundler().ensure()
+
+
+def test_the_dev_page_is_only_advertised_when_it_exists(tmp_path, monkeypatch) -> None:
+    """The CLI prints a deep link to the dev page, and must not print one when
+    serving a wheel -- the page is compiled out of a production bundle, so that
+    link would land on nothing."""
+    from voxlogica.ui import UISession
+
+    class _Server:
+        url = "http://127.0.0.1:10001/"
+
+        def stop(self) -> None:
+            pass
+
+    dev = UISession(_Server(), Hub(), Bundler(source_root=_ui_tree(tmp_path / "ui")), None)
+    assert dev.dev_url == "http://127.0.0.1:10001/#dev"
+
+    # A wheel has no implementation/ui beside the package; this checkout does,
+    # so the absence has to be arranged rather than assumed.
+    from voxlogica.ui import bundler as bundler_module
+
+    monkeypatch.setattr(bundler_module, "_source_root", lambda: None)
+    shipped = UISession(_Server(), Hub(), Bundler(), None)
+    assert shipped.bundler.is_dev is False
+    assert shipped.dev_url is None

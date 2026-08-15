@@ -113,10 +113,13 @@ from voxlogica.ui.server import DEFAULT_PORT as UI_DEFAULT_PORT
 logger = logging.getLogger("voxlogica.main")
 
 
-def _configure_logging(debug: bool) -> None:
+def _configure_logging(debug: bool, stream=None) -> None:
     logging.basicConfig(
         level=logging.DEBUG if debug else logging.INFO,
         format="%(levelname)s: %(message)s",
+        # `voxlogica mcp` speaks the protocol on stdout, so its logs must go the
+        # other way or the first log line breaks the session.
+        stream=stream,
     )
 
 
@@ -205,11 +208,18 @@ def _start_ui(args: argparse.Namespace, *, program: str | None):
                 "program": program,
                 "storeDb": getattr(args, "store_db", None),
             },
+            # The program under run is the workspace document: opening the UI on
+            # a run shows the cards that file describes, or the whole program as
+            # one card when it has never been arranged.
+            program=Path(program) if program else None,
         )
     except Exception as exc:  # noqa: BLE001 - the UI is optional, the run is not
         logger.warning("Could not start the UI (%s); continuing without it", exc)
         return None
     print(f"[voxlogica] UI at {session.url}", file=sys.stderr)
+    if session.dev_url is not None:
+        print(f"[voxlogica] dev page at {session.dev_url} (or press Cmd/Ctrl+.)",
+              file=sys.stderr)
     return session
 
 
@@ -330,6 +340,22 @@ def list_primitives_command(_args: argparse.Namespace) -> int:
     print(json.dumps(payload, indent=2))
     return 0
 
+def mcp_command(args: argparse.Namespace) -> int:
+    """The stdio bridge an MCP client launches.
+
+    Registered automatically with the clients installed on this machine (see
+    voxlogica/ui/registration.py), so an agent finds the workspace without
+    anybody hand-editing a config file. It names no port: it looks up the live
+    instance every time it is asked something.
+    """
+    # Never to stdout: stdout is the MCP transport, and one stray print would
+    # corrupt the protocol.
+    _configure_logging(getattr(args, "debug", False), stream=sys.stderr)
+    from voxlogica.ui.bridge import main as bridge_main
+
+    return bridge_main()
+
+
 def serve_command(args: argparse.Namespace) -> int:
     """Implement the ``serve`` subcommand: the UI with no computation attached.
 
@@ -345,6 +371,9 @@ def serve_command(args: argparse.Namespace) -> int:
         instance_info={"version": __version__, "program": None, "storeDb": args.store_db},
     )
     print(f"[voxlogica] UI at {session.url} (Ctrl-C to stop)", file=sys.stderr)
+    if session.dev_url is not None:
+        print(f"[voxlogica] dev page at {session.dev_url} (or press Cmd/Ctrl+.)",
+              file=sys.stderr)
     session.serve_forever()
     return 0
 
@@ -497,6 +526,12 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--store-db", help="Path to the persistent results SQLite database")
     serve_parser.add_argument("--debug", action="store_true")
     serve_parser.set_defaults(handler=serve_command)
+
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="Speak MCP on stdio for whichever VoxLogicA instance is running.")
+    mcp_parser.add_argument("--debug", action="store_true")
+    mcp_parser.set_defaults(handler=mcp_command)
 
     list_parser = subparsers.add_parser("list-primitives", help="List primitive kernels.")
     list_parser.set_defaults(handler=list_primitives_command)

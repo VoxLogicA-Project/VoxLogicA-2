@@ -5,14 +5,31 @@
   let { error } = $props();
 </script>
 
-<div class="overlay">
+<div class="overlay" role="alert">
   <strong>{error.summary}</strong>
   {#if error.detail}<pre>{error.detail}</pre>{/if}
 </div>
 
 <style>
-  .overlay { border: 1px solid var(--bad); border-radius: 6px; padding: 1rem;
-             margin-bottom: 2rem; background: color-mix(in srgb, var(--bad) 8%, transparent); }
-  strong { color: var(--bad); display: block; margin-bottom: 0.5rem; }
-  pre { margin: 0; white-space: pre-wrap; overflow-x: auto; font-size: 0.8rem; }
+  .overlay {
+    padding: var(--space-4);
+    border: var(--border-width) solid var(--color-danger);
+    border-radius: var(--radius-lg);
+    background: var(--color-danger-subtle);
+  }
+
+  strong {
+    display: block;
+    margin-bottom: var(--space-2);
+    color: var(--color-danger);
+    font-weight: var(--weight-semibold);
+  }
+
+  pre {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-x: auto;
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
 </style>

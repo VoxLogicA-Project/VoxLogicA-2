@@ -1,0 +1,182 @@
+/* The design tokens. Two tiers, and the separation between them is the whole
+ * discipline of this file.
+ *
+ * TIER 1 -- primitives (--gray-*, --blue-*, --red-*, --green-*). Raw ramps.
+ *   A component may never reference one. They exist so that the semantic tier
+ *   has somewhere to point, and so a palette change is one edit here rather
+ *   than a search across every component.
+ *
+ * TIER 2 -- semantic roles (--color-*, --space-*, --text-*, ...). What a
+ *   component is allowed to say. `--color-text-muted` survives a repaint of
+ *   the palette; `--gray-600` does not.
+ *
+ * Dark mode redefines ONLY tier 2. If a component named a primitive it would
+ * be light-mode-only by construction, which is why the rule is enforced by a
+ * test (tests/unit/test_ui_design_system_discipline.py) rather than trusted.
+ *
+ * Colours are OKLCH: perceptually uniform, so a ramp that looks evenly spaced
+ * is evenly spaced, and a hue shift does not drag lightness along with it.
+ */
+
+:root {
+  /* ---------------------------------------------------- tier 1: primitives */
+
+  /* Neutrals, very slightly cool. A dead-neutral grey reads as cheap on a
+   * screen; 265 is enough cast to feel deliberate and not enough to be blue. */
+  --gray-50: oklch(99.2% 0.002 265);
+  --gray-100: oklch(97.4% 0.003 265);
+  --gray-200: oklch(93.6% 0.005 265);
+  --gray-300: oklch(88.2% 0.007 265);
+  --gray-400: oklch(72.5% 0.009 265);
+  --gray-500: oklch(58.5% 0.011 265);
+  --gray-600: oklch(47.5% 0.013 265);
+  --gray-700: oklch(37.5% 0.013 265);
+  --gray-800: oklch(27.5% 0.011 265);
+  --gray-900: oklch(20.5% 0.009 265);
+  --gray-950: oklch(15.5% 0.007 265);
+  --white: oklch(100% 0 0);
+
+  /* One accent, restrained. Clarity comes from having a single colour that
+   * means "this is the action"; a second accent would only dilute it. */
+  --blue-300: oklch(80% 0.09 255);
+  --blue-400: oklch(70% 0.13 255);
+  --blue-500: oklch(60% 0.15 255);
+  --blue-600: oklch(52% 0.16 255);
+  --blue-700: oklch(45% 0.15 255);
+  --blue-100: oklch(96% 0.02 255);
+
+  --red-300: oklch(80% 0.1 25);
+  --red-400: oklch(70% 0.16 25);
+  --red-500: oklch(58% 0.19 25);
+  --red-600: oklch(50% 0.19 25);
+  --red-100: oklch(96% 0.02 25);
+
+  --green-400: oklch(72% 0.13 150);
+  --green-500: oklch(60% 0.13 150);
+  --green-600: oklch(52% 0.13 150);
+
+  /* ------------------------------------------------ tier 2: colour roles */
+
+  --color-canvas: var(--gray-100);
+  --color-surface: var(--white);
+  --color-surface-sunken: var(--gray-100);
+  --color-surface-hover: var(--gray-100);
+  --color-surface-active: var(--gray-200);
+
+  --color-text: var(--gray-900);
+  --color-text-muted: var(--gray-600);
+  --color-text-subtle: var(--gray-500);
+  --color-text-inverse: var(--white);
+
+  --color-border: var(--gray-200);
+  --color-border-strong: var(--gray-300);
+
+  --color-accent: var(--blue-600);
+  --color-accent-hover: var(--blue-700);
+  --color-accent-subtle: var(--blue-100);
+  --color-accent-text: var(--white);
+
+  --color-danger: var(--red-600);
+  --color-danger-hover: var(--red-500);
+  --color-danger-subtle: var(--red-100);
+
+  --color-ok: var(--green-600);
+
+  --color-focus: var(--blue-500);
+  --color-overlay: oklch(20.5% 0.009 265 / 40%);
+
+  /* ------------------------------------------------------ tier 2: metrics */
+
+  /* A 4px rhythm. Every gap, pad and inset in the UI is one of these, which is
+   * most of what makes an interface look composed rather than assembled. */
+  --space-0: 0;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+
+  /* The bento lattice. `--bento-pitch` is cell + gutter, so a card `w` cells
+   * wide is exactly `w * pitch - gutter`. In rem, not px: the board then scales
+   * with the user's text size instead of turning into stamps beside large type,
+   * and zoom is a single multiplier on top. See doc/dev/ui-bento.md. */
+  --bento-pitch: 4rem;
+  --bento-gutter: var(--space-2);
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-full: 999px;
+
+  --border-width: 1px;
+
+  /* Shadows stay almost invisible on purpose: depth here is communicated by a
+   * border and a surface change, with the shadow only lifting true overlays. */
+  --shadow-sm: 0 1px 2px oklch(20.5% 0.009 265 / 6%);
+  --shadow-md: 0 2px 4px oklch(20.5% 0.009 265 / 6%),
+               0 4px 12px oklch(20.5% 0.009 265 / 6%);
+  --shadow-overlay: 0 4px 8px oklch(20.5% 0.009 265 / 8%),
+                    0 12px 32px oklch(20.5% 0.009 265 / 12%);
+
+  --motion-instant: 80ms;
+  --motion-fast: 130ms;
+  --motion-base: 200ms;
+  --easing-standard: cubic-bezier(0.2, 0, 0.2, 1);
+  --easing-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  --ring-width: 2px;
+  --ring-offset: 2px;
+
+  --layer-overlay: 100;
+  --layer-dev: 1000;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Only roles are restated. Note the inversion is not a mirror: dark
+     * surfaces sit *above* the canvas in lightness, the same way light ones do,
+     * so elevation still reads as elevation. */
+    --color-canvas: var(--gray-950);
+    --color-surface: var(--gray-900);
+    --color-surface-sunken: var(--gray-950);
+    --color-surface-hover: var(--gray-800);
+    --color-surface-active: var(--gray-700);
+
+    --color-text: var(--gray-100);
+    --color-text-muted: var(--gray-400);
+    --color-text-subtle: var(--gray-500);
+    --color-text-inverse: var(--gray-950);
+
+    --color-border: var(--gray-800);
+    --color-border-strong: var(--gray-700);
+
+    --color-accent: var(--blue-400);
+    --color-accent-hover: var(--blue-300);
+    --color-accent-subtle: oklch(30% 0.06 255);
+    --color-accent-text: var(--gray-950);
+
+    --color-danger: var(--red-400);
+    --color-danger-hover: var(--red-300);
+    --color-danger-subtle: oklch(30% 0.06 25);
+
+    --color-ok: var(--green-400);
+
+    --color-focus: var(--blue-400);
+    --color-overlay: oklch(15.5% 0.007 265 / 60%);
+
+    --shadow-sm: 0 1px 2px oklch(0% 0 0 / 30%);
+    --shadow-md: 0 2px 4px oklch(0% 0 0 / 30%), 0 4px 12px oklch(0% 0 0 / 24%);
+    --shadow-overlay: 0 4px 8px oklch(0% 0 0 / 32%), 0 12px 32px oklch(0% 0 0 / 40%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-instant: 0ms;
+    --motion-fast: 0ms;
+    --motion-base: 0ms;
+  }
+}

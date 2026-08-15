@@ -25,10 +25,12 @@ from .bundler import Bundle, BundleError, Bundler
 from .hub import Hub
 from .server import DEFAULT_PORT, UIServer, bind_loopback
 from .watcher import UIWatcher
+from .registration import announce, register_clients, withdraw
+from .workspace import Workspace
 
 __all__ = [
     "Bundle", "BundleError", "Bundler", "Hub", "UIServer", "UIWatcher", "UISession",
-    "DEFAULT_PORT", "start_ui",
+    "Workspace", "DEFAULT_PORT", "start_ui",
 ]
 
 logger = logging.getLogger(__name__)
@@ -38,15 +40,28 @@ class UISession:
     """A running UI: the server, the hub it publishes to, and its watcher."""
 
     def __init__(self, server: UIServer, hub: Hub, bundler: Bundler,
-                 watcher: UIWatcher | None) -> None:
+                 watcher: UIWatcher | None, workspace: Workspace | None = None,
+                 record: Path | None = None) -> None:
         self.server = server
         self.hub = hub
         self.bundler = bundler
         self.watcher = watcher
+        self.workspace = workspace
+        self._record = record
 
     @property
     def url(self) -> str:
         return self.server.url
+
+    @property
+    def dev_url(self) -> str | None:
+        """Deep link to the dev page, or ``None`` when serving a wheel.
+
+        The page does not exist in a production bundle, so there is nothing to
+        link to there. In a checkout the CLI prints this next to the app URL:
+        a design system nobody can find is a design system nobody follows.
+        """
+        return f"{self.server.url}#dev" if self.bundler.is_dev else None
 
     def publish(self, event: dict, *, sticky_key: str | None = None) -> None:
         self.hub.publish(event, sticky_key=sticky_key)
@@ -83,6 +98,7 @@ class UISession:
             self.stop()
 
     def stop(self) -> None:
+        withdraw(self._record)
         if self.watcher is not None:
             self.watcher.stop()
             self.watcher = None
@@ -96,6 +112,7 @@ def start_ui(
     instance_info: dict | None = None,
     dev: bool | None = None,
     source_root: Path | None = None,
+    program: Path | None = None,
 ) -> UISession:
     """Bring the UI up on the first free port at or after ``port``.
 
@@ -105,9 +122,24 @@ def start_ui(
     """
     bundler = Bundler(source_root=source_root, dev=True if dev is None else dev)
     hub = Hub()
+    # The workspace exists before any browser does: an agent on the MCP server is
+    # a first-class client, and "what is on the board" cannot depend on whether
+    # somebody happens to have a tab open.
+    workspace = Workspace(hub=hub, path=program)
     sock = bind_loopback(port)
-    server = UIServer(hub=hub, bundler=bundler, sock=sock, instance_info=instance_info)
+    server = UIServer(
+        hub=hub, bundler=bundler, sock=sock, instance_info=instance_info, workspace=workspace
+    )
     server.start()
+    workspace.publish()
+
+    # Findable without anyone editing JSON: the instance announces itself, and
+    # every installed MCP client gains a `voxlogica` entry if it has none. Both
+    # are best-effort by construction -- see registration.py.
+    session_record = announce(port=server.port, url=server.url, program=str(program or "") or None)
+    registered = register_clients()
+    if registered:
+        logger.info("registered the VoxLogicA MCP server with: %s", ", ".join(registered))
 
     watcher: UIWatcher | None = None
     if bundler.is_dev:
@@ -116,4 +148,4 @@ def start_ui(
 
     if open_browser:
         webbrowser.open(server.url)
-    return UISession(server, hub, bundler, watcher)
+    return UISession(server, hub, bundler, watcher, workspace, session_record)

@@ -1,0 +1,5 @@
+/* The design layer's single entry point. Order matters: tokens must exist
+ * before the reset and the type defaults can reference them. */
+@import "./tokens.css";
+@import "./reset.css";
+@import "./typography.css";

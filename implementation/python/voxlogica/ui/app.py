@@ -13,16 +13,18 @@ and module-level imports keep that failure impossible.
 """
 
 import asyncio
+import contextlib
 import html
 import logging
 import os
 from typing import Callable
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from .bundler import Bundle, BundleError, Bundler
 from .hub import PING_INTERVAL, Hub
+from .mcp import CaptureBroker, build_transport, screenshot
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +39,42 @@ _CONTENT_TYPES = {
 }
 
 
-def build_app(*, hub: Hub, bundler: Bundler, describe: Callable[[], dict]) -> FastAPI:
-    app = FastAPI(title="VoxLogicA UI", docs_url=None, redoc_url=None, openapi_url=None)
+def build_app(
+    *, hub: Hub, bundler: Bundler, describe: Callable[[], dict], workspace=None
+) -> FastAPI:
+    # Screenshots an agent asked for and a browser will answer. Held here because
+    # the WebSocket that carries the answers is declared in this function.
+    captures = CaptureBroker()
+    transport = build_transport(workspace, hub, captures) if workspace is not None else None
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # The MCP session manager's task group must be entered and left by the
+        # same task, on the loop that serves the requests. The lifespan is the
+        # only place that is true.
+        if transport is None:
+            yield
+            return
+        async with transport[1].run():
+            yield
+
+    app = FastAPI(
+        title="VoxLogicA UI",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
+
+    if transport is not None:
+        app.mount("/mcp", transport[0])
+
+        @app.post("/mcp")
+        async def mcp_entry() -> Response:
+            # A mount matches "/mcp/..." but not "/mcp" itself, and the catch-all
+            # below would answer that with a 405. 307 keeps the method and the
+            # body, so a client configured with either URL works.
+            return RedirectResponse("/mcp/", status_code=307)
 
     def bundle_or_error() -> tuple[Bundle | None, BundleError | None]:
         try:
@@ -67,6 +103,35 @@ def build_app(*, hub: Hub, bundler: Bundler, describe: Callable[[], dict]) -> Fa
             "pingInterval": PING_INTERVAL,
         })
         return JSONResponse(payload)
+
+    @app.get("/api/workspace")
+    async def workspace_state() -> JSONResponse:
+        # The same snapshot the WebSocket pushes, for anything that would rather
+        # ask once than hold a connection open.
+        if workspace is None:
+            return JSONResponse({"workspace": None})
+        return JSONResponse({"workspace": workspace.snapshot()})
+
+    @app.post("/api/action")
+    async def run_action(payload: dict) -> JSONResponse:
+        """Apply an action by name. The `voxlogica mcp` bridge speaks this.
+
+        The same dispatcher the WebSocket uses, over one request: an agent in
+        another process should not have to hold a socket open to move a card.
+        """
+        if workspace is None:
+            raise HTTPException(status_code=404, detail="no workspace")
+        try:
+            result = workspace.apply(payload.get("name"), payload.get("params") or {})
+        except Exception as error:  # noqa: BLE001 - reported, not raised
+            return JSONResponse({"ok": False, "error": f"{type(error).__name__}: {error}"})
+        return JSONResponse({"ok": True, "result": result, "workspace": workspace.snapshot()})
+
+    @app.post("/api/capture")
+    async def capture(payload: dict) -> JSONResponse:
+        if workspace is None:
+            raise HTTPException(status_code=404, detail="no workspace")
+        return JSONResponse(await screenshot(hub, captures, payload.get("target")))
 
     @app.get("/api/build")
     async def build_status() -> JSONResponse:
@@ -97,6 +162,23 @@ def build_app(*, hub: Hub, bundler: Bundler, describe: Callable[[], dict]) -> Fa
                     if message.get("type") == "ping":
                         hub.heartbeat(client_id)
                         await websocket.send_json({"type": "pong"})
+                    elif message.get("type") == "captureResult":
+                        # This tab answering the screenshot an agent asked for.
+                        captures.settle(message.get("id"), message)
+                    elif message.get("type") == "action" and workspace is not None:
+                        # The browser never mutates its own copy: it asks for an
+                        # action by name and redraws from the state that comes
+                        # back, which is the same state an agent sees.
+                        reply: dict = {"type": "actionResult", "id": message.get("id")}
+                        try:
+                            reply["result"] = workspace.apply(
+                                message["name"], message.get("params") or {}
+                            )
+                            reply["ok"] = True
+                        except Exception as error:
+                            reply["ok"] = False
+                            reply["error"] = f"{type(error).__name__}: {error}"
+                        await websocket.send_json(reply)
 
             tasks = [asyncio.create_task(pump()), asyncio.create_task(receive())]
             done: set = set()

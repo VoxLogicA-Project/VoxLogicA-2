@@ -60,11 +60,13 @@ class UIServer:
         bundler: Bundler,
         sock: socket.socket,
         instance_info: dict | None = None,
+        workspace=None,
     ) -> None:
         self._hub = hub
         self._bundler = bundler
         self._sock = sock
         self._instance_info = dict(instance_info or {})
+        self._workspace = workspace
         self._thread: threading.Thread | None = None
         self._server = None
         self._ready = threading.Event()
@@ -91,7 +93,12 @@ class UIServer:
         # wheels exist for it. The UI serves a handful of requests; the C
         # accelerators would buy nothing measurable.
         config = uvicorn.Config(
-            build_app(hub=self._hub, bundler=self._bundler, describe=self._describe),
+            build_app(
+                hub=self._hub,
+                bundler=self._bundler,
+                describe=self._describe,
+                workspace=self._workspace,
+            ),
             loop="asyncio",
             http="h11",
             ws="websockets",
@@ -140,6 +147,11 @@ class UIServer:
         await serve
 
     def stop(self, *, timeout: float = 5.0) -> None:
+        # Whatever the autosave was still waiting to write, write it. Losing the
+        # last half-second of somebody's arrangement because they closed the tab
+        # is exactly the failure autosave exists to prevent.
+        if self._workspace is not None:
+            self._workspace.flush()
         if self._server is not None:
             self._server.should_exit = True
         if self._thread is not None:
