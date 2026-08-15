@@ -244,6 +244,27 @@ def move(path: str | Path, project: str | None) -> Path:
     return destination
 
 
+def copy(path: str | Path, project: str | None, name: str | None = None) -> Path:
+    """Copy a file into a project, or to the top of the library.
+
+    The copy is a copy of the *file*, contents and all: a workspace is one
+    .imgql, so duplicating a piece of work is duplicating one file, and what
+    comes back is something you can rename and change without touching the
+    original.
+    """
+    source = Path(path)
+    folder = folder_of(project)
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = _safe(name) if name else source.stem
+    destination = folder / f"{stem}{SUFFIX}"
+    n = 2
+    while destination.exists():
+        destination = folder / f"{stem}-{n}{SUFFIX}"
+        n += 1
+    shutil.copy2(source, destination)
+    return destination
+
+
 def rename(path: str | Path, name: str) -> Path:
     source = Path(path)
     destination = source.with_name(f"{_safe(name)}{SUFFIX}")

@@ -266,3 +266,20 @@ def test_a_linked_folder_is_not_ours_to_delete(tmp_path):
     library.link(elsewhere)
     assert library.delete_project("brats") is False
     assert elsewhere.exists()
+
+
+def test_copying_a_file_leaves_the_original_where_it_was():
+    made = library.new_file(name="original")
+    made.write_text("let a = 1\n")
+    copy = library.copy(made, "Elsewhere")
+    assert copy.parent == library.root() / "Elsewhere"
+    assert copy.read_text() == "let a = 1\n"
+    assert made.exists()
+
+
+def test_copying_into_the_same_place_does_not_overwrite():
+    made = library.new_file(name="twice")
+    made.write_text("let a = 1\n")
+    copy = library.copy(made, None)
+    assert copy.name == "twice-2.imgql"
+    assert made.read_text() == "let a = 1\n"

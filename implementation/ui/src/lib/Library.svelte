@@ -27,6 +27,7 @@
     onreveal,
     ondelete,
     ondeleteproject,
+    oncopy,
   } = $props();
 
   const ORDERS = [
@@ -50,6 +51,34 @@
   let anchor = $state(null);
   /** Paths waiting for a second confirmation before they are deleted. */
   let armed = $state(null);
+
+  /** The cut buffer: what was picked up, and whether it is moving or copying.
+   *
+   * A cut does not remove anything yet -- nothing is gone until it lands
+   * somewhere. Files marked for a move show dimmed until they are pasted or
+   * the buffer is dropped, which is the only honest way to draw "this is on its
+   * way out but still here". */
+  let buffer = $state(null);
+
+  function pickUp(paths, mode) {
+    buffer = paths.length ? { paths, mode } : null;
+  }
+
+  /** Where a paste lands when nothing else says: beside the file being looked
+   * at, which is where somebody who just chose a file expects it to go. */
+  const here = $derived(library.files.find((file) => file.open)?.project ?? null);
+
+  function paste(project = here) {
+    const held = buffer;
+    if (!held) return;
+    for (const path of held.paths) {
+      if (held.mode === "cut") onmove?.(path, project);
+      else oncopy?.(path, project);
+    }
+    // A cut is spent once it lands; a copy can be pasted again, which is what
+    // everyone expects of a copy.
+    if (held.mode === "cut") buffer = null;
+  }
 
   const needle = $derived(filter.trim().toLowerCase());
 
@@ -162,7 +191,11 @@
     event.preventDefault();
     over = null;
     const payload = event.dataTransfer?.getData("text/voxlogica-file");
-    for (const path of (payload ?? "").split("\n").filter(Boolean)) onmove?.(path, project);
+    const copying = event.dataTransfer?.getData("text/voxlogica-mode") === "copy" || event.altKey;
+    for (const path of (payload ?? "").split("\n").filter(Boolean)) {
+      if (copying) oncopy?.(path, project);
+      else onmove?.(path, project);
+    }
   }
 
   function fileMenu(file) {
@@ -192,6 +225,15 @@
           onselect: () => paths.forEach((path) => onmove?.(path, project.name)),
         })),
       { separator: true },
+      { label: `Cut${many}`, hint: "mod+X", onselect: () => pickUp(paths, "cut") },
+      { label: `Copy${many}`, hint: "mod+C", onselect: () => pickUp(paths, "copy") },
+      {
+        label: "Paste here",
+        hint: "mod+V",
+        disabled: buffer === null,
+        onselect: () => paste(file.project),
+      },
+      { separator: true },
       // Armed, not done: the menu asks, the bar at the top confirms. A delete
       // that happened on one click of a menu nobody opened deliberately is the
       // one mistake this list can make that cannot be undone.
@@ -209,6 +251,12 @@
         onselect: () => startRename("project", project.name, project.name),
       },
       { label: "New file here", onselect: () => onnewfile?.(project.name) },
+      {
+        label: buffer === null ? "Paste here" : `Paste ${buffer.paths.length} here`,
+        hint: "mod+V",
+        disabled: buffer === null,
+        onselect: () => paste(project.name),
+      },
       { label: "Show in folder", onselect: () => onreveal?.(project.path) },
       { separator: true },
       ...(project.linked
@@ -284,6 +332,7 @@
           class="row file"
           class:current={file.open}
           class:picked={picked.has(file.path)}
+          class:leaving={buffer?.mode === "cut" && buffer.paths.includes(file.path)}
           aria-current={file.open ? "page" : undefined}
           draggable="true"
           title={file.path}
@@ -291,10 +340,12 @@
             // Dragging one of several picked files carries all of them: what
             // you can do to one, you can do to the ones you chose.
             const paths = scope(file);
+            // Alt is copy, everywhere a file manager has ever existed.
+            event.dataTransfer.setData("text/voxlogica-mode", event.altKey ? "copy" : "move");
             // A private type, so nothing else on the page mistakes this for
             // something it can handle.
             event.dataTransfer.setData("text/voxlogica-file", paths.join("\n"));
-            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.effectAllowed = "copyMove";
           }}
           ondblclick={() => startRename("file", file.path, file.name)}
           onkeydown={(event) => {
@@ -305,6 +356,16 @@
             if (event.key === "Delete" || event.key === "Backspace") {
               event.preventDefault();
               arm(scope(file));
+            }
+            if (event.metaKey || event.ctrlKey) {
+              const key = event.key.toLowerCase();
+              if (key === "x" || key === "c") {
+                event.preventDefault();
+                pickUp(scope(file), key === "x" ? "cut" : "copy");
+              } else if (key === "v") {
+                event.preventDefault();
+                paste(file.project);
+              }
             }
           }}
           onclick={(event) => choose(file, event)}
@@ -366,6 +427,14 @@
         <Button tone="quiet" size="sm" onclick={() => (armed = null)}>Cancel</Button>
       </div>
     </div>
+  {:else if buffer}
+    <p class="counted">
+      {buffer.paths.length}
+      {buffer.mode === "cut" ? "cut" : "copied"} —
+      <button class="link" onclick={() => paste()}>paste</button>
+      ·
+      <button class="link" onclick={() => (buffer = null)}>drop</button>
+    </p>
   {:else if picked.size > 1}
     <p class="counted">{picked.size} picked</p>
   {:else if needle}
@@ -385,6 +454,14 @@
     >
       <div class="head">
         <span class="kicker">Files</span>
+        {#if buffer}
+          <!-- The top is a destination like any other, and it needs saying so:
+               without this, somebody looking at a file inside a project has no
+               way to paste anywhere else. -->
+          <Button tone="quiet" size="sm" title="Paste at the top" onclick={() => paste(null)}>
+            Paste
+          </Button>
+        {/if}
         <Button tone="quiet" size="sm" title="New file" onclick={() => onnewfile?.(null)}>+</Button>
       </div>
       {#if loose.length === 0}
@@ -624,6 +701,20 @@
    * ring outside it is a ring the scroll container cuts in half. */
   .file.picked {
     box-shadow: inset 0 0 0 var(--border-width) var(--color-accent);
+  }
+
+  /* On its way out, but still here: nothing is gone until it lands. */
+  .file.leaving {
+    opacity: 0.5;
+  }
+
+  .link {
+    color: var(--color-accent);
+    font-size: var(--text-2xs);
+  }
+
+  .link:hover {
+    text-decoration: underline;
   }
 
   .row:focus-visible {

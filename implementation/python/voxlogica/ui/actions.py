@@ -234,6 +234,12 @@ def _library_move(workspace, params):
     return str(moved)
 
 
+def _library_copy(_workspace, params):
+    from . import library
+
+    return str(library.copy(guard.permit(params["path"]), params.get("project")))
+
+
 def _library_rename(workspace, params):
     from . import library
 
@@ -398,6 +404,9 @@ ACTIONS: dict[str, Action] = {
         _action("library.moveFile", {"path": "string", "project": "string"}, ("path",),
                 "Move a file into a project, or out to the top of the library.",
                 _library_move, mutates=False),
+        _action("library.copyFile", {"path": "string", "project": "string"}, ("path",),
+                "Copy a file into a project, or to the top of the library.",
+                _library_copy, mutates=False),
         _action("library.renameFile", {"path": "string", "name": "string"}, ("path", "name"),
                 "Rename a file.", _library_rename, mutates=False),
         _action("library.renameProject", {"name": "string", "to": "string"}, ("name", "to"),

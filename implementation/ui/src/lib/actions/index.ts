@@ -47,6 +47,8 @@ export const library = {
   newProject: (name: string) => invoke<string>("library.newProject", { name }),
   moveFile: (path: string, project: string | null) =>
     invoke<string>("library.moveFile", { path, ...(project ? { project } : {}) }),
+  copyFile: (path: string, project: string | null) =>
+    invoke<string>("library.copyFile", { path, ...(project ? { project } : {}) }),
   renameFile: (path: string, name: string) =>
     invoke<string>("library.renameFile", { path, name }),
   renameProject: (name: string, to: string) =>

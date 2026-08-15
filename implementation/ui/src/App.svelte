@@ -201,6 +201,7 @@
       onreveal={(path) => libraryActions.reveal(path)}
           ondelete={(path) => libraryActions.deleteFile(path)}
           ondeleteproject={(name) => libraryActions.deleteProject(name)}
+          oncopy={(path, project) => libraryActions.copyFile(path, project)}
         />
         <!-- The handle is the edge itself, which is where everyone reaches for
              it. Dragging sets a width; double-clicking puts it back. -->

@@ -480,11 +480,21 @@ until it is dragged into a project. "Unfiled" is a location, not a limbo.
 |---|---|
 | Click a file | Open it. Whatever the last file still owed to disk is written first. |
 | Drag a file onto a project | Move it into that folder. Onto the top: out of any project. |
+| Alt-drag | Copy instead of move, as in every file manager. |
+| ⌘/Ctrl+X, C, V | Cut, copy, paste — the whole selection, into the project you paste in. |
 | Double-click a name | Rename the file, or the project. |
 | `+` beside *Files* or a project | A new file there. |
 | Click, ⌘/Ctrl-click, shift-click | Pick one, add one, pick a range. |
 | Right-click a file | Rename, move to any project, delete — applied to everything picked. |
 | Drag the sidebar's edge | Resize it. Double-click the edge restores the default; ⌘/Ctrl+B hides it. |
+
+**A cut does not remove anything.** Nothing is gone until it lands: files marked
+for a move are drawn dimmed until they are pasted or the buffer is dropped, which
+is the only honest way to draw "on its way out, but still here". A cut is spent
+when it lands; a copy can be pasted again, which is what a copy means everywhere
+else. A paste with no destination named goes beside the file you are looking at,
+and the top of the library is a destination like any other — it says *Paste* in
+its own header while something is held.
 
 An **empty project can be tidied away** from its own menu, with the same two
 steps. Only an empty one: deleting a project that still holds files would be
