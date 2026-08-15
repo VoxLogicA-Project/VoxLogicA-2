@@ -143,11 +143,32 @@ size.
 | Right-click a card | That card's menu: maximize, focus, send to a page, remove. |
 | Focus the header, arrows | Move one cell. |
 | Focus the header, shift+arrows | Resize one cell. |
-| Focus the header, `f` | Focus this card alone; `Escape` leaves. |
-| Focus the header, `m` / Enter | Maximize. |
-| Focus the header, Delete | Remove the card. |
+| Long press a card | Focus it alone; press and hold again to leave. |
+| Click a card | Select it. Shift-click adds; empty space clears. |
+| ⌘/Ctrl+F | Focus the selected card, or leave focus. |
+| ⌘/Ctrl+Backspace | Delete the selection. |
+| ⌘/Ctrl+Enter | Maximize the selection. |
+| ⌘/Ctrl+D | Duplicate the selection. |
+| ⌘/Ctrl+A | Select every card on the page. |
+| `?` | The whole list, in a sheet. |
 | Double-click a card's name | Rename it in place. Enter keeps, Escape abandons. |
 | ⌘/Ctrl `+` `-` `0`, ctrl+wheel | Zoom the lattice: bigger cells, same coordinates. |
+
+**Every action has a key, and every key is a chord.** Bare letters belong to the
+cards — `f` will mean the letter f in a program long before it means focus — so
+everything but the arrows takes the platform modifier. The arrows are safe
+because nothing else wants them while a card, and not a text field, has the
+keyboard. The list lives in `components/Bento/shortcuts.js`, next to the code
+that acts on it and rendered by the help sheet: a list of shortcuts maintained
+somewhere else is a list that is wrong by the second release.
+
+**A selection is a set.** Everything you can do to one card you can do to the
+several you picked out: they move together, resize together, duplicate together
+and delete together, and the group is clamped by whichever member reaches an edge
+first, so the shape a selection makes never changes on the way. Dragging a card
+that is in the selection carries the selection; dragging one that is not is about
+that card alone. A click that never became a drag narrows the selection to the
+card you clicked, because otherwise a selection could only ever grow.
 
 **Resizing pulls edges, not a handle.** All eight: four sides, four corners,
 invisible, ~8px wide with the corners winning where they meet. Pulling a top or

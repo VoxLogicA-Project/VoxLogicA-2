@@ -29,7 +29,7 @@ class Workspace:
         #: Not part of the document: which page you are on is not a property of
         #: the program, and a diff that changes because someone scrolled is a
         #: diff nobody wants to review.
-        self.view: dict[str, Any] = {"page": 0, "zoom": 1.0, "selection": None, "focus": None}
+        self.view: dict[str, Any] = {"page": 0, "zoom": 1.0, "selection": [], "focus": None}
         #: Undo is a stack of whole documents, as text.
         #:
         #: The text *is* the document -- export is concatenation and parsing is
@@ -55,6 +55,9 @@ class Workspace:
                 "cards": self.document.cards,
                 "view": dict(self.view),
                 "dirty": self.document.dirty,
+                #: The file exactly as it would be written, so a client can show
+                #: the document itself without a second round trip.
+                "source": self.document.to_imgql(),
                 "canUndo": bool(self._past),
                 "canRedo": bool(self._future),
             }

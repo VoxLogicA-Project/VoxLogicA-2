@@ -96,6 +96,31 @@
     }
   });
 
+  /** Holding a card is asking to see it on its own.
+   *
+   * A press that does not become a drag is a press that meant something else,
+   * and on a board where dragging is the main verb it is the only gesture left
+   * that costs nothing to offer. Half a second: long enough not to fire while
+   * somebody is deciding, short enough not to feel broken.
+   */
+  let longPress = null;
+
+  function startLongPress() {
+    if (!onfocus) return;
+    cancelLongPress();
+    longPress = setTimeout(() => {
+      longPress = null;
+      onfocus(!focused);
+    }, 500);
+  }
+
+  function cancelLongPress() {
+    if (longPress !== null) {
+      clearTimeout(longPress);
+      longPress = null;
+    }
+  }
+
   function startRename() {
     if (onrename) renaming = card.title ?? card.id;
   }
@@ -263,6 +288,11 @@
     // top of cards that had politely stepped out of its way.
     if (rect.x !== from.x || rect.y !== from.y || rect.w !== from.w || rect.h !== from.h) {
       oncommit?.(rect);
+    } else if (!event.shiftKey && !event.metaKey && !event.ctrlKey) {
+      // A press that never became a drag was a click, and clicking one of
+      // several selected cards means "just this one" -- otherwise a selection
+      // could only ever grow.
+      onselect?.(false, true);
     }
     onpreview?.(null);
   }
@@ -270,23 +300,7 @@
   /** The same gestures from the keyboard, which is the only way some people have
    * of arranging anything at all. */
   function onKeydown(event) {
-    if (onremove && (event.key === "Delete" || (event.key === "Backspace" && event.altKey))) {
-      // Delete, or Alt+Backspace for keyboards without one. Plain Backspace is
-      // not enough: it is one stray keystroke away from losing a card.
-      event.preventDefault();
-      onremove();
-      return;
-    }
-    if (event.key === "f" && onfocus) {
-      event.preventDefault();
-      onfocus(!focused);
-      return;
-    }
-    if ((event.key === "m" || event.key === "Enter") && onmaximize) {
-      event.preventDefault();
-      onmaximize();
-      return;
-    }
+
     const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[
       event.key
     ];
@@ -327,12 +341,22 @@
       tabindex="0"
       aria-label="{card.title ?? card.id} — move with arrows, resize with shift+arrows"
       onpointerdown={(event) => {
-        onselect?.();
+        onselect?.(event.shiftKey || event.metaKey || event.ctrlKey);
+        startLongPress(event);
         begin(event, "move");
       }}
-      onpointermove={move}
-      onpointerup={end}
-      onpointercancel={end}
+      onpointermove={(event) => {
+        cancelLongPress();
+        move(event);
+      }}
+      onpointerup={(event) => {
+        cancelLongPress();
+        end(event);
+      }}
+      onpointercancel={(event) => {
+        cancelLongPress();
+        end(event);
+      }}
       ondblclick={() => onmaximize?.()}
       onkeydown={onKeydown}
     >
@@ -430,11 +454,15 @@
     box-shadow: var(--shadow-overlay);
   }
 
-  /* The card you are working with, said as quietly as it can be said: a ring
-   * the width of the focus ring, in the accent, and nothing else moves. */
+  /* The card you are working with: a border, and only a border. An inset
+   * shadow rather than an outline, because an outline is painted outside the
+   * rounded corner and reads as a stray rule across the top of the card. */
   .card.selected {
-    outline: var(--ring-width) solid var(--color-accent);
-    outline-offset: calc(var(--ring-width) * -1);
+    box-shadow: inset 0 0 0 var(--ring-width) var(--color-accent), var(--shadow-md);
+  }
+
+  .card.selected.dragging {
+    box-shadow: inset 0 0 0 var(--ring-width) var(--color-accent), var(--shadow-overlay);
   }
 
   .card.invalid {

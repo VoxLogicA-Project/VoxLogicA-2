@@ -135,7 +135,17 @@ def _set_zoom(workspace, params):
 
 
 def _select(workspace, params):
-    workspace.view["selection"] = params.get("id")
+    """Select nothing, one card, or several.
+
+    A list rather than a single id, because everything you can do to one card
+    you eventually want to do to three, and a UI that has to grow a second
+    concept for that ends up with two rules for what "the current card" means.
+    """
+    ids = params.get("ids")
+    if ids is None:
+        one = params.get("id")
+        ids = [one] if one else []
+    workspace.view["selection"] = [str(value) for value in ids]
     return True
 
 
@@ -213,8 +223,8 @@ ACTIONS: dict[str, Action] = {
                 "Show a page of the board.", _go_to_page, mutates=False),
         _action("view.setZoom", {"zoom": "number"}, ("zoom",),
                 "Scale the board.", _set_zoom, mutates=False),
-        _action("view.select", {"id": "string"}, (),
-                "Select a card, or nothing.", _select, mutates=False),
+        _action("view.select", {"id": "string", "ids": "placements"}, (),
+                "Select nothing, one card (id) or several (ids).", _select, mutates=False),
         _action("view.focus", {"id": "string"}, (),
                 "Show one card alone, or -- with no id -- the whole board.", _focus, mutates=False),
         _action("workspace.open", {"path": "string"}, ("path",),

@@ -26,6 +26,7 @@
    */
   import ContextMenu from "../ContextMenu/ContextMenu.svelte";
   import BentoCard from "./BentoCard.svelte";
+  import { SHORTCUTS } from "./shortcuts.js";
 
   let {
     /** `[{ id, x, y, w?, h?, page?, auto?, minW?, minH?, maxW?, maxH?, aspect?, title? }]` */
@@ -54,13 +55,15 @@
     onrename = undefined,
     /** `(id, {x, y, w, h})` — a copy was asked for, and where it fits. */
     onduplicate = undefined,
-    /** `(id | null)` — the card the user is working with. */
+    /** `(ids)` — the cards the user is working with. */
     onselect = undefined,
-    selection = null,
+    selection = [],
     /** `(id | null)` — show one card alone, or the whole board again. */
     onfocus = undefined,
     /** `(zoom)` — the board was scaled. */
     onzoom = undefined,
+    /** The shortcut list was asked for. */
+    onhelp = undefined,
     /** The card being shown alone, if any. */
     focus = null,
     /** What `onadd` may be asked for, and how big each starts. */
@@ -225,21 +228,27 @@
    * than as cards teleporting to wherever there was room. Returns `null` if
    * somebody cannot be housed, which is what makes the drop refuse.
    */
-  function arrange(id, rect, push) {
-    const others = visible.filter((card) => card.id !== id);
+  function arrange(ids, rects, push) {
+    const others = visible.filter((card) => !ids.includes(card.id));
+    const moving = [...rects.values()];
     const fixed = [];
     const homeless = [];
     for (const card of others) {
       const box = rectOf(card);
-      (overlaps(box, rect) ? homeless : fixed).push({ card, box });
+      (moving.some((rect) => overlaps(box, rect)) ? homeless : fixed).push({ card, box });
     }
     if (homeless.length === 0) return new Map();
 
-    const taken = [rect, ...fixed.map((entry) => entry.box)];
+    const anchor = moving[0];
+    const taken = [...moving, ...fixed.map((entry) => entry.box)];
     const moved = new Map();
     // Nearest first: the card the dragged one has barely touched moves before
     // the card it is sitting on, which keeps the shuffle small and legible.
-    homeless.sort((a, b) => Math.hypot(a.box.x - rect.x, a.box.y - rect.y) - Math.hypot(b.box.x - rect.x, b.box.y - rect.y));
+    homeless.sort(
+      (a, b) =>
+        Math.hypot(a.box.x - anchor.x, a.box.y - anchor.y) -
+        Math.hypot(b.box.x - anchor.x, b.box.y - anchor.y),
+    );
 
     for (const { card, box } of homeless) {
       const spot = findSpot(box, taken, push);
@@ -279,26 +288,77 @@
     return null;
   }
 
-  /** The gesture in flight: which card, where it is, and which way it came. */
+  /** The gesture in flight: who is moving, where they are, and which way. */
   let drag = $state(null);
-  const displaced = $derived(drag ? arrange(drag.id, drag.rect, drag.push) : null);
+  const displaced = $derived(
+    drag ? arrange([...drag.rects.keys()], drag.rects, drag.push) : null,
+  );
   const refused = $derived(drag !== null && displaced === null);
+
+  /** The cards a gesture on this card should carry.
+   *
+   * Dragging a selected card moves everything selected, by the same delta;
+   * dragging an unselected one is about that card alone. That is the rule
+   * every canvas uses, and it is the reason selection is worth having: what
+   * you can do to one card you can do to the three you picked out. */
+  function partyFor(id) {
+    return selection.includes(id) ? selection.filter((other) => byId(other)) : [id];
+  }
+
+  const byId = (id) => visible.find((card) => card.id === id);
 
   function preview(card, rect) {
     if (rect === null) {
       drag = null;
       return;
     }
-    const from = drag?.rect ?? { x: card.x, y: card.y };
+    const party = partyFor(card.id);
+    const lead = rectOf(card);
+    const delta = { x: rect.x - lead.x, y: rect.y - lead.y, w: rect.w - lead.w, h: rect.h - lead.h };
+
+    // Everyone moves by the same delta, and nobody leaves the page: the group
+    // is clamped by whichever member hits the edge first, so the shape the
+    // selection makes never changes on the way.
+    const limits = party.reduce(
+      (acc, id) => {
+        const box = rectOf(byId(id));
+        return {
+          minX: Math.min(acc.minX, box.x),
+          minY: Math.min(acc.minY, box.y),
+          maxX: Math.max(acc.maxX, box.x + box.w),
+          maxY: Math.max(acc.maxY, box.y + box.h),
+        };
+      },
+      { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
+    );
+    const dx = Math.min(Math.max(delta.x, -limits.minX), width - limits.maxX);
+    const dy = Math.min(Math.max(delta.y, -limits.minY), height - limits.maxY);
+
+    const rects = new Map();
+    for (const id of party) {
+      const box = rectOf(byId(id));
+      const moved =
+        id === card.id
+          ? { ...rect, x: box.x + dx, y: box.y + dy }
+          : {
+              x: box.x + dx,
+              y: box.y + dy,
+              w: Math.max(1, Math.min(box.w + delta.w, width - box.x - dx)),
+              h: Math.max(1, Math.min(box.h + delta.h, height - box.y - dy)),
+            };
+      rects.set(id, moved);
+    }
+
+    const before = drag?.rects.get(card.id) ?? lead;
     // The push is the last actual movement, not the total: a card dragged left
     // and then back right shoves right, which is what the hand just did.
     const push = drag
       ? {
-          dx: Math.sign(rect.x - from.x) || drag.push.dx,
-          dy: Math.sign(rect.y - from.y) || drag.push.dy,
+          dx: Math.sign(rects.get(card.id).x - before.x) || drag.push.dx,
+          dy: Math.sign(rects.get(card.id).y - before.y) || drag.push.dy,
         }
       : { dx: 0, dy: 0 };
-    drag = { id: card.id, rect, push };
+    drag = { id: card.id, rects, push };
   }
 
   // ------------------------------------------- holding a drop until it lands
@@ -348,8 +408,7 @@
     // Focus is a way of looking, not a change to the layout: the card is drawn
     // filling the board and its real cells are left exactly as they were.
     if (focus === card.id) return { x: 0, y: 0, w: width, h: height };
-    if (drag?.id === card.id) return drag.rect;
-    return displaced?.get(card.id) ?? positionOf(card);
+    return drag?.rects.get(card.id) ?? displaced?.get(card.id) ?? positionOf(card);
   }
 
   // ------------------------------------------------ maximize, focus, zoom
@@ -441,26 +500,118 @@
     if (next !== zoom) onzoom?.(next);
   }
 
+  /** Every action has a key, and every key is a chord.
+   *
+   * Bare letters belong to the cards: `f` is going to mean the letter f in a
+   * program long before it means focus. So the board takes the platform's
+   * modifier for everything except the arrows, which nothing else wants while
+   * a card -- and not a text field -- has the keyboard.
+   */
+  /** Every action has a key, and every key is a chord.
+   *
+   * Bare letters belong to the cards: `f` is going to mean the letter f in a
+   * program long before it means focus. So the board takes the platform's
+   * modifier for everything except the arrows, which nothing else wants while a
+   * card -- and not a text field -- has the keyboard. The list itself is in
+   * ./shortcuts.js, next to nothing but the truth.
+   */
+
+  /** True when the keyboard belongs to something being typed into. */
+  const typing = (event) =>
+    event.target instanceof HTMLElement &&
+    (event.target.isContentEditable ||
+      ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName));
+
+  function selected() {
+    return selection.map((id) => byId(id)).filter(Boolean);
+  }
+
   function onWindowKeydown(event) {
-    if (event.key === "Escape" && focus) {
-      onfocus?.(null);
+    if (typing(event)) return;
+
+    if (event.key === "Escape") {
+      if (focus) onfocus?.(null);
+      else if (selection.length) onselect?.([]);
+      return;
+    }
+
+    if (event.key === "?" || (event.key === "/" && event.shiftKey)) {
+      event.preventDefault();
+      onhelp?.();
+      return;
+    }
+
+    const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[
+      event.key
+    ];
+    if (step && selection.length && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault();
+      nudge(step, event.shiftKey);
       return;
     }
     // The platform's own zoom chord, aimed at the board rather than the page:
     // this *is* what zooming means here, and leaving it to the browser would
     // scale the chrome around a board that already knows how to scale itself.
-    if (event.metaKey || event.ctrlKey) {
-      if (event.key === "=" || event.key === "+") {
-        event.preventDefault();
-        stepZoom(1);
-      } else if (event.key === "-") {
-        event.preventDefault();
-        stepZoom(-1);
-      } else if (event.key === "0") {
-        event.preventDefault();
-        if (zoom !== 1) onzoom?.(1);
-      }
+    if (!(event.metaKey || event.ctrlKey)) return;
+    const key = event.key.toLowerCase();
+    if (key === "=" || key === "+") {
+      event.preventDefault();
+      stepZoom(1);
+    } else if (key === "-") {
+      event.preventDefault();
+      stepZoom(-1);
+    } else if (key === "0") {
+      event.preventDefault();
+      if (zoom !== 1) onzoom?.(1);
+    } else if (key === "a") {
+      event.preventDefault();
+      onselect?.(visible.map((card) => card.id));
+    } else if (key === "f" && selection.length === 1) {
+      event.preventDefault();
+      onfocus?.(focus === selection[0] ? null : selection[0]);
+    } else if (key === "backspace" || key === "delete") {
+      event.preventDefault();
+      for (const card of selected()) onremove?.(card.id);
+      onselect?.([]);
+    } else if (key === "enter" && selection.length) {
+      event.preventDefault();
+      for (const card of selected()) maximize(card);
+    } else if (key === "d" && selection.length) {
+      event.preventDefault();
+      for (const card of selected()) onduplicate?.(card.id, copySpot(card));
     }
+  }
+
+  /** Move or resize everything selected, by one cell, together. */
+  function nudge([dx, dy], resizing) {
+    const party = selected();
+    if (!party.length) return;
+    const spots = party.map((card) => {
+      const box = rectOf(card);
+      return {
+        id: card.id,
+        ...(resizing
+          ? { x: box.x, y: box.y, w: Math.max(1, box.w + dx), h: Math.max(1, box.h + dy) }
+          : { x: box.x + dx, y: box.y + dy, w: box.w, h: box.h }),
+      };
+    });
+    const ids = spots.map((spot) => spot.id);
+    const room = spots.every(
+      (spot) =>
+        spot.x >= 0 &&
+        spot.y >= 0 &&
+        spot.x + spot.w <= width &&
+        spot.y + spot.h <= height &&
+        visible.every((other) => {
+          // A card moving with the group cannot object to the group's move.
+          if (ids.includes(other.id)) return true;
+          return !overlaps(spot, rectOf(other));
+        }),
+    );
+    if (!room) return;
+    pending = { ...pending, ...Object.fromEntries(spots.map((spot) => [spot.id, spot])) };
+    pendingSince = Date.now();
+    onarrange?.(spots);
   }
 
   function onWheel(event) {
@@ -473,11 +624,13 @@
 
   function commit(card, rect) {
     // The whole arrangement is committed, not just the card under the finger:
-    // everything that stepped aside to make room stays where it stepped. A card
-    // that avoided the drag and then snapped back the moment the drag ended
-    // would leave the two of them overlapping, which is the one state this
-    // board is built never to be in.
-    const spots = { [card.id]: rect };
+    // everyone dragged with it, and everyone that stepped aside to make room.
+    // A card that avoided the drag and then snapped back the moment the drag
+    // ended would leave the two of them overlapping, which is the one state
+    // this board is built never to be in.
+    const spots = {};
+    if (drag) for (const [id, spot] of drag.rects) spots[id] = spot;
+    else spots[card.id] = rect;
     if (displaced) for (const [id, spot] of displaced) spots[id] = spot;
     pending = { ...pending, ...spots };
     pendingSince = Date.now();
@@ -553,9 +706,13 @@
    * spreadsheet, and it means the same thing: this rectangle, these cells. */
   function onBoardPointerDown(event) {
     if (event.button !== 0 || !pitch || focus || !onadd) return;
-    if (event.target.closest(".card") || event.target.closest(".add")) return;
+    // The plus sits exactly where a sketch starts, so it must not swallow the
+    // press: dragging from it draws, clicking it makes the default card.
+    if (event.target.closest(".card")) return;
     const cell = cellAt(event);
     if (!cell || !canPlace(null, cell.x, cell.y, 1, 1)) return;
+    // Pressing empty lattice is how you let go of everything.
+    if (selection.length) onselect?.([]);
     event.preventDefault();
     try {
       // Keeps the sketch alive when the pointer leaves the board mid-drag.
@@ -688,6 +845,7 @@
             style="transform: translate3d({hovered.x * pitch}px, {hovered.y * pitch}px, 0);
                    width: {pitch - gutter}px; height: {pitch - gutter}px;"
             onclick={addHere}
+            onpointerdown={onBoardPointerDown}
           >
             +
           </button>
@@ -705,8 +863,19 @@
             size={sizeOf(card)}
             focused={focus === card.id}
             onremove={onremove ? () => onremove(card.id) : undefined}
-            selected={selection === card.id}
-            onselect={onselect ? () => onselect(card.id) : undefined}
+            selected={selection.includes(card.id)}
+            onselect={onselect
+              ? (additive, collapse) =>
+                  onselect(
+                    additive
+                      ? selection.includes(card.id)
+                        ? selection.filter((id) => id !== card.id)
+                        : [...selection, card.id]
+                      : collapse || !selection.includes(card.id)
+                        ? [card.id]
+                        : selection,
+                  )
+              : undefined}
             onduplicate={onduplicate ? () => onduplicate(card.id, copySpot(card)) : undefined}
             onmaximize={() => maximize(card)}
             onrename={onrename ? (title) => onrename(card.id, title) : undefined}

@@ -42,7 +42,7 @@ export interface Board {
 export interface View {
   page: number;
   zoom: number;
-  selection: string | null;
+  selection: string[];
   /** One card shown alone, or null for the whole board. */
   focus: string | null;
 }
@@ -53,6 +53,8 @@ export interface Snapshot {
   cards: Card[];
   view: View;
   dirty: boolean;
+  /** The document as it would be written to disk. */
+  source: string;
   canUndo: boolean;
   canRedo: boolean;
 }
@@ -60,9 +62,10 @@ export interface Snapshot {
 class WorkspaceStore {
   board = $state<Board>({ cols: 12, rows: 8 });
   cards = $state<Card[]>([]);
-  view = $state<View>({ page: 0, zoom: 1, selection: null, focus: null });
+  view = $state<View>({ page: 0, zoom: 1, selection: [], focus: null });
   path = $state<string | null>(null);
   dirty = $state(false);
+  source = $state("");
   canUndo = $state(false);
   canRedo = $state(false);
   /** True once the server has told us anything at all. */
@@ -85,6 +88,7 @@ class WorkspaceStore {
     this.view = snapshot.view;
     this.path = snapshot.path;
     this.dirty = snapshot.dirty;
+    this.source = snapshot.source ?? "";
     this.canUndo = snapshot.canUndo ?? false;
     this.canRedo = snapshot.canRedo ?? false;
     this.loaded = true;

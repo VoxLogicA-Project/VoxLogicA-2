@@ -36,7 +36,7 @@ export const card = {
 export const view = {
   goToPage: (page: number) => invoke("view.goToPage", { page }),
   setZoom: (zoom: number) => invoke("view.setZoom", { zoom }),
-  select: (id: string | null) => invoke("view.select", id === null ? {} : { id }),
+  select: (ids: string[]) => invoke("view.select", { ids }),
   focus: (id: string | null) => invoke("view.focus", id === null ? {} : { id }),
 };
 
