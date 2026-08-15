@@ -252,6 +252,15 @@
    */
   function arrange(ids, rects, push) {
     const others = visible.filter((card) => !ids.includes(card.id));
+    // Counted before anything is searched for. A drag big enough to leave less
+    // free space than the cards it displaces cannot be arranged however hard
+    // anyone looks, and looking is what used to cost the frame.
+    const covered = [...rects.values()].reduce((total, rect) => total + rect.w * rect.h, 0);
+    const wanted = others.reduce((total, card) => {
+      const box = rectOf(card);
+      return total + box.w * box.h;
+    }, 0);
+    if (covered + wanted > width * height) return null;
     const moving = [...rects.values()];
     const fixed = [];
     const homeless = [];
@@ -281,6 +290,17 @@
     return moved;
   }
 
+  /** How far a displaced card may be shoved before the drag is simply refused.
+   *
+   * Bounded for two reasons. A card that has to travel across the board to make
+   * room has not "stepped aside", it has been *thrown* somewhere the eye cannot
+   * follow -- so a short reach is the better behaviour whatever it costs. And
+   * the search is cubic in the size of the board when nothing is free, which on
+   * a 15x9 board with a maximized card measures 0.11ms a move: not a freeze,
+   * but the wrong shape to leave in a loop that runs while a finger moves.
+   */
+  const REACH = 4;
+
   /** The closest free position for `box`, preferring the push direction. */
   function findSpot(box, taken, push) {
     const free = (x, y) =>
@@ -292,14 +312,14 @@
 
     // 1. Straight along the shove, as far as it takes to clear.
     if (push.dx || push.dy) {
-      for (let step = 1; step <= Math.max(width, height); step += 1) {
+      for (let step = 1; step <= REACH; step += 1) {
         const x = box.x + push.dx * step;
         const y = box.y + push.dy * step;
         if (free(x, y)) return { x, y };
       }
     }
     // 2. Otherwise the nearest cell that fits, by rings around home.
-    for (let radius = 1; radius <= width + height; radius += 1) {
+    for (let radius = 1; radius <= REACH; radius += 1) {
       for (let dy = -radius; dy <= radius; dy += 1) {
         for (let dx = -radius; dx <= radius; dx += 1) {
           if (Math.abs(dx) + Math.abs(dy) !== radius) continue;
@@ -371,7 +391,21 @@
       rects.set(id, moved);
     }
 
-    const before = drag?.rects.get(card.id) ?? lead;
+    const settled = drag?.rects.get(card.id);
+    if (
+      settled &&
+      settled.x === rects.get(card.id).x &&
+      settled.y === rects.get(card.id).y &&
+      settled.w === rects.get(card.id).w &&
+      settled.h === rects.get(card.id).h
+    ) {
+      // The pointer moved but nothing changed cell. Assigning a new object
+      // anyway would invalidate the arrangement and recompute it for every
+      // pixel of a drag rather than for every cell of one.
+      return;
+    }
+
+    const before = settled ?? lead;
     // The push is the last actual movement, not the total: a card dragged left
     // and then back right shoves right, which is what the hand just did.
     const push = drag
