@@ -250,3 +250,119 @@ def test_editing_the_document_text_is_an_ordinary_change(workspace):
     assert any(card["title"] == "Typed" for card in workspace.snapshot()["cards"])
     assert workspace.apply("workspace.undo") is True
     assert all(card["title"] != "Typed" for card in workspace.snapshot()["cards"])
+
+
+def test_a_workspace_with_no_path_still_has_a_file_to_write_to(tmp_path, monkeypatch):
+    """Starting work must not begin with a decision.
+
+    With nothing named, the scratch path is a real file in the platform's
+    application-data directory -- so autosave has a destination from the first
+    keystroke, and nothing had to be asked.
+    """
+    from voxlogica.ui import home
+
+    monkeypatch.setenv("VOXLOGICA_HOME", str(tmp_path / "appdata"))
+    path = home.scratch_path()
+    # Its own folder, so whatever the work accumulates -- an image it loads, an
+    # output it writes -- has somewhere to be that travels with it.
+    assert path.parent.parent == tmp_path / "appdata" / "workspaces"
+    assert path.name == home.DOCUMENT
+    # Nothing is created by asking where it would go: an abandoned session
+    # leaves nothing behind.
+    assert not path.exists()
+
+
+def test_moving_a_workspace_takes_the_old_file_away(workspace, tmp_path):
+    workspace.apply("board.moveCard", {"id": "a", "x": 1, "y": 1})
+    workspace.flush()
+    scratch = workspace.path
+    assert scratch.exists()
+
+    target = tmp_path / "repo" / "analysis.imgql"
+    assert workspace.apply("workspace.moveTo", {"path": str(target)}) == str(target)
+    assert target.read_text() == workspace.document.to_imgql()
+    # One workspace, in one place: a copy left behind would be a second
+    # workspace by tomorrow.
+    assert not scratch.exists()
+    assert workspace.snapshot()["path"] == str(target)
+
+
+def test_moving_a_workspace_is_not_an_edit(workspace, tmp_path):
+    workspace.apply("board.moveCard", {"id": "a", "x": 1, "y": 1})
+    workspace.apply("workspace.moveTo", {"path": str(tmp_path / "elsewhere.imgql")})
+    # Undo goes back through changes to the document, not through filing.
+    assert workspace.apply("workspace.undo") is True
+    assert workspace.apply("workspace.undo") is False
+
+
+def test_a_scratch_workspace_is_a_file_before_it_holds_anything(tmp_path):
+    """"Where is my work" must have an answer before there is any work.
+
+    The file, and the directory under it, exist from the moment the workspace
+    does -- so it can be revealed in a file manager, found again tomorrow, and
+    written to by autosave without a first-time special case.
+    """
+    from voxlogica.ui.workspace import Workspace
+
+    path = tmp_path / "appdata" / "workspaces" / "2026-01-01-000000.imgql"
+    space = Workspace(path=path)
+    assert path.exists()
+    space.apply("board.addCard", {"id": "c1", "kind": "code", "title": "First"})
+    space.flush()
+    assert 'title="First"' in path.read_text()
+
+
+def test_opening_an_existing_file_does_not_rewrite_it(tmp_path):
+    """Creating the scratch must never touch somebody's own file."""
+    from voxlogica.ui.workspace import Workspace
+
+    path = tmp_path / "theirs.imgql"
+    original = "// hand written, never opened in the UI\nlet a = 1\n"
+    path.write_text(original)
+    before = path.stat().st_mtime_ns
+    Workspace(path=path)
+    assert path.read_text() == original
+    assert path.stat().st_mtime_ns == before
+
+
+def test_moving_a_scratch_brings_what_lived_beside_it(tmp_path, monkeypatch):
+    """A workspace is a folder so its images and outputs travel with it."""
+    from voxlogica.ui import home
+    from voxlogica.ui.workspace import Workspace
+
+    monkeypatch.setenv("VOXLOGICA_HOME", str(tmp_path / "appdata"))
+    scratch = home.scratch_path()
+    space = Workspace(path=scratch)
+    (scratch.parent / "case.nii.gz").write_bytes(b"not really an image")
+
+    target = tmp_path / "repo" / "study"
+    space.apply("workspace.moveTo", {"path": str(target)})
+
+    assert (target / home.DOCUMENT).exists()
+    assert (target / "case.nii.gz").read_bytes() == b"not really an image"
+    assert not scratch.parent.exists()
+
+
+def test_what_was_written_is_what_the_document_says_it_is(tmp_path):
+    """After a write, the file and the document must not disagree.
+
+    A workspace that annotates itself on the way to disk was read from a file
+    that did not contain those annotations. If the write leaves it remembering
+    the text it came from, the next export -- or the next autosave -- hands back
+    that older, emptier text and overwrites the file with it.
+    """
+    from voxlogica.ui.workspace import Workspace
+
+    path = tmp_path / "scratch" / "workspace.imgql"
+    space = Workspace(path=path)
+    space.apply("card.setTitle", {"id": "program", "title": "Named"})
+    space.flush()
+
+    on_disk = path.read_text()
+    assert 'title="Named"' in on_disk
+    assert space.document.to_imgql() == on_disk
+    assert space.snapshot()["source"] == on_disk
+
+    # And a second write does not undo the first.
+    space.flush()
+    assert path.read_text() == on_disk

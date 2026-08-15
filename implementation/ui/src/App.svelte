@@ -49,6 +49,9 @@
    * board whose file you cannot read would be a board you have to trust. */
   let showing = $state("board");
   let helping = $state(false);
+  /** The workspace name while it is being typed, or null. */
+  let naming = $state(null);
+
   /** The card being edited, or "document" for the file itself. Editing is a
    * property of the shell rather than of a card: only one thing at a time has
    * the keyboard, and that is easier to be sure of from one place. */
@@ -206,6 +209,49 @@
   {/if}
 
   <footer>
+    <!-- A name, not a path. What somebody calls this piece of work is a word;
+         where it happens to sit is the file manager's business, and a folder
+         path across the bottom of the window is neither readable nor useful. -->
+    {#if naming !== null}
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        class="name editing"
+        autofocus
+        bind:value={naming}
+        aria-label="Workspace name"
+        spellcheck="false"
+        onkeydown={(event) => {
+          event.stopPropagation();
+          if (event.key === "Enter" || event.key === "Tab") {
+            const next = naming.trim();
+            naming = null;
+            if (next && next !== workspace.name) workspaceActions.rename(next);
+          }
+          if (event.key === "Escape") naming = null;
+        }}
+        onblur={() => (naming = null)}
+      />
+    {:else}
+      <button
+        class="name"
+        title="Rename this workspace"
+        ondblclick={() => (naming = workspace.name ?? "")}
+        onclick={() => (naming = workspace.name ?? "")}
+      >
+        {workspace.name ?? "no workspace"}
+      </button>
+    {/if}
+    <Button tone="quiet" size="sm" onclick={() => workspaceActions.reveal()} title="Show in folder">
+      ⤢
+    </Button>
+    <Button
+      tone="quiet"
+      size="sm"
+      onclick={() => workspaceActions.chooseLocation()}
+      title="Move this workspace somewhere else"
+    >
+      Move…
+    </Button>
     <span class="where">{showing === "document" ? "document" : "board"} · <kbd>tab</kbd></span>
     <Button tone="quiet" size="sm" onclick={() => (helping = true)} title="Shortcuts (?)">
       ?
@@ -248,9 +294,36 @@
   footer {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: var(--space-3);
     font-size: var(--text-2xs);
     color: var(--color-text-subtle);
   }
+
+  .name {
+    min-width: 0;
+    max-width: 24ch;
+    text-align: left;
+    font-size: var(--text-2xs);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .name:hover {
+    color: var(--color-text);
+  }
+
+  .name.editing {
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--color-text);
+  }
+
+  .where {
+    margin-left: auto;
+  }
+
+
 </style>

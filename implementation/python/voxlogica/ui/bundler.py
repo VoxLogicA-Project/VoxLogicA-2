@@ -182,12 +182,8 @@ class Bundler:
             return Bundle(directory=outdir, index_html=self._source_root / "index.html",
                           fingerprint=fingerprint)
 
-        node = shutil.which("node")
-        if node is None:
-            raise BundleError(
-                "node was not found on PATH, and this checkout has no prebuilt UI bundle. "
-                "Install Node.js, or run against an installed VoxLogicA wheel.")
-        self._ensure_node_modules()
+        node, npm = self._toolchain()
+        self._ensure_node_modules(npm)
 
         staging = outdir.with_name(outdir.name + f".tmp{os.getpid()}")
         shutil.rmtree(staging, ignore_errors=True)
@@ -220,7 +216,22 @@ class Bundler:
         return Bundle(directory=outdir, index_html=self._source_root / "index.html",
                       fingerprint=fingerprint)
 
-    def _ensure_node_modules(self) -> None:
+    def _toolchain(self) -> tuple[str, str]:
+        """Node and npm: the system's, or a portable one fetched on first use.
+
+        Nobody should have to install a JavaScript toolchain to run a program
+        analysis tool. See toolchain.py.
+        """
+        from . import toolchain
+
+        try:
+            return toolchain.find()
+        except toolchain.ToolchainError as exc:
+            raise BundleError(
+                "the UI could not be built because no usable Node toolchain is available",
+                str(exc)) from exc
+
+    def _ensure_node_modules(self, npm: str) -> None:
         """Install build dependencies when the manifest and the tree disagree.
 
         Keyed on the manifest rather than on "does node_modules exist", because
@@ -238,9 +249,6 @@ class Bundler:
         except OSError:
             pass
 
-        npm = shutil.which("npm")
-        if npm is None:
-            raise BundleError("npm was not found on PATH; cannot install the UI build dependencies.")
         logger.info("Installing UI build dependencies...")
         proc = subprocess.run([npm, "install", "--no-audit", "--no-fund"],
                               cwd=self._source_root, capture_output=True, text=True,

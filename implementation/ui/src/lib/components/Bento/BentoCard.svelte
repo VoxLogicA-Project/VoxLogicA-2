@@ -99,6 +99,9 @@
   $effect(() => {
     if (renaming !== null && titleInput) {
       titleInput.focus();
+      // The whole name selected, the way every file manager on every platform
+      // starts a rename: the common case is replacing it, and anyone who meant
+      // to edit it just clicks or presses an arrow to place the caret.
       titleInput.select();
     }
   });
@@ -307,6 +310,13 @@
   /** The same gestures from the keyboard, which is the only way some people have
    * of arranging anything at all. */
   function onKeydown(event) {
+    // F2 renames, everywhere that has ever had a rename. Enter belongs to the
+    // card's content, so it cannot also mean this.
+    if (event.key === "F2" && onrename) {
+      event.preventDefault();
+      startRename();
+      return;
+    }
 
     const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[
       event.key
@@ -374,12 +384,22 @@
           class="title rename"
           bind:value={renaming}
           aria-label="Card name"
+          spellcheck="false"
+          autocomplete="off"
           onpointerdown={(event) => event.stopPropagation()}
+          ondblclick={(event) => event.stopPropagation()}
           onblur={() => endRename(true)}
           onkeydown={(event) => {
+            // The field owns the keyboard while it is open: the board's own
+            // chords -- and the browser's, for undo -- belong to the text.
             event.stopPropagation();
-            if (event.key === "Enter") endRename(true);
-            if (event.key === "Escape") endRename(false);
+            if (event.key === "Enter" || event.key === "Tab") {
+              // Tab keeps it too. A name abandoned because somebody tabbed away
+              // is a name they will have to type again.
+              endRename(true);
+            } else if (event.key === "Escape") {
+              endRename(false);
+            }
           }}
         />
       {:else}

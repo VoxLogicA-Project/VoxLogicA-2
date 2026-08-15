@@ -86,6 +86,28 @@ class UISession:
         finally:
             self.stop()
 
+    def serve_until_closed(self, *, patience: float = 30.0) -> None:
+        """Wait for the window, then serve until it goes away.
+
+        An application ends when its window does. The wait is bounded so a
+        browser that never arrives -- blocked, misconfigured, opened on the wrong
+        machine -- leaves a process that exits rather than one that lingers.
+        """
+        import time
+
+        try:
+            deadline = time.monotonic() + patience
+            while self.hub.client_count() == 0 and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if self.hub.client_count() == 0:
+                logger.info("no window connected within %.0fs; stopping", patience)
+                return
+            self.hub.wait_until_empty()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.stop()
+
     def serve_forever(self) -> None:
         """Block until interrupted. Used by ``voxlogica serve``."""
         import time
@@ -113,6 +135,7 @@ def start_ui(
     dev: bool | None = None,
     source_root: Path | None = None,
     program: Path | None = None,
+    workspace_path: Path | None = None,
 ) -> UISession:
     """Bring the UI up on the first free port at or after ``port``.
 
@@ -125,7 +148,10 @@ def start_ui(
     # The workspace exists before any browser does: an agent on the MCP server is
     # a first-class client, and "what is on the board" cannot depend on whether
     # somebody happens to have a tab open.
-    workspace = Workspace(hub=hub, path=program)
+    # `program` is what a run computes; `workspace_path` is the document being
+    # edited. For `voxlogica run` they are the same file, which is the point of
+    # a workspace that is a program.
+    workspace = Workspace(hub=hub, path=workspace_path or program)
     sock = bind_loopback(port)
     server = UIServer(
         hub=hub, bundler=bundler, sock=sock, instance_info=instance_info, workspace=workspace

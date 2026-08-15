@@ -368,6 +368,7 @@ def serve_command(args: argparse.Namespace) -> int:
     session = start_ui(
         port=args.ui_port,
         open_browser=args.open_browser,
+        workspace_path=_workspace_path(args),
         instance_info={"version": __version__, "program": None, "storeDb": args.store_db},
     )
     print(f"[voxlogica] UI at {session.url} (Ctrl-C to stop)", file=sys.stderr)
@@ -375,6 +376,48 @@ def serve_command(args: argparse.Namespace) -> int:
         print(f"[voxlogica] dev page at {session.dev_url} (or press Cmd/Ctrl+.)",
               file=sys.stderr)
     session.serve_forever()
+    return 0
+
+
+def _workspace_path(args: argparse.Namespace):
+    """The file this session works on: the one named, or a fresh scratch.
+
+    Starting work does not begin with a decision. With no path there is still a
+    file -- in the platform's application-data directory, named after now -- so
+    autosave has somewhere to write from the first keystroke, and moving it into
+    a repository later is moving one file.
+    """
+    from voxlogica.ui import home
+
+    named = getattr(args, "workspace", None)
+    return Path(named).expanduser() if named else home.scratch_path()
+
+
+def open_command(args: argparse.Namespace) -> int:
+    """Implement the bare ``voxlogica``: a workspace, in a window, now.
+
+    Quits when the window is closed, the way an application does. Nothing is
+    asked on the way in and nothing is left behind if nothing was written: the
+    scratch file appears the first time there is something to put in it.
+    """
+    _configure_logging(getattr(args, "debug", False))
+    from voxlogica.ui import start_ui, window
+
+    path = _workspace_path(args)
+    session = start_ui(
+        port=args.ui_port,
+        open_browser=False,
+        workspace_path=path,
+        instance_info={"version": __version__, "program": None,
+                       "storeDb": getattr(args, "store_db", None)},
+    )
+    how = window.open_window(session.url)
+    print(f"[voxlogica] {path}", file=sys.stderr)
+    print(f"[voxlogica] UI at {session.url}"
+          f"{' (opened in your browser)' if how == 'browser' else ''}", file=sys.stderr)
+    # Waits for the window to arrive, then leaves when it goes: an application
+    # that outlived its only window would be a process nobody knows to stop.
+    session.serve_until_closed()
     return 0
 
 
@@ -449,7 +492,14 @@ def calibrate_command(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     """Create the CLI parser and register all supported subcommands."""
     parser = argparse.ArgumentParser(prog="voxlogica", description="Build and execute VoxLogicA DAGs.")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    # Not required: `voxlogica` on its own is the application, and an
+    # application that answers a bare invocation with a usage error is one that
+    # thinks the CLI is the point.
+    subparsers = parser.add_subparsers(dest="command")
+    parser.add_argument("--ui-port", type=int, default=UI_DEFAULT_PORT, metavar="PORT",
+                        help=f"First port to try for the UI (default: {UI_DEFAULT_PORT})")
+    parser.add_argument("--debug", action="store_true")
+    parser.set_defaults(handler=open_command, workspace=None, store_db=None)
 
     run_parser = subparsers.add_parser("run", help="Parse, build, export, and optionally execute a DAG.")
     run_parser.add_argument("filename", help="VoxLogicA program file")
@@ -519,6 +569,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve_parser = subparsers.add_parser(
         "serve", help="Serve the browser UI with no computation attached (Ctrl-C to stop).")
+    serve_parser.add_argument("workspace", nargs="?",
+                              help="An .imgql workspace to open (default: a new one)")
     serve_parser.add_argument("--ui-port", type=int, default=UI_DEFAULT_PORT, metavar="PORT",
                               help=f"First port to try (default: {UI_DEFAULT_PORT})")
     serve_parser.add_argument("--open", dest="open_browser", action="store_true",

@@ -54,6 +54,8 @@ export interface View {
 
 export interface Snapshot {
   path: string | null;
+  /** The workspace's folder name -- what a person calls this piece of work. */
+  name: string | null;
   board: Board;
   cards: Card[];
   view: View;
@@ -69,6 +71,7 @@ class WorkspaceStore {
   cards = $state<Card[]>([]);
   view = $state<View>({ page: 0, zoom: 1, selection: [], focus: null });
   path = $state<string | null>(null);
+  name = $state<string | null>(null);
   dirty = $state(false);
   source = $state("");
   canUndo = $state(false);
@@ -92,6 +95,7 @@ class WorkspaceStore {
     this.cards = snapshot.cards;
     this.view = snapshot.view;
     this.path = snapshot.path;
+    this.name = snapshot.name ?? null;
     this.dirty = snapshot.dirty;
     this.source = snapshot.source ?? "";
     this.canUndo = snapshot.canUndo ?? false;

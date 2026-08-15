@@ -204,6 +204,24 @@ def _set_text(workspace, params):
     return workspace.set_text(params["text"])
 
 
+def _move_to(workspace, params):
+    return workspace.move_to(params["path"])
+
+
+def _rename_workspace(workspace, params):
+    return workspace.rename(params["name"])
+
+
+def _choose_location(workspace, _params):
+    """Open the system's own save panel, and move there if it is answered."""
+    workspace.choose_location()
+    return True
+
+
+def _reveal(workspace, _params):
+    return workspace.reveal()
+
+
 def _open(workspace, params):
     return workspace.open(params["path"])
 
@@ -278,6 +296,17 @@ ACTIONS: dict[str, Action] = {
                 "Replace the whole document with this .imgql text.", _set_text),
         _action("workspace.export", {}, (),
                 "The document as .imgql text, exactly as it would be saved.", _export, mutates=False),
+        _action("workspace.moveTo", {"path": "string"}, ("path",),
+                "Move this workspace to a path, taking the old file away.",
+                _move_to, mutates=False),
+        _action("workspace.rename", {"name": "string"}, ("name",),
+                "Rename this workspace, which renames its folder.",
+                _rename_workspace, mutates=False),
+        _action("workspace.chooseLocation", {}, (),
+                "Ask the system where this workspace should live, and move it there.",
+                _choose_location, mutates=False),
+        _action("workspace.reveal", {}, (),
+                "Show this workspace's file in the file manager.", _reveal, mutates=False),
         _action("workspace.save", {"path": "string"}, (),
                 "Write the document back to disk.", _save, mutates=False),
     )

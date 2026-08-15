@@ -41,15 +41,69 @@ python3 bootstrap.py
 # Run with legacy side-effect policy enabled (CLI only)
 ./voxlogica run --legacy test.imgql
 
-# Start API server
+# Open the workspace UI (see "The workspace" below)
+./voxlogica
+
+# Serve the UI without opening a window (Ctrl-C to stop)
 ./voxlogica serve
 
-# Start modern dev mode (backend + Vite frontend, one command)
-./voxlogica dev
-
-# Start the UI inspector MCP server for AI/browser debugging
-./voxlogica mcp ui-inspector --url http://127.0.0.1:5173/
+# Speak MCP on stdio for whichever instance is running
+./voxlogica mcp
 ```
+
+## The workspace
+
+`./voxlogica` with no arguments opens a workspace: a bento board of cards over
+an `.imgql` file. Nothing is asked on the way in.
+
+```bash
+./voxlogica                      # a new workspace, in a window
+./voxlogica path/to/study.imgql  # serve an existing one (same as `serve <file>`)
+./voxlogica run program.imgql    # compute, with the UI attached (see below)
+```
+
+**Where your work lives.** A new workspace gets its own folder in the place your
+platform keeps application data, named after the moment you started it, with the
+document inside as `workspace.imgql`:
+
+| | |
+|---|---|
+| macOS | `~/Library/Application Support/VoxLogicA/workspaces/<timestamp>/` |
+| Linux | `$XDG_DATA_HOME/voxlogica/workspaces/<timestamp>/` (default `~/.local/share`) |
+| Windows | `%LOCALAPPDATA%\VoxLogicA\workspaces\<timestamp>\` |
+
+Set `VOXLOGICA_HOME` to put that somewhere else. It is a folder rather than a
+bare file so that images you load and outputs you write can sit beside the
+program and travel with it.
+
+**Saving.** There is none: the file is the document, written automatically and
+debounced. Nothing is ever "unsaved".
+
+**Moving it into a repository.** Click the path at the bottom of the window; the
+system's own save panel opens, and the whole folder moves — program, layout,
+images and all. The layout lives in the file's own `//@card` comments, so from
+then on it diffs, merges and commits like any other source. The button beside it
+shows the workspace in your file manager.
+
+**Node.** The UI is built on first use, and if there is no usable Node on `PATH`
+VoxLogicA fetches an official one for your platform into its own data directory
+— checksum-verified against Node's published `SHASUMS256.txt`, unpacked per
+version, never installed system-wide. Nothing to install, nothing to add to
+`PATH`. `VOXLOGICA_NODE=/path/to/node` uses your own; `VOXLOGICA_NO_NODE_DOWNLOAD=1`
+refuses the download and tells you what to install instead.
+
+**With a computation.** `./voxlogica run program.imgql` prints its URL and then
+behaves exactly as it always did — same stdout, same exit code. If you open the
+UI it keeps serving until the last window closes; if nobody is watching it exits
+the moment the run ends.
+
+**Agents.** The instance registers an MCP server with every installed client it
+finds (Claude Code, Claude Desktop, Cursor, Codex) on first run, so an agent can
+see the same workspace you are looking at and drive it through the same named
+actions the UI uses. `VOXLOGICA_NO_MCP_REGISTER=1` turns that off.
+
+**Ports.** The UI takes the first free port from 10001 upward; `--ui-port` picks
+a different starting point. Everything binds to loopback only.
 
 ## Safety Defaults
 

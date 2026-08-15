@@ -79,7 +79,21 @@ export function connect() {
     }
   }
 
+  /** A tab that cannot render cannot photograph anything.
+   *
+   * The server asks every client and keeps the first answer. A hidden or
+   * zero-sized tab -- a background window, a devtools panel, an automation
+   * surface -- answers instantly with a blank strip and wins that race against
+   * the window somebody is actually looking at. So it waits, and answers only
+   * if nobody better did: a poor picture is still better than none. */
+  function renderable() {
+    return document.visibilityState === "visible" && innerWidth > 0 && innerHeight > 0;
+  }
+
   async function respond(message) {
+    if (!renderable()) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
     const reply = { type: "captureResult", id: message.id };
     try {
       reply.png = await capture(message.target ?? null);

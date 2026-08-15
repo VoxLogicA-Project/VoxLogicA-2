@@ -11,12 +11,16 @@ one place, one broadcast. See doc/dev/ui-workspace.md section 3.
 
 from __future__ import annotations
 
+import logging
+import shutil
 import threading
 from pathlib import Path
 from typing import Any
 
 from .actions import ACTIONS
 from .document import Document, parse
+
+logger = logging.getLogger(__name__)
 
 
 class Workspace:
@@ -43,6 +47,12 @@ class Workspace:
         #: change is only a change nobody has written down yet. Debounced
         #: because a drag is dozens of changes and the file is one.
         self._save_timer: threading.Timer | None = None
+        # A scratch workspace is a file from the start, not once it has earned
+        # one: "where is my work" must have an answer before there is any, or
+        # the answer is a process nobody can point at.
+        if self.path is not None and not self.path.exists():
+            self.document.dirty = True
+            self._write_now()
 
     # ------------------------------------------------------------------ state
 
@@ -51,6 +61,9 @@ class Workspace:
         with self._lock:
             return {
                 "path": str(self.path) if self.path else None,
+                #: What to call this workspace: the folder it lives in. The path
+                #: is for the file manager, the name is for the person.
+                "name": self.path.parent.name if self.path else None,
                 "board": self.document.board,
                 "cards": self.document.cards,
                 "view": dict(self.view),
@@ -112,7 +125,17 @@ class Workspace:
                 # every tool that watches it.
                 if self.path is None or not self.document.dirty:
                     return
-                self.path.write_text(self.document.to_imgql())
+                # The directory may not exist yet: a scratch workspace names its
+                # file before there is anything to put in it, and this is the
+                # moment there is.
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                text = self.document.to_imgql()
+                self.path.write_text(text)
+                # The written text *becomes* the document's own text. Without
+                # this, a document that was annotated on its way to disk stays
+                # "clean" while remembering the empty file it was read from --
+                # and the next export, undo or write hands back that emptiness.
+                self.document.source = text
                 self.document.dirty = False
         except OSError:
             # A read-only file or a vanished directory is not a reason to take
@@ -165,6 +188,106 @@ class Workspace:
             self.document = parse(text)
             self.document.dirty = True
         return True
+
+    def move_to(self, path: str) -> str:
+        """Give this workspace a home, and take the old one away.
+
+        The way a scratch becomes a tracked file: one .imgql moved into a
+        repository, layout and all, because the layout is in its own comments.
+        The previous file is removed once the new one is written -- a workspace
+        that existed in two places would be two workspaces by tomorrow.
+        """
+        from . import home
+
+        target = Path(path).expanduser()
+        if target.is_dir() or not target.suffix:
+            # A folder was chosen: the document keeps its name inside it.
+            target = target / home.DOCUMENT
+        with self._lock:
+            previous = self.path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            text = self.document.to_imgql()
+            target.write_text(text)
+            self.document.source = text
+            self.path = target
+            self.document.dirty = False
+            if previous is not None and previous != target and previous.exists():
+                self._retire(previous, target.parent)
+        self.publish()
+        return str(target)
+
+    @staticmethod
+    def _retire(previous: Path, destination: Path) -> None:
+        """Take the old copy away, and bring whatever lived beside it along.
+
+        A scratch workspace is a folder so that an image it loads or an output
+        it wrote can sit next to the program. Moving the workspace and leaving
+        those behind would move the half of it nobody looks at.
+        """
+        from . import home
+
+        try:
+            scratch = previous.parent.parent == home.workspaces()
+            if scratch:
+                for item in previous.parent.iterdir():
+                    if item == previous:
+                        continue
+                    goal = destination / item.name
+                    if not goal.exists():
+                        shutil.move(str(item), str(goal))
+            previous.unlink()
+            if scratch:
+                previous.parent.rmdir()
+        except OSError:
+            # Somebody else's file, a read-only directory, a folder that is not
+            # empty for a reason we cannot see. The workspace has moved either
+            # way; leaving something behind is not a reason to fail the move.
+            logger.debug("could not fully retire %s", previous, exc_info=True)
+
+    def rename(self, name: str) -> str:
+        """Rename the workspace's folder. The name is the only handle anyone needs.
+
+        A path is not an identity anybody wants to read: what a person calls
+        this piece of work is a word, and the folder is where that word lives so
+        that the file manager agrees with the UI.
+        """
+        cleaned = name.strip().strip("/\\")
+        with self._lock:
+            path = self.path
+        if not cleaned or path is None or cleaned == path.parent.name:
+            return str(path) if path else ""
+        return self.move_to(str(path.parent.parent / cleaned / path.name))
+
+    def choose_location(self) -> None:
+        """Ask the system where this should live, and move it there if answered.
+
+        Off the calling thread on purpose: a modal panel owned by another
+        process must not be able to freeze the board behind it, and the answer
+        may be minutes away. When it arrives the move publishes itself, so the
+        UI updates without having waited for anything.
+        """
+        from . import native
+
+        suggested = self.path or Path.home() / "workspace.imgql"
+
+        def ask() -> None:
+            chosen = native.choose_save_path(suggested)
+            if chosen:
+                self.move_to(chosen)
+
+        thread = threading.Thread(target=ask, name="voxlogica-save-dialog", daemon=True)
+        thread.start()
+
+    def reveal(self) -> bool:
+        """Show this workspace's file in the platform's file manager."""
+        from . import native
+
+        with self._lock:
+            path = self.path
+        if path is None:
+            return False
+        self.flush()
+        return native.reveal(path)
 
     def save(self, path: str | None = None) -> str:
         with self._lock:

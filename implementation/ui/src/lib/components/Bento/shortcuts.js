@@ -13,7 +13,7 @@ export const SHORTCUTS = [
   { keys: "drag empty cells", does: "Draw a new card at that size." },
   { keys: "click the +", does: "New card on the cell you are pointing at." },
   { keys: "double-click", does: "Maximize into the free room; again to restore." },
-  { keys: "double-click the name", does: "Rename the card." },
+  { keys: "double-click the name / F2", does: "Rename in place. Enter or Tab keeps it, Escape reverts." },
   { keys: "Enter", does: "Edit the selected card. mod+Enter keeps it, Escape abandons." },
   { keys: "long press", does: "Focus this card alone; again to leave." },
   { keys: "shift-click", does: "Add a card to the selection." },

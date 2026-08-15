@@ -48,6 +48,13 @@ export const workspace = {
   export: () => invoke<string>("workspace.export"),
   setText: (text: string) => invoke<boolean>("workspace.setText", { text }),
   save: (path?: string) => invoke<string>("workspace.save", path ? { path } : {}),
+  /** Give a scratch workspace a home -- typically inside a repository. */
+  moveTo: (path: string) => invoke<string>("workspace.moveTo", { path }),
+  /** Rename the workspace, which renames the folder it lives in. */
+  rename: (name: string) => invoke<string>("workspace.rename", { name }),
+  /** The system's own save panel; the move happens when it is answered. */
+  chooseLocation: () => invoke<boolean>("workspace.chooseLocation"),
+  reveal: () => invoke<boolean>("workspace.reveal"),
   undo: () => invoke<boolean>("workspace.undo"),
   redo: () => invoke<boolean>("workspace.redo"),
 };
