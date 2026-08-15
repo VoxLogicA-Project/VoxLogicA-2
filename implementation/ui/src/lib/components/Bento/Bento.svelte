@@ -68,6 +68,10 @@
     onhelp = undefined,
     /** `(id)` — Enter on a selected card: open whatever it holds. */
     onactivate = undefined,
+    /** Cut, copy and paste of whole cards. The board only asks. */
+    oncopycards = undefined,
+    oncutcards = undefined,
+    onpastecards = undefined,
     /** The card being shown alone, if any. */
     focus = null,
     /** What `onadd` may be asked for, and how big each starts. */
@@ -815,8 +819,9 @@
     return { w, h };
   }
 
-  const addItems = $derived(
-    kinds.map((kind) => {
+  const addItems = $derived([
+    ...(onpastecards ? [{ label: "Paste cards", hint: "mod+V", onselect: onpastecards }, { separator: true }] : []),
+    ...kinds.map((kind) => {
       const size = room(kind);
       return {
         label: kind.label,
@@ -825,7 +830,7 @@
         onselect: () => onadd?.(kind.kind, target.x, target.y, size.w, size.h),
       };
     }),
-  );
+  ]);
 </script>
 
 <svelte:window onkeydown={onWindowKeydown} />
@@ -905,6 +910,8 @@
                   )
               : undefined}
             onduplicate={onduplicate ? () => onduplicate(card.id, copySpot(card)) : undefined}
+            oncopy={oncopycards}
+            oncut={oncutcards}
             onderive={onderive ? () => onderive(card.id, copySpot(card)) : undefined}
             onmaximize={() => maximize(card)}
             onrename={onrename ? (title) => onrename(card.id, title) : undefined}

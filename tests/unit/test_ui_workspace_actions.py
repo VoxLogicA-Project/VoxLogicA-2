@@ -388,3 +388,84 @@ def test_what_was_written_is_what_the_document_says_it_is(tmp_path):
     # And a second write does not undo the first.
     space.flush()
     assert path.read_text() == on_disk
+
+
+PAIR = """\
+//@board cols=9 rows=8
+//@card id=a title="Segmentation" kind=code x=0 y=0 w=4 h=3
+let mask = threshold(flair, 0.6)
+//@card id=b title="mask" kind=result x=4 y=0 w=3 h=2 node=mask view=state
+"""
+
+
+def _space(tmp_path, text):
+    from voxlogica.ui.workspace import Workspace
+
+    path = tmp_path / "doc.imgql"
+    path.write_text(text)
+    return Workspace(path=path)
+
+
+def test_copying_cards_gives_imgql_text(tmp_path):
+    """The clipboard's format is the file's format, so it is readable anywhere."""
+    space = _space(tmp_path, PAIR)
+    text = space.apply("board.copyCards", {"ids": ["a", "b"]})
+    assert '//@card id=a title="Segmentation" kind=code' in text
+    assert "let mask = threshold(flair, 0.6)" in text
+    assert "node=mask" in text
+    # And it parses back as cards, which is what makes paste work anywhere.
+    from voxlogica.ui import document as doc
+
+    assert [card["title"] for card in doc.parse(text).cards] == ["Segmentation", "mask"]
+
+
+def test_pasting_mints_new_ids_and_keeps_the_originals(tmp_path):
+    space = _space(tmp_path, PAIR)
+    text = space.apply("board.copyCards", {"ids": ["a", "b"]})
+    made = space.apply("board.pasteCards", {"text": text})
+    cards = {card["id"]: card for card in space.snapshot()["cards"]}
+    assert len(made) == 2
+    assert set(made).isdisjoint({"a", "b"})
+    assert cards["a"]["source"].strip() == "let mask = threshold(flair, 0.6)"
+
+
+def test_a_pasted_binding_that_would_collide_is_renamed_with_its_references(tmp_path):
+    """A pasted group must still compute what it computed where it came from."""
+    space = _space(tmp_path, PAIR)
+    text = space.apply("board.copyCards", {"ids": ["a", "b"]})
+    made = space.apply("board.pasteCards", {"text": text})
+    cards = {card["id"]: card for card in space.snapshot()["cards"]}
+    pasted_code = cards[made[0]]["source"]
+    pasted_result = cards[made[1]]
+    assert "let mask2 =" in pasted_code
+    # The reference followed the rename, or the copy would show the original's
+    # value and look like it worked.
+    assert pasted_result["node"] == "mask2"
+    assert cards["a"]["source"].strip() == "let mask = threshold(flair, 0.6)"
+
+
+def test_cutting_takes_the_cards_out_and_hands_back_their_text(tmp_path):
+    space = _space(tmp_path, PAIR)
+    text = space.apply("board.cutCards", {"ids": ["b"]})
+    assert "node=mask" in text
+    assert [card["id"] for card in space.snapshot()["cards"]] == ["a"]
+    # And it can be undone, because a cut is a change to the document.
+    assert space.apply("workspace.undo") is True
+    assert [card["id"] for card in space.snapshot()["cards"]] == ["a", "b"]
+
+
+def test_plain_program_text_pasted_from_anywhere_becomes_a_card(tmp_path):
+    space = _space(tmp_path, PAIR)
+    made = space.apply("board.pasteCards", {"text": "let extra = 3\n"})
+    cards = {card["id"]: card for card in space.snapshot()["cards"]}
+    assert len(made) == 1
+    assert cards[made[0]]["kind"] == "code"
+    assert "let extra = 3" in cards[made[0]]["source"]
+
+
+def test_pasting_puts_the_cards_on_the_page_asked_for(tmp_path):
+    space = _space(tmp_path, PAIR)
+    text = space.apply("board.copyCards", {"ids": ["a"]})
+    made = space.apply("board.pasteCards", {"text": text, "page": 2})
+    card = next(c for c in space.snapshot()["cards"] if c["id"] == made[0])
+    assert card["page"] == 2

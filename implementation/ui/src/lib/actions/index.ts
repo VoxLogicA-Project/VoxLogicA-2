@@ -22,6 +22,11 @@ export const board = {
   /** A card that shows something another card produces; it records `from`. */
   deriveCard: (id: string, newId: string, params: Record<string, unknown> = {}) =>
     invoke("board.deriveCard", { id, newId, ...params }),
+  /** The clipboard's format is the file's format: .imgql text, both ways. */
+  copyCards: (ids: string[]) => invoke<string>("board.copyCards", { ids }),
+  cutCards: (ids: string[]) => invoke<string>("board.cutCards", { ids }),
+  pasteCards: (text: string, params: Record<string, unknown> = {}) =>
+    invoke<string[]>("board.pasteCards", { text, ...params }),
   removeCard: (id: string) => invoke("board.removeCard", { id }),
   duplicateCard: (id: string, newId: string, params: Record<string, unknown> = {}) =>
     invoke("board.duplicateCard", { id, newId, ...params }),

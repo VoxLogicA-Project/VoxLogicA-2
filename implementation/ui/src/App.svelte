@@ -81,6 +81,50 @@
     dragging = null;
   }
 
+  /** Cut, copy and paste for cards, through the system clipboard.
+   *
+   * What travels is .imgql text -- the file's own format -- so a copied card
+   * can be pasted into a mail, an editor or another workspace and still be the
+   * thing it was. The clipboard is asked first; a browser that refuses (no
+   * permission, no secure context) falls back to a buffer in this tab, which is
+   * worse only in that it does not leave the page.
+   */
+  let fallbackClipboard = $state("");
+
+  async function putOnClipboard(text) {
+    fallbackClipboard = text;
+    try {
+      await navigator.clipboard?.writeText(text);
+    } catch {
+      /* refused; the in-page buffer is what we have */
+    }
+  }
+
+  async function takeFromClipboard() {
+    try {
+      const text = await navigator.clipboard?.readText();
+      if (text) return text;
+    } catch {
+      /* refused, or nothing there */
+    }
+    return fallbackClipboard;
+  }
+
+  async function copyCards({ cut } = {}) {
+    const ids = workspace.view.selection;
+    if (!ids.length) return;
+    const outcome = cut ? await board.cutCards(ids) : await board.copyCards(ids);
+    if (outcome.ok && outcome.result) await putOnClipboard(outcome.result);
+    if (cut) view.select([]);
+  }
+
+  async function pasteCards() {
+    const text = await takeFromClipboard();
+    if (!text.trim()) return;
+    const outcome = await board.pasteCards(text, { page: workspace.view.page });
+    if (outcome.ok && Array.isArray(outcome.result)) view.select(outcome.result);
+  }
+
   /** A new project needs a name before it is a folder. Numbered rather than
    * asked for: naming a thing before making it is the dialogue this UI does not
    * have, and the name is one double-click away in the sidebar. */
@@ -135,10 +179,20 @@
       return;
     }
     if (!(event.metaKey || event.ctrlKey)) return;
-    if (event.key.toLowerCase() === "z") {
+    const key = event.key.toLowerCase();
+    if (key === "z") {
       event.preventDefault();
       if (event.shiftKey) workspaceActions.redo();
       else workspaceActions.undo();
+    } else if (key === "c" && workspace.view.selection.length) {
+      event.preventDefault();
+      copyCards();
+    } else if (key === "x" && workspace.view.selection.length) {
+      event.preventDefault();
+      copyCards({ cut: true });
+    } else if (key === "v") {
+      event.preventDefault();
+      pasteCards();
     }
   }
 
@@ -263,6 +317,9 @@
       onfocus={(id) => view.focus(id)}
       onzoom={(zoom) => view.setZoom(zoom)}
       onhelp={() => (helping = true)}
+      oncopycards={() => copyCards()}
+      oncutcards={() => copyCards({ cut: true })}
+      onpastecards={() => pasteCards()}
       onactivate={(id) => (editing = id)}
       onsendtopage={(id, page) => board.setPage(id, page)}
       onadd={(kind, x, y, w, h) =>

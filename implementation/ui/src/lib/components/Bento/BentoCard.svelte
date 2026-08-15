@@ -49,6 +49,8 @@
     onrename,
     onduplicate,
     onderive,
+    oncopy,
+    oncut,
     onselect,
     selected = false,
     /** True when this card is the one being shown alone. */
@@ -63,6 +65,8 @@
       onmaximize && { label: "Maximize", hint: "double-click", onselect: onmaximize },
       onrename && { label: "Rename", hint: "double-click the name", onselect: startRename },
       onduplicate && { label: "Duplicate", onselect: onduplicate },
+      oncopy && { label: "Copy", hint: "mod+C", onselect: oncopy },
+      oncut && { label: "Cut", hint: "mod+X", onselect: oncut },
       onderive &&
         card.kind === "code" && {
           label: "New result from this",

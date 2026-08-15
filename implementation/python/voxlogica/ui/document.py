@@ -105,6 +105,23 @@ def _unescape(value: str) -> str:
     return re.sub(r"\\(.)", r"\1", value)
 
 
+#: What a code card defines. Textual and provisional -- the engine's own binder
+#: knows better -- but it is what the UI can see today, and it is the same rule
+#: the "new result from this" menu uses.
+_BINDING = re.compile(r"^[ \t]*let[ \t]+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
+
+
+def bindings_in(source: str) -> list[str]:
+    return _BINDING.findall(source or "")
+
+
+def _free_name(name: str, taken: set[str]) -> str:
+    n = 2
+    while f"{name}{n}" in taken:
+        n += 1
+    return f"{name}{n}"
+
+
 def _quote(key: str, value: str) -> str:
     """Quote when the value could not be read back as one token, or always."""
     if key in _ALWAYS_QUOTED or value == "" or re.search(r'[\s"\\]', value):
@@ -347,6 +364,75 @@ class Document:
         self.segments.append(Segment(Directive(kind="card", attrs=values, raw="", rewritten=True), ""))
         self.dirty = True
         return True
+
+    # ------------------------------------------------------ cut and paste
+
+    def fragment(self, card_ids: list[str]) -> str:
+        """Those cards, as .imgql text.
+
+        The cut buffer is the file format. Not a private JSON payload beside it:
+        a fragment of a workspace *is* a fragment of a program, so what lands on
+        the system clipboard can be pasted into a text editor and read, mailed
+        to somebody, or pasted back here -- and there is no second format to keep
+        in step with this one.
+        """
+        wanted = [card_id for card_id in card_ids]
+        out: list[str] = []
+        for segment in self.segments:
+            directive = segment.directive
+            if directive is None or directive.kind != "card":
+                continue
+            if directive.attrs.get("id") not in wanted:
+                continue
+            out.append(directive.render())
+            if segment.body:
+                out.append(segment.body if segment.body.endswith("\n") else segment.body + "\n")
+        return "".join(line if line.endswith("\n") else line + "\n" for line in out)
+
+    def import_fragment(self, text: str, **overrides: Any) -> list[str]:
+        """Add the cards in `text` to this document. Returns their new ids.
+
+        Everything that could collide is renamed rather than refused. Ids are
+        minted fresh, because an id is this document's way of naming the card
+        and the incoming one means nothing here. Bindings -- the `let` names the
+        pasted code defines -- are renamed only when this document already
+        defines them, and the references *within the pasted cards* are rewritten
+        to match, so a pasted group still computes what it computed where it
+        came from.
+        """
+        incoming = parse(text)
+        if not incoming.annotated:
+            # Plain text pasted from anywhere: one code card holding it.
+            incoming = parse(f'//@card id=x kind=code\n{text if text.endswith(chr(10)) else text + chr(10)}')
+
+        taken = {name for card in self.cards for name in bindings_in(card.get("source", ""))}
+        renames: dict[str, str] = {}
+        for card in incoming.cards:
+            for name in bindings_in(card.get("source", "")):
+                if name in taken and name not in renames:
+                    renames[name] = _free_name(name, taken | set(renames.values()))
+                taken.add(renames.get(name, name))
+
+        made: list[str] = []
+        for card in incoming.cards:
+            new_id = self.next_id()
+            attrs = {
+                key: value
+                for key, value in card.items()
+                if key in ("kind", "title", "x", "y", "w", "h", "page", "node", "view", "aspect")
+                and value is not None
+            }
+            attrs.update({key: value for key, value in overrides.items() if value is not None})
+            if "node" in attrs and attrs["node"] in renames:
+                attrs["node"] = renames[attrs["node"]]
+            self.add_card(new_id, str(attrs.pop("kind", "code")), **attrs)
+            source = card.get("source", "")
+            for before, after in renames.items():
+                source = re.sub(rf"\b{re.escape(before)}\b", after, source)
+            if source:
+                self.set_source(new_id, source)
+            made.append(new_id)
+        return made
 
     def duplicate_card(self, card_id: str, new_id: str, **attrs: Any) -> bool:
         """Copy a card, body and all, as a new card.

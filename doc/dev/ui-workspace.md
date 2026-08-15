@@ -553,3 +553,34 @@ fresh from disk, and removing it from the list leaves the folder alone. The list
 of linked locations is the one thing the filesystem cannot tell us on its own, so
 it is the one thing stored (`projects.json`, a list of paths and nothing else).
 A linked folder is drawn with a dashed icon and keeps its own name.
+
+---
+
+## Cut and paste, for cards
+
+**The cut buffer is the file format.** Copying cards produces .imgql text — the
+directives and the bodies, exactly as they are written on disk — and that text is
+what goes on the system clipboard. So a copied card can be pasted into an editor
+and read, mailed to somebody, kept in a gist, or pasted back into any workspace
+in any window, and there is no second serialisation format that can drift from
+the first one. Pasting is `parse` plus `import_fragment`; the clipboard needs no
+special-casing anywhere.
+
+It follows that pasting *plain program text* from anywhere works too: text with
+no directives is one code card holding it, which is the same rule that opens an
+un-annotated file.
+
+**Everything that could collide is renamed, never refused.**
+
+| What | On paste |
+|---|---|
+| `id` | Minted fresh. An id is this document's way of naming a card; the incoming one means nothing here. |
+| `title` | Kept. Titles are prose and may repeat — that is why they are not identity. |
+| `let` bindings | Renamed only if this document already defines the name (`mask` → `mask2`), and every reference **within the pasted cards** is rewritten with it, including a result card's `node=`. |
+
+The last row is the one that matters: a pasted group has to still compute what it
+computed where it came from. A copy whose `node=` still pointed at the original's
+binding would show the original's value and look like it had worked.
+
+Cut is copy-then-remove and is a change to the document, so undo covers it. Copy
+is not, so it does not.

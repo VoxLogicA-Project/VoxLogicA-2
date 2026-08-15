@@ -123,6 +123,33 @@ def _derive(workspace, params):
     )
 
 
+def _copy_cards(workspace, params):
+    """Those cards as .imgql text -- which is what goes on the clipboard.
+
+    The cut buffer is the file format. Pasted into a text editor it is readable
+    program text; pasted back here it is cards again; and there is no second
+    format that can drift from this one.
+    """
+    return workspace.document.fragment([str(i) for i in params.get("ids") or []])
+
+
+def _cut_cards(workspace, params):
+    ids = [str(i) for i in params.get("ids") or []]
+    text = workspace.document.fragment(ids)
+    for card_id in ids:
+        workspace.document.remove_card(card_id)
+    return text
+
+
+def _paste_cards(workspace, params):
+    return workspace.document.import_fragment(
+        params["text"],
+        page=params.get("page"),
+        x=params.get("x"),
+        y=params.get("y"),
+    )
+
+
 def _remove(workspace, params):
     return workspace.document.remove_card(params["id"])
 
@@ -371,6 +398,14 @@ ACTIONS: dict[str, Action] = {
                  "page": "int"},
                 ("id", "newId"),
                 "Add a card that shows something another card produces.", _derive),
+        _action("board.copyCards", {"ids": "placements"}, ("ids",),
+                "Those cards as .imgql text, for the clipboard.", _copy_cards, mutates=False),
+        _action("board.cutCards", {"ids": "placements"}, ("ids",),
+                "Those cards as .imgql text, and remove them.", _cut_cards),
+        _action("board.pasteCards",
+                {"text": "string", "page": "int", "x": "int", "y": "int"}, ("text",),
+                "Add the cards in this .imgql text, renaming what would collide.",
+                _paste_cards),
         _action("board.removeCard", {"id": "string"}, ("id",),
                 "Remove a card and its contents.", _remove),
         _action("board.setPage", {"id": "string", "page": "int"}, ("id", "page"),
