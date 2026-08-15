@@ -42,6 +42,13 @@
   let draft = $state("");
   /** The project a dragged file is over: a name, "" for the top, or null. */
   let over = $state(null);
+  /** Paths the user has picked out. The open file is not necessarily among
+   * them: opening is looking, selecting is choosing what to act on. */
+  let picked = $state(new Set());
+  /** Where a shift-range starts from. */
+  let anchor = $state(null);
+  /** Paths waiting for a second confirmation before they are deleted. */
+  let armed = $state(null);
 
   const needle = $derived(filter.trim().toLowerCase());
 
@@ -69,6 +76,56 @@
     needle ? library.files.filter((file) => file.name.toLowerCase().includes(needle)).length : null,
   );
 
+  /** Every visible row, in the order they appear: what shift-click walks. */
+  const flat = $derived([
+    ...loose,
+    ...shown.flatMap((project) => (folded.has(project.name) ? [] : within(project.name))),
+  ]);
+
+  function choose(file, event) {
+    const additive = event.metaKey || event.ctrlKey;
+    const ranged = event.shiftKey;
+    if (ranged && anchor) {
+      const order = flat.map((entry) => entry.path);
+      const from = order.indexOf(anchor);
+      const to = order.indexOf(file.path);
+      if (from !== -1 && to !== -1) {
+        const [start, end] = from < to ? [from, to] : [to, from];
+        picked = new Set(order.slice(start, end + 1));
+        return;
+      }
+    }
+    if (additive) {
+      const next = new Set(picked);
+      if (next.has(file.path)) next.delete(file.path);
+      else next.add(file.path);
+      picked = next;
+      anchor = file.path;
+      return;
+    }
+    picked = new Set([file.path]);
+    anchor = file.path;
+    // A plain click is also how you open something: choosing one file and
+    // looking at it are the same gesture, and always were.
+    onopen?.(file.path);
+  }
+
+  /** What an action on `file` applies to: the selection if it is in it. */
+  function scope(file) {
+    return picked.has(file.path) && picked.size > 1 ? [...picked] : [file.path];
+  }
+
+  function arm(paths) {
+    armed = paths;
+  }
+
+  function confirmDelete() {
+    const paths = armed ?? [];
+    armed = null;
+    for (const path of paths) ondelete?.(path);
+    picked = new Set([...picked].filter((path) => !paths.includes(path)));
+  }
+
   function fold(name) {
     const next = new Set(folded);
     if (next.has(name)) next.delete(name);
@@ -93,26 +150,41 @@
   function onDrop(event, project) {
     event.preventDefault();
     over = null;
-    const path = event.dataTransfer?.getData("text/voxlogica-file");
-    if (path) onmove?.(path, project);
+    const payload = event.dataTransfer?.getData("text/voxlogica-file");
+    for (const path of (payload ?? "").split("\n").filter(Boolean)) onmove?.(path, project);
   }
 
   function fileMenu(file) {
+    const paths = scope(file);
+    const many = paths.length > 1 ? ` (${paths.length})` : "";
     return [
-      { label: "Rename", hint: "F2", onselect: () => startRename("file", file.path, file.name) },
+      {
+        label: "Rename",
+        hint: "F2",
+        disabled: paths.length > 1,
+        onselect: () => startRename("file", file.path, file.name),
+      },
       { label: "Show in folder", onselect: () => onreveal?.(file.path) },
       { separator: true },
       ...(file.project === null
         ? []
-        : [{ label: "Move to the top", onselect: () => onmove?.(file.path, null) }]),
+        : [
+            {
+              label: `Move to the top${many}`,
+              onselect: () => paths.forEach((path) => onmove?.(path, null)),
+            },
+          ]),
       ...library.projects
         .filter((project) => project.name !== file.project)
         .map((project) => ({
-          label: `Move to ${project.name}`,
-          onselect: () => onmove?.(file.path, project.name),
+          label: `Move to ${project.name}${many}`,
+          onselect: () => paths.forEach((path) => onmove?.(path, project.name)),
         })),
       { separator: true },
-      { label: "Delete", danger: true, onselect: () => ondelete?.(file.path) },
+      // Armed, not done: the menu asks, the bar at the top confirms. A delete
+      // that happened on one click of a menu nobody opened deliberately is the
+      // one mistake this list can make that cannot be undone.
+      { label: `Delete${many}…`, danger: true, onselect: () => arm(paths) },
     ];
   }
 
@@ -188,13 +260,17 @@
         <button
           class="row file"
           class:current={file.open}
+          class:picked={picked.has(file.path)}
           aria-current={file.open ? "page" : undefined}
           draggable="true"
           title={file.path}
           ondragstart={(event) => {
+            // Dragging one of several picked files carries all of them: what
+            // you can do to one, you can do to the ones you chose.
+            const paths = scope(file);
             // A private type, so nothing else on the page mistakes this for
             // something it can handle.
-            event.dataTransfer.setData("text/voxlogica-file", file.path);
+            event.dataTransfer.setData("text/voxlogica-file", paths.join("\n"));
             event.dataTransfer.effectAllowed = "move";
           }}
           ondblclick={() => startRename("file", file.path, file.name)}
@@ -203,8 +279,12 @@
               event.preventDefault();
               startRename("file", file.path, file.name);
             }
+            if (event.key === "Delete" || event.key === "Backspace") {
+              event.preventDefault();
+              arm(scope(file));
+            }
           }}
-          onclick={() => onopen?.(file.path)}
+          onclick={(event) => choose(file, event)}
         >
           {@render fileIcon()}
           <span class="label">{file.name}</span>
@@ -246,7 +326,20 @@
     </ContextMenu>
   </header>
 
-  {#if needle}
+  {#if armed}
+    <!-- Two steps, inline. Not a modal: a dialogue that steals the keyboard to
+         ask one question is worse than the mistake it prevents, and this can be
+         ignored simply by carrying on. -->
+    <div class="armed" role="alert">
+      <span>Delete {armed.length === 1 ? "this file" : `${armed.length} files`}?</span>
+      <div class="pair">
+        <Button tone="danger" size="sm" onclick={confirmDelete}>Delete</Button>
+        <Button tone="quiet" size="sm" onclick={() => (armed = null)}>Cancel</Button>
+      </div>
+    </div>
+  {:else if picked.size > 1}
+    <p class="counted">{picked.size} picked</p>
+  {:else if needle}
     <p class="counted">{matches} of {library.files.length}</p>
   {/if}
 
@@ -357,8 +450,10 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    width: 15rem;
-    flex: none;
+    /* The width is the rail's: a panel does not decide how wide it is when the
+     * person dragging its edge has an opinion. */
+    flex: 1;
+    min-width: 0;
     min-height: 0;
   }
 
@@ -389,13 +484,33 @@
     color: var(--color-text-subtle);
   }
 
+  .armed {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border-radius: var(--radius-md);
+    background: var(--color-danger-subtle);
+    font-size: var(--text-2xs);
+    color: var(--color-text);
+  }
+
+  .pair {
+    display: flex;
+    gap: var(--space-2);
+  }
+
   .scroll {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
     flex: 1;
     min-height: 0;
-    overflow: auto;
+    overflow-y: auto;
+    /* Room for a focus ring. A scroll container clips what leaves it, and an
+     * outline drawn on the edge row was being sliced down its side. */
+    overflow-x: hidden;
+    padding: var(--ring-width) calc(var(--ring-width) + 1px);
   }
 
   section {
@@ -473,6 +588,18 @@
   .file.current {
     background: var(--color-accent-subtle);
     color: var(--color-text);
+  }
+
+  /* Picked, which is not the same as open: one is what you are looking at, the
+   * other is what the next action applies to. Drawn inside the row, because a
+   * ring outside it is a ring the scroll container cuts in half. */
+  .file.picked {
+    box-shadow: inset 0 0 0 var(--border-width) var(--color-accent);
+  }
+
+  .row:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 var(--ring-width) var(--color-focus);
   }
 
   .file.current .icon {

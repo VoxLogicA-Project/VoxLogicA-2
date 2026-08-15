@@ -28,5 +28,6 @@ export const SHORTCUTS = [
   { keys: "mod+= / mod+- / mod+0", does: "Zoom in, out, reset." },
   { keys: "Escape", does: "Leave focus, or clear the selection." },
   { keys: "Tab", does: "Switch between the board and the document." },
+  { keys: "mod+B", does: "Hide or show the file list." },
   { keys: "?", does: "This list." },
 ];

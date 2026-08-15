@@ -220,3 +220,28 @@ def test_a_linked_folder_that_has_gone_is_simply_not_there(tmp_path):
     shutil.rmtree(elsewhere)
     # No error, no ghost row: the filesystem is still the truth.
     assert library.projects() == []
+
+
+def test_linking_a_folder_that_is_already_a_project_does_not_double_it():
+    """Two entries for one directory means its files are listed twice."""
+    inside = library.root() / "Segmentation"
+    inside.mkdir()
+    (inside / "study.imgql").write_text("let a = 1\n")
+
+    library.link(inside)
+
+    tree = library.tree()
+    assert [p["name"] for p in tree["projects"]] == ["Segmentation"]
+    assert [f["name"] for f in tree["files"]] == ["study"]
+
+
+def test_linking_the_same_folder_twice_by_different_paths_does_not_double_it(tmp_path):
+    elsewhere = tmp_path / "repos" / "brats"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "study.imgql").write_text("let a = 1\n")
+
+    library.link(elsewhere)
+    library.link(tmp_path / "repos" / "." / "brats")
+
+    assert [p["name"] for p in library.projects()] == ["brats"]
+    assert [f["name"] for f in library.tree()["files"]] == ["study"]

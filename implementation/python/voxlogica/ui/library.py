@@ -66,10 +66,18 @@ def links() -> list[Path]:
 
 
 def link(path: str | Path) -> str:
-    """Show an existing folder as a project. Nothing is moved or copied."""
+    """Show an existing folder as a project. Nothing is moved or copied.
+
+    A folder that is already a project -- because it lives in the library, or
+    because it was linked before -- is not added again. It listed its files
+    twice, which is what a second entry pointing at one directory means.
+    """
     folder = Path(path).expanduser().resolve()
     if not folder.is_dir():
         raise NotADirectoryError(str(folder))
+    if folder.parent == root().resolve():
+        # Already a project by virtue of where it is.
+        return folder.name
     current = links()
     if folder not in current:
         current.append(folder)
@@ -117,7 +125,13 @@ class Entry:
 
 
 def _folders() -> list[tuple[str, Path]]:
-    """(name, folder) for every project: the library's own, then linked ones."""
+    """(name, folder) for every project: the library's own, then linked ones.
+
+    Deduplicated by where the folder actually is. Two entries pointing at one
+    directory -- a link to a folder already in the library, the same folder
+    linked twice by different paths -- would list its files twice, which is the
+    list disagreeing with the filesystem about how many files there are.
+    """
     base = root()
     inside = (
         sorted(
@@ -128,7 +142,15 @@ def _folders() -> list[tuple[str, Path]]:
         if base.is_dir()
         else []
     )
-    return inside + [(folder.name, folder) for folder in links()]
+    seen = {folder.resolve() for _name, folder in inside}
+    out = list(inside)
+    for folder in links():
+        resolved = folder.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append((folder.name, folder))
+    return out
 
 
 def scan() -> list[Entry]:

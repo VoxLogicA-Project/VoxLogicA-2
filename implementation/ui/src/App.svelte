@@ -51,6 +51,36 @@
    * board whose file you cannot read would be a board you have to trust. */
   let showing = $state("board");
   let helping = $state(false);
+  const DEFAULT_SIDEBAR = 240;
+  const MIN_SIDEBAR = 140;
+
+  /** Whether the list is showing, and how wide. Kept here rather than in the
+   * sidebar: a panel cannot be the thing that decides whether it exists. */
+  let sidebar = $state(true);
+  let sidebarWidth = $state(DEFAULT_SIDEBAR);
+  let dragging = null;
+
+  const clampWidth = (value) =>
+    Math.min(Math.max(value, MIN_SIDEBAR), Math.max(MIN_SIDEBAR, innerWidth * 0.5));
+
+  function startResize(event) {
+    dragging = { pointerId: event.pointerId, x: event.clientX, from: sidebarWidth };
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      /* no active pointer with this id; the drag still works, just leakier */
+    }
+  }
+
+  function resize(event) {
+    if (!dragging || event.pointerId !== dragging.pointerId) return;
+    sidebarWidth = clampWidth(dragging.from + (event.clientX - dragging.x));
+  }
+
+  function endResize() {
+    dragging = null;
+  }
+
   /** A new project needs a name before it is a folder. Numbered rather than
    * asked for: naming a thing before making it is the dialogue this UI does not
    * have, and the name is one double-click away in the sidebar. */
@@ -84,6 +114,12 @@
     if (typing) return;
 
     if (editing !== null) return; // the viewer has the keyboard
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
+      // The chord every editor uses for this.
+      event.preventDefault();
+      sidebar = !sidebar;
+      return;
+    }
     if (event.key === "Enter" && showing === "document") {
       event.preventDefault();
       editing = "document";
@@ -150,7 +186,9 @@
   {/if}
 
   <div class="workbench">
-    <Library
+    {#if sidebar}
+      <div class="rail" style="width: {sidebarWidth}px">
+        <Library
       library={workspace.library}
       onopen={(path) => libraryActions.open(path)}
       onnewfile={(project) => libraryActions.newFile(project ?? undefined)}
@@ -161,8 +199,32 @@
       onaddfolder={() => libraryActions.addFolder()}
       onforgetfolder={(path) => libraryActions.forgetFolder(path)}
       onreveal={(path) => libraryActions.reveal(path)}
-      ondelete={(path) => libraryActions.deleteFile(path)}
-    />
+          ondelete={(path) => libraryActions.deleteFile(path)}
+        />
+        <!-- The handle is the edge itself, which is where everyone reaches for
+             it. Dragging sets a width; double-clicking puts it back. -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <div
+          class="grip"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the sidebar"
+          tabindex="0"
+          onpointerdown={startResize}
+          onpointermove={resize}
+          onpointerup={endResize}
+          onpointercancel={endResize}
+          ondblclick={() => (sidebarWidth = DEFAULT_SIDEBAR)}
+          onkeydown={(event) => {
+            const step = { ArrowLeft: -16, ArrowRight: 16 }[event.key];
+            if (!step) return;
+            event.preventDefault();
+            sidebarWidth = clampWidth(sidebarWidth + step);
+          }}
+        ></div>
+      </div>
+    {/if}
 
     <div class="pane">
 
@@ -239,6 +301,14 @@
   </div>
 
   <footer>
+    <Button
+      tone="quiet"
+      size="sm"
+      title={sidebar ? "Hide the file list (⌘B)" : "Show the file list (⌘B)"}
+      onclick={() => (sidebar = !sidebar)}
+    >
+      {sidebar ? "◧" : "▢"}
+    </Button>
     <!-- Naming belongs to the sidebar now: a file has its name there and a
          project has its own. What is left here is the pair of things the list
          cannot say -- where this file is on disk, and how to take it out of the
@@ -286,9 +356,30 @@
    * which is the point: no tab strip, no breadcrumb, no second list. */
   .workbench {
     display: flex;
-    gap: var(--space-4);
+    gap: var(--space-3);
     flex: 1;
     min-height: 0;
+  }
+
+  .rail {
+    display: flex;
+    flex: none;
+    min-height: 0;
+  }
+
+  .grip {
+    flex: none;
+    width: var(--space-2);
+    margin-left: var(--space-1);
+    cursor: col-resize;
+    touch-action: none;
+    border-radius: var(--radius-full);
+  }
+
+  .grip:hover,
+  .grip:focus-visible {
+    background: var(--color-border);
+    outline: none;
   }
 
   .pane {
