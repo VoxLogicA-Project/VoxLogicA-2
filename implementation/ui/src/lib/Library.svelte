@@ -26,6 +26,7 @@
     onrenameproject,
     onreveal,
     ondelete,
+    ondeleteproject,
   } = $props();
 
   const ORDERS = [
@@ -115,15 +116,25 @@
     return picked.has(file.path) && picked.size > 1 ? [...picked] : [file.path];
   }
 
+  /** What is waiting for a second confirmation: files, or one empty project. */
   function arm(paths) {
-    armed = paths;
+    armed = { kind: "files", paths };
+  }
+
+  function armProject(name) {
+    armed = { kind: "project", name };
   }
 
   function confirmDelete() {
-    const paths = armed ?? [];
+    const target = armed;
     armed = null;
-    for (const path of paths) ondelete?.(path);
-    picked = new Set([...picked].filter((path) => !paths.includes(path)));
+    if (!target) return;
+    if (target.kind === "project") {
+      ondeleteproject?.(target.name);
+      return;
+    }
+    for (const path of target.paths) ondelete?.(path);
+    picked = new Set([...picked].filter((path) => !target.paths.includes(path)));
   }
 
   function fold(name) {
@@ -189,6 +200,7 @@
   }
 
   function projectMenu(project) {
+    const holds = library.files.some((file) => file.project === project.name);
     return [
       {
         label: "Rename",
@@ -198,16 +210,27 @@
       },
       { label: "New file here", onselect: () => onnewfile?.(project.name) },
       { label: "Show in folder", onselect: () => onreveal?.(project.path) },
+      { separator: true },
       ...(project.linked
         ? [
-            { separator: true },
             {
               label: "Remove from the list",
               hint: "the folder itself is untouched",
               onselect: () => onforgetfolder?.(project.path),
             },
           ]
-        : []),
+        : [
+            {
+              label: "Delete project…",
+              // Empty ones only. Deleting a project that still holds files
+              // would be deleting the files, which the list already does
+              // explicitly, one at a time, with the same confirmation.
+              hint: holds ? "only when it is empty" : undefined,
+              disabled: holds,
+              danger: true,
+              onselect: () => armProject(project.name),
+            },
+          ]),
     ];
   }
 </script>
@@ -331,7 +354,13 @@
          ask one question is worse than the mistake it prevents, and this can be
          ignored simply by carrying on. -->
     <div class="armed" role="alert">
-      <span>Delete {armed.length === 1 ? "this file" : `${armed.length} files`}?</span>
+      <span>
+        {#if armed.kind === "project"}
+          Delete the empty project “{armed.name}”?
+        {:else}
+          Delete {armed.paths.length === 1 ? "this file" : `${armed.paths.length} files`}?
+        {/if}
+      </span>
       <div class="pair">
         <Button tone="danger" size="sm" onclick={confirmDelete}>Delete</Button>
         <Button tone="quiet" size="sm" onclick={() => (armed = null)}>Cancel</Button>

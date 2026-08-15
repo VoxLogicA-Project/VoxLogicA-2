@@ -200,6 +200,7 @@
       onforgetfolder={(path) => libraryActions.forgetFolder(path)}
       onreveal={(path) => libraryActions.reveal(path)}
           ondelete={(path) => libraryActions.deleteFile(path)}
+          ondeleteproject={(name) => libraryActions.deleteProject(name)}
         />
         <!-- The handle is the edge itself, which is where everyone reaches for
              it. Dragging sets a width; double-clicking puts it back. -->

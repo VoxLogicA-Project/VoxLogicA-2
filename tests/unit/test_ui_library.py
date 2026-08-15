@@ -245,3 +245,24 @@ def test_linking_the_same_folder_twice_by_different_paths_does_not_double_it(tmp
 
     assert [p["name"] for p in library.projects()] == ["brats"]
     assert [f["name"] for f in library.tree()["files"]] == ["study"]
+
+
+def test_an_empty_project_can_be_tidied_away():
+    library.new_project("Never used")
+    assert library.delete_project("Never used") is True
+    assert library.projects() == []
+
+
+def test_a_project_with_files_in_it_is_not_deleted():
+    """Deleting it would be deleting the files, which is a different act."""
+    library.new_file(project="In use", name="something")
+    assert library.delete_project("In use") is False
+    assert [p["name"] for p in library.projects()] == ["In use"]
+
+
+def test_a_linked_folder_is_not_ours_to_delete(tmp_path):
+    elsewhere = tmp_path / "repos" / "brats"
+    elsewhere.mkdir(parents=True)
+    library.link(elsewhere)
+    assert library.delete_project("brats") is False
+    assert elsewhere.exists()

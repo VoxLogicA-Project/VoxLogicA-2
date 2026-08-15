@@ -282,6 +282,12 @@ def _library_forget_folder(_workspace, params):
     return library.unlink(params["path"])  # a location we already showed
 
 
+def _library_delete_project(_workspace, params):
+    from . import library
+
+    return library.delete_project(params["name"])
+
+
 def _library_reveal(_workspace, params):
     from . import native
 
@@ -404,6 +410,9 @@ ACTIONS: dict[str, Action] = {
                 _library_forget_folder, mutates=False),
         _action("library.reveal", {"path": "string"}, ("path",),
                 "Show a file or project in the file manager.", _library_reveal, mutates=False),
+        _action("library.deleteProject", {"name": "string"}, ("name",),
+                "Remove an empty project folder. Refused if it still holds files.",
+                _library_delete_project, mutates=False),
         _action("library.deleteFile", {"path": "string"}, ("path",),
                 "Delete a file from the library.", _library_delete, mutates=False),
         _action("workspace.open", {"path": "string"}, ("path",),

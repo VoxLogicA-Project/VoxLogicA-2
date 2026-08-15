@@ -486,6 +486,12 @@ until it is dragged into a project. "Unfiled" is a location, not a limbo.
 | Right-click a file | Rename, move to any project, delete — applied to everything picked. |
 | Drag the sidebar's edge | Resize it. Double-click the edge restores the default; ⌘/Ctrl+B hides it. |
 
+An **empty project can be tidied away** from its own menu, with the same two
+steps. Only an empty one: deleting a project that still holds files would be
+deleting the files, which the list already does explicitly, one at a time. A
+linked folder is not ours to delete — *Remove from the list* forgets it and
+leaves it where it is.
+
 **Deleting is two steps.** The menu arms it and an inline bar confirms it — not a
 modal, because a dialogue that steals the keyboard to ask one question is worse
 than the mistake it prevents, and this one can be ignored by carrying on. It is

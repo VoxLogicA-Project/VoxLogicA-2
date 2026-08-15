@@ -264,6 +264,33 @@ def rename_project(name: str, to: str) -> str:
     return destination.name
 
 
+def delete_project(name: str) -> bool:
+    """Remove an empty project folder.
+
+    Empty only. Deleting a project that still holds files would be deleting the
+    files, which is a different and much heavier act than tidying away a folder
+    somebody made and did not use -- and one the sidebar can already do
+    explicitly, file by file, with a confirmation.
+
+    A linked folder is not ours to delete: forgetting it is `unlink`.
+    """
+    folder = root() / _safe(name)
+    if folder.resolve() in {item.resolve() for item in links()}:
+        return False
+    if not folder.is_dir():
+        return False
+    # macOS leaves these behind in any folder a Finder window has looked at, and
+    # a folder that is empty apart from one is empty.
+    for junk in folder.glob(".DS_Store"):
+        junk.unlink(missing_ok=True)
+    try:
+        folder.rmdir()
+    except OSError:
+        # Not empty, or not ours to remove. Either way nothing was lost.
+        return False
+    return True
+
+
 def delete(path: str | Path) -> bool:
     """Remove a file. Folders are left alone even when they empty out.
 
