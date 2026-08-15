@@ -257,6 +257,12 @@ Cards move between pages from their own menu.
 
 ## 6. What the board does not do
 
+- **It works where nobody is looking.** A tab that is not rendering — hidden,
+  backgrounded, driven by a test — measures zero, and a board that believed that
+  would collapse to one cell and refuse every move as out of bounds. The
+  document's own `cols`/`rows` are the answer when the window will not give one,
+  so an agent driving a workspace whose only client is a background tab gets the
+  same board a person would.
 - **It does not scroll, ever.** Zoom is a wish, not a command: cells grow until
   a card would fall off the page and no further, and shrinking the window
   shrinks the cells rather than hiding anything. A bounded page you can see all

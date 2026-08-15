@@ -115,6 +115,20 @@
     ),
   );
 
+  /** The room the board has, or the room the document says it wants.
+   *
+   * A tab that is not rendering -- hidden, backgrounded, driven by a test --
+   * measures zero, and a board that believed that would collapse to a single
+   * cell and refuse every move as out of bounds. The document's own `cols` and
+   * `rows` are the answer when the window will not give one: a stated geometry
+   * is better than a measured zero, and it makes the board behave identically
+   * whether or not anyone is looking at it.
+   */
+  const space = $derived({
+    width: room_.width || cols * basePitch,
+    height: room_.height || rows * basePitch,
+  });
+
   /** The largest cell size that still shows every card on this page.
    *
    * This board does not scroll, and that is a decision rather than an omission:
@@ -127,8 +141,8 @@
     basePitch === 0
       ? 1
       : Math.min(
-          (room_.width + gutter) / (needed.cols * basePitch),
-          (room_.height + gutter) / (needed.rows * basePitch),
+          (space.width + gutter) / (needed.cols * basePitch),
+          (space.height + gutter) / (needed.rows * basePitch),
         ),
   );
 
@@ -138,10 +152,10 @@
 
   /** The lattice is what fits, and never less than the cards reach. */
   const width = $derived(
-    Math.max(needed.cols, pitch ? Math.floor((room_.width + gutter) / pitch) : cols),
+    Math.max(needed.cols, pitch ? Math.floor((space.width + gutter) / pitch) : cols),
   );
   const height = $derived(
-    Math.max(needed.rows, pitch ? Math.floor((room_.height + gutter) / pitch) : rows),
+    Math.max(needed.rows, pitch ? Math.floor((space.height + gutter) / pitch) : rows),
   );
 
   /** Pages exist because cards are on them -- plus the empty one you are

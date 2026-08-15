@@ -224,3 +224,34 @@ def test_a_production_bundle_contains_no_gallery() -> None:
         assert marker not in js, f"{marker!r} is in the production bundle"
     assert "voxlogica-dev-panel" not in js
     assert "Moodboard" not in css
+
+
+# ------------------------------------------- the board works where nobody looks
+
+
+def test_the_board_falls_back_to_the_document_s_geometry() -> None:
+    """A tab that is not rendering measures zero, and a board that believed it
+    would collapse to one cell and refuse every move as out of bounds.
+
+    Asserted on the source because the alternative is a browser: the point is
+    that the measured room is never used raw.
+    """
+    board = (_SRC / "lib" / "components" / "Bento" / "Bento.svelte").read_text(encoding="utf-8")
+    assert "room_.width || cols * basePitch" in board, (
+        "the board must fall back to the document's own cols/rows when the "
+        "window reports no size at all")
+    assert "room_.width + gutter" not in board, (
+        "the measured room is used through `space`, which has the fallback")
+
+
+def test_a_capture_is_sized_by_content_not_by_the_viewport() -> None:
+    capture = (_SRC / "lib" / "capture.ts").read_text(encoding="utf-8")
+    assert "scrollWidth" in capture and "fallback" in capture, (
+        "a screenshot from a background tab must not be a one-pixel strip")
+
+
+def test_a_tab_that_cannot_render_lets_a_better_one_answer() -> None:
+    connection = (_SRC / "lib" / "connection.js").read_text(encoding="utf-8")
+    assert "renderable()" in connection, (
+        "the first answer wins a capture, so a hidden zero-sized tab has to "
+        "give a visible one the chance to answer first")

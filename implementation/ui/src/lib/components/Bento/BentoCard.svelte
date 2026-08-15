@@ -157,6 +157,15 @@
     h: (at.h ?? size.h) * pitch - gutter,
   });
 
+  /** The smallest a self-sizing card is allowed to be.
+   *
+   * Content measured at zero -- an empty card, a result with nothing in it yet
+   * -- would otherwise ask for one cell, and a card too small to show its own
+   * name is not a card anybody can use. Only auto cards get this floor: a size
+   * somebody chose by hand is a size they meant.
+   */
+  const AUTO_FLOOR = { w: 4, h: 2 };
+
   function clamp(w, h) {
     let cw = Math.min(Math.max(w, card.minW ?? 1), card.maxW ?? cols, cols);
     let ch = Math.min(Math.max(h, card.minH ?? 1), card.maxH ?? rows, rows);
@@ -193,8 +202,8 @@
     // The card is not only its content: the header takes cells too, and a card
     // sized to the content alone clips by exactly that much.
     const [w, h] = clamp(
-      Math.ceil((box.width + gutter) / pitch),
-      Math.ceil((box.height + (headerEl?.offsetHeight ?? 0) + gutter) / pitch),
+      Math.max(AUTO_FLOOR.w, Math.ceil((box.width + gutter) / pitch)),
+      Math.max(AUTO_FLOOR.h, Math.ceil((box.height + (headerEl?.offsetHeight ?? 0) + gutter) / pitch)),
     );
     if (w !== size.w || h !== size.h) onmeasure?.(w, h);
   }

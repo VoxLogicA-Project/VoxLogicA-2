@@ -22,7 +22,7 @@ function locate(target: string | null): Element {
     // would crop the right-hand cards out of the picture.
     return document.querySelector("main .board") ?? document.querySelector("main") ?? document.body;
   }
-  if (target === "page") return document.body;
+  if (target === "page") return document.querySelector("main") ?? document.body;
   const card = document.querySelector(`[data-card-id="${CSS.escape(target)}"]`);
   if (card === null) throw new Error(`no card on screen with id ${target}`);
   return card;
@@ -43,11 +43,31 @@ function styles(): string {
   return rules.join("\n");
 }
 
+/** The size to photograph something at.
+ *
+ * A tab that is not rendering reports a zero-sized viewport, and everything
+ * sized against the viewport -- the page column, `100dvh` -- measures zero with
+ * it. What still has a size is content: the board is as wide as its own cells
+ * whatever the window is doing. So the largest of the three answers is taken,
+ * and a picture comes back from a background tab instead of a one-pixel strip.
+ */
+function measure(element: Element): { width: number; height: number } {
+  const box = element.getBoundingClientRect();
+  const scroll = element as HTMLElement;
+  const board = document.querySelector("main .board");
+  const fallback = board && board !== element ? board.getBoundingClientRect() : null;
+  return {
+    width: Math.max(1, Math.ceil(Math.max(box.width, scroll.scrollWidth || 0, fallback?.width ?? 0))),
+    height: Math.max(
+      1,
+      Math.ceil(Math.max(box.height, scroll.scrollHeight || 0, fallback?.height ?? 0)),
+    ),
+  };
+}
+
 export async function capture(target: string | null): Promise<string> {
   const element = locate(target);
-  const box = element.getBoundingClientRect();
-  const width = Math.max(1, Math.ceil(box.width));
-  const height = Math.max(1, Math.ceil(box.height));
+  const { width, height } = measure(element);
 
   const clone = element.cloneNode(true) as HTMLElement;
   // The clone is laid out at the origin of its own canvas, not at the position

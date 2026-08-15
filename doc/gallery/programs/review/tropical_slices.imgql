@@ -1,0 +1,94 @@
+// Tropical slice review -- look at a 3D segmentation where it is hard, not
+// where it is easy.
+//
+// Reviewing one axial plane per case is reviewing the lesion at its widest,
+// which is where every method looks good. This picks three planes from a
+// REFERENCE mask:
+//
+//   equator   the plane where that mask has the most area
+//   tropics   halfway between the equator and each pole, a pole being the
+//             outermost plane on which the mask still exists
+//
+// The tropics are where a segmentation stops being a blob and starts being a
+// shape, so a method that only draws blobs fails there first, and a method that
+// invents tissue invents it there.
+//
+// Every function takes the arrays it works on as arguments -- no dataset, no
+// channels, no globals -- so this file is a lens, usable on any pair of masks
+// from any program.
+//
+// USAGE
+//
+//   import "../doc/gallery/programs/review/tropical_slices.imgql"
+//
+//   planes = tsr_planes(reference_mask, 155)
+//   bg     = tsr_background(flair_percentiles, brain_mask)
+//   out    = tsr_write_volume(tsr_compare(bg, prediction, truth), "/tmp/cmp.nii.gz")
+//
+// `planes` comes back as three numbers and the volume as one file, so the
+// panels are cut wherever it is convenient to look at them.
+//
+// In tsr_compare(bg, a, b) the grey levels are: background dim, 85 where only
+// `a` fires, 170 where only `b` fires, 255 where both do. Reading a panel is
+// therefore reading three questions at once -- what a found, what b found, and
+// what they agree on -- which is what makes a wrong SHAPE visible rather than
+// just a wrong score.
+
+import "simpleitk"
+import "strings"
+import "vox1"
+
+// --- Choosing the planes ----------------------------------------------------
+// `nz` is the number of axial planes (BraTS2020: 155).
+
+tsr_plane_area(m, zi) = volume(and(m, eq_sv(zi, z(m))))
+
+tsr_equator(m, nz) = argmax(for zi in range(0, nz) do tsr_plane_area(m, zi))
+
+// The outermost non-empty plane on each side, as an argmax rather than a
+// search: weighting a non-empty plane by its index peaks at the last one, and
+// by its distance from the end at the first.
+tsr_pole_hi(m, nz) =
+  argmax(for zi in range(0, nz) do *(num_gt(tsr_plane_area(m, zi), 0.0), +(zi, 1.0)))
+tsr_pole_lo(m, nz) =
+  argmax(for zi in range(0, nz) do *(num_gt(tsr_plane_area(m, zi), 0.0), -(nz, zi)))
+
+tsr_tropic_lo(m, nz) = floor(/(+(tsr_pole_lo(m, nz), tsr_equator(m, nz)), 2.0))
+tsr_tropic_hi(m, nz) = floor(/(+(tsr_equator(m, nz), tsr_pole_hi(m, nz)), 2.0))
+
+// The three planes, southern tropic first.
+tsr_planes(m, nz) = [tsr_tropic_lo(m, nz), tsr_equator(m, nz), tsr_tropic_hi(m, nz)]
+
+// --- Drawing ----------------------------------------------------------------
+
+// Anatomy at a level that never competes with the overlays.
+tsr_background(channel, brain) = *(mask(channel, brain), 60.0)
+
+// 85 = only `a`, 170 = only `b`, 255 = both. Three questions in one panel.
+//
+// Written as arithmetic on disjoint regions rather than with overlayB, which
+// needs `constant`: `constant` takes its geometry from a REMEMBERED base image
+// (kernels._require_base), so under a parallel engine with a content-addressed
+// cache the single shared `constant(85)` node carries whichever geometry some
+// thread touched last, and the overlay silently draws nothing. Multiplying a
+// boolean mask by a level has no such hidden state.
+// Masks arrive as 8-bit and the background is 32-bit float; SimpleITK's
+// Multiply refuses the mixture, so each region is cast once, here.
+tsr_f(m) = Cast(m, GetPixelIDValueFromString("sitkFloat32"))
+
+tsr_compare(background, a, b) =
+  let both = tsr_f(and(a, b)) in
+  let only_a = tsr_f(and(a, not(b))) in
+  let only_b = tsr_f(and(b, not(a))) in
+  let elsewhere = *(background, tsr_f(not(or(a, b)))) in
+  +(+(+(elsewhere, *(only_a, 85.0)), *(only_b, 170.0)), *(both, 255.0))
+
+// The channel on its own, for the panel that shows what everything is read from.
+tsr_anatomy(channel, brain) = *(mask(channel, brain), 255.0)
+
+// The comparison volume is written whole, as NIfTI, and the planes are cut from
+// it afterwards. SimpleITK's Extract is available here and returns an EMPTY
+// image for a 3D-to-2D axial cut (measured: a plane holding 13583 voxels
+// extracts to volume 0), so writing 2D from inside the program would silently
+// produce black panels -- which is exactly what it did before this was checked.
+tsr_write_volume(img, path) = WriteImage(img, path)
