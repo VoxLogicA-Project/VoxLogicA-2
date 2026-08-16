@@ -414,6 +414,8 @@
       oncutcards={() => copyCards({ cut: true })}
       onpastecards={() => pasteCards()}
       onrun={(id) => cardActions.run(id)}
+      onfocusbinding={(id, name) => cardActions.setFocus(id, name)}
+      bindingsOf={(card) => (card.kind === "code" ? bindingsIn(card.source) : [])}
       {running}
       onactivate={(id) => (editing = id)}
       onsendtopage={(id, page) => board.setPage(id, page)}

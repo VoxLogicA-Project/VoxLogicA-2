@@ -79,6 +79,13 @@
     onactivate = undefined,
     /** `(id)` — a card asked to compute what it is about. */
     onrun = undefined,
+    /** `(id, name)` — a card was pointed at a different one of its bindings. */
+    onfocusbinding = undefined,
+    /** `(card) -> string[]` — the names a card's fragment declares.
+     *
+     * A function rather than a field on the card, because what a fragment
+     * declares is a question about .imgql and the board does not speak it. */
+    bindingsOf = undefined,
     /** Ids of the cards with something queued or computing right now.
      *
      * The board is told, rather than working it out: what a card is about is a
@@ -1013,6 +1020,8 @@
             oncut={oncutcards}
             ondragout={cardsText ? (event) => dragOut(card, event) : undefined}
             onrun={onrun ? () => onrun(card.id) : undefined}
+            onfocusbinding={onfocusbinding ? (name) => onfocusbinding(card.id, name) : undefined}
+            bindings={bindingsOf?.(card) ?? []}
             running={running.includes(card.id)}
             onderive={onderive ? () => onderive(card.id, copySpot(card)) : undefined}
             onmaximize={() => maximize(card)}

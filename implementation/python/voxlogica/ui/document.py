@@ -52,6 +52,7 @@ _KEY_ORDER = (
     "auto",
     "page",
     "node",
+    "focus",
     "view",
     "from",
     "cols",
@@ -113,6 +114,33 @@ _BINDING = re.compile(r"^[ \t]*let[ \t]+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
 
 def bindings_in(source: str) -> list[str]:
     return _BINDING.findall(source or "")
+
+
+def _focus_of(card: dict[str, Any]) -> str | None:
+    """Which binding a card is *about*.
+
+    A card holds a fragment, and a fragment may declare several names. The one
+    it is about is the last it declares -- not the last line of a file, which is
+    arbitrary and moves when somebody appends to it, but the last of a fragment
+    whose boundary was drawn by hand. A fragment reads as scaffolding building
+    toward its final name: the earlier bindings are the working, the last one is
+    the answer.
+
+    A stated `focus=` always wins, and it is answered here rather than in the
+    browser so that a person and an agent are looking at the same card. Kept in
+    one place for the same reason the title and the id are: two implementations
+    of "what is this card about" would disagree on the day one was updated.
+
+    A result card has no fragment of its own; what it is about is the node it is
+    bound to.
+    """
+    stated = card.get("focus")
+    if stated:
+        return stated
+    declared = bindings_in(card.get("source", ""))
+    if declared:
+        return declared[-1]
+    return card.get("node")
 
 
 def _free_name(name: str, taken: set[str]) -> str:
@@ -238,7 +266,7 @@ class Document:
                 value = directive.int_or(key, None)
                 if value is not None:
                     card[key] = value
-            for key in ("node", "view", "from"):
+            for key in ("node", "view", "from", "focus"):
                 if key in attrs:
                     card[key] = attrs[key]
             if "aspect" in attrs:
@@ -256,6 +284,7 @@ class Document:
             card["source"] = (
                 _uncomment(segment.body) if card["kind"] == "note" else segment.body
             )
+            card["focus"] = _focus_of(card)
             cards.append(card)
         return cards
 
@@ -293,13 +322,15 @@ class Document:
         }
         if not declared:
             # The degenerate case, unchanged: one card, sized to its content.
-            return [{**program, "auto": True}]
+            return [{**program, "auto": True, "focus": _focus_of(program)}]
 
         # With something beside it, the program takes a stated column instead of
         # measuring itself: an auto card's width is not known until it is drawn,
         # and a layout that cannot say where its second column starts would put
         # one card on top of another the first time a program was wide.
-        cards: list[dict[str, Any]] = [{**program, "w": 7, "h": 9, "auto": False}]
+        cards: list[dict[str, Any]] = [
+            {**program, "w": 7, "h": 9, "auto": False, "focus": _focus_of(program)}
+        ]
         for index, output in enumerate(declared):
             card: dict[str, Any] = {
                 "id": f"{output.operation}{index + 1}",
@@ -314,6 +345,7 @@ class Document:
             }
             if output.binding:
                 card["node"] = output.binding
+                card["focus"] = output.binding
             else:
                 #: No hash for a sub-expression yet, so the card says what it is
                 #: a view of rather than pretending to be bound to it.

@@ -37,6 +37,10 @@ export const card = {
   setTitle: (id: string, title: string) => invoke("card.setTitle", { id, title }),
   setSource: (id: string, text: string) => invoke("card.setSource", { id, text }),
   bindNode: (id: string, node: string) => invoke("card.bindNode", { id, node }),
+  /** Which of the card's bindings it is about. Omit to go back to the default,
+   * which is the last one the fragment declares. */
+  setFocus: (id: string, focus?: string) =>
+    invoke("card.setFocus", focus ? { id, focus } : { id }),
   setKind: (id: string, kind: string) => invoke("card.setKind", { id, kind }),
   setViewMode: (id: string, view: string) => invoke("card.setViewMode", { id, view }),
   /** Compute what this card is about. Its dependencies follow on their own:

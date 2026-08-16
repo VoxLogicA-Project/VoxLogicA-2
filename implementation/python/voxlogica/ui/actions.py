@@ -416,6 +416,16 @@ def _node_id(workspace, params):
     return results.resolve(named) or named
 
 
+def _set_focus(workspace, params):
+    """Point a card at one of its own bindings.
+
+    Clearing it is not "no focus": it is *back to the default*, which is the
+    last binding the fragment declares. A card about nothing would be a card
+    with no reason to have a Run button.
+    """
+    return workspace.document.set_attr(params["id"], "focus", params.get("focus") or None)
+
+
 def _run_card(workspace, params):
     """Ask for everything a card is about.
 
@@ -517,6 +527,9 @@ ACTIONS: dict[str, Action] = {
                 "Rename a card.", _set_title),
         _action("card.setSource", {"id": "string", "text": "string"}, ("id", "text"),
                 "Replace the program text of a code card.", _set_source),
+        _action("card.setFocus", {"id": "string", "focus": "string"}, ("id",),
+                "Choose which of a card's bindings it is about; with no focus, "
+                "the last one it declares.", _set_focus),
         _action("card.bindNode", {"id": "string", "node": "string"}, ("id", "node"),
                 "Point a result card at a node of the program.", _bind_node),
         _action("card.setKind", {"id": "string", "kind": "string"}, ("id", "kind"),

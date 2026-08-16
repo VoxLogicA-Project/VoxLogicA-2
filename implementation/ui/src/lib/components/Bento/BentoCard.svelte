@@ -60,6 +60,14 @@
     onselect,
     /** The card was asked to compute what it is about. Absent = no button. */
     onrun,
+    /** `(name)` — a different one of this card's bindings was chosen. */
+    onfocusbinding,
+    /** The names this card's fragment declares, in the order it declares them.
+     *
+     * Passed in rather than parsed here: what a fragment declares is a question
+     * about .imgql, and a component that draws a rectangle has no business
+     * having an opinion about the language. */
+    bindings = [],
     /** True while anything this card is about is queued or computing. */
     running = false,
     selected = false,
@@ -458,6 +466,25 @@
         </span>
       {/if}
 
+      {#if bindings.length > 1 && onfocusbinding}
+        <!-- Only when there is a choice to make. A fragment declaring one name
+             is a fragment about that name, and a select with one option is a
+             control that teaches nothing and costs a glance on every card. -->
+        <select
+          class="binding"
+          aria-label="What {card.title} is about"
+          value={card.focus ?? bindings[bindings.length - 1]}
+          onpointerdown={(event) => event.stopPropagation()}
+          ondblclick={(event) => event.stopPropagation()}
+          onclick={(event) => event.stopPropagation()}
+          onchange={(event) => onfocusbinding?.(event.currentTarget.value)}
+        >
+          {#each bindings as name (name)}
+            <option value={name}>{name}</option>
+          {/each}
+        </select>
+      {/if}
+
       {#if onrun}
         <!-- Run belongs to the card, not to the window: a run is a demand for
              what *this* card is about. Dependencies come along because they
@@ -614,6 +641,37 @@
   /* Present but quiet, and pushed to the far end by the title's own growth.
    * A run button that announced itself on every card would make a board of
    * twenty cards look like a control panel. */
+  /* Reads as the card's own subtitle, not as a form control: no chrome until
+     it is approached, and the name it shows is the thing the eye is looking
+     for. A select styled like a select would put a widget on every card. */
+  .binding {
+    flex: none;
+    max-width: 40%;
+    margin-left: auto;
+    padding: 0 var(--space-1);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--color-text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    cursor: pointer;
+    appearance: none;
+    text-overflow: ellipsis;
+  }
+
+  .binding:hover,
+  .binding:focus-visible {
+    color: var(--color-text);
+    background: var(--color-surface-sunken);
+  }
+
+  /* With a binding beside it, the run button no longer needs to push itself
+     to the far end -- the select is already there. */
+  .binding ~ .run {
+    margin-left: 0;
+  }
+
   .run {
     flex: none;
     display: grid;
