@@ -224,9 +224,16 @@ src/lib/actions/   dispatch.svelte.ts         the one road to the server
 ```
 
 **The rule components live by:** read the store, call an action, never assign to
-the store. That is mechanically checkable, and there will be a test for it in the
-same spirit as the existing design-system discipline tests — those already fail
-the build when a component invents a colour, and this is the same kind of rule.
+the store. It is mechanically checked --
+`tests/unit/test_ui_separation_discipline.py` fails on a component that assigns
+to a store, on one that calls `/api/` behind the dispatch table's back, on an
+action Python has and the façade does not, and on an action module that grew
+markup.
+
+This is not tidiness. It is the property that lets a person and an agent drive
+*one* workspace: every change has a name, the name is in one list, and both
+sides call it. A component that reached in and assigned would be making a change
+with no name -- invisible to MCP, absent from undo, impossible to replay.
 
 `view` actions could have been kept in the browser -- nothing about zoom belongs
 in a file -- but they go to the server like the rest, because "which page am I
