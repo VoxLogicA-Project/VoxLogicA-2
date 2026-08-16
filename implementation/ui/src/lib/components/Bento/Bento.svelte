@@ -100,6 +100,21 @@
 
   let board = $state(null);
   let canvas = $state(null);
+  /** Two hidden lengths, drawn from the same tokens the grid is drawn from.
+   *
+   * Measuring the *grid* for its pitch was the obvious thing and it was a
+   * circle: the tracks are the pitch times the zoom, the zoom is capped by what
+   * fits, and what fits is a question about the pitch. An effect that read the
+   * zoom in order to divide it back out was therefore reading state it wrote,
+   * and Svelte stopped it -- correctly -- with `effect_update_depth_exceeded`.
+   *
+   * A ruler has no such opinion. `--bento-pitch` and `--bento-gutter` are `rem`
+   * and a spacing step, so their pixel values are the browser's to give and not
+   * ours to compute; but they do not depend on the zoom, on the board, or on
+   * anything this component writes. Measuring them is a question with an answer
+   * rather than an echo. */
+  let pitchRuler = $state(null);
+  let gutterRuler = $state(null);
   /** Cell pitch at zoom 1, and the room the board has, both measured. */
   let basePitch = $state(0);
   let gutter = $state(0);
@@ -182,27 +197,31 @@
     return { w: card.w ?? measured[card.id]?.w ?? 1, h: card.h ?? measured[card.id]?.h ?? 1 };
   }
 
-  // The grid owns the geometry; JS asks it what it did rather than recomputing
-  // it from the tokens. Two sources for one number is two chances to disagree,
-  // and the drag maths has to land on the same cells the grid drew.
+  // The tokens own the geometry; JS asks the browser what they came to in
+  // pixels rather than parsing `rem` itself. Two sources for one number is two
+  // chances to disagree, and the drag maths has to land on the same cells the
+  // grid drew -- `.board` derives its tracks from these same two variables, so
+  // it draws what is measured here by construction.
+  //
+  // Nothing in this effect reads anything it writes, and nothing it observes
+  // changes size because of what it writes: the rulers are fixed lengths, and
+  // the canvas is a flex child whose size the board cannot influence. That is
+  // the property that keeps it from looping, and it is worth preserving.
   $effect(() => {
-    if (!board || !canvas) return;
+    if (!pitchRuler || !gutterRuler || !canvas) return;
     const measure = () => {
-      const style = getComputedStyle(board);
-      gutter = parseFloat(style.columnGap) || 0;
-      // The first resolved track, not the element's width: a grid container is
-      // a block and may be wider than its own tracks, and dividing that width
-      // by `cols` would then hand the drag maths a pitch the grid never used.
-      const step = (parseFloat(style.gridTemplateColumns) || 0) + gutter;
-      // Divided back out by the zoom it was drawn at, so the number kept here
-      // is the one thing that does not move when the board is scaled.
-      if (step) basePitch = step / applied;
+      gutter = gutterRuler.getBoundingClientRect().width;
+      const step = pitchRuler.getBoundingClientRect().width;
+      if (step) basePitch = step;
       const box = canvas.getBoundingClientRect();
       room_ = { width: box.width, height: box.height };
     };
     measure();
+    // The rulers move only when the root font size does; the canvas moves
+    // whenever the window does. Both are worth hearing about.
     const observer = new ResizeObserver(measure);
-    observer.observe(board);
+    observer.observe(pitchRuler);
+    observer.observe(gutterRuler);
     observer.observe(canvas);
     return () => observer.disconnect();
   });
@@ -879,6 +898,11 @@
     oncontextmenucapture={onBoardContextMenu}
     onwheel={onWheel}
   >
+    <!-- Not decoration and not layout: these are the two lengths the grid is
+         built from, held somewhere the zoom cannot reach them. See the effect
+         that measures them. -->
+    <div class="ruler pitch" bind:this={pitchRuler} aria-hidden="true"></div>
+    <div class="ruler gutter" bind:this={gutterRuler} aria-hidden="true"></div>
     <ContextMenu label="Board" items={addItems}>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
@@ -1002,9 +1026,30 @@
   }
 
   .canvas {
+    position: relative;
     flex: 1;
     min-height: 0;
     min-width: 0;
+  }
+
+  /* Out of flow and of no height, so the board lays out as if they were not
+     there -- which, as far as anything but the tape measure is concerned, they
+     are not. */
+  .ruler {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .ruler.pitch {
+    width: var(--bento-pitch);
+  }
+
+  .ruler.gutter {
+    width: var(--bento-gutter);
   }
 
   .board {
