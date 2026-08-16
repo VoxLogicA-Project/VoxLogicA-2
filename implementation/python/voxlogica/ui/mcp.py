@@ -28,6 +28,7 @@ import uuid
 from typing import Any
 
 from .actions import ACTIONS, json_schema
+from .manual import manual
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,9 @@ class WorkspaceMCP:
             if card["id"] == card_id:
                 return card
         raise KeyError(f"no card with id {card_id}")
+
+    def manual(self) -> str:
+        return manual()
 
     def grid(self) -> dict[str, Any]:
         """The lattice an agent has to reason in before it moves anything.
@@ -218,6 +222,12 @@ def build_server(workspace, hub, captures: CaptureBroker):
                 "required": ["id"],
             },
         ),
+        "voxlogica.manual": (
+            "The manual: everything the application does, the same page the "
+            "user reads. Read this first -- an agent that guesses at the "
+            "vocabulary guesses wrong.",
+            {"type": "object", "properties": {}},
+        ),
         "ui.screenshot": (
             "A PNG of what a connected browser is showing: the whole board, the "
             "page, or one card by id.",
@@ -262,6 +272,8 @@ def build_server(workspace, hub, captures: CaptureBroker):
             payload = surface.imgql()
         elif dotted == "workspace.grid":
             payload = surface.grid()
+        elif dotted == "voxlogica.manual":
+            payload = surface.manual()
         elif dotted == "card.get":
             payload = surface.card(params["id"])
         elif dotted == "ui.screenshot":

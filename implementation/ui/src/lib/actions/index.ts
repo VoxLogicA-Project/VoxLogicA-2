@@ -101,6 +101,8 @@ export const library = {
 export const view = {
   goToPage: (page: number) => invoke("view.goToPage", { page }),
   setZoom: (zoom: number) => invoke("view.setZoom", { zoom }),
+  /** The board, or the document it is drawn from. */
+  show: (showing: string) => invoke("view.show", { showing }),
   /** How far back the board stands from its cards: source, both or value. */
   setLens: (lens: string) => invoke("view.setLens", { lens }),
   select: (ids: string[]) => invoke("view.select", { ids }),

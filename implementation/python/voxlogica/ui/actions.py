@@ -190,6 +190,20 @@ def _go_to_page(workspace, params):
 LENSES = ("source", "both", "value")
 
 
+def _show(workspace, params):
+    """Board or document -- the two distances Tab swaps between.
+
+    View state, and on the server for the reason all of it is: an agent asked
+    what the user is looking at has to be able to answer, and to put them back
+    where they were.
+    """
+    showing = params["showing"]
+    if showing not in ("board", "document"):
+        raise ValueError("showing must be 'board' or 'document'")
+    workspace.view["showing"] = showing
+    return True
+
+
 def _set_lens(workspace, params):
     """Set the board's lens.
 
@@ -626,6 +640,9 @@ ACTIONS: dict[str, Action] = {
                 "it. Bounded: says so rather than hanging.", _results_wait, mutates=False),
         _action("view.goToPage", {"page": "int"}, ("page",),
                 "Show a page of the board.", _go_to_page, mutates=False),
+        _action("view.show", {"showing": "string"}, ("showing",),
+                "Look at the board, or at the document the board is drawn from.",
+                _show, mutates=False),
         _action("view.setLens", {"lens": "string"}, ("lens",),
                 "How far back the board stands from its cards: source, both or "
                 "value.", _set_lens, mutates=False),

@@ -52,6 +52,8 @@ export interface View {
   focus: string | null;
   /** How far back the board stands: "source", "both" or "value". */
   lens: string;
+  /** "board" or "document": the two distances Tab swaps between. */
+  showing: string;
 }
 
 export interface LibraryFile {
@@ -105,7 +107,7 @@ export interface Snapshot {
 class WorkspaceStore {
   board = $state<Board>({ cols: 12, rows: 8 });
   cards = $state<Card[]>([]);
-  view = $state<View>({ page: 0, zoom: 1, selection: [], focus: null, lens: "both" });
+  view = $state<View>({ page: 0, zoom: 1, selection: [], focus: null, lens: "both", showing: "board" });
   path = $state<string | null>(null);
   name = $state<string | null>(null);
   dirty = $state(false);

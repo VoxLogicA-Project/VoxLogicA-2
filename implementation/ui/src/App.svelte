@@ -52,7 +52,7 @@
    *
    * Both are the same thing seen from two distances, which is the point: a
    * board whose file you cannot read would be a board you have to trust. */
-  let showing = $state("board");
+  const showing = $derived(workspace.view.showing ?? "board");
   let helping = $state(false);
   const DEFAULT_SIDEBAR = 240;
   const MIN_SIDEBAR = 140;
@@ -239,7 +239,7 @@
     }
     if (event.key === "Tab") {
       event.preventDefault();
-      showing = showing === "board" ? "document" : "board";
+      view.show(showing === "board" ? "document" : "board");
       return;
     }
     if (helping && event.key === "Escape") {

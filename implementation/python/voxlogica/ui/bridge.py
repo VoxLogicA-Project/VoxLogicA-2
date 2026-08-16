@@ -20,6 +20,7 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 
 from .actions import ACTIONS, json_schema
+from .manual import manual
 from .registration import instances
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,12 @@ def build_stdio_server():
             "One card: its kind, its geometry and its contents.",
             {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
         ),
+        "voxlogica.manual": (
+            "The manual: everything the application does, the same page the "
+            "user reads. Read this first -- an agent that guesses at the "
+            "vocabulary guesses wrong.",
+            {"type": "object", "properties": {}},
+        ),
         "ui.screenshot": (
             "A PNG of what a connected browser is showing: the whole board "
             "('board'), the page ('page'), or one card by id.",
@@ -121,6 +128,11 @@ def build_stdio_server():
 
         if dotted == "workspace.instances":
             return [TextContent(type="text", text=json.dumps(instances(), indent=2))]
+
+        if dotted == "voxlogica.manual":
+            # Answerable with no instance running: an agent should be able to
+            # find out what this is before it has anything to point at.
+            return [TextContent(type="text", text=manual())]
 
         instance = current()
         if instance is None:

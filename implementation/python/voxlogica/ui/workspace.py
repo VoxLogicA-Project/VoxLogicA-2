@@ -47,6 +47,8 @@ class Workspace:
             #: `both` by default: the middle of the movement, where a card shows
             #: its program and what that program currently comes to.
             "lens": "both",
+            #: Board or document: the two distances Tab swaps between.
+            "showing": "board",
         }
         #: Undo is a stack of whole documents, as text.
         #:
