@@ -411,12 +411,32 @@ def open_command(args: argparse.Namespace) -> int:
         instance_info={"version": __version__, "program": None,
                        "storeDb": getattr(args, "store_db", None)},
     )
-    how = window.open_window(session.url)
     print(f"[voxlogica] {path}", file=sys.stderr)
-    print(f"[voxlogica] UI at {session.url}"
-          f"{' (opened in your browser)' if how == 'browser' else ''}", file=sys.stderr)
-    # Waits for the window to arrive, then leaves when it goes: an application
-    # that outlived its only window would be a process nobody knows to stop.
+    print(f"[voxlogica] UI at {session.url}", file=sys.stderr)
+
+    if window.native_available():
+        # The system's own web view, on this thread, for the rest of the
+        # process's life. Nothing is inferred: the call returns when the window
+        # closes, and that is the application ending.
+        from voxlogica.ui import home
+
+        try:
+            window.run_native(
+                session.url,
+                devtools=session.bundler.is_dev,
+                storage=home.window_state_path(),
+            )
+        finally:
+            session.stop()
+        return 0
+
+    # No web view runtime here. Somebody else's window then, and its lifetime
+    # read off the hub: an application that outlived its only window would be a
+    # process nobody knows to stop.
+    how = window.open_window(session.url)
+    if how == "browser":
+        print("[voxlogica] no application window available; opened in your browser",
+              file=sys.stderr)
     session.serve_until_closed()
     return 0
 

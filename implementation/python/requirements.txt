@@ -7,6 +7,12 @@ mcp==1.26.0
 playwright==1.58.0
 canonicaljson==2.0.0
 watchdog==6.0.0
+# The application window: the operating system's own web view, not a bundled
+# rendering engine. PyObjC >= 12 declares free-threaded support, so importing
+# the macOS backend does not re-enable the GIL -- tests/unit/test_ui_window.py
+# is what keeps that true. Optional at runtime: with no GUI backend the UI
+# falls back to a browser window (voxlogica/ui/window.py).
+pywebview>=6.2
 dask[complete]==2025.5.1
 numpy==2.3.2
 # numba/SimpleITK: first versions shipping free-threaded (cp314t) wheels.

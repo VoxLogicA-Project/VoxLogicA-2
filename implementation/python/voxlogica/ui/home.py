@@ -58,6 +58,18 @@ def workspaces() -> Path:
     return data_home() / "workspaces"
 
 
+def window_state_path() -> Path:
+    """Where the native window keeps what a browser profile would keep.
+
+    Beside the workspaces rather than inside them: cookies and local storage are
+    something the application accumulated, not something the user wrote, and a
+    directory the user might put under git should contain only the latter.
+    """
+    path = data_home() / "window"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 #: What a workspace file is called when a *folder* was chosen for it -- the
 #: system save panel picks folders as readily as names, and a folder needs a
 #: document inside it.
