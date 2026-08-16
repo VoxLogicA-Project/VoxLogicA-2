@@ -42,7 +42,12 @@ class Workspace:
         #: Not part of the document: which page you are on is not a property of
         #: the program, and a diff that changes because someone scrolled is a
         #: diff nobody wants to review.
-        self.view: dict[str, Any] = {"page": 0, "zoom": 1.0, "selection": [], "focus": None}
+        self.view: dict[str, Any] = {
+            "page": 0, "zoom": 1.0, "selection": [], "focus": None,
+            #: `both` by default: the middle of the movement, where a card shows
+            #: its program and what that program currently comes to.
+            "lens": "both",
+        }
         #: Undo is a stack of whole documents, as text.
         #:
         #: The text *is* the document -- export is concatenation and parsing is

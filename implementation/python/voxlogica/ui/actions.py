@@ -183,6 +183,27 @@ def _go_to_page(workspace, params):
     return True
 
 
+#: The three distances a card can be looked at from. Not modes: `source` and
+#: `value` are the ends of one movement and `both` is the middle.
+LENSES = ("source", "both", "value")
+
+
+def _set_lens(workspace, params):
+    """Set the board's lens.
+
+    View state, like zoom and page: how far back somebody is standing is not a
+    property of the program, and a diff that changed because they leaned in
+    would be a diff nobody wants to review. A card may override it; the board
+    setting is what the rest follow, because a board where twenty cards each sit
+    in a mode somebody set once is a board you cannot read at a glance.
+    """
+    lens = params["lens"]
+    if lens not in LENSES:
+        raise ValueError(f"lens must be one of {', '.join(LENSES)}")
+    workspace.view["lens"] = lens
+    return True
+
+
 def _set_zoom(workspace, params):
     workspace.view["zoom"] = params["zoom"]
     return True
@@ -549,6 +570,9 @@ ACTIONS: dict[str, Action] = {
                 "it. Bounded: says so rather than hanging.", _results_wait, mutates=False),
         _action("view.goToPage", {"page": "int"}, ("page",),
                 "Show a page of the board.", _go_to_page, mutates=False),
+        _action("view.setLens", {"lens": "string"}, ("lens",),
+                "How far back the board stands from its cards: source, both or "
+                "value.", _set_lens, mutates=False),
         _action("view.setZoom", {"zoom": "number"}, ("zoom",),
                 "Scale the board.", _set_zoom, mutates=False),
         _action("view.select", {"id": "string", "ids": "placements"}, (),

@@ -17,6 +17,7 @@
   import Library from "./lib/Library.svelte";
   import SourceEditor from "./lib/source/SourceEditor.svelte";
   import ResultSubscription from "./lib/viewers/ResultSubscription.svelte";
+  import ResultState from "./lib/viewers/ResultState.svelte";
   import { app } from "./lib/state.svelte.js";
   import { workspace } from "./lib/store/workspace.svelte.ts";
   import { results } from "./lib/store/results.svelte.ts";
@@ -260,7 +261,33 @@
     } else if (key === "v") {
       event.preventDefault();
       pasteCards();
+    } else if (key === "l") {
+      // mod+L, never a bare letter: the letters belong to whoever is typing
+      // into a card, and that rule has no exceptions.
+      event.preventDefault();
+      cycleLens();
     }
+  }
+
+  /** The three distances, and how each is drawn in one glyph: the program
+   * filled, both halved, the value empty of text. */
+  const LENSES = ["source", "both", "value"];
+  const LENS_MARK = { source: "◑", both: "◐", value: "○" };
+
+  function cycleLens() {
+    const at = LENSES.indexOf(workspace.view.lens);
+    view.setLens(LENSES[(at + 1) % LENSES.length]);
+  }
+
+  /** How far back to stand from this card.
+   *
+   * The card's own answer if it has one, the board's otherwise. Board-wide by
+   * default because twenty cards each sitting in a mode somebody set once is a
+   * board you cannot read at a glance; overridable because a volume wants
+   * `value` while the code beside it wants `source`, and forcing one answer on
+   * both would make the lens useless. */
+  function lensFor(card) {
+    return card.view || workspace.view.lens || "both";
   }
 
   /** The cards with something queued or computing right now.
@@ -454,14 +481,30 @@
           <ResultSubscription node={card.node} />
           <viewer.component {result} node={card.node ?? ""} />
         {:else if viewer.source}
-          <viewer.component
-            value={card.source ?? ""}
-            bindings={workspace.nodes}
-            stateOf={(hash) => results.get(hash).state}
-            editing={editing === card.id}
-            oncommit={(text) => commitCard(card.id, text)}
-            oncancel={() => (editing = null)}
-          />
+          {@const lens = lensFor(card)}
+          <!-- One movement, three distances. The program and its values are the
+               same object seen from further back or closer in, so `both` is the
+               middle rather than a third mode: at either end nothing is hidden
+               that the other end would have shown for free. -->
+          <div class="lensed" data-lens={lens}>
+            {#if lens !== "value"}
+              <viewer.component
+                value={card.source ?? ""}
+                bindings={workspace.nodes}
+                stateOf={(hash) => results.get(hash).state}
+                editing={editing === card.id}
+                oncommit={(text) => commitCard(card.id, text)}
+                oncancel={() => (editing = null)}
+              />
+            {/if}
+            {#if lens !== "source" && card.focus}
+              {@const hash = results.hashFor(card.focus)}
+              <ResultSubscription node={card.focus} />
+              <div class="value" class:only={lens === "value"}>
+                <ResultState result={results.get(hash)} node={card.focus} />
+              </div>
+            {/if}
+          </div>
         {:else}
           <viewer.component
             value={card.source ?? ""}
@@ -513,6 +556,17 @@
     >
       Move…
     </Button>
+    <!-- One control for the whole board, because the lens is a place to stand
+         and not a per-card preference. A card that wants otherwise says so
+         itself, and then stops following this. -->
+    <Button
+      tone="quiet"
+      size="sm"
+      onclick={cycleLens}
+      title="How close to stand: source, both, value (⌘L)"
+    >
+      {LENS_MARK[workspace.view.lens] ?? "◐"}
+    </Button>
     <span class="where">{showing === "document" ? "document" : "board"} · <kbd>tab</kbd></span>
     <Button tone="quiet" size="sm" onclick={() => (helping = true)} title="Shortcuts (?)">
       ?
@@ -539,6 +593,38 @@
   .pending {
     color: var(--color-text-subtle);
     font-size: var(--text-sm);
+  }
+
+  /* The two surfaces stacked, with the program taking whatever the value does
+     not. At `source` there is one child and at `value` there is one child, so
+     the same rule draws all three distances without a branch per lens. */
+  .lensed {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+  }
+
+  /* The value never takes more than half of a card it is sharing: a program you
+     can no longer read is a program you cannot fix, and the value is the thing
+     you can always get more of by standing further back. */
+  .value {
+    flex: none;
+    max-height: 50%;
+    min-height: 0;
+    overflow: auto;
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--color-border);
+  }
+
+  /* Alone, it is the card. */
+  .value.only {
+    flex: 1;
+    max-height: none;
+    padding-top: 0;
+    border-top: none;
   }
 
   .problems {

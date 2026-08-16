@@ -50,6 +50,8 @@ export interface View {
   selection: string[];
   /** One card shown alone, or null for the whole board. */
   focus: string | null;
+  /** How far back the board stands: "source", "both" or "value". */
+  lens: string;
 }
 
 export interface LibraryFile {
@@ -103,7 +105,7 @@ export interface Snapshot {
 class WorkspaceStore {
   board = $state<Board>({ cols: 12, rows: 8 });
   cards = $state<Card[]>([]);
-  view = $state<View>({ page: 0, zoom: 1, selection: [], focus: null });
+  view = $state<View>({ page: 0, zoom: 1, selection: [], focus: null, lens: "both" });
   path = $state<string | null>(null);
   name = $state<string | null>(null);
   dirty = $state(false);
