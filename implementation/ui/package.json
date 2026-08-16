@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Browser UI for VoxLogicA 2. Built by build.mjs, which the Python server invokes; there is no dev server of its own.",
   "scripts": {
-    "build": "node build.mjs --outdir dist"
+    "build": "node build.mjs --outdir dist",
+    "test": "node --test \"test/*.test.js\""
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
