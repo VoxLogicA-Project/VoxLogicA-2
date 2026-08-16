@@ -103,6 +103,72 @@ def analyse(source: str) -> Uses | None:
     return Uses(frozenset(defines), frozenset(needs) - defines)
 
 
+@dataclass(frozen=True)
+class Output:
+    """A `print` or a `save`: an output the program itself declared."""
+
+    #: "print" or "save". They are kept apart because they are not the same
+    #: thing wearing two names: a print is a value shown, a save is an effect
+    #: with a destination, and a card for each says so.
+    operation: str
+    #: The quoted label, which is what the author called this output.
+    label: str
+    #: The expression, as written.
+    expression: str
+    #: The expression when it is a bare name, so it can be bound to a node
+    #: without anyone hashing a sub-expression. `None` for anything else --
+    #: honest until a selection can be resolved to a hash on its own.
+    binding: str | None
+
+
+def outputs(source: str) -> list[Output]:
+    """The outputs a program declares, in file order.
+
+    These are what a document *says* it produces, so they are what a board
+    should show when nobody has arranged one yet. Asked of the real parser, for
+    the same reason everything else in this module is: a regular expression
+    looking for `print` would find one inside a string, inside a comment, and
+    inside the word `sprint`.
+    """
+    from voxlogica import parser as vp
+
+    if not (source or "").strip():
+        return []
+    try:
+        program = vp.parse_program_content(source)
+    except Exception as exc:  # noqa: BLE001 - a file mid-edit declares nothing
+        logger.debug("could not read the outputs of a document (%s)", exc)
+        return []
+
+    found: list[Output] = []
+    for command in program.commands:
+        if isinstance(command, vp.Print):
+            operation = "print"
+        elif isinstance(command, vp.Save):
+            operation = "save"
+        else:
+            continue
+        expression = command.expression
+        # `print "s" s` is the common shape and the one worth binding: a bare
+        # name is already a node the reducer can be asked about. Anything
+        # larger needs a hash for a sub-expression, which is a separate piece
+        # of machinery, so it is left unbound rather than guessed at.
+        binding = (
+            expression.identifier
+            if isinstance(expression, vp.ECall) and not expression.arguments
+            else None
+        )
+        found.append(
+            Output(
+                operation=operation,
+                label=command.identifier,
+                expression=expression.to_syntax(),
+                binding=binding,
+            )
+        )
+    return found
+
+
 class Cycle(ValueError):
     """Cards that need each other. There is no order that satisfies them."""
 

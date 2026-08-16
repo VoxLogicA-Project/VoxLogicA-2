@@ -438,8 +438,10 @@
       {#snippet children(card)}
         {@const result = results.forCard(card)}
         {@const viewer = viewerFor(card, result)}
-        {#if card.kind === "result" && !card.node}
-          <p class="pending">Not bound to a node yet.</p>
+        {#if viewer.result && !card.node}
+          <!-- A print or save whose expression is not a bare name has nothing to
+               resolve to a hash yet; it says what it is a view of instead. -->
+          <p class="pending">{card.expression ?? "Not bound to a node yet."}</p>
         {:else if viewer.result}
           <!-- Subscribed for as long as it is on screen, and only that long:
                the server pushes updates for hashes somebody is looking at. -->

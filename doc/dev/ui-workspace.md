@@ -46,7 +46,9 @@ Numbered so the rest of the document can point at them.
   up to a workspace.
 - **R2 — The document is a sub-store**, and it round-trips to an `.imgql` file
   **without data loss**, using special comments. A file *without* special
-  comments opens as a single large code card. Strict requirement.
+  comments opens as a large code card holding every byte of it, beside one card
+  for each output the program declares (`print`, `save`) -- derived, never
+  written, so opening a file cannot modify it. Strict requirement.
 - **R3 — Every mutation lives in a UI-less module.** All functions that change
   the store are Svelte modules with no markup (`.svelte.ts`, which exists for
   exactly this), organised in a hierarchical namespace whose shape is the shape

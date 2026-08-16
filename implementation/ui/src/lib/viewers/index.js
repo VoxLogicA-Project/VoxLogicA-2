@@ -31,6 +31,12 @@ const BY_KIND = {
   code: { component: TextEditor, mono: true, editable: true },
   note: { component: TextEditor, mono: false, editable: true },
   result: { component: ResultState, mono: true, editable: false, result: true },
+  // A `print` and a `save` are both outputs the program declared, and they are
+  // separate kinds because they are not the same act: a print is a value shown,
+  // a save is an effect with a destination. They share a viewer only until the
+  // save one exists -- at which point this is a row, not a rewrite.
+  print: { component: ResultState, mono: true, editable: false, result: true },
+  save: { component: ResultState, mono: true, editable: false, result: true },
 };
 
 const FALLBACK = { component: TextEditor, mono: true, editable: true };

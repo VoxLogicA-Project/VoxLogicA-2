@@ -53,11 +53,23 @@ def test_real_programs_survive_a_round_trip_unchanged(path):
 
 
 def test_a_file_without_directives_is_one_code_card_holding_all_of_it():
+    """R2: the whole program, in one card, and nothing lost.
+
+    It is no longer the *only* card -- a `print` or a `save` is an output the
+    author declared and gets one of its own (test_ui_document_outputs.py) -- but
+    the code card still holds every byte, which is what R2 is actually about.
+    """
     cards = doc.parse(PLAIN).cards
-    assert len(cards) == 1
     assert cards[0]["kind"] == "code"
     assert cards[0]["source"] == PLAIN
-    # Never sized by hand, so the board is free to size it to its content.
+    assert [card["kind"] for card in cards[1:]] == ["print"]
+
+
+def test_a_program_declaring_nothing_is_sized_by_the_board():
+    """With no neighbours there is nothing to collide with, so the card can go
+    on measuring itself."""
+    cards = doc.parse('let a = load("x.nii.gz")\n').cards
+    assert len(cards) == 1
     assert cards[0]["auto"] is True
 
 

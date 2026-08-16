@@ -211,18 +211,7 @@ class Document:
         on. It has no width or height, so the board sizes it to its content.
         """
         if not self.annotated:
-            return [
-                {
-                    "id": "program",
-                    "kind": "code",
-                    "title": "Program",
-                    "x": 0,
-                    "y": 0,
-                    "page": 0,
-                    "auto": True,
-                    "source": self.source,
-                }
-            ]
+            return self._unarranged()
 
         cards: list[dict[str, Any]] = []
         for index, segment in enumerate(self.segments):
@@ -267,6 +256,68 @@ class Document:
             card["source"] = (
                 _uncomment(segment.body) if card["kind"] == "note" else segment.body
             )
+            cards.append(card)
+        return cards
+
+    def _unarranged(self) -> list[dict[str, Any]]:
+        """A board for a file nobody has arranged: the program, and its outputs.
+
+        A `print` and a `save` are what the program *says* it produces, with a
+        name its author chose, so they are what a board should show when there
+        is no layout to read. They are kept apart -- a print is a value shown, a
+        save is an effect with a destination -- because a card that conflated
+        them would have to explain which one it was every time.
+
+        Nothing else here becomes a card yet. Text carrying no directive stays
+        in the file and is reached through the document view; the stronger rule
+        this is half of, *nothing in the program may be invisible on the board*,
+        is worth revisiting once real files have been opened in anger.
+
+        **Derived, not written.** Opening a file must not modify it: these cards
+        exist in this list and nowhere else until the first edit, which is what
+        turns a plain file into an annotated one (see `_annotate`). Somebody who
+        opens a program to look at it and closes it again finds their file
+        exactly as they left it, byte for byte.
+        """
+        from . import analysis
+
+        declared = analysis.outputs(self.source)
+        program = {
+            "id": "program",
+            "kind": "code",
+            "title": "Program",
+            "x": 0,
+            "y": 0,
+            "page": 0,
+            "source": self.source,
+        }
+        if not declared:
+            # The degenerate case, unchanged: one card, sized to its content.
+            return [{**program, "auto": True}]
+
+        # With something beside it, the program takes a stated column instead of
+        # measuring itself: an auto card's width is not known until it is drawn,
+        # and a layout that cannot say where its second column starts would put
+        # one card on top of another the first time a program was wide.
+        cards: list[dict[str, Any]] = [{**program, "w": 7, "h": 9, "auto": False}]
+        for index, output in enumerate(declared):
+            card: dict[str, Any] = {
+                "id": f"{output.operation}{index + 1}",
+                "kind": output.operation,
+                "title": output.label,
+                "x": 8,
+                "y": index * 3,
+                "w": 5,
+                "h": 3,
+                "page": 0,
+                "auto": False,
+            }
+            if output.binding:
+                card["node"] = output.binding
+            else:
+                #: No hash for a sub-expression yet, so the card says what it is
+                #: a view of rather than pretending to be bound to it.
+                card["expression"] = output.expression
             cards.append(card)
         return cards
 
