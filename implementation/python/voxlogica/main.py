@@ -203,6 +203,7 @@ def _start_ui(args: argparse.Namespace, *, program: str | None):
         session = start_ui(
             port=args.ui_port,
             open_browser=getattr(args, "open_browser", False),
+            store_db=getattr(args, "store_db", None),
             instance_info={
                 "version": __version__,
                 "program": program,
@@ -306,6 +307,10 @@ def _run_command_inner(args: argparse.Namespace, ui) -> int:
             threads_auto=args.threads_auto,
             engine_debug=args.engine_debug,
             dynamic_expansion=args.dynamic_expansion,
+            # What makes a result card say `computing` while it computes. None
+            # when nobody is serving a UI, which is the case that must stay
+            # free: an observer that is `None` is not called at all.
+            observe=ui.results.observe if ui is not None and ui.results else None,
         ).execute_workplan(workplan, profile=args.profile)
         if not execution_result.success:
             for diagnostic in execution_result.diagnostics:
@@ -369,6 +374,7 @@ def serve_command(args: argparse.Namespace) -> int:
         port=args.ui_port,
         open_browser=args.open_browser,
         workspace_path=_workspace_path(args),
+        store_db=args.store_db,
         instance_info={"version": __version__, "program": None, "storeDb": args.store_db},
     )
     print(f"[voxlogica] UI at {session.url} (Ctrl-C to stop)", file=sys.stderr)
@@ -408,6 +414,7 @@ def open_command(args: argparse.Namespace) -> int:
         port=args.ui_port,
         open_browser=False,
         workspace_path=path,
+        store_db=getattr(args, "store_db", None),
         instance_info={"version": __version__, "program": None,
                        "storeDb": getattr(args, "store_db", None)},
     )

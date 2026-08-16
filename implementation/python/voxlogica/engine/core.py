@@ -29,7 +29,7 @@ import os
 import sys
 import time
 from collections import defaultdict, deque
-from typing import Any
+from typing import Any, Callable
 
 from tqdm import tqdm
 
@@ -104,8 +104,15 @@ class ComputationEngine:
     def __init__(self, registry: PrimitiveRegistry | None = None,
                  backend: StorageBackend | None = None, max_concurrency: int = 0,
                  progress: bool = False, debug: bool = False, max_live_bytes: int = 0,
-                 threads_auto: str = "balanced"):
+                 threads_auto: str = "balanced",
+                 observe: Callable[..., None] | None = None):
         self.registry = registry or PrimitiveRegistry()
+        # Somebody watching what happens to individual nodes -- the UI, so a
+        # result card can say `computing` while it is. Optional and checked
+        # against None rather than defaulted to a no-op lambda, because these
+        # calls sit in the dispatch path of a plan that may have a hundred
+        # thousand nodes in it, and a call that does nothing still costs a call.
+        self._observe = observe
         self.table = NodeTable(backend=backend)
         # See engine/topology.py: os.cpu_count() overcounts on a hybrid P/E
         # CPU (measured: E-cores ~0.70x a P-core here, and this workload's
@@ -536,6 +543,20 @@ class ComputationEngine:
             if self.graph.register(nid):
                 self._enqueue(nid)
 
+    def _report(self, nid: NodeId, state: str, **fields: Any) -> None:
+        """Tell the observer, if there is one, and never fail because of it.
+
+        An observer is a spectator. A UI that raised while being told a node had
+        finished would abort a computation for the sake of a card, which is the
+        wrong way round -- so the exception is logged and the run continues.
+        """
+        if self._observe is None:
+            return
+        try:
+            self._observe(nid, state, **fields)
+        except Exception:
+            pass
+
     def _enqueue(self, nid: NodeId) -> None:
         """Offer a ready node to the workers, or park it under memory pressure.
 
@@ -543,6 +564,7 @@ class ComputationEngine:
         once; the progress floor in ``_maintain`` guarantees parked work is
         admitted before the workers could ever starve.
         """
+        self._report(nid, "pending")
         priority = self._priority.get(nid, 0)
         if (self.table.accounted_bytes > self.governor.budget
                 and self.ready.qsize() >= self.max_concurrency):
@@ -990,6 +1012,9 @@ class ComputationEngine:
         if frontier > self._peak_frontier:
             self._peak_frontier = frontier
         self._settle_node(nid)
+        # After settling, so that anything reading the value the moment it is
+        # told about it finds the value there.
+        self._report(nid, "done", value=value)
         if self._progress is not None:
             self._nodes_done += 1
             self._progress_pending += 1
@@ -1298,6 +1323,13 @@ class ComputationEngine:
                             if dep not in self.table.values:
                                 self._rematerialize(dep)
                         self._kernels_executed += len(cone)
+                        # A fused cone is one kernel and several nodes, and all
+                        # of them are being computed right now. Reporting only
+                        # the exit would leave every interior card sitting at
+                        # `pending` through the work that produces it.
+                        if self._observe is not None:
+                            for member_id in cone.members_topo:
+                                self._report(member_id, "computing")
                         self._cones_dispatched += 1
                         self._ops_fused += len(cone) - 1
                         started = time.perf_counter()
@@ -1340,6 +1372,10 @@ class ComputationEngine:
                                 self.table.complete_without_value(member_id)
                                 self._priority.pop(member_id, None)
                                 self.admission.on_complete(member_id)
+                                # Done, and deliberately without a value: an
+                                # elided interior was never materialized. A card
+                                # on one says so rather than waiting forever.
+                                self._report(member_id, "done")
                             if self._progress is not None:
                                 self._nodes_done += len(cone.interiors)
                                 self._progress_pending += len(cone.interiors)
@@ -1360,6 +1396,7 @@ class ComputationEngine:
                         continue
 
                     self.table.begin(nid)  # enforces the no-double-computation invariant
+                    self._report(nid, "computing")
                     self._kernels_executed += 1
                     started = time.perf_counter()
                     self._in_flight += 1
@@ -1394,6 +1431,7 @@ class ComputationEngine:
             wrapped = NodeExecutionError(nid, node.operator if node is not None else "<engine>")
             wrapped.__cause__ = error
             error = wrapped
+        self._report(nid, "failed", error=str(error))
         if self._first_error is None:
             self._first_error = error
             self.admission.abort(error)

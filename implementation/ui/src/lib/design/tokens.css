@@ -124,6 +124,11 @@
   --motion-instant: 80ms;
   --motion-fast: 130ms;
   --motion-base: 200ms;
+  /* The one duration that is not a transition: the period of something that
+   * repeats while a condition holds -- a node computing, a job running. Slow
+   * on purpose. A pulse near the transition durations reads as a glitch; this
+   * reads as breathing, which is what it is meant to say. */
+  --motion-pulse: 1600ms;
   --easing-standard: cubic-bezier(0.2, 0, 0.2, 1);
   --easing-exit: cubic-bezier(0.4, 0, 1, 1);
 
@@ -178,5 +183,9 @@
     --motion-instant: 0ms;
     --motion-fast: 0ms;
     --motion-base: 0ms;
+    /* A zero-length pulse never plays, which is the point: the state it
+     * accompanies is also written out in words, so nothing is lost by holding
+     * still. */
+    --motion-pulse: 0ms;
   }
 }

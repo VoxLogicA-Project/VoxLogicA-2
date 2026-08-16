@@ -16,8 +16,10 @@
   import Help from "./lib/Help.svelte";
   import Library from "./lib/Library.svelte";
   import TextEditor from "./lib/viewers/TextEditor.svelte";
+  import ResultSubscription from "./lib/viewers/ResultSubscription.svelte";
   import { app } from "./lib/state.svelte.js";
   import { workspace } from "./lib/store/workspace.svelte.ts";
+  import { results } from "./lib/store/results.svelte.ts";
   import {
     board,
     card as cardActions,
@@ -355,12 +357,18 @@
       onrename={(id, title) => cardActions.setTitle(id, title)}
     >
       {#snippet children(card)}
-        {@const viewer = viewerFor(card)}
+        {@const result = results.forCard(card)}
+        {@const viewer = viewerFor(card, result)}
         {#if card.kind === "result" && !card.node}
           <p class="pending">Not bound to a node yet.</p>
+        {:else if viewer.result}
+          <!-- Subscribed for as long as it is on screen, and only that long:
+               the server pushes updates for hashes somebody is looking at. -->
+          <ResultSubscription node={card.node} />
+          <viewer.component {result} node={card.node ?? ""} />
         {:else}
           <viewer.component
-            value={card.kind === "result" ? (card.node ?? "") : (card.source ?? "")}
+            value={card.source ?? ""}
             mono={viewer.mono}
             editing={editing === card.id && viewer.editable}
             oncommit={(text) => commitCard(card.id, text)}

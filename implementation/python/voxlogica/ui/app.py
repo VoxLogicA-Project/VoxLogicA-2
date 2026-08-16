@@ -40,7 +40,8 @@ _CONTENT_TYPES = {
 
 
 def build_app(
-    *, hub: Hub, bundler: Bundler, describe: Callable[[], dict], workspace=None
+    *, hub: Hub, bundler: Bundler, describe: Callable[[], dict], workspace=None,
+    results=None
 ) -> FastAPI:
     # Screenshots an agent asked for and a browser will answer. Held here because
     # the WebSocket that carries the answers is declared in this function.
@@ -162,6 +163,14 @@ def build_app(
                     if message.get("type") == "ping":
                         hub.heartbeat(client_id)
                         await websocket.send_json({"type": "pong"})
+                    elif message.get("type") == "results.subscribe" and results is not None:
+                        # Answered immediately with what is known, because for a
+                        # node computed an hour ago in another process the next
+                        # thing to happen to it is nothing at all.
+                        for state in results.subscribe(message.get("hashes") or []):
+                            await websocket.send_json({"type": "result", **state})
+                    elif message.get("type") == "results.unsubscribe" and results is not None:
+                        results.unsubscribe(message.get("hashes") or [])
                     elif message.get("type") == "captureResult":
                         # This tab answering the screenshot an agent asked for.
                         captures.settle(message.get("id"), message)

@@ -6,24 +6,31 @@
 // both rather than a field on the card. A card bound to a number and a card
 // bound to an image are the same kind of card; they are not the same view.
 //
-// There is one viewer today, and it is provisional: a plain text editor. It
-// exists to be the seed. What replaces and joins it -- an image viewer, a table,
-// a chart, a graph of the DAG -- arrives here as another entry in one table
-// rather than as another branch in a component.
+// The table below is the extension point. An image viewer, a table, a chart, a
+// graph of the DAG: each arrives as another row here, keyed by the type name the
+// server puts on a result, rather than as another branch inside a component.
 //
 // See doc/dev/ui-workspace.md.
 
 import TextEditor from "./TextEditor.svelte";
+import ResultState from "./ResultState.svelte";
 
-/** What a result's type is called, when we know it. Empty for now: results are
- * not wired up, and inventing type names before there are values to have them
- * would be inventing the wrong ones. */
-const BY_RESULT_TYPE = {};
+/** What a result's type is called, and who draws it.
+ *
+ * Only the types the server actually emits belong here. `ResultState` is what
+ * every result falls back to and it is not a placeholder: for an image or a
+ * volume, "done, 240×240×155 float32" *is* the useful view, and a richer one is
+ * an addition to it rather than a correction of it. */
+const BY_RESULT_TYPE = {
+  number: { component: ResultState, mono: true, editable: false, result: true },
+  string: { component: ResultState, mono: false, editable: false, result: true },
+  boolean: { component: ResultState, mono: true, editable: false, result: true },
+};
 
 const BY_KIND = {
   code: { component: TextEditor, mono: true, editable: true },
   note: { component: TextEditor, mono: false, editable: true },
-  result: { component: TextEditor, mono: true, editable: false },
+  result: { component: ResultState, mono: true, editable: false, result: true },
 };
 
 const FALLBACK = { component: TextEditor, mono: true, editable: true };

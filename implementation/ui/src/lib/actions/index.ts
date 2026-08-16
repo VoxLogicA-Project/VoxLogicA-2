@@ -41,6 +41,19 @@ export const card = {
   setViewMode: (id: string, view: string) => invoke("card.setViewMode", { id, view }),
 };
 
+/** Node states, asked of the server rather than read from the replica.
+ *
+ * The browser has its own `results` store and that is what a *card* reads --
+ * reactively, off the pushed events. These two exist for the other reader: code
+ * that wants an answer once, and code that wants to wait for one, without
+ * standing up a subscription to get it. Same vocabulary as the MCP server, so
+ * an agent and a script say the same thing. */
+export const resultsActions = {
+  get: (node: string) => invoke<Record<string, unknown>>("results.get", { node }),
+  wait: (node: string, state = "done", timeout = 60) =>
+    invoke<Record<string, unknown>>("results.wait", { node, state, timeout }),
+};
+
 /** The library: the projects and files this instance can open.
  *
  * One file is open at a time and the sidebar lists them all, so there are no

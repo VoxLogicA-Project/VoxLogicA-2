@@ -16,6 +16,7 @@
 
 import { app } from "./state.svelte.js";
 import { workspace } from "./store/workspace.svelte.ts";
+import { results } from "./store/results.svelte.ts";
 import { attach, settle } from "./actions/dispatch.svelte.ts";
 import { capture } from "./capture.ts";
 
@@ -61,6 +62,13 @@ export function connect() {
         break;
       case "workspace":
         workspace.receive(message.workspace);
+        // The bindings the document compiled to, so a card that names `mask`
+        // knows which node that is. It travels with the snapshot because it is
+        // a property of the text, and the text is what just changed.
+        results.receiveIndex(message.workspace?.nodes);
+        break;
+      case "result":
+        results.receive(message);
         break;
       case "actionResult":
         settle(message.id, message);
@@ -117,6 +125,11 @@ export function connect() {
     ws.onopen = () => {
       app.connection.status = "connected";
       attach(ws);
+      // Subscriptions are per connection, not per tab: the server that answers
+      // is not necessarily the one that was asked, so they are re-stated.
+      results.attach((message) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+      });
     };
     ws.onmessage = (event) => handle(JSON.parse(event.data));
     ws.onerror = () => ws.close();

@@ -1212,7 +1212,11 @@ def _reduce_program_internal(
             return
         binding = updated_env.try_find(command.identifier)
         if isinstance(binding, OperationVal):
-            declaration_bindings[command.identifier] = binding
+            # The id, not the value that holds it: the map is declared as
+            # `dict[str, NodeId]` and every caller wants a hash it can look up
+            # in the results store. An `OperationVal` here would be a type the
+            # annotation denies, discovered by whoever indexed it first.
+            declaration_bindings[command.identifier] = binding.operation_id
 
     with _PlanningProgress(work_plan):
         stdlib_path = Path(__file__).parent / "stdlib" / "stdlib.imgql"

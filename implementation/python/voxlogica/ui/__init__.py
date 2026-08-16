@@ -26,14 +26,63 @@ from .hub import Hub
 from .server import DEFAULT_PORT, UIServer, bind_loopback
 from .watcher import UIWatcher
 from .registration import announce, register_clients, withdraw
+from .results import Results
 from .workspace import Workspace
 
 __all__ = [
     "Bundle", "BundleError", "Bundler", "Hub", "UIServer", "UIWatcher", "UISession",
-    "Workspace", "DEFAULT_PORT", "start_ui",
+    "Workspace", "Results", "DEFAULT_PORT", "start_ui",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class _StoreHandle:
+    """The results store, opened when something first asks it a question.
+
+    `voxlogica serve` is "a UI for the store alone" and has no computation to
+    hand it one, so the UI opens its own. Lazily, because a workspace nobody has
+    put a result card on never needs it, and a UI must start on a machine whose
+    cache is missing or unreadable -- a database is a source of answers here, not
+    a precondition.
+
+    A second handle onto the same file is exactly what this store is built for:
+    it is WAL, and concurrent runs sharing one cache is the reason it exists.
+    """
+
+    def __init__(self, db_path: str | None) -> None:
+        self._db_path = db_path
+        self._store = None
+        self._tried = False
+
+    def _open(self):
+        if self._tried:
+            return self._store
+        self._tried = True
+        from voxlogica.storage import SQLiteResultsDatabase, get_storage
+
+        # A run in this process has already opened one; two handles would be two
+        # caches' worth of memory budget for one cache.
+        existing = get_storage()
+        if existing is not None:
+            self._store = existing
+            return self._store
+        try:
+            self._store = SQLiteResultsDatabase(db_path=self._db_path)
+        except Exception as exc:
+            logger.debug("no results store for the UI (%s)", exc)
+        return self._store
+
+    def has(self, node_id: str) -> bool:
+        store = self._open()
+        return bool(store is not None and store.has(node_id))
+
+    def value(self, node_id: str):
+        store = self._open()
+        if store is None:
+            return None
+        record = store.get_record(node_id)
+        return None if record is None else record.value
 
 
 class UISession:
@@ -41,12 +90,14 @@ class UISession:
 
     def __init__(self, server: UIServer, hub: Hub, bundler: Bundler,
                  watcher: UIWatcher | None, workspace: Workspace | None = None,
-                 record: Path | None = None) -> None:
+                 record: Path | None = None, results: Results | None = None) -> None:
         self.server = server
         self.hub = hub
         self.bundler = bundler
         self.watcher = watcher
         self.workspace = workspace
+        #: Node states. `results.observe` is what a run hands the engine.
+        self.results = results
         self._record = record
 
     @property
@@ -136,6 +187,7 @@ def start_ui(
     source_root: Path | None = None,
     program: Path | None = None,
     workspace_path: Path | None = None,
+    store_db: str | None = None,
 ) -> UISession:
     """Bring the UI up on the first free port at or after ``port``.
 
@@ -151,10 +203,18 @@ def start_ui(
     # `program` is what a run computes; `workspace_path` is the document being
     # edited. For `voxlogica run` they are the same file, which is the point of
     # a workspace that is a program.
-    workspace = Workspace(hub=hub, path=workspace_path or program)
+    # Node states, and the results store as their second source: a hash whose
+    # value is already cached is `done` before anything runs, which is the most
+    # useful thing this system does and would be a lie to render as `unknown`.
+    # Asked lazily and defensively -- a UI must not be what fails when a cache
+    # is unreadable.
+    store = _StoreHandle(store_db)
+    results = Results(hub, probe=store.has, fetch=store.value)
+    workspace = Workspace(hub=hub, path=workspace_path or program, results=results)
     sock = bind_loopback(port)
     server = UIServer(
-        hub=hub, bundler=bundler, sock=sock, instance_info=instance_info, workspace=workspace
+        hub=hub, bundler=bundler, sock=sock, instance_info=instance_info,
+        workspace=workspace, results=results,
     )
     server.start()
     workspace.publish()
@@ -174,4 +234,4 @@ def start_ui(
 
     if open_browser:
         webbrowser.open(server.url)
-    return UISession(server, hub, bundler, watcher, workspace, session_record)
+    return UISession(server, hub, bundler, watcher, workspace, session_record, results)

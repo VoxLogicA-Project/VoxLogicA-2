@@ -66,12 +66,14 @@ class UIServer:
         sock: socket.socket,
         instance_info: dict | None = None,
         workspace=None,
+        results=None,
     ) -> None:
         self._hub = hub
         self._bundler = bundler
         self._sock = sock
         self._instance_info = dict(instance_info or {})
         self._workspace = workspace
+        self._results = results
         self._thread: threading.Thread | None = None
         self._server = None
         self._ready = threading.Event()
@@ -103,6 +105,7 @@ class UIServer:
                 bundler=self._bundler,
                 describe=self._describe,
                 workspace=self._workspace,
+                results=self._results,
             ),
             loop="asyncio",
             http="h11",

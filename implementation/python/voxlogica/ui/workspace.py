@@ -25,8 +25,12 @@ logger = logging.getLogger(__name__)
 
 
 class Workspace:
-    def __init__(self, *, hub=None, path: str | Path | None = None) -> None:
+    def __init__(self, *, hub=None, path: str | Path | None = None, results=None) -> None:
         self._hub = hub
+        #: Where node states live. The workspace tells it which names the
+        #: document compiled to; it tells the workspace nothing back. Optional
+        #: so a workspace can be constructed in a test without one.
+        self.results = results
         self._lock = threading.RLock()
         self.path: Path | None = Path(path) if path else None
         text = self.path.read_text() if self.path and self.path.exists() else ""
@@ -107,7 +111,7 @@ class Workspace:
                 "dirty": self.document.dirty,
                 #: The file exactly as it would be written, so a client can show
                 #: the document itself without a second round trip.
-                "source": self.document.to_imgql(),
+                "source": (source := self.document.to_imgql()),
                 #: The library is the tab bar: every file there is, and which
                 #: one is open. Read from the filesystem each time, because the
                 #: filesystem is the only description of it.
@@ -117,9 +121,23 @@ class Workspace:
                 #: has a duplicate name for a few seconds and does not need a
                 #: dialogue about it, but does want to be told which two cards.
                 "issues": self._issues(),
+                #: Which node each `let` in this document compiled to. A result
+                #: card names a binding -- prose the user typed -- and only the
+                #: reducer can say which hash that is. It travels with the
+                #: snapshot because it is a property of the text, and the text
+                #: is what just changed.
+                "nodes": self._nodes(source),
                 "canUndo": bool(self._past),
                 "canRedo": bool(self._future),
             }
+
+    def _nodes(self, source: str) -> dict[str, str]:
+        from .results import bindings_for
+
+        bindings = bindings_for(source)
+        if self.results is not None:
+            self.results.set_bindings(bindings)
+        return bindings
 
     def _issues(self) -> dict[str, Any]:
         from . import analysis

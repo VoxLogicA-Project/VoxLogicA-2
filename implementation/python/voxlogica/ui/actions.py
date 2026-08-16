@@ -372,6 +372,37 @@ def _action(name, params, required, doc, apply, *, mutates=True):
     )
 
 
+def _node_id(workspace, params):
+    """A node, named the way a person names one.
+
+    A `let` name is what somebody types and what a card carries, so that is what
+    these actions take. A hash is accepted too and passes straight through --
+    an agent that already has one should not have to invent a name for it.
+    """
+    named = params["node"]
+    results = getattr(workspace, "results", None)
+    if results is None:
+        raise ValueError("this workspace has no results")
+    return results.resolve(named) or named
+
+
+def _results_get(workspace, params):
+    return workspace.results.state_of(_node_id(workspace, params))
+
+
+def _results_wait(workspace, params):
+    """The awaited half of R6, for an agent.
+
+    The alternative is an agent polling `results.get`, which is the same
+    question asked repeatedly with the answer arriving late by construction.
+    """
+    return workspace.results.wait(
+        _node_id(workspace, params),
+        state=params.get("state") or "done",
+        timeout=float(params.get("timeout") or 60.0),
+    )
+
+
 def _undo(workspace, _params):
     return workspace.undo()
 
@@ -425,6 +456,13 @@ ACTIONS: dict[str, Action] = {
                 "Switch what a card is: code, result or note.", _set_kind),
         _action("card.setViewMode", {"id": "string", "view": "string"}, ("id", "view"),
                 "Switch how a result card renders: its state or its content.", _set_view_mode),
+        _action("results.get", {"node": "string"}, ("node",),
+                "What is known about a node right now: its state, and its value "
+                "when there is a small one.", _results_get, mutates=False),
+        _action("results.wait", {"node": "string", "state": "string", "timeout": "number"},
+                ("node",),
+                "Block until a node reaches a state (default done), then return "
+                "it. Bounded: says so rather than hanging.", _results_wait, mutates=False),
         _action("view.goToPage", {"page": "int"}, ("page",),
                 "Show a page of the board.", _go_to_page, mutates=False),
         _action("view.setZoom", {"zoom": "number"}, ("zoom",),

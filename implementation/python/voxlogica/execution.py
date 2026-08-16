@@ -94,6 +94,7 @@ class ExecutionEngine:
         engine_debug: bool = False,
         dynamic_expansion: bool = True,
         threads_auto: str = "balanced",
+        observe=None,
     ):
         """Create an engine bound to one primitive registry and one strategy.
 
@@ -104,6 +105,11 @@ class ExecutionEngine:
         ``print``/``save`` goal instead. ``threads`` caps concurrent kernels for
         either (0 = auto-detect, see ``threads_auto``). See
         doc/dev/unified-computation-engine.md.
+
+        ``observe`` is an optional ``(node_id, state, **fields)`` callable told
+        about every node's transitions, so a UI can show a node computing while
+        it computes. Engine strategy only, and a spectator by construction --
+        see ``ComputationEngine._report``.
 
         ``threads_auto`` picks the auto-detection heuristic used when
         ``threads=0`` (engine strategy only): ``"p-cores"`` (default) corrects
@@ -118,7 +124,7 @@ class ExecutionEngine:
             from voxlogica.engine.strategy import EngineExecutionStrategy
             self._strategy = EngineExecutionStrategy(
                 self.registry, self.storage, threads=threads, debug=engine_debug,
-                threads_auto=threads_auto)
+                threads_auto=threads_auto, observe=observe)
         else:
             self._strategy = LazyExecutionStrategy(
                 self.registry, self.storage, threads=threads, dynamic_expansion=dynamic_expansion)
