@@ -27,7 +27,7 @@ voxlogica run program.imgql
 ```
 
 `voxlogica serve` is the same machinery with no computation attached — a UI for
-the store alone.
+the store alone. Bare `voxlogica` is that again, in a window of its own (§4a).
 
 ### Why in-process
 
@@ -52,6 +52,8 @@ about paying that cost honestly.
 | `watcher.py` | notice a UI source edit, rebuild, push a reload | restart, reconfigure, or stop anything |
 | `server.py` | bind a port, run uvicorn off the main thread | contain any routes |
 | `app.py` | the ASGI app: bundle, `/api/*`, `/ws` | own a lifecycle |
+| `window.py` | put a URL in an application window | know what is in it |
+| `results.py` | node states, and waiting for one | run anything |
 
 The split is by *what can go wrong*, not by size. Each module has one failure
 mode: a build that does not compile, a client that went away without saying so, a
@@ -126,6 +128,42 @@ reloads itself when a good build appears.
 
 ---
 
+## 4a. The window
+
+A workspace is an application, not a page: it owns the whole viewport, it has no
+use for a URL bar, and a tab lost among thirty others is a workspace you will not
+find again. So bare `voxlogica` opens a window, and the window it opens is the
+**operating system's own web view** — WKWebView on macOS, WebView2 on Windows,
+WebKitGTK on Linux — driven by `pywebview`.
+
+Nothing is bundled. The Electron-shaped answer carries a rendering engine the
+user already has, and a chromeless `chrome --app=URL` (which this was) is not an
+application: no dock icon, no menu bar, and no window whose closing *means*
+anything — its end had to be inferred from a heartbeat that stopped arriving.
+Now `run_native` returns when the user closes the window, and that is the
+application being over.
+
+Two constraints, neither negotiable, both tested in
+`tests/unit/test_ui_window.py`:
+
+- **The window owns the main thread.** Cocoa and GTK insist. `run_native` blocks
+  and is the last thing the process does, with the HTTP server already on a
+  thread of its own. This is exactly why `voxlogica run` does *not* get a native
+  window: its main thread is busy computing, which is the reason anyone opened
+  the UI. A run still gets the browser ladder below.
+- **It must not cost the engine its parallelism.** Importing a C extension that
+  has not declared free-threaded support re-enables the GIL process-wide — the
+  same rule that rules out `watchdog` in §4. PyObjC ≥ 12 declares it, and the
+  test asserts it in a fresh interpreter, because this one has already imported
+  SimpleITK and answered the question another way.
+
+Underneath, unchanged: a Chromium-family `--app` window, then the default
+browser. Both are worse windows rather than broken ones, which is what makes the
+native path a preference and not a dependency. `VOXLOGICA_NO_NATIVE_WINDOW=1`
+takes the ladder from the top.
+
+---
+
 ## 5. Lifetime: the run exits when nobody is looking
 
 At the end of a computation the process asks the hub whether anyone is watching,
@@ -168,8 +206,15 @@ Related constraints in the same area:
 - **Svelte 5 with runes.** `state.svelte.js` is a module-level `$state`
   singleton: a deep proxy, so the engine mutating `app.run.summary.nodes` is
   observed without a setter or an immutable-update dance. No store library.
-- **One WebSocket** (`connection.js`) carrying hello, heartbeat, engine events
-  and `ui-reload`. Handlers are bound to a local `const` socket, never to the
+- **Measure things that do not depend on what the measurement writes.** The
+  board once read its cell pitch off its own grid tracks and divided the zoom
+  back out — but the zoom is capped by what fits, and what fits is a question
+  about the pitch. The effect read the state it wrote, Svelte stopped it with
+  `effect_update_depth_exceeded`, and the board froze on load. It measures two
+  hidden rulers now. Any `$effect` that both writes state and observes the DOM
+  is worth this second look.
+- **One WebSocket** (`connection.js`) carrying hello, heartbeat, engine events,
+  result subscriptions and `ui-reload`. Handlers are bound to a local `const` socket, never to the
   shared variable, so a late event from a dead socket cannot close its successor.
 - **Sticky events are replayed on connect**, so a browser opened mid-run is not
   staring at an empty screen. `ui-reload` is deliberately *not* sticky: replaying
@@ -203,10 +248,18 @@ memoised-failure guard, and the asset route's path containment.
 `tests/unit/test_ui_design_system_discipline.py` covers the front-end rules
 described in [ui-design-system.md](ui-design-system.md).
 
+`tests/unit/test_ui_results.py` and `test_ui_results_transport.py` cover node
+states: which of the two sources answers, which way a state may move, and that a
+subscription is answered rather than merely recorded. The transport one exists
+because the bug it caught — a state's `type` shadowing the message's — showed up
+only as a card that never updated.
+
+`tests/unit/test_ui_window.py` covers the window's two constraints (§4a).
+
 Run them with the repo venv:
 
 ```bash
-.venv/bin/python -m pytest tests/unit/test_ui_server_lifecycle.py tests/unit/test_ui_design_system_discipline.py -q
+.venv/bin/python -m pytest tests/unit -k ui -q
 ```
 
 ---

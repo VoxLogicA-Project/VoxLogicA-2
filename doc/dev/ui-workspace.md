@@ -2,11 +2,12 @@
 
 Audience: anyone building the real UI on top of the bento board.
 
-**Status: built, except results.** The store, the document and its `.imgql`
-round-trip, the action manifest, the MCP server and its automatic registration
-with the MCP clients on the machine are all in the tree and tested. What is *not*
-built is section 4's `results` sub-store -- cards can be bound to a node, but
-nothing yet delivers that node's state or value. Section 9 tracks the rest.
+**Status: built.** The store, the document and its `.imgql` round-trip, the
+action manifest, the MCP server and its automatic registration with the MCP
+clients on the machine, and -- as of the `results` sub-store described in
+section 4 -- R6 as well: a card bound to a node shows that node's state and
+changes as it changes. Section 9 tracks what is left, which is now viewers
+rather than plumbing.
 
 The board this sits on is [ui-bento.md](ui-bento.md); how a browser ends up
 connected at all is [ui-architecture.md](ui-architecture.md); the visual rules are
@@ -120,27 +121,72 @@ that changes because someone scrolled is a diff nobody wants to review.
 ### Results, and waiting for one (R6)
 
 ```
-results.get(hash) -> { state: "unknown" | "pending" | "computing" | "done" | "failed",
-                       value?, error?, at? }
+results.get(hash) -> { hash,
+                       state: "unknown" | "pending" | "computing" | "done" | "failed",
+                       value?, valueType?, summary?, error?, at? }
 ```
 
-Two ways to read the same thing, because there are two kinds of reader:
+`voxlogica/ui/results.py` on the server, `src/lib/store/results.svelte.ts` in the
+browser. Two ways to read the same thing, because there are two kinds of reader:
 
 - **Reactive**, for a card: reading it in a component re-renders that component
   when it changes. This is what makes a result card a live view of a hash rather
   than a snapshot someone has to refresh.
 - **Awaited**, for an action, a test, or an agent:
-  `await results.wait(hash, { state: "done", timeout })`. One promise resolved
-  from the same event stream, so there is no polling and no second source of
-  truth.
+  `await results.wait(hash, { state: "done", timeout })` in the browser, the
+  `results.wait` action on the server and over MCP. One promise resolved from the
+  same event stream, so there is no polling and no second source of truth. Always
+  bounded: a wait with no bound is a hang with a friendlier name.
 
 Subscription is per hash and driven by what is on the board: a card that shows a
-hash subscribes it, and the server pushes updates for subscribed hashes only.
-Streaming the whole store to every client would make the cost of a large run a
-function of how many tabs are open.
+hash subscribes it (`ResultSubscription.svelte`, where "on screen" is a
+component's lifetime and the teardown is Svelte's), and the server pushes updates
+for subscribed hashes only. What that buys is that the traffic is a function of
+*how much is being looked at*, not of how big the run is -- a hundred-thousand
+node plan with four cards on screen is four subscriptions. It does not buy
+per-client filtering: the hub fans out to everyone, and pretending otherwise
+would mean a client id in the protocol that nothing reads.
+
+#### Two sources, and one of them is not the engine
+
+A node whose value is already in the results store is `done` before anything
+runs. That is the entire point of a content-addressed cache, and a cache hit
+rendered as `unknown` until somebody recomputed it would be the UI lying about
+the most useful thing the system does. So the store is asked first and the engine
+second; the engine only ever has *more recent* news, never contradictory news,
+because a hash is what its value is. States are ranked, so a `pending` arriving
+after a `computing` -- the scheduler does not serialise its bookkeeping against
+this module -- is dropped rather than making a card flicker backwards.
+
+#### What the engine reports
+
+`ComputationEngine(observe=...)` (`engine/core.py`), threaded through
+`ExecutionEngine` and `EngineExecutionStrategy`, and attached by `voxlogica run`
+when a UI is serving. It is a **spectator**: optional, not called at all when
+absent -- these sites are in the scheduler's dispatch path -- and an observer that
+raises is swallowed, because a UI that could abort a computation for the sake of
+a card has it the wrong way round. Fused cone members are reported too; reporting
+only the exit would leave every interior card at `pending` through the work that
+produces it.
+
+#### Names, and why the map travels with the text
+
+A card names a *binding* -- `mask`, as typed -- and only the reducer can say
+which node that compiled to. `reduce_program_with_bindings` answers that, and the
+map rides along in the workspace snapshot as `nodes`, because it is a property of
+the text and the text is what just changed. A document mid-edit does not parse
+and yields an empty map, which is the normal case rather than an error. A
+sixty-four-character hex string passes through as itself on both sides, so an
+agent that already has a hash need not invent a name for it.
+
+**A trap worth naming.** A state is spread into a message envelope whose own
+`type` says it is a result, so the kind of a *value* is called `valueType`. It
+was `type` once; the states arrived as messages of type `"number"`, nothing
+handled them, cards never updated, and nothing anywhere said why.
 
 **Open:** whether `wait` also resolves on a *value* predicate (`value > 0.9`) or
-only on state transitions. State-only is simpler and probably enough.
+only on state transitions. State-only is what is implemented, via an `until`
+predicate in the browser that nothing yet passes.
 
 ---
 
@@ -343,13 +389,18 @@ moved because something else moved it should probably say so.
    neither side can drift.~~
 5. ~~The MCP server over the manifest, with screenshots, and registration with
    the clients on the machine.~~
-6. **Polymorphic card content.** Code cards render their text today; clickable
-   names, notes as prose, and results are not there yet.
-7. **`results` and `results.wait`** (§4, R6) — per-hash subscriptions fed by the
-   engine. This is the one hard requirement not yet met.
-8. Creating and deleting cards from the UI: the actions exist, the affordances do
-   not.
-9. Undo (§6), moving a card between pages (ui-bento.md §7).
+6. ~~**`results` and `results.wait`** (§4, R6) — per-hash subscriptions fed by
+   the engine.~~
+7. ~~Creating and deleting cards from the UI.~~
+8. ~~Undo, moving a card between pages.~~
+9. **Viewers for the values themselves.** Every result renders through
+   `ResultState` today: its state, and its value only when that value is a small
+   scalar. An image, a volume, a table and a chart are four more rows in
+   `src/lib/viewers/index.js`, keyed on `valueType`. That table is the extension
+   point and it is deliberately nearly empty — inventing type names before there
+   are values to have them would be inventing the wrong ones.
+10. **Clickable names in code cards**: a name in the source as a handle on the
+    node it defines. The binding map that makes this possible now exists (§4).
 
 ### TypeScript, honestly
 
@@ -385,9 +436,18 @@ same availability.
 
 ## Saving
 
-Explicit, on ⌘/Ctrl+S. The document is a program in somebody's repository, and
-rewriting it every time a card is nudged would put noise in a diff they did not
-ask for. `dirty` is in the snapshot for anything that wants to show it.
+There is none, and that is the feature. A workspace is not a thing you save, any
+more than a drawer is: the file on disk **is** the document, and an unsaved change
+is only a change nobody has written down yet. `workspace.py` debounces the write,
+because a drag is dozens of changes and the file is one, and flushes on shutdown.
+
+This was an explicit ⌘S once, on the reasoning that the document is a program in
+somebody's repository and rewriting it on every nudge puts noise in a diff they
+did not ask for. That reasoning was right about the diff and wrong about the
+remedy: the answer to "I do not want every nudge in my history" is git, which the
+library's project-as-folder shape is built for, not a keystroke the user has to
+remember or lose work to. `dirty` is still in the snapshot for anything that
+wants to show it.
 
 ---
 
