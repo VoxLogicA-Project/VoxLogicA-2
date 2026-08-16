@@ -375,6 +375,8 @@
           ondelete={(path) => libraryActions.deleteFile(path)}
           ondeleteproject={(name) => libraryActions.deleteProject(name)}
           oncopy={(path, project) => libraryActions.copyFile(path, project)}
+          onaddlabel={(path, label) => libraryActions.addLabel(path, label)}
+          onremovelabel={(path, label) => libraryActions.removeLabel(path, label)}
           onpastecards={dropCardsInLibrary}
         />
         <!-- The handle is the edge itself, which is where everyone reaches for

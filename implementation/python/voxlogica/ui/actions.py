@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from . import guard
+from .document import parse as parse_document
 
 #: Parameter types are deliberately few: they have to survive JSON, a TypeScript
 #: signature and an MCP tool schema without a type system in the middle.
@@ -259,6 +261,60 @@ def _set_text(workspace, params):
     way. Undo covers it like any other change.
     """
     return workspace.set_text(params["text"])
+
+
+def _label(workspace, params, add: bool):
+    """Add or remove one label, in the file that carries it.
+
+    Written through the document, not by patching the line: parsing and writing
+    a `//@board` directive is something `document.py` already does losslessly,
+    and a second writer of that syntax would be a second chance to get the
+    quoting wrong.
+
+    The open file is edited in place so the board redraws; any other file is
+    read, changed and written -- labelling something is not opening it.
+    """
+    from . import labels as labelling
+
+    path = guard.permit(params["path"])
+    label = labelling.clean(params["label"])
+    if not label:
+        return False
+
+    if workspace.path is not None and Path(path) == workspace.path:
+        document = workspace.document
+        current = labelling.parse(document.to_imgql())
+        wanted = _with(current, label, add)
+        if wanted == current:
+            return False
+        document.set_board(labels=",".join(wanted) or None)
+    else:
+        text = Path(path).read_text()
+        current = labelling.parse(text)
+        wanted = _with(current, label, add)
+        if wanted == current:
+            return False
+        document = parse_document(text)
+        document.set_board(labels=",".join(wanted) or None)
+        Path(path).write_text(document.to_imgql())
+        labelling.forget(Path(path))
+    return True
+
+
+def _with(current: list[str], label: str, add: bool) -> list[str]:
+    """The label list this operation wants. Order is the order they were given,
+    because a label list that reshuffled itself would put noise in a diff."""
+    if add:
+        return current if label in current else [*current, label]
+    return [item for item in current if item != label]
+
+
+def _add_label(workspace, params):
+    return _label(workspace, params, add=True)
+
+
+def _remove_label(workspace, params):
+    return _label(workspace, params, add=False)
 
 
 def _library_open(workspace, params):
@@ -579,6 +635,12 @@ ACTIONS: dict[str, Action] = {
                 "Select nothing, one card (id) or several (ids).", _select, mutates=False),
         _action("view.focus", {"id": "string"}, (),
                 "Show one card alone, or -- with no id -- the whole board.", _focus, mutates=False),
+        _action("library.addLabel", {"path": "string", "label": "string"},
+                ("path", "label"),
+                "Give a file a label. It is written into the file itself, so it "
+                "travels with it.", _add_label),
+        _action("library.removeLabel", {"path": "string", "label": "string"},
+                ("path", "label"), "Take a label off a file.", _remove_label),
         _action("library.open", {"path": "string"}, ("path",),
                 "Open a file from the library; the pane shows one at a time.",
                 _library_open, mutates=False),

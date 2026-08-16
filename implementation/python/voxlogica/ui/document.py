@@ -57,6 +57,7 @@ _KEY_ORDER = (
     "from",
     "cols",
     "rows",
+    "labels",
 )
 
 _GEOMETRY = ("x", "y", "w", "h", "page")
@@ -95,7 +96,7 @@ def _comment(text: str) -> str:
 #: Always written quoted, whatever they contain. A title is prose -- somebody
 #: will type a space into it within the hour -- and a field that is only
 #: sometimes quoted teaches every reader of the file the wrong rule.
-_ALWAYS_QUOTED = ("title",)
+_ALWAYS_QUOTED = ("title", "labels")
 
 
 def _escape(value: str) -> str:
@@ -376,6 +377,24 @@ class Document:
                 parts.append("\n")
             parts.append(segment.body)
         return "".join(parts)
+
+    def set_board(self, **attrs: Any) -> bool:
+        """Set attributes on the `//@board` line, making it if there is none.
+
+        A file with no directives gains them here, exactly as it does when a
+        card is first moved: labelling a plain program is an edit like any
+        other, and the format's whole promise is that adding a comment leaves it
+        a valid program.
+        """
+        if not self.annotated:
+            self._annotate()
+        for segment in self.segments:
+            if segment.directive is not None and segment.directive.kind == "board":
+                for key, value in attrs.items():
+                    segment.directive.set(key, value)
+                self.dirty = True
+                return True
+        return False
 
     def _annotate(self) -> None:
         board = Directive("board", {"cols": "12", "rows": "8"}, "", rewritten=True)

@@ -20,6 +20,9 @@
     onnewfile,
     onnewproject,
     onaddfolder,
+    /** `(path, label)` — a label was added to a file, or taken off it. */
+    onaddlabel,
+    onremovelabel,
     onforgetfolder,
     onmove,
     onrenamefile,
@@ -51,6 +54,34 @@
    * Every one takes a modifier -- the bare letters belong to whoever is typing
    * into a card, and that is the rule the whole shortcut scheme rests on.
    */
+  /** Labelling a file, as a rename is: in place, in the row, with the keyboard
+   * already in it. A dialogue for one word would be a dialogue nobody finishes.
+   *
+   * Typing a label that is already there takes it off again. One gesture for
+   * both directions, because "label this" and "unlabel this" are the same
+   * thought arriving twice, and a separate remove would need its own affordance
+   * on a row that has no room for one.
+   */
+  let labelling = $state(null);
+  let labelDraft = $state("");
+
+  function startLabel(file) {
+    labelling = file.path;
+    labelDraft = "";
+  }
+
+  function commitLabel() {
+    const path = labelling;
+    const text = labelDraft.trim();
+    labelling = null;
+    labelDraft = "";
+    if (!path || !text) return;
+    const file = library.files.find((entry) => entry.path === path);
+    const has = (file?.labels ?? []).some((tag) => tag.toLowerCase() === text.toLowerCase());
+    if (has) onremovelabel?.(path, text);
+    else onaddlabel?.(path, text);
+  }
+
   /** Which project the open file is in, if any. */
   function openProject() {
     return library.files.find((file) => file.open)?.project ?? null;
@@ -78,6 +109,12 @@
       // of the library. Where you are is the only answer that needs no dialogue.
       event.preventDefault();
       onnewfile?.(openProject() ?? undefined);
+    } else if (key === ";") {
+      // The open file, labelled. Semicolon because every letter that could
+      // stand for "label" is spoken for, and it is next to the home row.
+      event.preventDefault();
+      const open = library.files.find((file) => file.open);
+      if (open) startLabel(open);
     } else if (key === "e") {
       // The open file, in the file manager. On the window because the sidebar
       // rarely has the keyboard, and the row-level chord covers the other case.
@@ -155,6 +192,26 @@
 
   const needle = $derived(filter.trim().toLowerCase());
 
+  /** What the filter box means, which is two things.
+   *
+   * `label:draft` asks about labels; anything else asks about names. Prefixed
+   * rather than a second box, because a filter is one thought -- "the drafts",
+   * "the brats ones" -- and splitting it into two fields makes the user say
+   * which kind of thought they were having before they have had it. */
+  const wanted = $derived(
+    needle.startsWith("label:")
+      ? { kind: "label", text: needle.slice(6).trim() }
+      : { kind: "name", text: needle },
+  );
+
+  function selects(file) {
+    if (!wanted.text) return true;
+    if (wanted.kind === "label") {
+      return (file.labels ?? []).some((label) => label.toLowerCase().startsWith(wanted.text));
+    }
+    return file.name.toLowerCase().includes(wanted.text);
+  }
+
   function sorted(files) {
     const rows = [...files];
     if (order === "recent") rows.sort((a, b) => b.modified - a.modified);
@@ -165,7 +222,7 @@
   function within(project) {
     return sorted(
       library.files.filter(
-        (file) => file.project === project && (!needle || file.name.toLowerCase().includes(needle)),
+        (file) => file.project === project && selects(file),
       ),
     );
   }
@@ -176,7 +233,7 @@
     library.projects.filter((project) => !needle || within(project.name).length > 0),
   );
   const matches = $derived(
-    needle ? library.files.filter((file) => file.name.toLowerCase().includes(needle)).length : null,
+    needle ? library.files.filter(selects).length : null,
   );
 
   /** Every visible row, in the order they appear: what shift-click walks. */
@@ -286,6 +343,13 @@
         onselect: () => startRename("file", file.path, file.name),
       },
       { label: "Show in folder", hint: "mod+E", onselect: () => onreveal?.(file.path) },
+      { separator: true },
+      { label: "Add a label…", hint: "mod+;", onselect: () => startLabel(file) },
+      ...(file.labels ?? []).map((tag) => ({
+        label: `Remove “${tag}”`,
+        hint: "mod+;",
+        onselect: () => onremovelabel?.(file.path, tag),
+      })),
       { separator: true },
       ...(file.project === null
         ? []
@@ -470,6 +534,30 @@
         >
           {@render fileIcon()}
           <span class="label">{file.name}</span>
+          {#if labelling === file.path}
+            <!-- svelte-ignore a11y_autofocus -->
+            <input
+              class="tagfield"
+              autofocus
+              bind:value={labelDraft}
+              placeholder="label"
+              aria-label="Label for {file.name}"
+              spellcheck="false"
+              onclick={(event) => event.stopPropagation()}
+              onkeydown={(event) => {
+                event.stopPropagation();
+                if (event.key === "Enter") commitLabel();
+                if (event.key === "Escape") labelling = null;
+              }}
+              onblur={commitLabel}
+            />
+          {:else if file.labels?.length}
+            <!-- After the name and never instead of it: a label is how you find
+                 a file again, not what the file is called. -->
+            <span class="labels">
+              {#each file.labels as tag (tag)}<span class="tag">{tag}</span>{/each}
+            </span>
+          {/if}
         </button>
       {/if}
     </ContextMenu>
@@ -484,8 +572,8 @@
       bind:this={filterField}
       class="filter"
       type="search"
-      placeholder="Filter"
-      aria-label="Filter files by name"
+      placeholder="Filter, or label:…"
+      aria-label="Filter files by name, or by label: with a label: prefix"
       bind:value={filter}
       onkeydown={(event) => {
         event.stopPropagation();
@@ -668,6 +756,36 @@
     display: flex;
     align-items: center;
     gap: var(--space-1);
+  }
+
+  /* After the name, quiet, and never in place of it: a label is how you find a
+     file again, not what it is called. */
+  .labels {
+    display: flex;
+    gap: var(--space-1);
+    margin-left: auto;
+    overflow: hidden;
+  }
+
+  .tag {
+    padding: 0 var(--space-1);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-sunken);
+    color: var(--color-text-muted);
+    font-size: var(--text-2xs);
+    white-space: nowrap;
+  }
+
+  .tagfield {
+    width: 6rem;
+    margin-left: auto;
+    padding: 0 var(--space-1);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-sunken);
+    color: var(--color-text);
+    font-size: var(--text-2xs);
+    outline: none;
   }
 
   .filter {

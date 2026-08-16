@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import home
+from . import home, labels
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +121,10 @@ class Entry:
             "project": self.project,
             "open": open_path is not None and self.path == open_path,
             "modified": self.path.stat().st_mtime if self.path.exists() else 0,
+            #: Read from the file's own head, memoised on its mtime and size.
+            #: A label belongs to the file that carries it, so it survives a
+            #: `git mv` this UI never saw. See labels.py.
+            "labels": labels.of(self.path),
         }
 
 

@@ -37,6 +37,7 @@ export const SHORTCUTS = [
   { keys: "mod+U", does: "Sort the file list by name or by last changed." },
   { keys: "mod+N", does: "New file, where the open one lives." },
   { keys: "mod+E", does: "Show a file in the folder it is in." },
+  { keys: "mod+;", does: "Label the open file. The same label again takes it off." },
   { keys: "shift+mod+P", does: "New project." },
   { keys: "shift+mod+O", does: "Add a folder you already have." },
   { keys: "?", does: "This list." },

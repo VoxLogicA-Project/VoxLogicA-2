@@ -89,6 +89,11 @@ export const library = {
    *
    * The same .imgql `board.copyCards` produces, through the same merge, so a
    * card dragged into a file and a card pasted into it land identically. */
+  /** A label, written into the file itself so it travels with it. */
+  addLabel: (path: string, label: string) =>
+    invoke<boolean>("library.addLabel", { path, label }),
+  removeLabel: (path: string, label: string) =>
+    invoke<boolean>("library.removeLabel", { path, label }),
   pasteCards: (path: string, text: string) =>
     invoke<string[]>("library.pasteCards", { path, text }),
 };
