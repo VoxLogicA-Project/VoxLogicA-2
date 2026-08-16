@@ -31,5 +31,13 @@ export const SHORTCUTS = [
   { keys: "mod+B", does: "Hide or show the file list." },
   { keys: "mod+X / mod+C / mod+V", does: "Cut, copy and paste cards — or files, in the list." },
   { keys: "mod+L", does: "How close to stand: the program, both, or just the value." },
+  { keys: "mod+R", does: "New result card from the selection." },
+  { keys: "mod+→ / mod+←", does: "Send the selection to the next or previous page." },
+  { keys: "mod+K", does: "Filter the file list." },
+  { keys: "mod+U", does: "Sort the file list by name or by last changed." },
+  { keys: "mod+N", does: "New file, where the open one lives." },
+  { keys: "mod+E", does: "Show a file in the folder it is in." },
+  { keys: "shift+mod+P", does: "New project." },
+  { keys: "shift+mod+O", does: "Add a folder you already have." },
   { keys: "?", does: "This list." },
 ];

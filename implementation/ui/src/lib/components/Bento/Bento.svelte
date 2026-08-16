@@ -712,6 +712,19 @@
     } else if (key === "d" && selection.length) {
       event.preventDefault();
       for (const card of selected()) onduplicate?.(card.id, copySpot(card));
+    } else if (key === "r" && selection.length) {
+      // A card showing what the selected one computes. R for result, and the
+      // same act the card menu calls "New result from this".
+      event.preventDefault();
+      for (const card of selected()) onderive?.(card.id, copySpot(card));
+    } else if ((event.key === "ArrowRight" || event.key === "ArrowLeft") && selection.length) {
+      // The pages are already left and right along the pager; sending a card to
+      // one is the same direction with the modifier held.
+      event.preventDefault();
+      const step = event.key === "ArrowRight" ? 1 : -1;
+      for (const card of selected()) {
+        onsendtopage?.(card.id, Math.max(0, card.page + step));
+      }
     }
   }
 

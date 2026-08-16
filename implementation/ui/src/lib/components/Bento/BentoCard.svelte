@@ -82,13 +82,13 @@
     [
       onmaximize && { label: "Maximize", hint: "double-click", onselect: onmaximize },
       onrename && { label: "Rename", hint: "double-click the name", onselect: startRename },
-      onduplicate && { label: "Duplicate", onselect: onduplicate },
+      onduplicate && { label: "Duplicate", hint: "mod+D", onselect: onduplicate },
       oncopy && { label: "Copy", hint: "mod+C", onselect: oncopy },
       oncut && { label: "Cut", hint: "mod+X", onselect: oncut },
       onderive &&
         card.kind === "code" && {
           label: "New result from this",
-          hint: "shows a value this card computes",
+          hint: "mod+R",
           onselect: onderive,
         },
       onfocus && {
@@ -99,15 +99,22 @@
       onsendtopage && { separator: true },
       onsendtopage && {
         label: "Send to next page",
+        hint: "mod+→",
         onselect: () => onsendtopage(card.page + 1),
       },
       onsendtopage && {
         label: "Send to previous page",
+        hint: "mod+←",
         disabled: card.page === 0,
         onselect: () => onsendtopage(card.page - 1),
       },
       onremove && { separator: true },
-      onremove && { label: "Remove card", danger: true, onselect: onremove },
+      onremove && {
+        label: "Remove card",
+        hint: "mod+Backspace",
+        danger: true,
+        onselect: onremove,
+      },
     ].filter(Boolean),
   );
 

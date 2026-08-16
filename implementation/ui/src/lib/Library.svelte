@@ -42,6 +42,50 @@
 
   let filter = $state("");
   let order = $state("name");
+  let filterField = $state(null);
+
+  /** The list's own chords, so nothing here is reachable only by menu.
+   *
+   * On the window rather than on the sidebar, because the sidebar is rarely
+   * what has the keyboard: somebody looking for a file is looking at the board.
+   * Every one takes a modifier -- the bare letters belong to whoever is typing
+   * into a card, and that is the rule the whole shortcut scheme rests on.
+   */
+  /** Which project the open file is in, if any. */
+  function openProject() {
+    return library.files.find((file) => file.open)?.project ?? null;
+  }
+
+  function onWindowKeydown(event) {
+    if (!(event.metaKey || event.ctrlKey)) return;
+    const key = event.key.toLowerCase();
+    if (key === "p" && event.shiftKey) {
+      event.preventDefault();
+      onnewproject?.();
+    } else if (key === "o" && event.shiftKey) {
+      event.preventDefault();
+      onaddfolder?.();
+    } else if (key === "k") {
+      // The filter, which is the one thing here somebody reaches for mid-thought.
+      event.preventDefault();
+      filterField?.focus();
+      filterField?.select();
+    } else if (key === "u") {
+      event.preventDefault();
+      order = order === "name" ? "recent" : "name";
+    } else if (key === "n") {
+      // A new file where the open one lives: the project it is in, or the top
+      // of the library. Where you are is the only answer that needs no dialogue.
+      event.preventDefault();
+      onnewfile?.(openProject() ?? undefined);
+    } else if (key === "e") {
+      // The open file, in the file manager. On the window because the sidebar
+      // rarely has the keyboard, and the row-level chord covers the other case.
+      event.preventDefault();
+      const open = library.files.find((file) => file.open);
+      if (open) onreveal?.(open.path);
+    }
+  }
   /** Projects the user has folded away, by name. */
   let folded = $state(new Set());
   /** `{kind: "file" | "project", key}` while something is being renamed. */
@@ -241,7 +285,7 @@
         disabled: paths.length > 1,
         onselect: () => startRename("file", file.path, file.name),
       },
-      { label: "Show in folder", onselect: () => onreveal?.(file.path) },
+      { label: "Show in folder", hint: "mod+E", onselect: () => onreveal?.(file.path) },
       { separator: true },
       ...(file.project === null
         ? []
@@ -283,14 +327,14 @@
         hint: project.linked ? "linked folders keep their own name" : "double-click",
         onselect: () => startRename("project", project.name, project.name),
       },
-      { label: "New file here", onselect: () => onnewfile?.(project.name) },
+      { label: "New file here", hint: "mod+N", onselect: () => onnewfile?.(project.name) },
       {
         label: buffer === null ? "Paste here" : `Paste ${buffer.paths.length} here`,
         hint: "mod+V",
         disabled: buffer === null,
         onselect: () => paste(project.name),
       },
-      { label: "Show in folder", onselect: () => onreveal?.(project.path) },
+      { label: "Show in folder", hint: "mod+E", onselect: () => onreveal?.(project.path) },
       { separator: true },
       ...(project.linked
         ? [
@@ -403,6 +447,10 @@
               event.preventDefault();
               startRename("file", file.path, file.name);
             }
+            if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "e") {
+              event.preventDefault();
+              onreveal?.(file.path);
+            }
             if (event.key === "Delete" || event.key === "Backspace") {
               event.preventDefault();
               arm(scope(file));
@@ -428,9 +476,12 @@
   </li>
 {/snippet}
 
+<svelte:window onkeydown={onWindowKeydown} />
+
 <nav class="library" aria-label="Library">
   <header>
     <input
+      bind:this={filterField}
       class="filter"
       type="search"
       placeholder="Filter"
@@ -452,7 +503,7 @@
       <Button
         tone="quiet"
         size="sm"
-        title="Sorted by {ORDERS.find((entry) => entry.id === order)?.label} — right-click to change"
+        title="Sorted by {ORDERS.find((entry) => entry.id === order)?.label} — mod+U, or right-click to choose"
         onclick={() => (order = order === "name" ? "recent" : "name")}
       >
         ⇅
@@ -594,8 +645,8 @@
   </div>
 
   <footer>
-    <Button tone="quiet" size="sm" onclick={() => onnewproject?.()}>New project</Button>
-    <Button tone="quiet" size="sm" title="Show a folder you already have" onclick={() => onaddfolder?.()}>
+    <Button tone="quiet" size="sm" title="New project (shift+mod+P)" onclick={() => onnewproject?.()}>New project</Button>
+    <Button tone="quiet" size="sm" title="Show a folder you already have (shift+mod+O)" onclick={() => onaddfolder?.()}>
       Add folder…
     </Button>
   </footer>
