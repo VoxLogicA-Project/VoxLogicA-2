@@ -49,6 +49,35 @@ def test_native_backend_does_not_re_enable_the_gil():
     )
 
 
+def test_the_inspector_stays_shut_unless_it_is_asked_for(monkeypatch):
+    """It was tied to "is this a source checkout", which meant everybody working
+    on VoxLogicA got a devtools pane in their face at every startup -- the
+    inspector deciding when it was wanted rather than the person."""
+    started: list[dict] = []
+
+    class FakeWebview:
+        @staticmethod
+        def create_window(*_args, **_kwargs):
+            class W:
+                events = type("E", (), {"closed": []})()
+
+            return W()
+
+        @staticmethod
+        def start(**kwargs):
+            started.append(kwargs)
+
+    monkeypatch.setitem(sys.modules, "webview", FakeWebview)
+
+    monkeypatch.delenv("VOXLOGICA_DEVTOOLS", raising=False)
+    window.run_native("http://127.0.0.1:10001/")
+    assert started[-1]["debug"] is False
+
+    monkeypatch.setenv("VOXLOGICA_DEVTOOLS", "1")
+    window.run_native("http://127.0.0.1:10001/")
+    assert started[-1]["debug"] is True
+
+
 def test_native_can_be_switched_off(monkeypatch):
     """The escape hatch is checked before anything is imported."""
     monkeypatch.setenv("VOXLOGICA_NO_NATIVE_WINDOW", "1")

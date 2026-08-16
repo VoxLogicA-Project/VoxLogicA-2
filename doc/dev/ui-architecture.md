@@ -157,6 +157,11 @@ Two constraints, neither negotiable, both tested in
   test asserts it in a fresh interpreter, because this one has already imported
   SimpleITK and answered the question another way.
 
+The inspector stays shut unless `VOXLOGICA_DEVTOOLS` says otherwise. It was
+tied to "is this a source checkout", which meant everybody working on VoxLogicA
+got a devtools pane in their face at every startup -- the inspector deciding
+when it was wanted rather than the person, and a right-click away in any case.
+
 Underneath, unchanged: a Chromium-family `--app` window, then the default
 browser. Both are worse windows rather than broken ones, which is what makes the
 native path a preference and not a dependency. `VOXLOGICA_NO_NATIVE_WINDOW=1`

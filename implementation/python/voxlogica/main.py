@@ -430,7 +430,6 @@ def open_command(args: argparse.Namespace) -> int:
         try:
             window.run_native(
                 session.url,
-                devtools=session.bundler.is_dev,
                 storage=home.window_state_path(),
             )
         finally:

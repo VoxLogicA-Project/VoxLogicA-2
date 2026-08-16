@@ -72,6 +72,15 @@ _COMMANDS = (
 #: and for the user on the far end of a `ssh -X` who wants the browser they have.
 _DISABLE = "VOXLOGICA_NO_NATIVE_WINDOW"
 
+#: Set to open the window with the inspector already showing.
+#:
+#: Off by default, and deliberately not tied to whether this is a source
+#: checkout. It was, and it meant that everybody working on VoxLogicA got a
+#: devtools pane in their face every time the application started -- which is
+#: the inspector deciding when it is wanted rather than the person. Opening it
+#: is one right-click away in every web view that has one.
+_DEVTOOLS = "VOXLOGICA_DEVTOOLS"
+
 
 def _candidates() -> list[str]:
     found: list[str] = []
@@ -124,7 +133,7 @@ def run_native(
     title: str = "VoxLogicA",
     size: tuple[int, int] = (1280, 860),
     minimum: tuple[int, int] = (720, 480),
-    devtools: bool = False,
+    devtools: bool | None = None,
     storage: Path | None = None,
     on_closed: Callable[[], None] | None = None,
 ) -> None:
@@ -135,6 +144,9 @@ def run_native(
     inferring an absence from a heartbeat that stopped.
     """
     import webview
+
+    if devtools is None:
+        devtools = bool(os.environ.get(_DEVTOOLS))
 
     window = webview.create_window(
         title,
