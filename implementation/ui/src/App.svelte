@@ -263,6 +263,31 @@
     }
   }
 
+  /** The cards with something queued or computing right now.
+   *
+   * Derived, never assigned: a card is running because one of the nodes it is
+   * about is, and that is a fact about the results store rather than a flag
+   * somebody has to remember to clear. Press Run on B and A lights up too --
+   * nothing arranges that, B's dependencies simply *are* A's bindings, and both
+   * resolve to the same hashes.
+   */
+  const running = $derived(
+    workspace.cards
+      .filter((card) =>
+        nodesOf(card).some((node) => {
+          const state = results.get(results.hashFor(node)).state;
+          return state === "pending" || state === "computing";
+        }),
+      )
+      .map((card) => card.id),
+  );
+
+  /** Every name a card is about: what it declares, plus what it is bound to. */
+  function nodesOf(card) {
+    const names = card.kind === "code" ? bindingsIn(card.source) : [];
+    return card.node ? [...names, card.node] : names;
+  }
+
   /** The bindings a program card declares, in order.
    *
    * The provisional way to find what a card produces: `let <name> =`. When the
@@ -388,6 +413,8 @@
       oncopycards={() => copyCards()}
       oncutcards={() => copyCards({ cut: true })}
       onpastecards={() => pasteCards()}
+      onrun={(id) => cardActions.run(id)}
+      {running}
       onactivate={(id) => (editing = id)}
       onsendtopage={(id, page) => board.setPage(id, page)}
       onadd={(kind, x, y, w, h) =>

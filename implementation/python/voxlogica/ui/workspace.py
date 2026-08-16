@@ -25,12 +25,16 @@ logger = logging.getLogger(__name__)
 
 
 class Workspace:
-    def __init__(self, *, hub=None, path: str | Path | None = None, results=None) -> None:
+    def __init__(self, *, hub=None, path: str | Path | None = None, results=None,
+                 compute=None) -> None:
         self._hub = hub
         #: Where node states live. The workspace tells it which names the
         #: document compiled to; it tells the workspace nothing back. Optional
         #: so a workspace can be constructed in a test without one.
         self.results = results
+        #: Where a demand goes when a card asks to be computed. Optional for the
+        #: same reason `results` is: a workspace in a test runs nothing.
+        self.compute = compute
         self._lock = threading.RLock()
         self.path: Path | None = Path(path) if path else None
         text = self.path.read_text() if self.path and self.path.exists() else ""

@@ -26,12 +26,13 @@ from .hub import Hub
 from .server import DEFAULT_PORT, UIServer, bind_loopback
 from .watcher import UIWatcher
 from .registration import announce, register_clients, withdraw
+from .compute import Compute
 from .results import Results
 from .workspace import Workspace
 
 __all__ = [
     "Bundle", "BundleError", "Bundler", "Hub", "UIServer", "UIWatcher", "UISession",
-    "Workspace", "Results", "DEFAULT_PORT", "start_ui",
+    "Workspace", "Results", "Compute", "DEFAULT_PORT", "start_ui",
 ]
 
 logger = logging.getLogger(__name__)
@@ -210,7 +211,9 @@ def start_ui(
     # is unreadable.
     store = _StoreHandle(store_db)
     results = Results(hub, probe=store.has, fetch=store.value)
-    workspace = Workspace(hub=hub, path=workspace_path or program, results=results)
+    compute = Compute(hub, results)
+    workspace = Workspace(hub=hub, path=workspace_path or program, results=results,
+                          compute=compute)
     sock = bind_loopback(port)
     server = UIServer(
         hub=hub, bundler=bundler, sock=sock, instance_info=instance_info,

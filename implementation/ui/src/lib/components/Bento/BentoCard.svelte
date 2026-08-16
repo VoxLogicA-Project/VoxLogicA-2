@@ -58,6 +58,10 @@
      * drag is `event.preventDefault()` inside it, as it is anywhere else. */
     ondragout,
     onselect,
+    /** The card was asked to compute what it is about. Absent = no button. */
+    onrun,
+    /** True while anything this card is about is queued or computing. */
+    running = false,
     selected = false,
     /** True when this card is the one being shown alone. */
     focused = false,
@@ -380,6 +384,7 @@
   <article
     data-card-id={card.id}
     class="card"
+    class:running
     class:dragging
     class:invalid
     class:focused
@@ -451,6 +456,32 @@
         >
           {card.title}
         </span>
+      {/if}
+
+      {#if onrun}
+        <!-- Run belongs to the card, not to the window: a run is a demand for
+             what *this* card is about. Dependencies come along because they
+             must, which is the engine's business and not something anyone
+             should have to say. -->
+        <button
+          type="button"
+          class="run"
+          class:working={running}
+          aria-label="Compute {card.title}"
+          title="Compute this card"
+          onpointerdown={(event) => event.stopPropagation()}
+          ondblclick={(event) => event.stopPropagation()}
+          onclick={(event) => {
+            event.stopPropagation();
+            onrun?.();
+          }}
+        >
+          <!-- A triangle, drawn rather than typed: a glyph would inherit the
+               text metrics and sit off-centre at every size but one. -->
+          <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+            <path d="M3.5 2.2 L9.6 6 L3.5 9.8 Z" />
+          </svg>
+        </button>
       {/if}
     </header>
 
@@ -578,6 +609,65 @@
 
   .card.dragging header {
     cursor: grabbing;
+  }
+
+  /* Present but quiet, and pushed to the far end by the title's own growth.
+   * A run button that announced itself on every card would make a board of
+   * twenty cards look like a control panel. */
+  .run {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    margin-left: auto;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--color-text-subtle);
+    cursor: pointer;
+    opacity: 0;
+    transition:
+      opacity var(--motion-fast) var(--easing-standard),
+      color var(--motion-fast) var(--easing-standard);
+  }
+
+  .run svg {
+    width: 0.75rem;
+    height: 0.75rem;
+    fill: currentColor;
+  }
+
+  /* Revealed by approach, and by the keyboard -- which is the part that is
+   * usually forgotten and the reason `:focus-visible` is here at all. */
+  .card:hover .run,
+  .card.selected .run,
+  .run:focus-visible {
+    opacity: 1;
+  }
+
+  .run:hover {
+    color: var(--color-text);
+    background: var(--color-surface-sunken);
+  }
+
+  /* While it is working the button stops being a control and becomes the
+   * card's own status: always visible, breathing on the accent. */
+  .run.working {
+    opacity: 1;
+    color: var(--color-accent);
+    animation: pulse var(--motion-pulse) var(--easing-standard) infinite;
+  }
+
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 0.45;
+    }
+    50% {
+      opacity: 1;
+    }
   }
 
   .rename {

@@ -77,6 +77,14 @@
     onhelp = undefined,
     /** `(id)` — Enter on a selected card: open whatever it holds. */
     onactivate = undefined,
+    /** `(id)` — a card asked to compute what it is about. */
+    onrun = undefined,
+    /** Ids of the cards with something queued or computing right now.
+     *
+     * The board is told, rather than working it out: what a card is about is a
+     * question about node states, and a component that renders a lattice has no
+     * business knowing what a hash is. */
+    running = [],
     /** Cut, copy and paste of whole cards. The board only asks. */
     oncopycards = undefined,
     oncutcards = undefined,
@@ -1004,6 +1012,8 @@
             oncopy={oncopycards}
             oncut={oncutcards}
             ondragout={cardsText ? (event) => dragOut(card, event) : undefined}
+            onrun={onrun ? () => onrun(card.id) : undefined}
+            running={running.includes(card.id)}
             onderive={onderive ? () => onderive(card.id, copySpot(card)) : undefined}
             onmaximize={() => maximize(card)}
             onrename={onrename ? (title) => onrename(card.id, title) : undefined}

@@ -396,7 +396,8 @@ moved because something else moved it should probably say so.
 7. ~~Creating and deleting cards from the UI.~~
 8. ~~Undo, moving a card between pages.~~
 9. **Viewers for the values themselves**, and the card anatomy they sit in --
-   designed in [ui-cards.md](ui-cards.md), which supersedes the sketch below. Every result renders through
+   designed in [ui-cards.md](ui-cards.md), which supersedes the sketch that
+   follows. Every result renders through
    `ResultState` today: its state, and its value only when that value is a small
    scalar. An image, a volume, a table and a chart are four more rows in
    `src/lib/viewers/index.js`, keyed on `valueType`. That table is the extension

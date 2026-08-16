@@ -416,6 +416,43 @@ def _node_id(workspace, params):
     return results.resolve(named) or named
 
 
+def _run_card(workspace, params):
+    """Ask for everything a card is about.
+
+    Everything it *defines*, not only what it focuses on: a fragment's earlier
+    bindings are the working that leads to its last one, and a card whose middle
+    steps stayed `unknown` while its answer went `done` would be showing a
+    computation that did not happen the way it happened.
+
+    Dependencies are not listed here and never need to be. They are other
+    cards' bindings, which are the same hashes, and the engine reaches them
+    because the goals it was given need them.
+    """
+    card = next((entry for entry in workspace.document.cards
+                 if entry.get("id") == params["id"]), None)
+    if card is None:
+        raise ValueError(f"no card {params['id']!r}")
+    if workspace.compute is None or workspace.results is None:
+        raise ValueError("this workspace cannot run anything")
+
+    source = workspace.document.to_imgql()
+    bindings = workspace.results.bindings
+    # A card bound to a node by hash asks for that; a code card asks for the
+    # names it declares. Both end as node ids, which is all a demand is.
+    wanted = [bindings[name] for name in _defined_by(card) if name in bindings]
+    if card.get("node"):
+        wanted.append(bindings.get(card["node"], card["node"]))
+    return workspace.compute.demand(source, wanted)
+
+
+def _defined_by(card):
+    """The names a card's own text declares, asked of the real parser."""
+    from . import analysis
+
+    uses = analysis.analyse(card.get("source") or "")
+    return sorted(uses.defines) if uses is not None else []
+
+
 def _results_get(workspace, params):
     return workspace.results.state_of(_node_id(workspace, params))
 
@@ -486,6 +523,10 @@ ACTIONS: dict[str, Action] = {
                 "Switch what a card is: code, result or note.", _set_kind),
         _action("card.setViewMode", {"id": "string", "view": "string"}, ("id", "view"),
                 "Switch how a result card renders: its state or its content.", _set_view_mode),
+        _action("card.run", {"id": "string"}, ("id",),
+                "Compute what a card is about. Its dependencies follow, and "
+                "every card showing one of them updates as it happens.",
+                _run_card, mutates=False),
         _action("results.get", {"node": "string"}, ("node",),
                 "What is known about a node right now: its state, and its value "
                 "when there is a small one.", _results_get, mutates=False),

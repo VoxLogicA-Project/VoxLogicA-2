@@ -235,6 +235,32 @@ class Results:
         if watched:
             self._publish(event)
 
+    def forget(self, nodes: Iterable[str]) -> list[dict[str, Any]]:
+        """Drop what the engine said about these, and answer afresh.
+
+        For the optimistic `pending` a demand writes. A node the scheduler never
+        dispatched -- because it was already satisfied, or folded, or elided
+        inside a fused cone -- produces no event, and the optimism would then sit
+        on top of the store's own answer forever. A card stuck at `pending` looks
+        exactly like a computation that is merely slow, which is the most
+        expensive kind of wrong this module can be.
+
+        Returns the states as they read now, so the caller can publish them.
+        """
+        wanted = [node for node in nodes if node]
+        with self._lock:
+            for node in wanted:
+                self._states.pop(node, None)
+            self._changed.notify_all()
+
+        fresh = [self.state_of(node) for node in wanted]
+        with self._lock:
+            watched = {state["hash"] for state in fresh if state["hash"] in self._watched}
+        for state in fresh:
+            if state["hash"] in watched:
+                self._publish(state)
+        return fresh
+
     # ------------------------------------------------------ subscriptions
 
     def subscribe(self, hashes: Iterable[str]) -> list[dict[str, Any]]:

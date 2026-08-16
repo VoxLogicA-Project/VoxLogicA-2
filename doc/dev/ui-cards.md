@@ -152,6 +152,11 @@ Decisions worth defending:
   that are, by definition, worth having: they are addressed by content, so no
   later edit can invalidate them. Cancellation exists for the user asking for it,
   not as a consequence of asking for something else.
+- **A demand is a `value` goal, and only that.** The language already has the
+  right kind: `value` materialises a node and does nothing else, where `print`
+  and `save` are effects. A Run therefore computes what was asked for and does
+  *not* fire the document's `save`s — writing files because somebody pressed Run
+  on an unrelated card is not something a button can be allowed to mean.
 - **`save` is not subsumed.** A card can show you a value; it cannot put it on
   disk. `print` becomes optional once any binding can be shown, but `save` is an
   *effect*. The card offers "save this", and the action writes a `save` into the
@@ -257,10 +262,13 @@ diagnose from the symptom.
 
 ---
 
-## 8. Build order
+## 8. Build order, and where it has got to
 
-1. The compute service and per-card Run (§5) — the spine everything else hangs
-   from, and the thing that makes a card's state change worth watching.
+1. ~~The compute service and per-card Run (§5)~~ — **done**. `ui/compute.py`,
+   the `card.run` action, the Run button on the card header, and `running`
+   derived in `App.svelte` from the results store rather than held as a flag.
+   Verified end to end: Run on the program card computes `s`, and a `let`
+   nothing prints can be demanded on its own.
 2. `decorate()` and the source surface (§6), state written into names.
 3. Lenses (§4).
 4. Selection → hash (§6), the editor as a probe into the store.
@@ -268,3 +276,19 @@ diagnose from the symptom.
 6. Focus control and the `save this` action (§3, §5).
 
 Each of these is useful alone, which is the test of whether the split is real.
+
+### Two things to pick up first
+
+**A test-suite timing problem, not a product one.** `tests/unit/test_ui_compute.py`
+passes on its own in under a second, and the rest of the `-k ui` set passes in
+about three. Run together they stall past two minutes. The engine on a
+*background thread inside pytest* is the suspect -- the same demand completes
+immediately in a plain interpreter, which is why the real-engine tests in that
+file call `_execute_with_engine` on the test's own thread and say so. Worth
+finding before adding more tests around it: `-k "ui and not compute"` is green
+and is the workaround meanwhile.
+
+**Still owed from the earlier audit**: labels on library files -- in the
+document's own `//@board` line, per the reasoning that a label belongs to the
+file that carries it (projects get none, they are folders) -- and a keyboard
+shortcut for every action that is currently context-menu only.

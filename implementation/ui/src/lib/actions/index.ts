@@ -39,6 +39,9 @@ export const card = {
   bindNode: (id: string, node: string) => invoke("card.bindNode", { id, node }),
   setKind: (id: string, kind: string) => invoke("card.setKind", { id, kind }),
   setViewMode: (id: string, view: string) => invoke("card.setViewMode", { id, view }),
+  /** Compute what this card is about. Its dependencies follow on their own:
+   * they are other cards' bindings, which are the same hashes. */
+  run: (id: string) => invoke<Record<string, unknown>>("card.run", { id }),
 };
 
 /** Node states, asked of the server rather than read from the replica.
