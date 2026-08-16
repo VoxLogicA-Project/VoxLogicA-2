@@ -35,11 +35,18 @@
   };
 
   const label = $derived(LABEL[result.state] ?? result.state);
+
+  /** A name as typed, but a hash abbreviated.
+   *
+   * Sixty-four hex characters is not something anyone reads; it is something
+   * they recognise, and the first eight are enough for that. A card bound by a
+   * `let` name shows the name, which is the case that matters. */
+  const shown = $derived(/^[0-9a-f]{64}$/.test(node) ? `${node.slice(0, 8)}…` : node);
 </script>
 
 <div class="result" data-state={result.state}>
   <header>
-    <span class="node">{node}</span>
+    <span class="node" title={node}>{shown}</span>
     {#if label}
       <span class="state" class:working={result.state === "computing"}>{label}</span>
     {/if}

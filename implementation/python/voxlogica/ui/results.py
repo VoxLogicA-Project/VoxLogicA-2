@@ -204,7 +204,7 @@ class Results:
         if value is not None:
             event["value"] = value
         if kind:
-            event["type"] = kind
+            event["valueType"] = kind
         if summary:
             event["summary"] = summary
         return event
@@ -224,7 +224,7 @@ class Results:
                 if shown is not None:
                     event["value"] = shown
                 if kind:
-                    event["type"] = kind
+                    event["valueType"] = kind
                 if summary:
                     event["summary"] = summary
             if error is not None:
@@ -254,6 +254,10 @@ class Results:
             self._watched.difference_update(h for h in hashes if h)
 
     def _publish(self, event: dict[str, Any]) -> None:
+        # `valueType`, not `type`, is what a state calls the kind of thing it
+        # holds -- because `type` is the envelope's, and a state spread into an
+        # envelope that shares a key silently becomes a message of the wrong
+        # kind. That is a bug you find by watching a card never update.
         self._hub.publish({"type": "result", **event})
 
     # -------------------------------------------------------------- waiting

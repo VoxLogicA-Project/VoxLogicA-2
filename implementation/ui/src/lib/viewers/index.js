@@ -39,9 +39,9 @@ const FALLBACK = { component: TextEditor, mono: true, editable: true };
  * The viewer for a card, and how it should be run.
  *
  * @param {{kind?: string}} card
- * @param {{type?: string}} [result] the value the card is showing, if any
+ * @param {{valueType?: string}} [result] the value the card is showing, if any
  */
 export function viewerFor(card, result = undefined) {
-  if (result?.type && BY_RESULT_TYPE[result.type]) return BY_RESULT_TYPE[result.type];
+  if (result?.valueType && BY_RESULT_TYPE[result.valueType]) return BY_RESULT_TYPE[result.valueType];
   return BY_KIND[card?.kind] ?? FALLBACK;
 }

@@ -34,8 +34,10 @@ export interface Result {
   state: ResultState;
   /** The value, when there is one and it is small enough to have been sent. */
   value?: unknown;
-  /** What kind of thing `value` is, as the server names it. Chooses the viewer. */
-  type?: string;
+  /** What kind of thing `value` is, as the server names it. Chooses the viewer.
+   * Not called `type`: these arrive spread into a message envelope whose own
+   * `type` says it is a result, and two `type`s in one object is one of them. */
+  valueType?: string;
   /** A short description of a value too large to send -- shape, size, dtype. */
   summary?: string;
   error?: string;
@@ -90,10 +92,16 @@ class ResultsStore {
     return this.by[hash] ?? { ...UNKNOWN, hash };
   }
 
-  /** The node a binding compiled to, if the server has said. */
+  /** The node a binding compiled to, if the server has said.
+   *
+   * A hash passes straight through, the same way it does on the server: a card
+   * bound to one by an agent that already had it should not have to be given a
+   * name first. Sixty-four hex characters is not a `let` name anyone typed. */
   hashFor(name: string | null | undefined): string | null {
     if (!name) return null;
-    return this.index[name] ?? null;
+    const known = this.index[name];
+    if (known) return known;
+    return /^[0-9a-f]{64}$/.test(name) ? name : null;
   }
 
   /** What a card is showing: its binding resolved, then looked up. */
@@ -146,14 +154,14 @@ class ResultsStore {
   }
 
   /** A server event. One node, one new state. */
-  receive(message: { hash?: string } & Partial<Result>): void {
+  receive(message: { hash?: string; type?: string } & Partial<Result>): void {
     const hash = message.hash;
     if (!hash) return;
     const result: Result = {
       hash,
       state: message.state ?? "unknown",
       value: message.value,
-      type: message.type,
+      valueType: message.valueType,
       summary: message.summary,
       error: message.error,
       at: message.at,
