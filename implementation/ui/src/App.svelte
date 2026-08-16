@@ -15,7 +15,7 @@
   import BuildError from "./lib/BuildError.svelte";
   import Help from "./lib/Help.svelte";
   import Library from "./lib/Library.svelte";
-  import TextEditor from "./lib/viewers/TextEditor.svelte";
+  import SourceEditor from "./lib/source/SourceEditor.svelte";
   import ResultSubscription from "./lib/viewers/ResultSubscription.svelte";
   import { app } from "./lib/state.svelte.js";
   import { workspace } from "./lib/store/workspace.svelte.ts";
@@ -386,8 +386,12 @@
       <!-- The same viewer a code card gets, on the whole file. Editing here and
            editing a card are the same edit written the same way, because the
            layout lives in the file's own comments. -->
-      <TextEditor
+      <!-- The same surface a code card gets, on the whole file: one
+           highlighter, two places to look at it from. -->
+      <SourceEditor
         value={workspace.source}
+        bindings={workspace.nodes}
+        stateOf={(hash) => results.get(hash).state}
         editing={editing === "document"}
         oncommit={(text) => {
           editing = null;
@@ -449,6 +453,15 @@
                the server pushes updates for hashes somebody is looking at. -->
           <ResultSubscription node={card.node} />
           <viewer.component {result} node={card.node ?? ""} />
+        {:else if viewer.source}
+          <viewer.component
+            value={card.source ?? ""}
+            bindings={workspace.nodes}
+            stateOf={(hash) => results.get(hash).state}
+            editing={editing === card.id}
+            oncommit={(text) => commitCard(card.id, text)}
+            oncancel={() => (editing = null)}
+          />
         {:else}
           <viewer.component
             value={card.source ?? ""}

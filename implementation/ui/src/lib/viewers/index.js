@@ -13,6 +13,7 @@
 // See doc/dev/ui-workspace.md.
 
 import TextEditor from "./TextEditor.svelte";
+import SourceEditor from "../source/SourceEditor.svelte";
 import ResultState from "./ResultState.svelte";
 
 /** What a result's type is called, and who draws it.
@@ -28,7 +29,10 @@ const BY_RESULT_TYPE = {
 };
 
 const BY_KIND = {
-  code: { component: TextEditor, mono: true, editable: true },
+  // A program is not plain text: every name it binds carries the state of
+  // the node it names, which is what makes the card a view of a running
+  // computation rather than a file someone pasted in.
+  code: { component: SourceEditor, mono: true, editable: true, source: true },
   note: { component: TextEditor, mono: false, editable: true },
   result: { component: ResultState, mono: true, editable: false, result: true },
   // A `print` and a `save` are both outputs the program declared, and they are

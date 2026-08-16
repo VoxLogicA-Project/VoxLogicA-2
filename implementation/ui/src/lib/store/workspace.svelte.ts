@@ -94,6 +94,8 @@ export interface Snapshot {
   source: string;
   library: Library;
   issues: Issues;
+  /** Which node each `let` in this document compiled to. */
+  nodes: Record<string, string>;
   canUndo: boolean;
   canRedo: boolean;
 }
@@ -108,6 +110,9 @@ class WorkspaceStore {
   source = $state("");
   library = $state<Library>({ root: "", projects: [], files: [] });
   issues = $state<Issues>({ cycle: [], duplicates: {} });
+  /** name -> node hash, as the reducer compiled this document. A property of
+   * the text, so it arrives with the text and is replaced with it. */
+  nodes = $state<Record<string, string>>({});
   canUndo = $state(false);
   canRedo = $state(false);
   /** True once the server has told us anything at all. */
@@ -134,6 +139,7 @@ class WorkspaceStore {
     this.source = snapshot.source ?? "";
     this.library = snapshot.library ?? { root: "", projects: [], files: [] };
     this.issues = snapshot.issues ?? { cycle: [], duplicates: {} };
+    this.nodes = snapshot.nodes ?? {};
     this.canUndo = snapshot.canUndo ?? false;
     this.canRedo = snapshot.canRedo ?? false;
     this.loaded = true;
