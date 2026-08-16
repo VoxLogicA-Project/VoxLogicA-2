@@ -9,8 +9,10 @@ section 4 -- R6 as well: a card bound to a node shows that node's state and
 changes as it changes. Section 9 tracks what is left, which is now viewers
 rather than plumbing.
 
-The board this sits on is [ui-bento.md](ui-bento.md); how a browser ends up
-connected at all is [ui-architecture.md](ui-architecture.md); the visual rules are
+The board this sits on is [ui-bento.md](ui-bento.md); what is *inside* a card --
+lenses, the source surface, viewers and the compute service -- is
+[ui-cards.md](ui-cards.md); how a browser ends up connected at all is
+[ui-architecture.md](ui-architecture.md); the visual rules are
 [ui-design-system.md](ui-design-system.md).
 
 This document changes as the thing gets built. Where a decision is still open it
@@ -393,7 +395,8 @@ moved because something else moved it should probably say so.
    the engine.~~
 7. ~~Creating and deleting cards from the UI.~~
 8. ~~Undo, moving a card between pages.~~
-9. **Viewers for the values themselves.** Every result renders through
+9. **Viewers for the values themselves**, and the card anatomy they sit in --
+   designed in [ui-cards.md](ui-cards.md), which supersedes the sketch below. Every result renders through
    `ResultState` today: its state, and its value only when that value is a small
    scalar. An image, a volume, a table and a chart are four more rows in
    `src/lib/viewers/index.js`, keyed on `valueType`. That table is the extension
