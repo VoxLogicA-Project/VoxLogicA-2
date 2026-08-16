@@ -60,6 +60,15 @@
     /** `(ids)` — the cards the user is working with. */
     onselect = undefined,
     selection = [],
+    /** `{ ids, text }` — the selection as .imgql, ready before a drag starts.
+     *
+     * A DataTransfer may only be written inside `dragstart`, and what has to
+     * travel is the server's own text -- the very thing the clipboard carries.
+     * Asking for it when the drag begins would arrive too late, so the owner of
+     * the board keeps it ready and hands it here. A drag that starts before it
+     * is ready is refused rather than sent with some second, invented payload
+     * that could then differ from what a paste would have produced. */
+    cardsText = null,
     /** `(id | null)` — show one card alone, or the whole board again. */
     onfocus = undefined,
     /** `(zoom)` — the board was scaled. */
@@ -367,6 +376,30 @@
   }
 
   const byId = (id) => visible.find((card) => card.id === id);
+
+  /** A card leaving the board, on the system's own drag.
+   *
+   * Two flavours go on the transfer and they hold the same string: `text/plain`
+   * so a card dropped in an editor, a terminal or a mail is readable program
+   * text, and a private type so a drop that came from outside this application
+   * is never mistaken for cards. The ids ride along because whoever receives
+   * the drop has to know what to take away if it was a move.
+   */
+  function dragOut(card, event) {
+    const ids = partyFor(card.id);
+    const ready =
+      cardsText &&
+      ids.length === cardsText.ids.length &&
+      ids.every((id) => cardsText.ids.includes(id));
+    if (!ready || !event.dataTransfer) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.setData("text/plain", cardsText.text);
+    event.dataTransfer.setData("text/voxlogica-cards", cardsText.text);
+    event.dataTransfer.setData("text/voxlogica-card-ids", ids.join("\n"));
+    event.dataTransfer.effectAllowed = "copyMove";
+  }
 
   function preview(card, rect) {
     if (rect === null) {
@@ -970,6 +1003,7 @@
             onduplicate={onduplicate ? () => onduplicate(card.id, copySpot(card)) : undefined}
             oncopy={oncopycards}
             oncut={oncutcards}
+            ondragout={cardsText ? (event) => dragOut(card, event) : undefined}
             onderive={onderive ? () => onderive(card.id, copySpot(card)) : undefined}
             onmaximize={() => maximize(card)}
             onrename={onrename ? (title) => onrename(card.id, title) : undefined}

@@ -469,3 +469,53 @@ def test_pasting_puts_the_cards_on_the_page_asked_for(tmp_path):
     made = space.apply("board.pasteCards", {"text": text, "page": 2})
     card = next(c for c in space.snapshot()["cards"] if c["id"] == made[0])
     assert card["page"] == 2
+
+
+def test_cards_dropped_on_another_file_are_merged_by_the_same_rules(tmp_path):
+    """Dragging cards into a file in the sidebar is pasting into it.
+
+    The text is the clipboard's text and the merge is `Document`'s, so the ids
+    that would collide are renamed and both cards survive -- the same outcome a
+    paste onto the board gives, because it is the same code.
+    """
+    space = _space(tmp_path, PAIR)
+    text = space.apply("board.copyCards", {"ids": ["a", "b"]})
+
+    elsewhere = tmp_path / "other.imgql"
+    elsewhere.write_text(PAIR)  # already holds cards called a and b
+    made = space.apply("library.pasteCards", {"path": str(elsewhere), "text": text})
+
+    from voxlogica.ui import document as doc
+
+    landed = doc.parse(elsewhere.read_text())
+    assert len(made) == 2
+    assert [card["id"] for card in landed.cards] == ["a", "b", *made]
+    # Both of each: nothing was overwritten by something with the same name.
+    assert len(landed.cards) == 4
+    # And the pasted program still computes what it computed where it came from.
+    pasted = {card["id"]: card for card in landed.cards}
+    assert "let mask2 =" in pasted[made[0]]["source"]
+    assert pasted[made[1]]["node"] == "mask2"
+    # The board it was dragged off is untouched: dropping is not moving.
+    assert [card["id"] for card in space.snapshot()["cards"]] == ["a", "b"]
+
+
+def test_cards_dropped_on_the_file_that_is_open_go_through_the_board(tmp_path):
+    """Otherwise the next autosave would write the workspace over the drop."""
+    space = _space(tmp_path, PAIR)
+    text = space.apply("board.copyCards", {"ids": ["a"]})
+    made = space.apply("library.pasteCards", {"path": str(space.path), "text": text})
+    assert len(made) == 1
+    assert made[0] in {card["id"] for card in space.snapshot()["cards"]}
+    space.flush()
+    assert space.path.read_text() == space.document.to_imgql()
+
+
+def test_cards_dropped_on_a_file_that_is_not_there_yet_make_it(tmp_path):
+    """A project row makes a file to drop into, and this is that file."""
+    space = _space(tmp_path, PAIR)
+    text = space.apply("board.copyCards", {"ids": ["a"]})
+    fresh = tmp_path / "Study" / "new.imgql"
+    made = space.apply("library.pasteCards", {"path": str(fresh), "text": text})
+    assert len(made) == 1
+    assert "threshold(flair, 0.6)" in fresh.read_text()

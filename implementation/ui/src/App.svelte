@@ -142,6 +142,56 @@
     if (outcome.ok && Array.isArray(outcome.result)) view.select(outcome.result);
   }
 
+  /** The selection as .imgql, kept ready for a drag that has not started yet.
+   *
+   * A DataTransfer can only be filled inside `dragstart`, and by then there is
+   * no time to ask the server anything. So the text is fetched when the
+   * selection changes -- through `board.copyCards`, the same action the
+   * clipboard uses, so a dragged card and a copied card are the same bytes by
+   * construction rather than by two implementations agreeing. Reading is not an
+   * edit: `copyCards` changes nothing and costs one message.
+   */
+  let cardsText = $state(null);
+
+  $effect(() => {
+    const ids = [...workspace.view.selection];
+    if (!ids.length) {
+      cardsText = null;
+      return;
+    }
+    let current = true;
+    board.copyCards(ids).then((outcome) => {
+      // A selection that changed while we were asking is not this one.
+      if (current && outcome.ok && outcome.result) cardsText = { ids, text: outcome.result };
+    });
+    return () => (current = false);
+  });
+
+  /** Cards dropped on a row of the sidebar: they go into that file.
+   *
+   * Moving is cutting and pasting, in that order, and for the same reason it is
+   * in that order at the clipboard: the text the target receives has to be the
+   * text the board actually gave up. Alt copies instead, so the cards stay.
+   */
+  async function dropCardsInLibrary(target, payload) {
+    let text = payload.text;
+    if (!payload.copy && payload.ids.length) {
+      const cut = await board.cutCards(payload.ids);
+      if (!cut.ok || !cut.result) return;
+      text = cut.result;
+    }
+    let path = target.path;
+    if (!path) {
+      // A project is a folder, so cards dropped on one need a file to be in.
+      // Making it is the only thing that could have been meant, and it is the
+      // same file `+` would have made.
+      const made = await libraryActions.newFile(target.project ?? undefined);
+      if (!made.ok || !made.result) return;
+      path = made.result;
+    }
+    await libraryActions.pasteCards(path, text);
+  }
+
   /** A new project needs a name before it is a folder. Numbered rather than
    * asked for: naming a thing before making it is the dialogue this UI does not
    * have, and the name is one double-click away in the sidebar. */
@@ -273,6 +323,7 @@
           ondelete={(path) => libraryActions.deleteFile(path)}
           ondeleteproject={(name) => libraryActions.deleteProject(name)}
           oncopy={(path, project) => libraryActions.copyFile(path, project)}
+          onpastecards={dropCardsInLibrary}
         />
         <!-- The handle is the edge itself, which is where everyone reaches for
              it. Dragging sets a width; double-clicking puts it back. -->
@@ -354,6 +405,7 @@
       onderive={derive}
       onselect={(ids) => view.select(ids)}
       selection={workspace.view.selection}
+      {cardsText}
       onrename={(id, title) => cardActions.setTitle(id, title)}
     >
       {#snippet children(card)}

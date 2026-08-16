@@ -78,6 +78,12 @@ export const library = {
   addFolder: (path?: string) => invoke("library.addFolder", path ? { path } : {}),
   forgetFolder: (path: string) => invoke<boolean>("library.forgetFolder", { path }),
   reveal: (path: string) => invoke<boolean>("library.reveal", { path }),
+  /** Cards dropped on a row: the clipboard's text, merged into that file.
+   *
+   * The same .imgql `board.copyCards` produces, through the same merge, so a
+   * card dragged into a file and a card pasted into it land identically. */
+  pasteCards: (path: string, text: string) =>
+    invoke<string[]>("library.pasteCards", { path, text }),
 };
 
 export const view = {

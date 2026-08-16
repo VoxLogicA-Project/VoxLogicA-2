@@ -334,6 +334,36 @@ def _library_reveal(_workspace, params):
     return native.reveal(guard.permit(params["path"]))
 
 
+def _library_paste_cards(workspace, params):
+    """Put the cards in this .imgql text into a file that is not on screen.
+
+    This is what a card dragged onto a row in the sidebar lands as. The text is
+    the same text `board.copyCards` hands the clipboard, and it is merged by the
+    same `Document.import_fragment` -- so ids are minted fresh and bindings that
+    would collide are renamed with their references, exactly as they are on the
+    board. A second implementation of "add these cards to a file" would be a
+    second set of rules for what happens when two cards claim one name, and the
+    two would disagree the first time either changed.
+
+    A drop on the file that *is* open is not a special case worth a special
+    path: it is a paste, so it goes through the ordinary one and is undoable
+    like any other paste. Writing that file behind the workspace's back would
+    lose it at the next autosave.
+    """
+    from pathlib import Path as _Path
+
+    from . import document as doc
+
+    path = guard.permit(params["path"])
+    if workspace.path is not None and _Path(workspace.path).resolve() == path:
+        return workspace.apply("board.pasteCards", {"text": params["text"]})
+    target = doc.parse(path.read_text() if path.exists() else "")
+    made = target.import_fragment(params["text"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(target.to_imgql())
+    return made
+
+
 def _library_delete(workspace, params):
     from . import library
 
@@ -500,6 +530,10 @@ ACTIONS: dict[str, Action] = {
         _action("library.deleteProject", {"name": "string"}, ("name",),
                 "Remove an empty project folder. Refused if it still holds files.",
                 _library_delete_project, mutates=False),
+        _action("library.pasteCards", {"path": "string", "text": "string"},
+                ("path", "text"),
+                "Add the cards in this .imgql text to a file of the library, "
+                "renaming what would collide.", _library_paste_cards, mutates=False),
         _action("library.deleteFile", {"path": "string"}, ("path",),
                 "Delete a file from the library.", _library_delete, mutates=False),
         _action("workspace.open", {"path": "string"}, ("path",),

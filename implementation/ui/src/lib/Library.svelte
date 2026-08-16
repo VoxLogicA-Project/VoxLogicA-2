@@ -28,6 +28,11 @@
     ondelete,
     ondeleteproject,
     oncopy,
+    /** `({path} | {project}, {text, ids, copy})` — cards were dropped on a row.
+     *
+     * The list does not know what a card is and does not need to: it knows
+     * where the pointer let go, and hands the payload on unopened. */
+    onpastecards,
   } = $props();
 
   const ORDERS = [
@@ -44,6 +49,30 @@
   let draft = $state("");
   /** The project a dragged file is over: a name, "" for the top, or null. */
   let over = $state(null);
+  /** The file row a dragged *card* is over, by path. Files are drop targets
+   * only for cards: a file dropped on a file means its project, which is what
+   * the section around it already accepts. */
+  let overFile = $state(null);
+
+  /** Cards, as this list receives them. The private type is what tells a drag
+   * that came from the board apart from a drag that came from the desktop. */
+  const CARDS = "text/voxlogica-cards";
+  const CARD_IDS = "text/voxlogica-card-ids";
+
+  const carriesCards = (event) => !!event.dataTransfer?.types.includes(CARDS);
+
+  function droppedCards(event, target) {
+    const text = event.dataTransfer?.getData(CARDS);
+    if (!text) return false;
+    onpastecards?.(target, {
+      text,
+      ids: (event.dataTransfer.getData(CARD_IDS) || "").split("\n").filter(Boolean),
+      // Alt is copy, everywhere a file manager has ever existed. Read when the
+      // pointer lets go, because that is when the person decided.
+      copy: event.altKey,
+    });
+    return true;
+  }
   /** Paths the user has picked out. The open file is not necessarily among
    * them: opening is looking, selecting is choosing what to act on. */
   let picked = $state(new Set());
@@ -190,6 +219,10 @@
   function onDrop(event, project) {
     event.preventDefault();
     over = null;
+    overFile = null;
+    // Cards dropped on a project land in a new file there, because a project is
+    // a folder and cards need a file to be in.
+    if (droppedCards(event, { project })) return;
     const payload = event.dataTransfer?.getData("text/voxlogica-file");
     const copying = event.dataTransfer?.getData("text/voxlogica-mode") === "copy" || event.altKey;
     for (const path of (payload ?? "").split("\n").filter(Boolean)) {
@@ -333,9 +366,26 @@
           class:current={file.open}
           class:picked={picked.has(file.path)}
           class:leaving={buffer?.mode === "cut" && buffer.paths.includes(file.path)}
+          class:target={overFile === file.path}
           aria-current={file.open ? "page" : undefined}
           draggable="true"
           title={file.path}
+          ondragover={(event) => {
+            // Only cards. Anything else belongs to the section behind this row,
+            // so it is left to bubble there untouched.
+            if (!carriesCards(event)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            overFile = file.path;
+          }}
+          ondragleave={() => (overFile = overFile === file.path ? null : overFile)}
+          ondrop={(event) => {
+            if (!carriesCards(event)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            overFile = null;
+            droppedCards(event, { path: file.path });
+          }}
           ondragstart={(event) => {
             // Dragging one of several picked files carries all of them: what
             // you can do to one, you can do to the ones you chose.
@@ -701,6 +751,15 @@
    * ring outside it is a ring the scroll container cuts in half. */
   .file.picked {
     box-shadow: inset 0 0 0 var(--border-width) var(--color-accent);
+  }
+
+  /* Cards are over this row and would land in it. The same dashed accent the
+   * sections wear, drawn inside the row rather than around it: the scroll
+   * container clips anything that leaves, and an outline offset outwards was
+   * being sliced down its side. */
+  .file.target {
+    outline: var(--border-width) dashed var(--color-accent);
+    outline-offset: calc(-1 * var(--border-width));
   }
 
   /* On its way out, but still here: nothing is gone until it lands. */

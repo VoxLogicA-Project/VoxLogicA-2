@@ -51,6 +51,12 @@
     onderive,
     oncopy,
     oncut,
+    /** `(event)` on `dragstart` — the card is being dragged off the board.
+     *
+     * The board fills the DataTransfer, because what travels is the whole
+     * selection's text and only the board knows what is selected. Refusing the
+     * drag is `event.preventDefault()` inside it, as it is anywhere else. */
+    ondragout,
     onselect,
     selected = false,
     /** True when this card is the one being shown alone. */
@@ -320,6 +326,21 @@
     onpreview?.(null);
   }
 
+  /** A gesture the pointer can no longer finish, abandoned rather than kept.
+   *
+   * `end` insists on a pointerup from the pointer that began -- rightly, that is
+   * what commits. But an engine that stops delivering pointer events mid-drag
+   * (WebKit, once anything native takes the pointer) or a window that loses
+   * focus leaves a gesture nothing can ever finish, and a board holding one
+   * refuses all further input: the freeze this exists to make impossible.
+   * Nothing is committed -- a gesture nobody could complete is not an intent. */
+  function abandon() {
+    if (!gesture) return;
+    gesture = null;
+    dragging = false;
+    onpreview?.(null);
+  }
+
   /** The same gestures from the keyboard, which is the only way some people have
    * of arranging anything at all. */
   function onKeydown(event) {
@@ -350,6 +371,10 @@
     });
   }
 </script>
+
+<!-- Focus leaving the window and a native drag ending are the two moments a
+     pointer gesture can have been orphaned; both abandon it (see `abandon`). -->
+<svelte:window onblur={abandon} ondragend={abandon} />
 
 <ContextMenu label="{card.title} actions" items={menu}>
   <article
@@ -429,7 +454,30 @@
       {/if}
     </header>
 
-    <div class="body">
+    <!-- The header arranges, the body travels -- and the markup says so:
+         `draggable` sits on the body alone, never on the card. It was on the
+         card once, guarded by the header's `preventDefault` on pointerdown, and
+         that guard is a Chrome fact rather than a web fact: WebKit starts a
+         draggable ancestor's native drag regardless, and the moment it does it
+         stops delivering pointermove and pointerup -- so the arrange gesture
+         never ended and the board froze, precisely in the window that is the
+         application (WKWebView). Only `preventDefault` inside *dragstart* is
+         honoured everywhere, and the belt below uses it: a drag that begins
+         while an arrange gesture is live is refused, whatever engine let it
+         start. -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="body"
+      draggable={ondragout ? "true" : undefined}
+      ondragstart={(event) => {
+        if (gesture !== null) {
+          event.preventDefault();
+          return;
+        }
+        ondragout?.(event);
+      }}
+      onpointerdown={(event) => onselect?.(event.shiftKey || event.metaKey || event.ctrlKey)}
+    >
       <div bind:this={content} class="content">
         {@render children?.()}
       </div>
