@@ -277,16 +277,23 @@ diagnose from the symptom.
 
 Each of these is useful alone, which is the test of whether the split is real.
 
-### Two things to pick up first
+### Running the tests, and a trap that is worth knowing about
 
-**A test-suite timing problem, not a product one.** `tests/unit/test_ui_compute.py`
-passes on its own in under a second, and the rest of the `-k ui` set passes in
-about three. Run together they stall past two minutes. The engine on a
-*background thread inside pytest* is the suspect -- the same demand completes
-immediately in a plain interpreter, which is why the real-engine tests in that
-file call `_execute_with_engine` on the test's own thread and say so. Worth
-finding before adding more tests around it: `-k "ui and not compute"` is green
-and is the workaround meanwhile.
+```bash
+.venv/bin/python -m pytest tests/unit -k ui -q
+```
+
+Under four seconds, the whole set. If it takes minutes instead, **count the
+`voxlogica` processes you have running**: every dev instance carries a source
+watcher, and several of them rebuilding into the shared bundle cache
+(`~/.cache/voxlogica/ui-bundles/`) while the suite asks for a build of its own is
+enough to make the run look hung. It is contention, not a slow test, and the
+suite is not the thing to go looking inside.
+
+The real-engine tests in `test_ui_compute.py` call `_execute_with_engine`
+directly rather than going through the runner thread. That is a deliberate
+narrowing -- the threading properties are covered above them with an injected
+execute -- and not a workaround for anything known to be broken.
 
 **Still owed from the earlier audit**: labels on library files -- in the
 document's own `//@board` line, per the reasoning that a label belongs to the

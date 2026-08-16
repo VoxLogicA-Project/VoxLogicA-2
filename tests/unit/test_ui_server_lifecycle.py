@@ -90,13 +90,23 @@ def test_concurrent_instances_take_consecutive_ports() -> None:
 
 
 def test_binding_fails_loudly_when_the_whole_range_is_taken() -> None:
-    held = [bind_loopback(10001, attempts=1)]
+    """A range with nothing free raises rather than returning something wrong.
+
+    The range under test is a port the operating system just handed us, not the
+    literal 10001: a developer with a VoxLogicA running -- which is the whole
+    point of the port search -- would otherwise fail this test for doing exactly
+    what the code is designed to cope with.
+    """
+    # Port 0 asks the kernel for a free one, so the range is known-taken by
+    # construction and known-free the moment this closes.
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    taken = probe.getsockname()[1]
     try:
         with pytest.raises(RuntimeError, match="No free port"):
-            bind_loopback(held[0].getsockname()[1], attempts=1)
+            bind_loopback(taken, attempts=1)
     finally:
-        for sock in held:
-            sock.close()
+        probe.close()
 
 
 def test_a_run_keeps_serving_until_the_last_browser_leaves() -> None:
