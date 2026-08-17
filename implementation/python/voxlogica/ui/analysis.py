@@ -169,6 +169,36 @@ def outputs(source: str) -> list[Output]:
     return found
 
 
+def syntax_error(source: str) -> dict[str, Any] | None:
+    """Why this document does not compile, or `None` when it does.
+
+    Silence was the old answer, and it made Run look broken: a program with a
+    missing label compiled to nothing, so no name resolved to a node, so a card
+    asked for nothing and reported that nothing happened -- which is true and
+    useless. A parse error is a fact about the document, exactly like a cycle or
+    a duplicate name, and it belongs beside them.
+    """
+    from voxlogica.parser import ProgramParseError, parse_program_content
+
+    if not (source or "").strip():
+        return None
+    try:
+        parse_program_content(source)
+    except ProgramParseError as error:
+        first = str(error).splitlines()[0]
+        # Drop the source name: the reader is looking at the document, and
+        # "<input>:3:7" tells them about a file they did not open.
+        _, _, message = first.partition(": ")
+        return {
+            "line": getattr(error, "line", None),
+            "column": getattr(error, "column", None),
+            "message": message or first,
+        }
+    except Exception as exc:  # noqa: BLE001 - anything else is still "it did not"
+        return {"line": None, "column": None, "message": str(exc)}
+    return None
+
+
 class Cycle(ValueError):
     """Cards that need each other. There is no order that satisfies them."""
 

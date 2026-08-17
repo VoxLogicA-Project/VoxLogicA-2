@@ -114,3 +114,36 @@ def test_opening_a_file_does_not_rewrite_it():
         _ = document.cards  # deriving must not be a mutation
         assert document.to_imgql() == text
         assert document.annotated is False
+
+
+# ------------------------------------------------- why nothing is computed
+
+
+def test_a_document_that_does_not_compile_says_so():
+    """Silence made Run look broken.
+
+    `print x+x` is missing its label, so the program does not parse, so no name
+    resolves to a node, so a card asks for nothing and reports that nothing
+    happened -- true, and useless. The reason is a fact about the document and
+    belongs with the other facts.
+    """
+    where = analysis.syntax_error("let x = 3\n\nprint x+x\n")
+    assert where is not None
+    assert where["line"] == 3
+    assert "expected" in where["message"]
+    # The reader is looking at the document, not at a file called <input>.
+    assert "<input>" not in where["message"]
+
+
+def test_a_document_that_compiles_says_nothing():
+    assert analysis.syntax_error('let x = 3\nprint "x" x\n') is None
+    assert analysis.syntax_error("") is None
+
+
+def test_the_workspace_reports_it_beside_the_other_facts(tmp_path):
+    from voxlogica.ui.workspace import Workspace
+
+    path = tmp_path / "doc.imgql"
+    path.write_text("let x = 3\n\nprint x+x\n")
+    issues = Workspace(path=path).snapshot()["issues"]
+    assert issues["syntax"]["line"] == 3

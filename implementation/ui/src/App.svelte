@@ -92,6 +92,15 @@
   const named = (id) => workspace.cards.find((card) => card.id === id)?.title ?? id;
 
   const problems = $derived([
+    // First: until the program parses, nothing else here is worth reading, and
+    // every name is unresolved for the same one reason.
+    ...(workspace.issues.syntax
+      ? [
+          workspace.issues.syntax.line
+            ? `line ${workspace.issues.syntax.line}: ${workspace.issues.syntax.message}`
+            : workspace.issues.syntax.message,
+        ]
+      : []),
     ...(workspace.issues.cycle.length
       ? [`${workspace.issues.cycle.map(named).join(" → ")} need each other`]
       : []),

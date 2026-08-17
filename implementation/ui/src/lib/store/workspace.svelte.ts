@@ -80,6 +80,9 @@ export interface Library {
 }
 
 export interface Issues {
+  /** Why the document does not compile, or null. Nothing else here means much
+   * until this is null. */
+  syntax?: { line: number | null; column: number | null; message: string } | null;
   /** Cards that need each other. No order satisfies them. */
   cycle: string[];
   /** Names defined by more than one card, and which cards define them. */

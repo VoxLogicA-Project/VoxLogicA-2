@@ -160,6 +160,9 @@ class Workspace:
         except analysis.Cycle as found:
             cycle = list(found.ids)
         return {
+            #: Why the document does not compile, if it does not. First,
+            #: because nothing else in here means much until it does.
+            "syntax": analysis.syntax_error(self.document.to_imgql()),
             "cycle": cycle,
             "duplicates": analysis.duplicates(cards),
             #: Cards sharing a cell. The board refuses placements that would
