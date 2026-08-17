@@ -64,6 +64,10 @@ export const card = {
  * an agent and a script say the same thing. */
 export const resultsActions = {
   get: (node: string) => invoke<Record<string, unknown>>("results.get", { node }),
+  /** What a selected sub-expression is, in the open document's context, and
+   * whether it is already computed. Null when it is not an expression. */
+  hashOf: (expression: string) =>
+    invoke<Record<string, unknown> | null>("results.hashOf", { expression }),
   wait: (node: string, state = "done", timeout = 60) =>
     invoke<Record<string, unknown>>("results.wait", { node, state, timeout }),
 };

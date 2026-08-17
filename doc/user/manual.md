@@ -109,6 +109,12 @@ The program and its values are one thing seen from further back or closer in.
 | **both** | The program, and what the focused name currently comes to. *(default)* |
 | **value** | The value alone. |
 
+**Select any part of a program** and the footer says what it is and whether this
+machine has already worked it out. The selection is compiled *in that
+document's context*, so `threshold(flair, 0.6)` means what it means there — and
+if the same expression was computed yesterday under a different name, it is
+already `computed`, because a value is its content (`results.hashOf`).
+
 ⌘L moves the whole board. A single card can be set differently, and then stops
 following.
 

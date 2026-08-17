@@ -25,6 +25,7 @@
     board,
     card as cardActions,
     library as libraryActions,
+    resultsActions,
     view,
     workspace as workspaceActions,
   } from "./lib/actions/index.ts";
@@ -269,6 +270,30 @@
     }
   }
 
+  /** What the current selection in an editor is, once the server has said.
+   *
+   * Debounced, because a selection changes as fast as a pointer moves and each
+   * answer costs the reducer a compile. The reply carries the state as well as
+   * the hash, so highlighting three words answers "is this already computed?"
+   * in one round trip rather than two.
+   */
+  let probe = $state(null);
+  let probeTimer = null;
+
+  function probeSelection(selection) {
+    clearTimeout(probeTimer);
+    const text = (selection?.text ?? "").trim();
+    if (!text) {
+      probe = null;
+      return;
+    }
+    probeTimer = setTimeout(async () => {
+      const outcome = await resultsActions.hashOf(text);
+      // A selection that moved on while we were asking is not this one.
+      if (outcome.ok) probe = outcome.result ? { text, ...outcome.result } : null;
+    }, 220);
+  }
+
   /** The three distances, and how each is drawn in one glyph: the program
    * filled, both halved, the value empty of text. */
   const LENSES = ["source", "both", "value"];
@@ -421,6 +446,7 @@
         value={workspace.source}
         bindings={workspace.nodes}
         stateOf={(hash) => results.get(hash).state}
+        onselect={probeSelection}
         editing={editing === "document"}
         oncommit={(text) => {
           editing = null;
@@ -497,6 +523,7 @@
                 bindings={workspace.nodes}
                 stateOf={(hash) => results.get(hash).state}
                 editing={editing === card.id}
+                onselect={probeSelection}
                 oncommit={(text) => commitCard(card.id, text)}
                 oncancel={() => (editing = null)}
               />
@@ -571,6 +598,15 @@
     >
       {LENS_MARK[workspace.view.lens] ?? "◐"}
     </Button>
+    {#if probe}
+      <!-- The editor as a probe into the store: what you highlighted, and
+           whether this system has worked it out before. Said quietly, in the
+           footer, because it answers a question you asked with a gesture. -->
+      <span class="probe" title={probe.hash}>
+        <code>{probe.text.length > 28 ? probe.text.slice(0, 28) + "…" : probe.text}</code>
+        {probe.state === "done" ? "computed" : probe.state}
+      </span>
+    {/if}
     <span class="where">{showing === "document" ? "document" : "board"} · <kbd>tab</kbd></span>
     <Button tone="quiet" size="sm" onclick={() => (helping = true)} title="Shortcuts (?)">
       ?
@@ -592,6 +628,24 @@
      * disappearing toolbar does not leave a strip of board underneath it. */
     height: 100dvh;
     padding: var(--space-3);
+  }
+
+  .probe {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-1);
+    min-width: 0;
+    color: var(--color-text-muted);
+    font-size: var(--text-2xs);
+    white-space: nowrap;
+  }
+
+  .probe code {
+    overflow: hidden;
+    max-width: 16ch;
+    color: var(--color-text);
+    font-family: var(--font-mono);
+    text-overflow: ellipsis;
   }
 
   .pending {

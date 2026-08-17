@@ -132,6 +132,43 @@ def bindings_for(text: str) -> dict[str, str]:
     return dict(resolved)
 
 
+#: The name a probed sub-expression is bound to while it is being hashed.
+#:
+#: Improbable rather than illegal: a collision would silently hash the user's own
+#: binding instead of their selection. It does *not* start with an underscore --
+#: the grammar does not accept those, and the first version of this returned
+#: `None` for everything because of it, which reads exactly like "that is not an
+#: expression" and is therefore the kind of bug you can stare through.
+_PROBE = "voxlogicaProbe0"
+
+
+def hash_of(source: str, expression: str) -> str | None:
+    """The node a sub-expression would compile to, in this document's context.
+
+    Selecting three words in the editor and being told whether they are already
+    computed is the whole point, and the hard part is the word *context*: the
+    hash of `threshold(flair, 0.6)` depends on what `flair` means here. So the
+    selection is not hashed on its own -- it is appended to the document as one
+    more binding and the real reducer is asked what that came to.
+
+    That is deliberately not "map the character range back to an AST node". The
+    parser carries positions as `file:line:column` strings and not on every
+    node, so that mapping would be a second, approximate understanding of the
+    grammar; and this way the answer comes from the same reducer the engine
+    uses, which is the only way a cache question can be answered *correctly*
+    rather than plausibly.
+
+    `None` when the selection is not an expression in its own right -- half of
+    one, or a name that only exists inside a `fun` this appends after. That is
+    the honest answer, and the common one while a pointer is moving.
+    """
+    text = (expression or "").strip()
+    if not text or _PROBE in text:
+        return None
+    probed = f"{source}\nlet {_PROBE} = {text}\n"
+    return bindings_for(probed).get(_PROBE)
+
+
 class Results:
     """The node states of one UI instance."""
 

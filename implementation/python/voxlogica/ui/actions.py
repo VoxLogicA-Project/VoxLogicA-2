@@ -582,6 +582,22 @@ def _defined_by(card):
     return sorted(uses.defines) if uses is not None else []
 
 
+def _hash_of(workspace, params):
+    """What a selection in the editor is, and whether it is already computed.
+
+    Answered on the server because there is one hasher and it is the reducer.
+    A JavaScript reimplementation would drift and then answer cache questions
+    wrongly and *silently*, which is worse than not answering them.
+    """
+    from .results import hash_of
+
+    node = hash_of(workspace.document.to_imgql(), params["expression"])
+    if node is None:
+        return None
+    state = workspace.results.state_of(node) if workspace.results else {"hash": node}
+    return state
+
+
 def _results_get(workspace, params):
     return workspace.results.state_of(_node_id(workspace, params))
 
@@ -665,6 +681,10 @@ ACTIONS: dict[str, Action] = {
                 "Compute what a card is about. Its dependencies follow, and "
                 "every card showing one of them updates as it happens.",
                 _run_card, mutates=False),
+        _action("results.hashOf", {"expression": "string"}, ("expression",),
+                "The node a sub-expression of this document would compile to, "
+                "and what is known about it. Null when it is not an expression.",
+                _hash_of, mutates=False),
         _action("results.get", {"node": "string"}, ("node",),
                 "What is known about a node right now: its state, and its value "
                 "when there is a small one.", _results_get, mutates=False),
