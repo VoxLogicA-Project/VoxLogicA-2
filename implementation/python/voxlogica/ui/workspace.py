@@ -159,7 +159,15 @@ class Workspace:
             cycle: list[str] = []
         except analysis.Cycle as found:
             cycle = list(found.ids)
-        return {"cycle": cycle, "duplicates": analysis.duplicates(cards)}
+        return {
+            "cycle": cycle,
+            "duplicates": analysis.duplicates(cards),
+            #: Cards sharing a cell. The board refuses placements that would
+            #: cause this, so a document carrying one arrived that way -- and
+            #: saying so is better than a board whose gestures have quietly
+            #: stopped making sense.
+            "overlaps": [list(pair) for pair in analysis.overlapping(cards)],
+        }
 
     # ---------------------------------------------------------------- actions
 

@@ -63,10 +63,19 @@ def test_every_action_becomes_an_mcp_tool_schema():
 
 
 def test_moving_a_card_changes_the_document_and_the_snapshot(workspace):
-    assert workspace.apply("board.moveCard", {"id": "a", "x": 2, "y": 1}) is True
+    # To free cells: (2, 1) would have put `a` under `b`, and cards never share
+    # a cell (test_ui_no_overlap.py). This test is about a move reaching both
+    # the document and the snapshot, not about where a card may go.
+    assert workspace.apply("board.moveCard", {"id": "a", "x": 0, "y": 3}) is True
     card = next(card for card in workspace.snapshot()["cards"] if card["id"] == "a")
-    assert (card["x"], card["y"]) == (2, 1)
-    assert "//@card id=a kind=code x=2 y=1 w=4 h=3" in workspace.document.to_imgql()
+    assert (card["x"], card["y"]) == (0, 3)
+    assert "//@card id=a kind=code x=0 y=3 w=4 h=3" in workspace.document.to_imgql()
+
+
+def test_a_move_onto_another_card_is_refused_through_the_action(workspace):
+    """The invariant is not a component's manners: an agent calling the action
+    directly is refused in exactly the same way."""
+    assert workspace.apply("board.moveCard", {"id": "a", "x": 2, "y": 1}) is False
 
 
 def test_an_unknown_action_is_refused_by_name(workspace):

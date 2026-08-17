@@ -84,7 +84,10 @@ def test_cards_carry_geometry_and_kind_specific_attributes():
 
 def test_moving_a_card_rewrites_that_line_and_nothing_else():
     document = doc.parse(ANNOTATED)
-    assert document.place("dice", x=2, y=5)
+    # To free cells: (2, 5) would have put `dice` on top of `todo`, and cards
+    # never share a cell -- see test_ui_no_overlap.py. This test is about the
+    # diff a move produces, not about where a card may go.
+    assert document.place("dice", x=5, y=4)
     out = document.to_imgql()
 
     before = ANNOTATED.splitlines()
@@ -92,7 +95,7 @@ def test_moving_a_card_rewrites_that_line_and_nothing_else():
     changed = [i for i, (a, b) in enumerate(zip(before, after)) if a != b]
     assert len(before) == len(after)
     assert changed == [5]
-    assert "x=2 y=5" in after[5]
+    assert "x=5 y=4" in after[5]
     # The other card's body is untouched, byte for byte.
     assert 'let flair = load("case.nii.gz")' in out
 
@@ -221,3 +224,35 @@ def test_the_only_card_of_a_plain_file_can_be_renamed():
     assert 'title="My analysis"' in out
     assert out.endswith(PLAIN)
     assert doc.parse(out).cards[0]["title"] == "My analysis"
+
+
+def test_a_body_without_a_final_newline_cannot_swallow_the_next_card():
+    """Data loss, and it took three keystrokes to cause.
+
+    A directive is only a directive at the start of a line -- the pattern is
+    anchored, and must be, or a `//@card` inside a string would restructure
+    somebody's document. So a card body that does not end in a newline glued the
+    *next* directive onto its last line, where the following parse read it as
+    ordinary text: that card, and every card after it, disappeared into the
+    first one's source.
+
+    A textarea hands back exactly such a body whenever the user does not press
+    Enter last, which is most of the time.
+    """
+    document = doc.parse(ANNOTATED)
+    document.set_source("segmentation", "let y = x + 2")  # no trailing newline
+
+    out = document.to_imgql()
+    again = doc.parse(out)
+    assert [card["id"] for card in again.cards] == ["segmentation", "dice", "todo"]
+    assert again.cards[0]["source"] == "let y = x + 2\n"
+    assert "//@card" not in again.cards[0]["source"]
+    # And what came out is itself a fixed point.
+    assert doc.parse(out).to_imgql() == out
+
+
+def test_an_empty_body_does_not_run_two_directives_together():
+    document = doc.parse(ANNOTATED)
+    document.set_source("segmentation", "")
+    out = document.to_imgql()
+    assert [card["id"] for card in doc.parse(out).cards] == ["segmentation", "dice", "todo"]

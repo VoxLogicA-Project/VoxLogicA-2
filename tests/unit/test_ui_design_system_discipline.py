@@ -278,3 +278,36 @@ def test_the_source_editor_does_not_depend_on_its_parent_for_a_height():
     assert "position: relative" in mirror, (
         "the mirror must stay in the flow: it is what gives the editor a height"
     )
+
+
+def test_the_board_never_asks_a_rendering_filter_about_geometry():
+    """The bug that cost a whole afternoon, kept out by name.
+
+    `visible` is what is *drawn*: focus narrows it to one card. `occupants` is
+    what takes up cells. They were the same list once, so `canPlace` consulted
+    the focused view -- and maximizing a focused card found an empty board and
+    grew over everything on it, permanently, in the file.
+
+    Geometry asks `occupants`. If any of these ask `visible` again, the same
+    class of bug is back.
+    """
+    board = _UI / "src" / "lib" / "components" / "Bento" / "Bento.svelte"
+    if not board.exists():
+        pytest.skip("no UI sources here")
+    text = board.read_text()
+
+    for function in ("canPlace", "roomFor", "arrangement"):
+        start = text.find(f"function {function}(")
+        if start < 0:
+            continue
+        body = text[start : text.find("\n  }", start)]
+        assert "visible" not in body, (
+            f"{function} asks `visible`, which focus filters. Geometry asks "
+            "`occupants`."
+        )
+
+    # `needed` decides how big the lattice is, and it is a derived rather than
+    # a function, so it is checked by its own line.
+    needed = text[text.index("const needed = $derived("):]
+    needed = needed[: needed.index("  );")]
+    assert "occupants" in needed and "visible" not in needed

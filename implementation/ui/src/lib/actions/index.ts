@@ -31,6 +31,9 @@ export const board = {
   duplicateCard: (id: string, newId: string, params: Record<string, unknown> = {}) =>
     invoke("board.duplicateCard", { id, newId, ...params }),
   setPage: (id: string, page: number) => invoke("board.setPage", { id, page }),
+  /** Move cards apart until none share a cell. For a document that arrived
+   * overlapping -- the board refuses to create one. */
+  untangle: () => invoke<string[]>("board.untangle"),
 };
 
 export const card = {

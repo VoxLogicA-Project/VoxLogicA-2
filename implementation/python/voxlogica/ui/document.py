@@ -117,6 +117,19 @@ def bindings_in(source: str) -> list[str]:
     return _BINDING.findall(source or "")
 
 
+def _unterminated(parts: list[str]) -> bool:
+    """Whether what has been written so far stops mid-line.
+
+    Asked of the last part that *has* any characters: an empty body contributes
+    nothing, and looking at it rather than through it inserts a blank line after
+    every directive that has no text under it.
+    """
+    for part in reversed(parts):
+        if part:
+            return not part.endswith("\n")
+    return False
+
+
 def _focus_of(card: dict[str, Any]) -> str | None:
     """Which binding a card is *about*.
 
@@ -373,6 +386,16 @@ class Document:
         parts: list[str] = []
         for segment in self.segments:
             if segment.directive is not None:
+                # A directive is only a directive at the start of a line: the
+                # pattern is anchored, and it has to be, or a `//@card` inside a
+                # string would restructure somebody's document. So a body that
+                # does not end in a newline would glue the *next* directive onto
+                # its last line, where the next parse reads it as ordinary text
+                # -- and the card it described, plus every card after it, is
+                # gone. A textarea hands back exactly such a body whenever the
+                # user does not press Enter last, which is most of the time.
+                if _unterminated(parts):
+                    parts.append("\n")
                 parts.append(segment.directive.render())
                 parts.append("\n")
             parts.append(segment.body)
@@ -428,11 +451,30 @@ class Document:
                 return segment
         return None
 
-    def place(self, card_id: str, **geometry: int) -> bool:
-        """Move or resize a card. Returns False if there is no such card."""
+    def place(self, card_id: str, *, _checked: bool = True, **geometry: int) -> bool:
+        """Move or resize a card. False if there is no such card, or no room.
+
+        **Cards never share a cell.** Not "are discouraged from": a placement
+        that would overlap is refused here, at the one point geometry is
+        written, so no gesture and no agent can produce a board the drag
+        arithmetic cannot reason about. The board refuses these visually too --
+        a drop onto occupied cells snaps back -- but a rule enforced only in a
+        component is a rule an MCP client walks straight past.
+
+        A card the document has not sized is left out of the question: unknown
+        is not the same as small, and treating it as one cell is what let other
+        cards be grown over it.
+        """
         segment = self._writable(card_id)
         if segment is None:
             return False
+
+        # `_checked=False` only from `arrange`, which has already validated the
+        # arrangement as a whole -- see there for why a step-by-step check is
+        # the wrong question.
+        if _checked and not self._room_for(card_id, geometry):
+            return False
+
         for key, value in geometry.items():
             if key not in _GEOMETRY and key not in ("w", "h"):
                 raise ValueError(f"not a geometry attribute: {key}")
@@ -441,6 +483,110 @@ class Document:
         # file says so by carrying w/h at all.
         self.dirty = True
         return True
+
+    def arrange(self, placements: list[dict[str, Any]]) -> bool:
+        """Apply a whole gesture at once, or none of it.
+
+        One drag is one arrangement: the card under the finger *and* everyone
+        who stepped aside for it. Applied one at a time, the layout passes
+        through states that are genuinely overlapping -- grow a card before its
+        neighbour has moved and the two share cells for an instant -- so a
+        per-placement check would refuse the resize and let the neighbour move
+        anyway. That is exactly the "they avoided, then came back on top of each
+        other" this is meant to make impossible.
+
+        So the *result* is what is checked, not the steps. All or nothing, and
+        the check is on the arrangement as a whole.
+        """
+        from . import analysis
+
+        wanted = {str(spot["id"]): spot for spot in placements}
+        if any(self.find(card_id) is None for card_id in wanted):
+            return False
+
+        after = []
+        for card in self.cards:
+            spot = wanted.get(card["id"])
+            if spot is None:
+                after.append(card)
+                continue
+            after.append({
+                **card,
+                **{key: int(spot[key]) for key in ("x", "y", "w", "h", "page")
+                   if key in spot and spot[key] is not None},
+            })
+        if analysis.overlapping(after):
+            return False
+
+        for card_id, spot in wanted.items():
+            self.place(
+                card_id,
+                _checked=False,
+                **{key: int(spot[key]) for key in ("x", "y", "w", "h")
+                   if key in spot and spot[key] is not None},
+            )
+        return True
+
+    def _room_for(self, card_id: str, geometry: dict[str, Any]) -> bool:
+        """Whether `card_id` would still be alone on its cells after this."""
+        from . import analysis
+
+        cards = self.cards
+        card = next((entry for entry in cards if entry.get("id") == card_id), None)
+        if card is None:
+            return True
+
+        after = {**card, **{k: v for k, v in geometry.items() if v is not None}}
+        if after.get("w") is None or after.get("h") is None:
+            # Sized by its content: the document cannot know what it covers, so
+            # it cannot be asked to prove it covers nothing.
+            return True
+        box = (int(after.get("x", 0)), int(after.get("y", 0)),
+               int(after["w"]), int(after["h"]))
+        return analysis.fits(cards, card_id, box, int(after.get("page", 0) or 0))
+
+    def untangle(self) -> list[str]:
+        """Move cards apart until nothing shares a cell. Returns what moved.
+
+        The board's model is that placement is *refused* rather than resolved,
+        and the algorithm that makes room for a drag begins by assuming nothing
+        overlaps. A document that arrives overlapping -- hand-edited, merged, or
+        written by a build with the bug this exists because of -- makes that
+        assumption false, and from then on every gesture behaves inexplicably.
+
+        So this is a repair, not a layout engine: cards are visited in file
+        order, the first to claim a cell keeps it, and anything on top of it is
+        swept to the first free row below. Nobody's arrangement is optimised and
+        nothing moves that did not have to.
+        """
+        from . import analysis
+
+        cards = self.cards
+        if not analysis.overlapping(cards):
+            return []
+
+        moved: list[str] = []
+        settled: list[dict[str, Any]] = []
+        for card in cards:
+            if card.get("w") is None or card.get("h") is None:
+                # Unsized cards take room the document cannot know about, so
+                # they are left exactly where they are rather than moved on a
+                # guess.
+                settled.append(card)
+                continue
+            page = int(card.get("page", 0) or 0)
+            box = (int(card.get("x", 0)), int(card.get("y", 0)),
+                   int(card["w"]), int(card["h"]))
+            if analysis.fits(settled, card["id"], box, page):
+                settled.append(card)
+                continue
+            y = box[1]
+            while not analysis.fits(settled, card["id"], (box[0], y, box[2], box[3]), page):
+                y += 1
+            self.place(card["id"], y=y)
+            moved.append(card["id"])
+            settled.append({**card, "y": y})
+        return moved
 
     def next_id(self, prefix: str = "c") -> str:
         """A reference nobody has to think about.

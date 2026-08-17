@@ -65,16 +65,7 @@ def _arrange(workspace, params):
     whoever saves the file next -- can see it. Refusing the whole batch when one
     id is unknown is the same argument from the other side.
     """
-    placements = params.get("cards") or []
-    ids = [str(spot["id"]) for spot in placements]
-    if any(workspace.document.find(card_id) is None for card_id in ids):
-        return False
-    for spot in placements:
-        workspace.document.place(
-            str(spot["id"]),
-            **{key: int(spot[key]) for key in ("x", "y", "w", "h") if key in spot},
-        )
-    return True
+    return workspace.document.arrange(params.get("cards") or [])
 
 
 def _add(workspace, params):
@@ -150,6 +141,10 @@ def _paste_cards(workspace, params):
         x=params.get("x"),
         y=params.get("y"),
     )
+
+
+def _untangle(workspace, _params):
+    return workspace.document.untangle()
 
 
 def _remove(workspace, params):
@@ -656,6 +651,9 @@ ACTIONS: dict[str, Action] = {
                 _paste_cards),
         _action("board.removeCard", {"id": "string"}, ("id",),
                 "Remove a card and its contents.", _remove),
+        _action("board.untangle", {}, (),
+                "Move cards apart until none share a cell. For a document that "
+                "arrived overlapping.", _untangle),
         _action("board.setPage", {"id": "string", "page": "int"}, ("id", "page"),
                 "Move a card to another page of the board.", _set_page),
         _action("card.setTitle", {"id": "string", "title": "string"}, ("id", "title"),

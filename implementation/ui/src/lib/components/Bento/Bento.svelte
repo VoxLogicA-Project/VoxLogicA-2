@@ -149,7 +149,7 @@
 
   /** The cells the cards on this page actually reach. */
   const needed = $derived(
-    visible.reduce(
+    occupants.reduce(
       (acc, card) => {
         const box = { ...sizeOf(card), x: card.x, y: card.y };
         return {
@@ -215,8 +215,22 @@
   const pageCount = $derived(
     Math.max(1, page + 1, ...items.map((card) => card.page + 1)),
   );
+  /** The cards that occupy cells on this page.
+   *
+   * **This, not `visible`, is what geometry asks.** Focus is a way of *looking*,
+   * so it filters what is drawn -- and for a while it also filtered what
+   * `canPlace` could see, which meant maximizing a focused card found an empty
+   * board and grew over everything on it. The layout was then genuinely
+   * overlapping, avoidance started from a premise that was false, and nothing
+   * could be dragged anywhere again.
+   *
+   * A rendering filter must never reach the geometry. Two names, so it cannot.
+   */
+  const occupants = $derived(items.filter((card) => card.page === page));
+
+  /** The cards that are drawn. Focus shows one alone; that is all it does. */
   const visible = $derived(
-    focus ? items.filter((card) => card.id === focus) : items.filter((card) => card.page === page),
+    focus ? occupants.filter((card) => card.id === focus) : occupants,
   );
 
   /** A card's effective size: what it was given, or what it measured. */
@@ -271,7 +285,7 @@
   /** Cells [x, x+w) x [y, y+h) are inside the page and free of other cards. */
   function canPlace(id, x, y, w, h) {
     if (x < 0 || y < 0 || x + w > width || y + h > height) return false;
-    return !visible.some((other) => {
+    return !occupants.some((other) => {
       if (other.id === id) return false;
       const box = rectOf(other);
       return x < box.x + box.w && box.x < x + w && y < box.y + box.h && box.y < y + h;
@@ -297,7 +311,7 @@
    * somebody cannot be housed, which is what makes the drop refuse.
    */
   function arrange(ids, rects, push) {
-    const others = visible.filter((card) => !ids.includes(card.id));
+    const others = occupants.filter((card) => !ids.includes(card.id));
     // Counted before anything is searched for. A drag big enough to leave less
     // free space than the cards it displaces cannot be arranged however hard
     // anyone looks, and looking is what used to cost the frame.
@@ -393,7 +407,7 @@
     return selection.includes(id) ? selection.filter((other) => byId(other)) : [id];
   }
 
-  const byId = (id) => visible.find((card) => card.id === id);
+  const byId = (id) => occupants.find((card) => card.id === id);
 
   /** A card leaving the board, on the system's own drag.
    *
@@ -751,7 +765,7 @@
         spot.y >= 0 &&
         spot.x + spot.w <= width &&
         spot.y + spot.h <= height &&
-        visible.every((other) => {
+        occupants.every((other) => {
           // A card moving with the group cannot object to the group's move.
           if (ids.includes(other.id)) return true;
           return !overlaps(spot, rectOf(other));

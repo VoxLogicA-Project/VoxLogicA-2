@@ -260,3 +260,69 @@ def duplicates(cards: list[dict[str, Any]]) -> dict[str, list[str]]:
         for name in sorted(seen.defines):
             where.setdefault(name, []).append(card["id"])
     return {name: ids for name, ids in where.items() if len(ids) > 1}
+
+
+# ------------------------------------------------------------------- geometry
+
+
+def _box(card: dict[str, Any]) -> tuple[int, int, int, int] | None:
+    """A card's cells, or `None` for one the board has not sized yet.
+
+    A card with no `w`/`h` is sized by its content at render time, so the
+    document does not know how much room it takes. Guessing small is what let
+    other cards be grown over it, so it is left out of the question entirely --
+    unknown is not the same as tiny.
+    """
+    if card.get("w") is None or card.get("h") is None:
+        return None
+    return (
+        int(card.get("x", 0)),
+        int(card.get("y", 0)),
+        int(card["w"]),
+        int(card["h"]),
+    )
+
+
+def overlapping(cards: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """Pairs of cards that share a cell, on the same page.
+
+    The board's whole model rests on this being empty: placement is refused
+    rather than resolved, and the algorithm that makes room for a drag starts
+    from the premise that nothing overlaps yet. Once two cards share a cell that
+    premise is false, and every gesture afterwards behaves inexplicably -- which
+    is what makes this worth being able to *ask*.
+    """
+    boxes = []
+    for card in cards:
+        box = _box(card)
+        if box is not None:
+            boxes.append((card.get("id", ""), int(card.get("page", 0) or 0), box))
+
+    found: list[tuple[str, str]] = []
+    for index, (first, page, (ax, ay, aw, ah)) in enumerate(boxes):
+        for second, other_page, (bx, by, bw, bh) in boxes[index + 1:]:
+            if page != other_page:
+                continue
+            if ax + aw <= bx or bx + bw <= ax or ay + ah <= by or by + bh <= ay:
+                continue
+            found.append((first, second))
+    return found
+
+
+def fits(cards: list[dict[str, Any]], card_id: str, box: tuple[int, int, int, int],
+         page: int = 0) -> bool:
+    """Whether `card_id` may occupy `box` without landing on anybody."""
+    x, y, w, h = box
+    for card in cards:
+        if card.get("id") == card_id:
+            continue
+        if int(card.get("page", 0) or 0) != page:
+            continue
+        other = _box(card)
+        if other is None:
+            continue
+        ox, oy, ow, oh = other
+        if x + w <= ox or ox + ow <= x or y + h <= oy or oy + oh <= y:
+            continue
+        return False
+    return True
