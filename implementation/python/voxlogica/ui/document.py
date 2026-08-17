@@ -479,8 +479,14 @@ class Document:
             if key not in _GEOMETRY and key not in ("w", "h"):
                 raise ValueError(f"not a geometry attribute: {key}")
             segment.directive.set(key, value)
-        # A card the user has sized is no longer the content's to size, and the
-        # file says so by carrying w/h at all.
+        if "w" in geometry or "h" in geometry:
+            # A card somebody sized by hand is no longer the content's to size.
+            # This used to be implicit -- carrying `w`/`h` at all meant "not
+            # auto" -- and that signal disappeared the day every card started
+            # carrying them (see `measured`). Said out loud now, because the
+            # alternative is a card that silently re-measures itself back over
+            # the size the user just chose.
+            segment.directive.set("auto", "false")
         self.dirty = True
         return True
 
@@ -544,6 +550,29 @@ class Document:
         box = (int(after.get("x", 0)), int(after.get("y", 0)),
                int(after["w"]), int(after["h"]))
         return analysis.fits(cards, card_id, box, int(after.get("page", 0) or 0))
+
+    def measured(self, card_id: str, w: int, h: int) -> bool:
+        """Record what a self-sizing card measured itself at.
+
+        Written like any other size, with one difference: `auto` is left set,
+        because it says the size came from the content rather than from a
+        person, and the card goes on re-measuring. What it buys is that the
+        document knows what *every* card covers -- see `place`, which cannot
+        refuse an overlap with a card whose footprint is unknown.
+        """
+        segment = self._writable(card_id)
+        if segment is None:
+            return False
+        if not self._room_for(card_id, {"w": w, "h": h}):
+            return False
+        if (segment.directive.attrs.get("w") == str(w)
+                and segment.directive.attrs.get("h") == str(h)):
+            return True
+        segment.directive.set("w", w)
+        segment.directive.set("h", h)
+        segment.directive.set("auto", "true")
+        self.dirty = True
+        return True
 
     def untangle(self) -> list[str]:
         """Move cards apart until nothing shares a cell. Returns what moved.

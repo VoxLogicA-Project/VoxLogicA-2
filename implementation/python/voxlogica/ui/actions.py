@@ -143,6 +143,22 @@ def _paste_cards(workspace, params):
     )
 
 
+def _measured(workspace, params):
+    """Write down what a self-sizing card came to.
+
+    The board measures a card against its content; only the browser can. But
+    the *document* is what keeps cards from sharing a cell, and it cannot keep
+    that about a card whose footprint it does not know -- which is how anything
+    could be placed on top of an auto card. So the measurement comes back here.
+
+    `auto` stays set: it records where the size came from, and the card goes on
+    re-measuring when its content changes. Refused if the size would overlap
+    somebody, which leaves the card drawn at its measurement and stored at its
+    last agreed one -- a smaller lie than a board whose rules do not hold.
+    """
+    return workspace.document.measured(params["id"], int(params["w"]), int(params["h"]))
+
+
 def _untangle(workspace, _params):
     return workspace.document.untangle()
 
@@ -651,6 +667,10 @@ ACTIONS: dict[str, Action] = {
                 _paste_cards),
         _action("board.removeCard", {"id": "string"}, ("id",),
                 "Remove a card and its contents.", _remove),
+        _action("board.measured", {"id": "string", "w": "int", "h": "int"},
+                ("id", "w", "h"),
+                "Record the size an auto card measured itself at, so the "
+                "document knows what every card covers.", _measured),
         _action("board.untangle", {}, (),
                 "Move cards apart until none share a cell. For a document that "
                 "arrived overlapping.", _untangle),

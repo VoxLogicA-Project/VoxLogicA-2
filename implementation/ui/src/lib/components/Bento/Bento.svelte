@@ -82,6 +82,12 @@
     /** `(id)` — declare what a card is about as an output of the program. */
     onsavethis = undefined,
     onprintthis = undefined,
+    /** `(id, w, h)` — an auto card measured itself, in cells.
+     *
+     * Reported rather than kept private: the document holds every card's size,
+     * because an invariant cannot be kept about something its keeper cannot
+     * see. `auto` says where a size came from, not whether there is one. */
+    onmeasured = undefined,
     /** `(id, name)` — a card was pointed at a different one of its bindings. */
     onfocusbinding = undefined,
     /** `(card) -> string[]` — the names a card's fragment declares.
@@ -1064,7 +1070,15 @@
               : undefined}
             onpreview={(rect) => preview(card, rect)}
             oncommit={(rect) => commit(card, rect)}
-            onmeasure={(w, h) => (measured = { ...measured, [card.id]: { w, h } })}
+            onmeasure={(w, h) => {
+              // Kept locally so the board can lay out this frame, and reported
+              // so the document can keep it. A card whose footprint exists only
+              // here is one the document cannot reason about, and the whole
+              // no-overlap invariant is the document's to keep. See
+              // doc/dev/ui-bento.md section 2.
+              measured = { ...measured, [card.id]: { w, h } };
+              onmeasured?.(card.id, w, h);
+            }}
           >
             {@render children?.(card)}
           </BentoCard>

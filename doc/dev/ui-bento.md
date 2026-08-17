@@ -93,6 +93,48 @@ visible if the object is a `$state` proxy, and requiring every caller — includ
 a gallery entry, which is plain JSON in a plain module — to have made one is a
 rule that gets broken silently, by a board that moves nothing.
 
+### One authority for placement
+
+**Cards never share a cell**, and that is an invariant rather than a habit:
+everything else here assumes it. Placement is *refused* rather than resolved, the
+arithmetic that makes room for a drag begins by assuming nothing overlaps yet,
+and the moment two cards do share a cell every later gesture behaves
+inexplicably -- cards refuse to move anywhere, the avoidance stops working, and
+nothing on screen says why.
+
+Keeping an invariant true needs one place that decides. This is that place:
+
+> **The document decides where a card may be. The browser only proposes.**
+
+`voxlogica/ui/document.py` owns the algebra -- can this rectangle go here, who
+must step aside, what does the board become -- and `voxlogica/ui/analysis.py`
+owns the predicate the algebra is built from. The board previews a gesture
+locally so it stays attached to the pointer, but the preview is a *drawing*, and
+when the document refuses it the card snaps back.
+
+Three rules follow, and each of them is a bug that happened:
+
+- **Every card has a size in the document.** `auto` is a policy for the first
+  measurement, not a permanent state: what the browser measures is written back
+  like any other size. A card whose footprint exists only at render time is one
+  the document cannot reason about, so it was invisible to the invariant and
+  anything could be placed on top of it.
+- **A rendering filter must never reach the geometry.** Focus narrows what is
+  *drawn* to one card. It once narrowed the list `canPlace` consulted as well, so
+  maximizing a focused card found an empty board and grew over everything on it.
+  Two names now, `visible` and `occupants`, and a test that keeps them apart.
+- **One gesture is one arrangement**, checked as a whole and applied
+  all-or-nothing. Applied card by card it passes through states that genuinely
+  overlap -- grow a card before its neighbour has moved -- so a per-step check
+  refuses the resize and lets the neighbour move anyway, which is exactly how
+  cards "avoided and then came back on top of each other". It is also what makes
+  swapping two cards in one gesture possible at all.
+
+**Rejected: enforcing this in the board alone.** It was, and it was not an
+invariant -- a rule that lives in a component is a rule an agent over MCP walks
+straight past, and half the ways to overlap did not go through that component
+anyway.
+
 ---
 
 ## 3. Auto-sizing
@@ -127,6 +169,14 @@ A `ResizeObserver` re-runs it when the content changes, so a result that arrives
 or a log that grows re-sizes its card without anyone asking. **Resizing a card by
 hand clears `auto`** — a card the user has sized is no longer the content's to
 size.
+
+**What is measured is written down.** The board reports the size it arrived at
+and the document keeps it, so `auto` describes where a size *came from* rather
+than whether one exists. Without that the document holds a card with no
+footprint, and §2 explains what that cost: an invariant cannot be kept about
+something the keeper cannot see. A file therefore gains `w`/`h` for cards that
+had none, on the first open that measures them — which is a real edit, and worth
+it for a board whose rules hold.
 
 ---
 

@@ -31,6 +31,9 @@ export const board = {
   duplicateCard: (id: string, newId: string, params: Record<string, unknown> = {}) =>
     invoke("board.duplicateCard", { id, newId, ...params }),
   setPage: (id: string, page: number) => invoke("board.setPage", { id, page }),
+  /** What an auto card measured, in cells. The document keeps every card's
+   * size: `auto` records where the size came from, not whether there is one. */
+  measured: (id: string, w: number, h: number) => invoke("board.measured", { id, w, h }),
   /** Move cards apart until none share a cell. For a document that arrived
    * overlapping -- the board refuses to create one. */
   untangle: () => invoke<string[]>("board.untangle"),

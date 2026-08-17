@@ -67,11 +67,76 @@ def test_cards_on_different_pages_share_nothing():
 
 
 def test_an_unsized_card_is_left_out_of_the_question():
-    """A card the document has not sized is sized by its content at render
-    time, so the document does not know what it covers. Guessing small is what
-    let other cards be grown over it; unknown is not the same as tiny."""
+    """Until it has been measured, the document does not know what it covers.
+
+    Guessing small is what let other cards be grown over it; unknown is not the
+    same as tiny. The answer is not a better guess -- it is that the browser
+    reports the measurement, below.
+    """
     text = TWO + "//@card id=c kind=code x=0 y=0\nlet c = 3\n"
     assert analysis.overlapping(parse(text).cards) == []
+
+
+# ------------------------------------------------- every card has a footprint
+
+
+def test_a_measured_card_becomes_visible_to_the_invariant():
+    """The hole that made all of this feel like whack-a-mole.
+
+    A self-sizing card had a size only in the browser, so the document could
+    not keep cards off it -- and half the ways to overlap went through exactly
+    that. The board reports what it measured, and from then on the card is a
+    rectangle like any other.
+    """
+    document = parse(
+        "//@board cols=12 rows=8\n"
+        "//@card id=p kind=code x=0 y=0\nlet a = 1\n"
+        "//@card id=b kind=code x=6 y=0 w=4 h=3\nlet b = 2\n"
+    )
+    assert document.place("b", x=1, y=1) is True, "nothing known, nothing refused"
+
+    document = parse(
+        "//@board cols=12 rows=8\n"
+        "//@card id=p kind=code x=0 y=0\nlet a = 1\n"
+        "//@card id=b kind=code x=6 y=0 w=4 h=3\nlet b = 2\n"
+    )
+    assert document.measured("p", 5, 4) is True
+    assert document.place("b", x=1, y=1) is False, "the card is known now"
+
+
+def test_measuring_leaves_the_card_the_content_s_to_size():
+    """`auto` says where a size came from, not whether there is one."""
+    document = parse("//@board cols=9 rows=8\n//@card id=p kind=code x=0 y=0\nlet a = 1\n")
+    document.measured("p", 5, 4)
+    card = document.cards[0]
+    assert (card["w"], card["h"]) == (5, 4)
+    assert card["auto"] is True
+
+
+def test_sizing_a_card_by_hand_takes_it_away_from_the_content():
+    """This used to be implicit -- carrying w/h at all meant "not auto" -- and
+    that signal died the day every card started carrying them. A card that
+    silently re-measured itself back over the size somebody just chose would be
+    the worst of both."""
+    document = parse("//@board cols=9 rows=8\n//@card id=p kind=code x=0 y=0\nlet a = 1\n")
+    document.measured("p", 5, 4)
+    document.place("p", w=7)
+    assert document.cards[0]["auto"] is False
+
+
+def test_moving_a_card_leaves_it_the_content_s_to_size():
+    """Only sizing it by hand is a claim about its size; moving it is not."""
+    document = parse("//@board cols=9 rows=8\n//@card id=p kind=code x=0 y=0\nlet a = 1\n")
+    document.measured("p", 5, 4)
+    document.place("p", x=2, y=1)
+    assert document.cards[0]["auto"] is True
+
+
+def test_a_measurement_that_would_overlap_is_refused():
+    """The card is drawn at what it measured and stored at the last size
+    everyone agreed on -- a smaller lie than a board whose rules do not hold."""
+    document = fresh()
+    assert document.measured("a", 20, 20) is False
 
 
 # ------------------------------------------------------------------ refusing

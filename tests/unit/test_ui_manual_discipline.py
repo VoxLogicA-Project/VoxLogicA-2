@@ -29,6 +29,9 @@ SHORTCUTS = (
 #: Actions that exist for scripts and agents and have no user-facing gesture at
 #: all. Named individually, so adding one is a decision rather than a slip.
 _MACHINERY = {
+    # Reported by the board rather than asked for by anybody: the size a
+    # self-sizing card came to. There is no gesture to document.
+    "board.measured",
     # The pieces of a drag, which the manual describes as dragging.
     "board.moveCard",
     "board.resizeCard",

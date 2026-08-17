@@ -472,6 +472,7 @@
       oncopycards={() => copyCards()}
       oncutcards={() => copyCards({ cut: true })}
       onpastecards={() => pasteCards()}
+      onmeasured={(id, w, h) => board.measured(id, w, h)}
       onrun={(id) => cardActions.run(id)}
       onsavethis={(id) => cardActions.saveThis(id)}
       onprintthis={(id) => cardActions.printThis(id)}
