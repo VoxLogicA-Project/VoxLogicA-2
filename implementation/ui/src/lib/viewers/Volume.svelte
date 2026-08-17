@@ -54,7 +54,7 @@
    * WebGL object graph, and making it reactive would mean proxying every
    * texture NiiVue owns. */
   let nv = null;
-  let loaded = [];
+  let loaded = $state([]);
   let family = null;
 
   const SLICE = { axial: 0, coronal: 1, sagittal: 2, multi: 3 };
@@ -210,7 +210,14 @@
   class="volume"
   onpointerenter={() => (live ? contexts.touch(holder) : wake())}
 >
-  <canvas bind:this={canvas} class:hidden={!live}></canvas>
+  <!-- `data-drawn` is the viewer saying how many volumes it is actually
+       holding. Not instrumentation: "there is a canvas" and "there is a volume
+       on it" are different claims, and only the second one is the promise this
+       component makes. It is the only way anything outside the GPU can tell
+       them apart -- a WebGL drawing buffer reads back empty once the frame has
+       been composited, so counting lit pixels answers the wrong question. -->
+  <canvas bind:this={canvas} class:hidden={!live} data-drawn={loaded.length}
+  ></canvas>
 
   {#if !live && frozen}
     <!-- The last true frame. Not a placeholder: it is what this viewer drew,

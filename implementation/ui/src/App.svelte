@@ -90,6 +90,31 @@
    *
    * The ids are what the document uses to point at things; a person reading a
    * warning wants the name they gave the card. */
+  /** How a viewer that draws bytes is handed the thing to draw.
+   *
+   * One function because there are two places a card can arrive at such a
+   * viewer -- a print or save card *is* the value, and a code card shows it
+   * beside the program through the lens -- and they were not the same code.
+   * The lens passed `layers`; the card branch passed `result` and `node`, which
+   * a drawing viewer has no use for, so a print card bound to a volume mounted
+   * a canvas with nothing on it. Two call sites, one answer, and adding the
+   * next drawable type cannot reintroduce the difference.
+   *
+   * The hash comes from the *result*, never from the card. A card says `v`,
+   * which is a name in a document; the bytes route is addressed by content and
+   * knows nothing about names, so handing it a card's `node` asked for a volume
+   * called "v" and got a 404. The result is the thing that already knows which
+   * node it is about.
+   *
+   * `null` when there is nothing to draw yet: the URL is the content hash, so
+   * it only exists once the node is done, and asking earlier would be asking
+   * for a hash that names nothing.
+   */
+  function drawable(shown) {
+    if (shown?.state !== "done" || !shown.hash) return null;
+    return [{ hash: shown.hash, url: `/api/node/${shown.hash}` }];
+  }
+
   const named = (id) => workspace.cards.find((card) => card.id === id)?.title ?? id;
 
   const problems = $derived([
@@ -556,8 +581,13 @@
         {:else if viewer.result}
           <!-- Subscribed for as long as it is on screen, and only that long:
                the server pushes updates for hashes somebody is looking at. -->
+          {@const drawing = viewer.bytes ? drawable(result) : null}
           <ResultSubscription node={card.node} />
-          <viewer.component {result} node={card.node ?? ""} />
+          {#if drawing}
+            <viewer.component layers={drawing} />
+          {:else}
+            <viewer.component {result} node={card.node ?? ""} />
+          {/if}
         {:else if viewer.source}
           {@const lens = lensFor(card)}
           <!-- One movement, three distances. The program and its values are the
@@ -580,12 +610,13 @@
               {@const hash = results.hashFor(card.focus)}
               {@const shown = results.get(hash)}
               {@const how = viewerFor(card, shown)}
+              {@const drawing = how.bytes ? drawable(shown) : null}
               <ResultSubscription node={card.focus} />
               <div class="value" class:only={lens === "value"}>
-                {#if how.bytes && shown.state === "done"}
+                {#if drawing}
                   <!-- The bytes themselves, and only once the node is done:
                        the URL is the hash, so it is immutable and cacheable. -->
-                  <how.component layers={[{ hash, url: `/api/node/${hash}` }]} />
+                  <how.component layers={drawing} />
                 {:else}
                   <ResultState result={shown} node={card.focus} />
                 {/if}

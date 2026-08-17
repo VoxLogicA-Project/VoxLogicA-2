@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import OrderedDict
 import time
 from typing import Any, Callable, Iterable
 
@@ -75,6 +76,13 @@ def describe(value: Any) -> tuple[Any, str, str]:
             return value, "string", ""
         return None, "string", f"{len(value)} characters"
 
+    if isinstance(value, (bytes, bytearray)):
+        # What the engine hands over for a volume: the encoded file, with no
+        # type beside it. Magic numbers are what file formats are *for*, so
+        # this identifies rather than guesses -- and a viewer that can draw a
+        # NIfTI needs to be told this is one before it will try.
+        return None, _format_of(value), f"{len(value):,} bytes"
+
     name = type(value).__name__
     # Duck-typed rather than imported: this module must not drag SimpleITK or
     # numpy into the UI server's import graph to describe something.
@@ -91,6 +99,46 @@ def describe(value: Any) -> tuple[Any, str, str]:
     if isinstance(value, (list, tuple, dict, set)):
         return None, "collection", f"{name} of {len(value)}"
     return None, name, name
+
+
+#: How much encoded value to hold on to at once. A handful of volumes: enough
+#: that the cards on a board can all be drawn, small enough that a long session
+#: does not accumulate every intermediate it ever saw.
+_PAYLOAD_BUDGET = 256 * 1024 * 1024
+
+#: Where NIfTI-1 keeps the four bytes that say it is one, and what they are.
+#: An offset and a constant from the format itself -- this identifies rather
+#: than guesses, which is the whole difference between reading a magic number
+#: and hoping.
+_NIFTI_AT, _NIFTI = 344, (b"n+1\x00", b"ni1\x00")
+_PNG = b"\x89PNG\r\n\x1a\n"
+
+
+def _format_of(payload: bytes) -> str:
+    """What a byte stream is, said only when the bytes themselves say it.
+
+    The engine hands a volume over as an encoded file with no type beside it,
+    and a viewer that can draw a NIfTI has to be told that is what this is. A
+    .nii.gz is gzip, so the header has to be uncompressed before it can be
+    read -- and only the header: 400 bytes is enough to reach the magic, and
+    decompressing a whole volume to name it would be absurd.
+    """
+    if payload.startswith(_PNG):
+        return "image"
+    header = payload
+    if payload[:2] == b"\x1f\x8b":
+        try:
+            import zlib
+
+            # `wbits` with 16 means "expect a gzip wrapper". The stream is
+            # truncated on purpose, so an incomplete-data error is the normal
+            # ending rather than a problem.
+            header = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(payload, 400)
+        except Exception:  # noqa: BLE001 - naming a value never fails
+            return "bytes"
+    if header[_NIFTI_AT : _NIFTI_AT + 4] in _NIFTI:
+        return "image"
+    return "bytes"
 
 
 #: Bindings, memoised on the document text. Compiling is not free -- it loads
@@ -182,6 +230,12 @@ class Results:
         self._fetch = fetch
         self._lock = threading.Lock()
         self._states: dict[str, dict[str, Any]] = {}
+        #: Encoded values seen going past, kept so a viewer can be handed the
+        #: file itself. The description that reaches a card deliberately drops
+        #: the bytes -- nobody wants a volume down a websocket -- and for a node
+        #: the store did not persist, this was then the last copy. Bounded, and
+        #: oldest-out: it is a convenience over the store, not a second store.
+        self._payloads: OrderedDict[str, bytes] = OrderedDict()
         self._watched: set[str] = set()
         self._bindings: dict[str, str] = {}
         self._changed = threading.Condition(self._lock)
@@ -267,11 +321,18 @@ class Results:
             # then the only copy, and a viewer asking for it should not be told
             # "not computed" about a node that plainly is.
             with self._lock:
-                known = self._states.get(node_id)
-            value = known.get("value") if known else None
+                value = self._payloads.get(node_id)
+                if value is None:
+                    known = self._states.get(node_id)
+                    value = known.get("value") if known else None
         if value is None:
             return None
 
+        if isinstance(value, (bytes, bytearray)):
+            # Already encoded: hand it over untouched. Re-encoding what the
+            # engine encoded would be a second opinion about a byte stream.
+            name = "volume.nii.gz" if _format_of(value) == "image" else "value.bin"
+            return bytes(value), f"{node_id[:16]}-{name}"
         suffix = ".nii.gz" if hasattr(value, "GetSize") else ".json"
         try:
             import tempfile
@@ -292,6 +353,17 @@ class Results:
             logger.debug("could not serialise %s (%s)", node_id, exc)
             return None
 
+    def _keep(self, node_id: str, payload: bytes) -> None:
+        """Hold on to an encoded value, within the budget. Caller holds the lock."""
+        if len(payload) > _PAYLOAD_BUDGET:
+            return  # one value that would evict everything is not worth keeping
+        self._payloads.pop(node_id, None)
+        self._payloads[node_id] = payload
+        held = sum(len(item) for item in self._payloads.values())
+        while held > _PAYLOAD_BUDGET and len(self._payloads) > 1:
+            _, dropped = self._payloads.popitem(last=False)
+            held -= len(dropped)
+
     def observe(self, node_id: str, state: str, *, value: Any = None,
                 error: str | None = None) -> None:
         """A transition, from the engine. Safe from any thread, and cheap: this
@@ -310,6 +382,8 @@ class Results:
                     event["valueType"] = kind
                 if summary:
                     event["summary"] = summary
+                if isinstance(value, (bytes, bytearray)):
+                    self._keep(node_id, bytes(value))
             if error is not None:
                 event["error"] = error
             self._states[node_id] = event
