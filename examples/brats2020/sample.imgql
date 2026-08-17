@@ -1,0 +1,158 @@
+import "simpleitk"
+import "vox1"
+
+// A five-case BraTS2020 sampler: whole-tumour segmentation on FLAIR alone,
+// scored against the ground truth, per case and on average.
+//
+// Small enough to run on a laptop in a couple of minutes, and written to be
+// read: every step below is a named region, so opening this in the UI gives one
+// card per idea rather than one card per file. That is the point of the example
+// -- it is a program you can point at, not a pipeline you configure.
+//
+// Self-contained on purpose. The real experiments in `looping_experiment/`
+// import a shared `experiment.imgql` whose `dataset_root` points at the compute
+// host and expects a different file layout; an example that broke the moment
+// you cloned it would be worse than no example. The definitions here are the
+// same ones, spelled out.
+
+// --- Where the data is ----------------------------------------------------
+// Relative to nothing: `dir` needs a real path. Five cases live beside this
+// file, gzipped, in the layout BraTS ships -- one folder per case, five
+// modalities inside it. `dir`'s recursive flag walks into them.
+//
+// Point this at the full dataset and nothing else here has to change; the
+// sample is 5 of the same 369 files, chosen and not cherry-picked (see
+// README.md for how, and what each one is for).
+dataset_root = "./examples/brats2020/data"
+
+flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
+seg_paths = dir(dataset_root, "*_seg.nii.gz", true, true)
+
+// --- The spatial vocabulary ----------------------------------------------
+// Four operators, and every region below is built from them. This is the whole
+// language of the method: no classifier, no training, no weights.
+//
+//   N(a)          `a` grown by one voxel -- its closure.
+//   touch(a,b)    the part of `a` that is spatially connected to `b`.
+//   pdt(x)        distance from every voxel to the region `x`.
+//   smoothen(a,x) a morphological opening: drop anything thinner than `x`,
+//                 keep the bulk. Turns a speckled threshold into a core.
+N(a) = near(a)
+touch(a, b) = through(N(b), a)
+pdt(x) = mask(dt(x), dt(x) > 0)
+distgeq(x, y) = x <= pdt(y)
+distleq(x, y) = x >= pdt(y)
+smoothen(a, x) = distleq(x, distgeq(x, not(a)))
+
+// A region's holes filled: a hole is interior exactly when the outside cannot
+// reach it. Necrotic centres are holes in the bright rim, and they are tumour.
+// Defined here rather than beside the method that uses it: a name has to exist
+// before it is mentioned, which the compiler will tell you plainly if you forget.
+fill_holes(region) = not(touch(not(region), border(region)))
+
+// --- Reading a case ------------------------------------------------------
+read(path) = intensity(ReadImage(path))
+
+// The brain, found rather than given: background is what touches the edge of
+// the image while being nearly black, and the brain is everything else. No
+// atlas and no skull-stripping step -- the border is the only prior.
+brain_of(flair) =
+  let background = touch(leq_sv(0.1, flair), border(flair)) in
+  not(background)
+
+// Intensity is not comparable between scanners, so it is replaced by *rank*
+// within the brain: every voxel becomes its percentile, 0 to 1. "Hyperintense"
+// then means the same thing in every case, which is what makes one set of
+// thresholds applicable to all of them.
+ranked(flair, brain) = percentiles(flair, brain, 0)
+
+flair_of(g) = read(index(flair_paths, g))
+brain(g) = brain_of(flair_of(g))
+pflair(g) = ranked(flair_of(g), brain(g))
+
+// Whole tumour, as BraTS defines it: every non-zero label together.
+gt(g) = geq_sv(1, read(index(seg_paths, g)))
+
+// --- The method ----------------------------------------------------------
+// Hysteresis, which is two thresholds and a reachability question rather than
+// one threshold and a hope:
+//
+//   the *seed* is the small set of voxels bright enough to be tumour on their
+//   own, opened so that a scattering of bright noise does not qualify;
+//   the *pool* is the larger set that is plausibly tumour;
+//   the answer is the part of the pool spatially reachable from a seed.
+//
+// One threshold cannot do this. Set it high and the tumour is a fragment; set
+// it low and it floods through the ventricles into the far hemisphere. Asking
+// "connected to something certain" is what separates the two failures -- and it
+// is a *spatial* question, which is the whole reason this language exists.
+//
+// `grow(a, b)` is that question: `a`, plus the components of `b` reachable from
+// it. Note the order -- `through(x, y)` returns the components of *y* that meet
+// *x*, so writing it the other way round hands back the seed unchanged and the
+// pool threshold stops mattering at all. That reads as a suspiciously flat
+// sweep, which is exactly how it was caught here.
+//
+// The closings are not decoration: a tumour's bright rim can be interrupted by
+// a vessel, and without closing the gap the far side of the rim is a separate
+// component that reachability will not cross to.
+segment(hyper, vi, g) =
+  let inside = brain(g) in
+  let ranks = pflair(g) in
+  let seed = smoothen(geq_sv(hyper, ranks), 5.0) in
+  let pool = smoothen(geq_sv(vi, ranks), 2.0) in
+  let core = grow(seed, pool) in
+  let regrown = grow(imclose(core, 3.0), pool) in
+  fill_holes(maxvol(and(imclose(regrown, 2.0), inside)))
+
+
+// --- Scoring -------------------------------------------------------------
+dice(pred, truth) =
+  let overlap = and(pred, truth) in
+  /(*(2.0, volume(overlap)), +(volume(pred), volume(truth)))
+
+seq_avg(seq) = /(fold + 0 seq, fold + 0 (for x in seq do 1))
+
+// --- The sweep -----------------------------------------------------------
+// One threshold pair is a guess; a sweep is an answer about the family. Six
+// values of the pool threshold at a fixed seed threshold, and the best Dice a
+// case reaches over them.
+//
+// This is written here, in ImgQL, and not in a script around it. The sweep is
+// part of the claim -- it is what "the best this method can do on this case"
+// means -- so it belongs in the program that makes the claim, where the engine
+// can share every intermediate between the six branches instead of recomputing
+// the brain mask six times.
+vi_levels = [0.82, 0.85, 0.88, 0.90, 0.92, 0.94]
+seed_level = 0.95
+
+best(seq) = index(seq, argmax(seq))
+
+sweep(g) = for vi in vi_levels do dice(segment(seed_level, vi, g), gt(g))
+best_dice(g) = best(sweep(g))
+
+// --- The five cases ------------------------------------------------------
+// Indices into the folder, which `dir` returns sorted, so 0..4 is 002, 079,
+// 089, 230, 328 in that order. Named here so the printout says which case a
+// number belongs to.
+cases = [0, 1, 2, 3, 4]
+
+// Per case, as it finishes -- not only the average at the end. An average is
+// the one number that cannot tell you which case went wrong.
+print "case_002_best" best_dice(0)
+print "case_079_best" best_dice(1)
+print "case_089_best" best_dice(2)
+print "case_230_best" best_dice(3)
+print "case_328_best" best_dice(4)
+
+// And the whole sweep for one case, so the shape of the curve is visible: this
+// is what tells you whether the best value was a plateau or a spike.
+print "case_230_sweep" sweep(3)
+
+print "average_best" seq_avg(for g in cases do best_dice(g))
+
+// A single segmentation, kept as a volume, so the UI has something to draw and
+// the result can be opened in any viewer. 0.90 is the middle of the sweep --
+// not case 230's best, deliberately: this is the picture of one parameter
+// choice, not of the ceiling.
+save "case_230_segmentation.nii.gz" segment(seed_level, 0.90, 3)
