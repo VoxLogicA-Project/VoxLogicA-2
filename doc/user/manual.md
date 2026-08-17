@@ -60,7 +60,7 @@ shortly after they stop arriving. `workspace.save` exists for scripts, and
 | **the +** | New card on the cell you are pointing at. |
 | **double-click** | Maximize into the free room; again to restore. |
 | **double-click the name**, or **F2** | Rename in place. |
-| **Enter** | Edit the card. **⌘Enter** keeps it, **Escape** abandons. |
+| **click the text** | Type. The caret lands where you clicked; there is nothing to open first. **⌘Enter** or clicking away keeps it, **Escape** abandons. |
 | **long press** | Show this card alone; again to leave. |
 | **⌘F** | The same, from the keyboard. |
 | **⌘D** | Duplicate. **⌘R** makes a result card from the selection. |

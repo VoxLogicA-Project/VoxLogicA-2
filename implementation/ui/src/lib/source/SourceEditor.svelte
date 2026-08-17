@@ -40,6 +40,7 @@
    * is how a sub-expression will be asked about (doc/dev/ui-cards.md section 6).
    */
   import { classOf, decorate } from "./decorate.js";
+  import { INTERACTION } from "./interaction.js";
 
   let {
     /** The program text. */
@@ -48,7 +49,12 @@
     bindings = {},
     /** hash -> state. A function, so this component subscribes to nothing. */
     stateOf = () => "unknown",
-    /** True when this card has the keyboard. */
+    /** True when this card has the keyboard.
+     *
+     * With `INTERACTION` at "click", this stops gating whether the text can be
+     * typed into: a click lands the caret where it landed, which is what every
+     * editor on the machine does. It still says which card the board's own
+     * chords must keep their hands off. */
     editing = false,
     /** `(text)` — the edit was kept. */
     oncommit,
@@ -66,8 +72,22 @@
   // svelte-ignore state_referenced_locally
   let draft = $state(value);
 
-  /** What the mirror shows: the draft while typing, the document otherwise. */
-  const shown = $derived(editing ? draft : value);
+  /** True while the caret is in here. The thing that decides whose text is on
+   * screen -- not a mode, because in "click" interaction there is no moment
+   * anybody opened anything, and the mirror still has to show what is being
+   * typed. */
+  let focused = $state(false);
+
+  /** What the mirror shows: the draft while somebody is typing into it, the
+   * document the rest of the time. */
+  const shown = $derived(focused || editing ? draft : value);
+
+  // The document moved while nobody was typing -- somebody else's edit, an
+  // undo, another file. Following it here is safe precisely because nobody is
+  // typing; following it while they were would overwrite them mid-word.
+  $effect(() => {
+    if (!focused && !editing) draft = value;
+  });
   const spans = $derived(decorate(shown, bindings, stateOf));
 
   $effect(() => {
@@ -116,13 +136,20 @@
     autocomplete="off"
     autocapitalize="off"
     autocorrect="off"
-    readonly={!editing}
+    readonly={INTERACTION === "focus" && !editing}
     aria-label="Program text"
     onkeydown={onKeydown}
     onselect={report}
     onkeyup={report}
     onmouseup={report}
-    onblur={() => editing && oncommit?.(draft)}
+    onfocus={() => (focused = true)}
+    onblur={() => {
+      focused = false;
+      // Whatever was typed is kept, whether or not anything "opened" first: in
+      // click interaction the edit never had a beginning to speak of, and an
+      // editor that quietly discarded it would be the worst possible answer.
+      if (draft !== value) oncommit?.(draft);
+    }}
   ></textarea>
 </div>
 
@@ -186,6 +213,12 @@
      works and still reports, but it cannot take the caret by being clicked. */
   .field.inert {
     caret-color: transparent;
+  }
+
+  /* Typing straight in: the caret is real before anything was "opened", so it
+     has to be visible before anything was opened too. */
+  :global([data-interaction="click"]) .field.inert {
+    caret-color: var(--color-accent);
   }
 
   /* The vocabulary of state, written into the names themselves. A badge beside

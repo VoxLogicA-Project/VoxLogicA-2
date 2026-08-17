@@ -370,6 +370,7 @@
     // gesture does. Clearing first threw it away and left the dragged card on
     // top of cards that had politely stepped out of its way.
     if (rect.x !== from.x || rect.y !== from.y || rect.w !== from.w || rect.h !== from.h) {
+      movedAt = Date.now();
       oncommit?.(rect);
     } else if (!event.shiftKey && !event.metaKey && !event.ctrlKey) {
       // A press that never became a drag was a click, and clicking one of
@@ -388,6 +389,27 @@
    * focus leaves a gesture nothing can ever finish, and a board holding one
    * refuses all further input: the freeze this exists to make impossible.
    * Nothing is committed -- a gesture nobody could complete is not an intent. */
+  /** When this card last actually moved or grew under the pointer.
+   *
+   * A double click is two clicks, and on this board a click is the tail of a
+   * *drag*: press, move, release. Pick a card up, put it down, pick it up again
+   * within the double-click window and the browser reports a dblclick nobody
+   * performed -- so the card maximized itself, seemingly at random, which is
+   * exactly what it was reported as.
+   */
+  let movedAt = 0;
+
+  /** Maximize only when neither click was really a drag.
+   *
+   * The window is the platform's own double-click interval rather than a
+   * guess at one: the two events this has to tell apart are exactly the two
+   * the platform used to decide they were a pair.
+   */
+  function maybeMaximize() {
+    if (Date.now() - movedAt < 600) return;
+    onmaximize?.();
+  }
+
   function abandon() {
     if (!gesture) return;
     gesture = null;
@@ -467,7 +489,7 @@
         cancelLongPress();
         end(event);
       }}
-      ondblclick={() => onmaximize?.()}
+      ondblclick={maybeMaximize}
       onkeydown={onKeydown}
     >
       {#if renaming !== null}

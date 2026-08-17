@@ -16,6 +16,7 @@
   import Help from "./lib/Help.svelte";
   import Library from "./lib/Library.svelte";
   import SourceEditor from "./lib/source/SourceEditor.svelte";
+  import { INTERACTION } from "./lib/source/interaction.js";
   import ResultSubscription from "./lib/viewers/ResultSubscription.svelte";
   import ResultState from "./lib/viewers/ResultState.svelte";
   import { app } from "./lib/state.svelte.js";
@@ -413,7 +414,7 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<main>
+<main data-interaction={INTERACTION}>
   {#if app.buildError}
     <BuildError error={app.buildError} />
   {/if}
