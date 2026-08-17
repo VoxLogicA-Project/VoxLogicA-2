@@ -98,6 +98,11 @@
     ...Object.entries(workspace.issues.duplicates).map(
       ([name, ids]) => `“${name}” is defined by ${ids.map(named).join(" and ")}`,
     ),
+    // Said in card names, like the rest: "big overlaps one" means nothing to
+    // somebody who never sees an id.
+    ...(workspace.issues.overlaps ?? []).map(
+      ([first, second]) => `${named(first)} and ${named(second)} are on the same cells`,
+    ),
   ]);
 
   /** Cut, copy and paste for cards, through the system clipboard.
@@ -569,6 +574,13 @@
       {#each problems as problem, index (problem)}
         {index > 0 ? " · " : ""}{problem}
       {/each}
+      {#if workspace.issues.overlaps?.length}
+        <!-- The one problem the board can fix by itself, so it offers to. A
+             fact with nothing to do about it is a fact that gets ignored. -->
+        <Button tone="quiet" size="sm" onclick={() => board.untangle()}>
+          Move them apart
+        </Button>
+      {/if}
     </p>
   {/if}
 

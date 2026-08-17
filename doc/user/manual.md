@@ -72,8 +72,8 @@ shortly after they stop arriving. `workspace.save` exists for scripts, and
 **Cards never share a cell.** A drop or a resize onto occupied cells snaps
 back, and the refusal is in the document itself, so nothing — no gesture, no
 agent — can produce a board whose arithmetic no longer works. A file that
-arrived overlapping is reported rather than silently drawn, and **Untangle**
-(`board.untangle`) moves cards apart until it is whole again. Dragging a card onto
+arrived overlapping says so at the bottom of the window, with a **Move them
+apart** button that fixes it (`board.untangle`). Dragging a card onto
 a file or project in the sidebar **moves it into that file** (hold ⌥ to copy).
 
 **Save this** and **Print this**, in a card's menu, declare what it is about as
