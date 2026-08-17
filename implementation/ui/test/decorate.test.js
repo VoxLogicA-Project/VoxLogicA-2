@@ -131,3 +131,18 @@ test("the class carries the state, in one place", () => {
   assert.equal(classOf({ kind: "binding" }), "tok binding is-unknown");
   assert.equal(classOf({ kind: "comment" }), "tok comment");
 });
+
+// ---------------------------------------------- the layout the CSS depends on
+
+test("every span carries text, so the mirror is never empty when the source is not", () => {
+  // The lesson from a real failure: the editor collapsed to zero height with
+  // the text present in the DOM, and the alignment check passed because it was
+  // comparing two empty rectangles. A browser test that only compares the two
+  // layers to each other can be satisfied by both being nothing -- so the thing
+  // to assert is that there is something to lay out at all.
+  const text = "let mask = flair\n";
+  const spans = decorate(text, BINDINGS, stateOf);
+  assert.ok(spans.length > 0);
+  assert.ok(spans.some((span) => span.text.trim().length > 0));
+  assert.equal(rebuild(spans).length, text.length);
+});

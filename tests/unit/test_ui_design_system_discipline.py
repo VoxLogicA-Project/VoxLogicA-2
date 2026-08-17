@@ -255,3 +255,26 @@ def test_a_tab_that_cannot_render_lets_a_better_one_answer() -> None:
     assert "renderable()" in connection, (
         "the first answer wins a capture, so a hidden zero-sized tab has to "
         "give a visible one the chance to answer first")
+
+
+def test_the_source_editor_does_not_depend_on_its_parent_for_a_height():
+    """A real failure, and the shape of it is worth keeping out.
+
+    Both layers were absolutely positioned, so the component had no content in
+    the flow and no height of its own; every parent chain without a definite
+    height collapsed it to nothing. The text was in the DOM and the screen was
+    blank, which is the hardest kind of wrong to see.
+
+    The mirror is in the flow now and supplies the height. If it ever goes back
+    to `position: absolute`, this says so.
+    """
+    editor = _UI / "src" / "lib" / "source" / "SourceEditor.svelte"
+    if not editor.exists():
+        pytest.skip("no UI sources here")
+    text = editor.read_text()
+    style = text[text.index("<style>"):]
+    mirror = style[style.index(".mirror {"):]
+    mirror = mirror[: mirror.index("}")]
+    assert "position: relative" in mirror, (
+        "the mirror must stay in the flow: it is what gives the editor a height"
+    )

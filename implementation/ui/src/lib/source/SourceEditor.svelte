@@ -15,15 +15,23 @@
    * of one pixel is invisible at the top of a card and a line and a half out by
    * the bottom, which is exactly where nobody looks when they check.
    *
-   * Four traps, all of which have their fingerprints on the CSS below:
+   * **The mirror is in the flow; the textarea floats on it.** Not the other way
+   * round, and this is the whole layout: the mirror's text is what gives the
+   * component its height, so the editor is as tall as the program it holds and
+   * needs nothing from its parent. Both layers absolutely positioned was the
+   * first attempt, and it collapsed to zero height everywhere the parent chain
+   * had no definite height -- text present in the DOM, nothing on screen, and an
+   * alignment check that passed because it was comparing two empty rectangles.
+   * It also means there is exactly one scroller (the card), so there is no
+   * scroll to synchronise and no horizontal drift to fail to reproduce.
    *
-   * - the mirror never scrolls itself; it is *moved* to follow the textarea, on
-   *   both axes, because a horizontal drift is the one people fail to reproduce;
+   * Three traps remain, all with their fingerprints on the CSS below:
+   *
    * - the textarea's glyphs are hidden with `-webkit-text-fill-color`, not
    *   `color`, because `color: transparent` also erases the *selection*, and a
    *   selection you cannot see is worse than no highlighting at all;
-   * - a trailing newline needs a trailing space in the mirror, or the last line
-   *   collapses and everything below it sits a line too high;
+   * - a trailing newline needs a trailing character in the mirror, or the last
+   *   line collapses and the textarea is a line taller than what it covers;
    * - the caret gets an explicit colour: it is the only part of the textarea
    *   that must stay visible.
    *
@@ -69,16 +77,8 @@
       if (!field) return;
       field.focus();
       field.setSelectionRange(field.value.length, field.value.length);
-      sync();
     });
   });
-
-  /** Keep the mirror under the textarea, on both axes. */
-  function sync() {
-    if (!field || !mirror) return;
-    mirror.scrollTop = field.scrollTop;
-    mirror.scrollLeft = field.scrollLeft;
-  }
 
   function report() {
     if (!field || !onselect) return;
@@ -118,8 +118,6 @@
     autocorrect="off"
     readonly={!editing}
     aria-label="Program text"
-    onscroll={sync}
-    oninput={sync}
     onkeydown={onKeydown}
     onselect={report}
     onkeyup={report}
@@ -132,16 +130,15 @@
   .source {
     position: relative;
     width: 100%;
-    height: 100%;
-    min-height: 0;
+    /* No height of its own: the mirror below is in the flow and supplies it.
+       Asking a parent for one is what made this collapse to nothing. */
+    min-height: 100%;
   }
 
   /* THE CONTRACT. Everything here decides where a glyph lands, so it is
      declared once and both layers inherit it. Setting any of these on one
      layer alone is the bug this component exists to not have. */
   .layer {
-    position: absolute;
-    inset: 0;
     margin: 0;
     padding: 0;
     border: 0;
@@ -155,19 +152,23 @@
     overflow-wrap: anywhere;
     word-break: normal;
     text-align: left;
-    overflow: auto;
+    /* Neither layer scrolls: the card does. One scroller means nothing to keep
+       in step, which is one whole class of bug that cannot happen here. */
+    overflow: hidden;
   }
 
-  /* Painted, and never interactive: every event belongs to the textarea. */
+  /* In the flow, painted, and never interactive: it is both the picture and the
+     ruler, and every event belongs to the textarea above it. */
   .mirror {
+    position: relative;
+    min-height: 100%;
     color: var(--color-text);
-    /* It is moved by `sync`, not scrolled by the user, and a scrollbar here
-       would be a second one beside the textarea's. */
-    overflow: hidden;
     pointer-events: none;
   }
 
   .field {
+    position: absolute;
+    inset: 0;
     background: none;
     resize: none;
     /* Not `color: transparent`: that erases the selection highlight too, and a

@@ -669,8 +669,11 @@
     flex-direction: column;
     gap: var(--space-2);
     width: 100%;
-    height: 100%;
-    min-height: 0;
+    /* `min-height`, not `height`: the card's content area is a plain block with
+       no definite height of its own, so a percentage *height* here resolves
+       against nothing and collapses -- taking both surfaces with it. Asking to
+       be at least as tall works whether the parent is definite or not. */
+    min-height: 100%;
   }
 
   /* The value never takes more than half of a card it is sharing: a program you
