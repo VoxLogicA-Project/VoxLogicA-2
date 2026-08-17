@@ -145,6 +145,10 @@ are no tabs. Drag files between projects, or use ⌘X / ⌘C / ⌘V.
 | **⌘;** | Label the open file. The same label again takes it off, and so does *Remove* in its menu. |
 | **F2** | Rename. **⌫** deletes, and asks once first. |
 
+**Examples** is a project you did not add and cannot lose: the programs that
+ship with VoxLogicA, ready to open and run. It is read-only — copy a card or a
+file out of it and the copy is yours.
+
 **Labels are written into the file**, on its `//@board` line. So a label
 survives a `git mv`, a copy, or a colleague's mail — there is no index to fall
 out of step. Projects have no labels: a folder has no document to keep them in.

@@ -387,15 +387,24 @@
     return [
       {
         label: "Rename",
-        disabled: project.linked,
-        hint: project.linked ? "linked folders keep their own name" : "double-click",
+        disabled: project.linked || project.builtin,
+        hint: project.builtin
+          ? "this one ships with VoxLogicA"
+          : project.linked
+            ? "linked folders keep their own name"
+            : "double-click",
         onselect: () => startRename("project", project.name, project.name),
       },
-      { label: "New file here", hint: "mod+N", onselect: () => onnewfile?.(project.name) },
+      {
+        label: "New file here",
+        hint: project.builtin ? "the examples are read-only" : "mod+N",
+        disabled: project.builtin,
+        onselect: () => onnewfile?.(project.name),
+      },
       {
         label: buffer === null ? "Paste here" : `Paste ${buffer.paths.length} here`,
-        hint: "mod+V",
-        disabled: buffer === null,
+        hint: project.builtin ? "the examples are read-only" : "mod+V",
+        disabled: buffer === null || project.builtin,
         onselect: () => paste(project.name),
       },
       { label: "Show in folder", hint: "mod+E", onselect: () => onreveal?.(project.path) },
@@ -705,14 +714,19 @@
                 <span class="label">{project.name}</span>
               </button>
             {/if}
-            <Button
-              tone="quiet"
-              size="sm"
-              title="New file in {project.name}"
-              onclick={() => onnewfile?.(project.name)}
-            >
-              +
-            </Button>
+            {#if !project.builtin}
+              <!-- The examples ship with the program: they are there to be read,
+                   run and copied out of, and a plus that offers to write into
+                   them offers something the server refuses. -->
+              <Button
+                tone="quiet"
+                size="sm"
+                title="New file in {project.name}"
+                onclick={() => onnewfile?.(project.name)}
+              >
+                +
+              </Button>
+            {/if}
           </div>
         </ContextMenu>
 

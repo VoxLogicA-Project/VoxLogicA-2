@@ -42,6 +42,42 @@ def root() -> Path:
     return home.workspaces()
 
 
+#: The name the shipped examples appear under. One word, because it is what the
+#: folder is, and because a person scanning a sidebar reads the first one.
+EXAMPLES = "Examples"
+
+
+def examples_root() -> Path | None:
+    """Where the programs that ship with VoxLogicA are, if they are here.
+
+    Nobody should have to find and mount these by hand: the first question a new
+    workspace raises is "what does one of these look like", and the answer is on
+    disk already. So they are a project that is simply always there.
+
+    `None` when there are none -- an installed wheel carries the code and not the
+    examples, and a project pointing at a folder that does not exist would be a
+    row that does nothing when clicked.
+    """
+    # library.py -> ui -> voxlogica -> python -> implementation -> the checkout.
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "examples"
+        if candidate.is_dir() and any(candidate.rglob(f"*{SUFFIX}")):
+            return candidate
+    return None
+
+
+def is_builtin(folder: Path) -> bool:
+    """Whether this project is one of ours rather than one of theirs.
+
+    It is still an ordinary folder of ordinary files -- open them, run them, copy
+    a card out of them. What it is not is *theirs to lose*: forgetting a project
+    they never added would be an offer to break something they did not build.
+    """
+    found = examples_root()
+    return found is not None and folder.resolve() == found.resolve()
+
+
 #: Folders elsewhere on disk that are shown as projects too.
 #:
 #: A list of *locations*, not of content: what is in them is still whatever the
@@ -148,6 +184,10 @@ def _folders() -> list[tuple[str, Path]]:
     )
     seen = {folder.resolve() for _name, folder in inside}
     out = list(inside)
+    shipped = examples_root()
+    if shipped is not None and shipped.resolve() not in seen:
+        seen.add(shipped.resolve())
+        out.append((EXAMPLES, shipped))
     for folder in links():
         resolved = folder.resolve()
         if resolved in seen:
@@ -167,8 +207,15 @@ def scan() -> list[Entry]:
     )
     filed: list[Entry] = []
     for name, folder in _folders():
+        # A project is a flat folder of programs, and that is the model
+        # everywhere except here: the examples ship one folder per example,
+        # because an example is a program *and its data*. Looking one level in
+        # for those is what makes them appear at all -- and it is confined to
+        # the folders we ship, so nobody's own project starts behaving
+        # differently from the folder they can see in Finder.
+        pattern = f"**/*{SUFFIX}" if is_builtin(folder) else f"*{SUFFIX}"
         filed.extend(
-            Entry(path, name) for path in sorted(folder.glob(f"*{SUFFIX}")) if path.is_file()
+            Entry(path, name) for path in sorted(folder.glob(pattern)) if path.is_file()
         )
     return loose + filed
 
@@ -182,7 +229,13 @@ def projects() -> list[dict[str, Any]]:
     """
     linked = {str(folder) for folder in links()}
     return [
-        {"name": name, "path": str(folder), "linked": str(folder) in linked}
+        {
+            "name": name,
+            "path": str(folder),
+            "linked": str(folder) in linked,
+            #: Ours, and so not theirs to forget, rename or delete.
+            "builtin": is_builtin(folder),
+        }
         for name, folder in _folders()
     ]
 
@@ -207,9 +260,26 @@ def folder_of(project: str | None) -> Path:
     return root() / _safe(project)
 
 
+class ReadOnlyProject(Exception):
+    """Somebody tried to write into a project that ships with the program."""
+
+
+def _writable(folder: Path) -> Path:
+    """The folder, if it is somebody's to write in.
+
+    The examples are there to be read, run and copied out of -- not to be the
+    accidental destination of a new file because they happened to be the
+    selected project. Refusing says so; quietly putting the file somewhere else
+    would leave them looking for it.
+    """
+    if is_builtin(folder):
+        raise ReadOnlyProject(f"{EXAMPLES} ships with VoxLogicA; copy a file out of it instead")
+    return folder
+
+
 def new_file(project: str | None = None, name: str | None = None) -> Path:
     """A new, empty file -- in a project, or loose at the top of the library."""
-    folder = folder_of(project)
+    folder = _writable(folder_of(project))
     folder.mkdir(parents=True, exist_ok=True)
     stem = _safe(name) if name else datetime.now().strftime("%Y-%m-%d-%H%M%S")
     candidate = folder / f"{stem}{SUFFIX}"

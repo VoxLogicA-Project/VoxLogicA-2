@@ -17,7 +17,16 @@ from voxlogica.ui.workspace import Workspace
 
 @pytest.fixture(autouse=True)
 def _library(tmp_path, monkeypatch):
+    """An empty library, and nothing else in the sidebar.
+
+    The examples that ship with VoxLogicA are a project that appears without
+    being added, which is the point of them -- and which would otherwise be in
+    every list this file asserts on. These tests are about the *user's* library,
+    so the shipped one is switched off here and tested on its own in
+    test_ui_library_examples.py.
+    """
     monkeypatch.setenv("VOXLOGICA_HOME", str(tmp_path / "appdata"))
+    monkeypatch.setattr(library, "examples_root", lambda: None)
     library.root().mkdir(parents=True)
     return library.root()
 
