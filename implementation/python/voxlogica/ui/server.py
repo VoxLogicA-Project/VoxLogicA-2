@@ -112,7 +112,20 @@ class UIServer:
             ws="websockets",
             log_level="warning",
             access_log=False,
-            lifespan="off",
+            # "auto", not "off". The MCP mount's session manager owns a task
+            # group that must be entered and left by the same task on the loop
+            # that serves requests, and the lifespan is the only place that is
+            # true (see app.py). With it off, every request to /mcp answered
+            # 500 "Task group is not initialized" -- and nothing said so,
+            # because the endpoint's own tests drive the app through TestClient,
+            # which runs the lifespan. The test passed; the server did not work.
+            #
+            # `off` was not a decision about MCP: it predates the mount, from
+            # the first commit of this server, and nobody turned it back on when
+            # the lifespan appeared. `auto` rather than `on` because a UI that
+            # refused to start because an optional MCP surface was unhappy would
+            # be trading the whole application for one of its features.
+            lifespan="auto",
         )
 
         class _Threaded(uvicorn.Server):
