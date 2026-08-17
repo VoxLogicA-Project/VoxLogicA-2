@@ -298,6 +298,26 @@ class Document:
             card["source"] = (
                 _uncomment(segment.body) if card["kind"] == "note" else segment.body
             )
+            # A print or save card is *about* what its own line prints. In an
+            # unarranged file that comes from `outputs()`; here the card's
+            # source is the directive's own `print` line, so it is the same
+            # question asked of one line instead of the whole file. Without
+            # this, laying a board out is what un-binds every output card on it
+            # -- the card reads "not bound to a node yet" about a line that
+            # plainly says what it is about, and its play button computes
+            # nothing.
+            if card["kind"] in ("print", "save") and "node" not in card:
+                from . import analysis
+
+                declared = analysis.outputs(card["source"])
+                if declared:
+                    card["node"] = declared[0].binding or declared[0].expression
+                    if not declared[0].binding:
+                        card["expression"] = declared[0].expression
+                    if declared[0].label:
+                        card.setdefault("title", declared[0].label)
+                        if card["title"] == identity:
+                            card["title"] = declared[0].label
             card["focus"] = _focus_of(card)
             cards.append(card)
         return cards

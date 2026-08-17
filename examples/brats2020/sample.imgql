@@ -1,3 +1,5 @@
+//@board cols=12 rows=8
+//@card id=program kind=code x=0 y=0 w=3 h=8 title=Program
 import "simpleitk"
 import "vox1"
 
@@ -139,20 +141,55 @@ cases = [0, 1, 2, 3, 4]
 
 // Per case, as it finishes -- not only the average at the end. An average is
 // the one number that cannot tell you which case went wrong.
-print "case_002_best" best_dice(0)
-print "case_079_best" best_dice(1)
-print "case_089_best" best_dice(2)
-print "case_230_best" best_dice(3)
-print "case_328_best" best_dice(4)
 
+//@card id=print1 kind=print x=4 y=0 w=2 h=2 page=1
+print "case_002_best" best_dice(0)
+//@card id=print2 kind=print x=6 y=0 w=2 h=2 page=1
+print "case_079_best" best_dice(1)
+//@card id=print3 kind=print x=8 y=0 w=2 h=2 page=1
+print "case_089_best" best_dice(2)
+//@card id=print4 kind=print x=10 y=0 w=2 h=2 page=1
+print "case_230_best" best_dice(3)
+//@card id=print5 kind=print x=4 y=2 w=2 h=2 page=1
+print "case_328_best" best_dice(4)
 // And the whole sweep for one case, so the shape of the curve is visible: this
 // is what tells you whether the best value was a plateau or a spike.
+//@card id=print6 kind=print x=8 y=2 w=4 h=2 page=1
 print "case_230_sweep" sweep(3)
-
+//@card id=print7 kind=print x=6 y=2 w=2 h=2 page=1
 print "average_best" seq_avg(for g in cases do best_dice(g))
-
-// A single segmentation, kept as a volume, so the UI has something to draw and
-// the result can be opened in any viewer. 0.90 is the middle of the sweep --
-// not case 230's best, deliberately: this is the picture of one parameter
-// choice, not of the ceiling.
+// --- The method, drawn ---------------------------------------------------
+// Printing a region prints a *volume*, and the UI draws volumes rather than
+// describing them: open this file with `voxlogica serve` and these six cards
+// are six pictures, in three planes, of the same brain at six stages.
+//
+// This is the argument for writing segmentation as a program you can read. Each
+// line below is one step of the method, and each one is visible on its own --
+// so when a case goes wrong you look at where it went wrong instead of at a
+// Dice score and a guess. Case 230 is the median case; change the index and
+// every card follows.
+//
+// Ordered as the method runs, which is also the order to look at them in.
+//@card id=print8 kind=print x=3 y=0 w=3 h=4 page=0
+print "the_scan" flair_of(3)
+//@card id=print9 kind=print x=0 y=0 w=4 h=4 page=1
+print "1_brain" brain(3)
+//@card id=print10 kind=print x=6 y=0 w=3 h=4 page=0
+print "2_seed" smoothen(geq_sv(seed_level, pflair(3)), 5.0)
+//@card id=print11 kind=print x=9 y=0 w=3 h=4 page=0
+print "3_pool" smoothen(geq_sv(0.90, pflair(3)), 2.0)
+//@card id=print12 kind=print x=3 y=4 w=3 h=4 page=0
+print "4_result" segment(seed_level, 0.90, 3)
+//@card id=print13 kind=print x=6 y=4 w=3 h=4 page=0
+print "5_ground_truth" gt(3)
+// The disagreement, which is the card actually worth looking at: everything the
+// method found that is not tumour, and everything it missed. A Dice of 0.95
+// says how much; only this says *where*, and where is what tells you whether
+// the next parameter is the right thing to reach for.
+//@card id=print14 kind=print x=9 y=4 w=3 h=4 page=0
+print "6_disagreement" xor(segment(seed_level, 0.90, 3), gt(3))
+// And the same segmentation as a file on disk, for anything outside this
+// window. A save is an effect the program declares, so a headless run performs
+// it and a diff shows that it was asked for.
+//@card id=save15 kind=save x=0 y=4 w=4 h=2 page=1
 save "case_230_segmentation.nii.gz" segment(seed_level, 0.90, 3)

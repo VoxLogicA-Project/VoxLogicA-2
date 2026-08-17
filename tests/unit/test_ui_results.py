@@ -54,8 +54,24 @@ def test_a_volume_is_described_rather_than_sent():
 
     value, kind, summary = describe(Volume())
     assert value is None
-    assert kind == "array"
+    # Three dimensions is a volume, whatever class it arrives in. This said
+    # "array" until a board full of printed volumes drew as lines of text: the
+    # summary was accurate and the type was the part a viewer reads, so nothing
+    # could be drawn. The description still leaves the bytes out -- that is the
+    # separate promise above, and the one this test is named for.
+    assert kind == "image"
     assert "(240, 240, 155)" in summary and "float32" in summary
+
+
+def test_something_that_is_not_a_volume_is_still_an_array():
+    """The distinction has to cut somewhere, and it cuts at three dimensions:
+    a viewer that draws a brain has nothing to do with a table of numbers."""
+
+    class Table:
+        shape = (500, 4)
+        dtype = "float64"
+
+    assert describe(Table())[1] == "array"
 
 
 def test_describing_never_raises():

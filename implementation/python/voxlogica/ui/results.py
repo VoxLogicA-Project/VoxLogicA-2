@@ -90,7 +90,12 @@ def describe(value: Any) -> tuple[Any, str, str]:
     size = getattr(value, "GetSize", None)
     if shape is not None:
         dtype = getattr(value, "dtype", "")
-        return None, "array", f"{name} {tuple(shape)} {dtype}".strip()
+        # Three dimensions is a volume, whatever class it arrives in. The engine
+        # hands images over as its own array type, and calling that "array" was
+        # true and useless: it left every printed volume showing its shape as
+        # text next to a viewer that could have drawn it.
+        kind = "image" if len(tuple(shape)) == 3 else "array"
+        return None, kind, f"{name} {tuple(shape)} {dtype}".strip()
     if callable(size):
         try:
             return None, "image", f"{name} {tuple(size())}"
@@ -270,15 +275,45 @@ class Results:
         spoken. Never raises: an unreadable cache is an `unknown`, not a 500."""
         with self._lock:
             known = self._states.get(node_id)
-        if known is not None:
+        # A `done` with nothing in it is the common shape and the misleading
+        # one: a node already in the store is never dispatched, so the engine
+        # reports it finished without ever holding its value. The card is then
+        # told "done" and nothing else -- no type, so no viewer, so a volume
+        # that exists on disk draws as a line of text. The store is asked in
+        # exactly that case, which is also the case where it certainly has it.
+        if known is not None and (known.get("state") != DONE or "valueType" in known):
             return dict(known)
 
         if self._probe is not None:
             try:
                 if self._probe(node_id):
-                    return self._from_store(node_id)
+                    stored = self._from_store(node_id)
+                    # The store knows the node is done; it does not always know
+                    # what the value *is* -- a fetch can fail, or come back as
+                    # something with no description. What went past the engine
+                    # does know. Two answers about one node, and the one that
+                    # says "this is a volume" is the one a card can draw.
+                    if "valueType" not in stored:
+                        with self._lock:
+                            seen = self._states.get(node_id)
+                        if seen and "valueType" in seen:
+                            stored = {**stored, **{
+                                key: seen[key] for key in ("value", "valueType", "summary")
+                                if key in seen
+                            }}
+                    if known is not None:
+                        # The engine's news is never overwritten -- only filled
+                        # in. It is the authority on *when*; the store is the
+                        # authority on *what*.
+                        stored = {**stored, **known, **{
+                            key: stored[key] for key in ("value", "valueType", "summary")
+                            if key in stored
+                        }}
+                    return stored
             except Exception as exc:
                 logger.debug("results store could not be asked about %s (%s)", node_id, exc)
+        if known is not None:
+            return dict(known)
         return {"hash": node_id, "state": UNKNOWN}
 
     def _from_store(self, node_id: str) -> dict[str, Any]:
@@ -291,6 +326,8 @@ class Results:
             # The node is done -- that much the probe established. Only the
             # description failed, and a card that says "done" is still right.
             logger.debug("could not describe %s (%s)", node_id, exc)
+            return event
+        if not kind:
             return event
         if value is not None:
             event["value"] = value
@@ -333,7 +370,12 @@ class Results:
             # engine encoded would be a second opinion about a byte stream.
             name = "volume.nii.gz" if _format_of(value) == "image" else "value.bin"
             return bytes(value), f"{node_id[:16]}-{name}"
-        suffix = ".nii.gz" if hasattr(value, "GetSize") else ".json"
+        # A three-dimensional array is written as a volume, through the same
+        # writer a `save` uses -- so what a viewer draws and what the program
+        # would have written to disk are the same bytes.
+        shape = getattr(value, "shape", None)
+        volumetric = hasattr(value, "GetSize") or (shape is not None and len(tuple(shape)) == 3)
+        suffix = ".nii.gz" if volumetric else ".json"
         try:
             import tempfile
             from pathlib import Path as _Path
@@ -342,6 +384,16 @@ class Results:
                 target = _Path(folder) / f"{node_id[:16]}{suffix}"
                 if suffix == ".nii.gz":
                     import SimpleITK as sitk
+
+                    if not hasattr(value, "GetSize"):
+                        import numpy as _np
+
+                        # Booleans are regions; NIfTI has no bool, and uint8 is
+                        # what every viewer expects a mask to arrive as.
+                        array = _np.asarray(value)
+                        if array.dtype == bool:
+                            array = array.astype("uint8")
+                        value = sitk.GetImageFromArray(array)
 
                     sitk.WriteImage(value, str(target))
                 else:

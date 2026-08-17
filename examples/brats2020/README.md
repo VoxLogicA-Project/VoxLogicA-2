@@ -32,6 +32,21 @@ small may raise no seed at all, and then there is nothing to grow. That is not a
 tuning problem — it is the method being inapplicable, and an example that only
 contained cases it handles would be an advertisement rather than a sample.
 
+## The board
+
+The file carries its own layout, in comments, so `serve` opens a designed board
+rather than a pile:
+
+- **page 1** — the method, drawn. Six volumes in NiiVue: the scan, the seed, the
+  pool, the result, the ground truth, and — the one worth looking at — the
+  **disagreement**, everything the method found that is not tumour and
+  everything it missed. A Dice of 0.958 says how much; only that card says
+  *where*.
+- **page 2** — the numbers, and the brain mask.
+
+Press ▶ on a card to compute what that card is about; its dependencies follow on
+their own, and every card showing one of them updates as it lands.
+
 ## How the five were chosen
 
 Every one of the 369 training ground truths was measured (voxel count, number of
