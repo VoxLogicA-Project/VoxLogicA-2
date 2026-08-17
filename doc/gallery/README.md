@@ -20,6 +20,9 @@ parameter sweep costs far less than the number of parameter combinations
 suggests, and why programs read as definitions of *what* a result is rather than
 instructions for producing it.
 
+Two of them carry data beside the program, in a folder of their own; that data
+is not in git and its README says how to rebuild it from a local dataset.
+
 ## 1 — Language basics
 
 | Program | What it teaches |
@@ -41,6 +44,7 @@ instructions for producing it.
 
 | Program | What it teaches |
 |---|---|
+| [`brats2020/brats-five-cases`](programs/brats2020/brats-five-cases.imgql) | Whole-tumour segmentation on five real cases, swept and scored |
 | [`simpleitk/sitk-threshold`](programs/simpleitk/sitk-threshold.imgql) | Call any SimpleITK filter; derive bounds from the image itself |
 | [`simpleitk/sitk-smooth`](programs/simpleitk/sitk-smooth.imgql) | Write a volume to a computed path (`$stem`) |
 | [`vox1/vox1-dot-ops`](programs/vox1/vox1-dot-ops.imgql) | Arithmetic lifted to whole images (`+.`, `.+`) |

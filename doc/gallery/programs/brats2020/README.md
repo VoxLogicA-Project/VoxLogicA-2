@@ -4,13 +4,13 @@ Whole-tumour segmentation on FLAIR alone — no training, no weights — scored
 against the ground truth. Runs in about 5 seconds.
 
 ```bash
-./voxlogica run examples/brats2020/sample.imgql
+./voxlogica run doc/gallery/programs/brats2020/brats-five-cases.imgql
 ```
 
 Open it in the UI instead, and each step becomes a card:
 
 ```bash
-./voxlogica serve examples/brats2020/sample.imgql
+./voxlogica serve doc/gallery/programs/brats2020/brats-five-cases.imgql
 ```
 
 ## What it prints
@@ -61,8 +61,8 @@ afterwards.
 **not** in git (40 MB). To rebuild it from a local copy of the dataset:
 
 ```bash
-for n in 002 079 089 230 328; do C=BraTS20_Training_$n; mkdir -p examples/brats2020/data/$C; for m in flair t1 t1ce t2 seg; do gzip -c "$BRATS/$C/${C}_$m.nii" > "examples/brats2020/data/$C/${C}_$m.nii.gz"; done; done
+for n in 002 079 089 230 328; do C=BraTS20_Training_$n; mkdir -p doc/gallery/programs/brats2020/data/$C; for m in flair t1 t1ce t2 seg; do gzip -c "$BRATS/$C/${C}_$m.nii" > "doc/gallery/programs/brats2020/data/$C/${C}_$m.nii.gz"; done; done
 ```
 
-Point `dataset_root` in `sample.imgql` at the full dataset and nothing else
+Point `dataset_root` in `brats-five-cases.imgql` at the full dataset and nothing else
 changes — the five are the same files, and the indices are folder order.

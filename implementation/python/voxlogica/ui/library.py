@@ -59,9 +59,13 @@ def examples_root() -> Path | None:
     row that does nothing when clicked.
     """
     # library.py -> ui -> voxlogica -> python -> implementation -> the checkout.
+    # `doc/gallery` is where they actually live: a reading path through the
+    # language, ordered in its own README, every program self-contained and
+    # printing something. Pointing anywhere else would be inventing a second
+    # collection beside the one that is maintained.
     here = Path(__file__).resolve()
     for parent in here.parents:
-        candidate = parent / "examples"
+        candidate = parent / "doc" / "gallery" / "programs"
         if candidate.is_dir() and any(candidate.rglob(f"*{SUFFIX}")):
             return candidate
     return None

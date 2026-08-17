@@ -1,5 +1,5 @@
 //@board cols=12 rows=8
-//@card id=program kind=code x=0 y=0 w=3 h=8 title=Program
+//@card id=program title="Program" kind=code x=0 y=0 w=10 h=12 auto=false
 import "simpleitk"
 import "vox1"
 
@@ -25,7 +25,7 @@ import "vox1"
 // Point this at the full dataset and nothing else here has to change; the
 // sample is 5 of the same 369 files, chosen and not cherry-picked (see
 // README.md for how, and what each one is for).
-dataset_root = "./examples/brats2020/data"
+dataset_root = "./doc/gallery/programs/brats2020/data"
 
 flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
 seg_paths = dir(dataset_root, "*_seg.nii.gz", true, true)
@@ -170,23 +170,23 @@ print "average_best" seq_avg(for g in cases do best_dice(g))
 // every card follows.
 //
 // Ordered as the method runs, which is also the order to look at them in.
-//@card id=print8 kind=print x=3 y=0 w=3 h=4 page=0
+//@card id=print8 kind=print x=10 y=0 w=3 h=4 page=0
 print "the_scan" flair_of(3)
 //@card id=print9 kind=print x=0 y=0 w=4 h=4 page=1
 print "1_brain" brain(3)
-//@card id=print10 kind=print x=6 y=0 w=3 h=4 page=0
+//@card id=print10 kind=print x=13 y=0 w=3 h=4 page=0
 print "2_seed" smoothen(geq_sv(seed_level, pflair(3)), 5.0)
-//@card id=print11 kind=print x=9 y=0 w=3 h=4 page=0
+//@card id=print11 kind=print x=16 y=0 w=3 h=4 page=0
 print "3_pool" smoothen(geq_sv(0.90, pflair(3)), 2.0)
-//@card id=print12 kind=print x=3 y=4 w=3 h=4 page=0
+//@card id=print12 kind=print x=10 y=4 w=3 h=4 auto=false page=0
 print "4_result" segment(seed_level, 0.90, 3)
-//@card id=print13 kind=print x=6 y=4 w=3 h=4 page=0
+//@card id=print13 kind=print x=13 y=4 w=3 h=4 page=0
 print "5_ground_truth" gt(3)
 // The disagreement, which is the card actually worth looking at: everything the
 // method found that is not tumour, and everything it missed. A Dice of 0.95
 // says how much; only this says *where*, and where is what tells you whether
 // the next parameter is the right thing to reach for.
-//@card id=print14 kind=print x=9 y=4 w=3 h=4 page=0
+//@card id=print14 kind=print x=16 y=4 w=3 h=4 page=0
 print "6_disagreement" xor(segment(seed_level, 0.90, 3), gt(3))
 // And the same segmentation as a file on disk, for anything outside this
 // window. A save is an effect the program declares, so a headless run performs

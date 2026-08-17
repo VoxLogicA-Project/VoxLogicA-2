@@ -19,10 +19,21 @@ from voxlogica.ui import library
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_the_examples_are_found_in_the_checkout():
+def test_the_examples_are_the_gallery_and_not_a_second_collection():
+    """`doc/gallery` is the maintained one: a reading path through the language,
+    ordered in its own README. Pointing the sidebar at anything else would be
+    inventing a second collection beside it, which is how the first version of
+    this shipped -- one folder, one example, next to a gallery of twenty."""
     found = library.examples_root()
     assert found is not None, "the shipped examples are not being found"
-    assert found == ROOT / "examples"
+    assert found == ROOT / "doc" / "gallery" / "programs"
+
+
+def test_the_whole_gallery_is_there():
+    listed = {entry.path.stem for entry in library.scan() if entry.project == library.EXAMPLES}
+    on_disk = {path.stem for path in (ROOT / "doc" / "gallery" / "programs").rglob("*.imgql")}
+    assert listed == on_disk
+    assert len(listed) > 5, "the gallery is barely there; is the scan finding subfolders?"
 
 
 def test_they_appear_as_a_project_nobody_added():
@@ -44,9 +55,10 @@ def test_an_example_in_a_subfolder_is_still_listed():
     """An example is a program *and its data*, so each lives in its own folder.
     A flat listing would show an empty project -- which is how this was found."""
     files = [entry.path for entry in library.scan() if entry.project == library.EXAMPLES]
-    assert any(path.name == "sample.imgql" for path in files), (
+    assert any(path.name == "brats-five-cases.imgql" for path in files), (
         "the BraTS example is not in the list; only the top level is being read"
     )
+    assert any(path.name == "intro-hello.imgql" for path in files)
 
 
 def test_looking_deeper_is_confined_to_what_we_ship(tmp_path, monkeypatch):
