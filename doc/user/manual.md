@@ -146,8 +146,10 @@ are no tabs. Drag files between projects, or use ⌘X / ⌘C / ⌘V.
 | **F2** | Rename. **⌫** deletes, and asks once first. |
 
 **Examples** is a project you did not add and cannot lose: the programs that
-ship with VoxLogicA, ready to open and run. It is read-only — copy a card or a
-file out of it and the copy is yours.
+ship with VoxLogicA, ready to open and run. They are **read-only**, and the
+footer says so while one is open — there is no Save here, so a file that took
+your edit and lost it would be the worst answer. Move… saves a copy wherever
+you like, and the copy is yours to change.
 
 **Labels are written into the file**, on its `//@board` line. So a label
 survives a `git mv`, a copy, or a colleague's mail — there is no index to fall

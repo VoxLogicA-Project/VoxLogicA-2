@@ -712,6 +712,16 @@
     >
       {showing === "document" ? "showing the file" : "showing the cards"}
     </Button>
+    {#if workspace.readOnly}
+      <!-- There is no Save in this application: the file is the document and it
+           is written shortly after you stop typing. So "read-only" is not a
+           mode somebody chose -- it is the one thing that has to be said out
+           loud, or an example would look like it took your edit and then lose
+           it the next time you opened it. -->
+      <span class="readonly" title="Ships with VoxLogicA. Copy it out to edit it.">
+        read-only
+      </span>
+    {/if}
     <span class="spacer"></span>
     <Button tone="quiet" size="sm" onclick={() => (helping = true)} title="Shortcuts (?)">
       ?
@@ -889,6 +899,15 @@
   /* Pushes whatever follows to the far end, without being a thing itself.
      `margin-left: auto` on a label meant the label had to exist to do it, and
      it was the label that had nothing useful to say. */
+  .readonly {
+    padding: 0 var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    line-height: 1.8;
+  }
+
   .spacer {
     flex: 1;
   }

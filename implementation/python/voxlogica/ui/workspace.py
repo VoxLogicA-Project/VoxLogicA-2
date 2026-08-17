@@ -139,6 +139,10 @@ class Workspace:
                 #: snapshot because it is a property of the text, and the text
                 #: is what just changed.
                 "nodes": self._nodes(source),
+                #: Ours rather than theirs: the examples are read, run and
+                #: copied out of, never written to. The board still moves --
+                #: what it will not do is put that back on disk.
+                "readOnly": self.read_only,
                 "canUndo": bool(self._past),
                 "canRedo": bool(self._future),
             }
@@ -241,6 +245,12 @@ class Workspace:
                 # the file when only the view changed would show up as work in
                 # every tool that watches it.
                 if self.path is None or not self.document.dirty:
+                    return
+                if self.read_only:
+                    # An example is a thing to read, run and copy out of. There
+                    # is no Save in this application -- the file *is* the
+                    # document -- so the only way to keep that true and keep the
+                    # examples intact is to not write here at all.
                     return
                 # The directory may not exist yet: a scratch workspace names its
                 # file before there is anything to put in it, and this is the
@@ -436,11 +446,24 @@ class Workspace:
         self.flush()
         return native.reveal(path)
 
+    @property
+    def read_only(self) -> bool:
+        """Whether this document is ours rather than theirs. See library.py."""
+        from . import library
+
+        return library.is_read_only(self.path)
+
     def save(self, path: str | None = None) -> str:
         with self._lock:
             target = Path(path) if path else self.path
             if target is None:
                 raise ValueError("no path to save to")
+            from . import library
+
+            # `save` with a path is Save As, and saving an example *somewhere
+            # else* is exactly the right way to start editing one.
+            if library.is_read_only(target):
+                raise PermissionError(f"{target.name} ships with VoxLogicA and is read-only")
             target.write_text(self.document.to_imgql())
             self.path = target
             return str(target)

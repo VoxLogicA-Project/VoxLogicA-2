@@ -87,3 +87,60 @@ def test_it_cannot_be_forgotten_because_it_was_never_linked():
     shipped = library.examples_root()
     assert shipped is not None
     assert shipped.resolve() not in {folder.resolve() for folder in library.links()}
+
+
+# ------------------------------------------------------------- and read-only
+
+
+def test_an_example_is_never_written_to(tmp_path, monkeypatch):
+    """The gap the project-level guard left, and the one that actually bit.
+
+    There is no Save here -- the file *is* the document, written shortly after
+    you stop -- so opening an example and nudging one card put a layout comment
+    into the checkout. It was found as a stray `//@card` in a shipped example,
+    committed by accident.
+    """
+    from voxlogica.ui.workspace import Workspace
+
+    shipped = library.examples_root()
+    assert shipped is not None
+    example = next(shipped.rglob("*.imgql"))
+    before = example.read_text()
+
+    workspace = Workspace(path=example)
+    assert workspace.read_only is True
+    workspace.document.place(workspace.document.cards[0]["id"], page=3)
+    workspace.flush()
+    assert example.read_text() == before, "an example was written to"
+
+
+def test_the_snapshot_says_so(tmp_path):
+    """Refusing in silence would be the worst of both: the edit appears to take
+    and is gone the next time the file is opened."""
+    from voxlogica.ui.workspace import Workspace
+
+    shipped = library.examples_root()
+    assert shipped is not None
+    assert Workspace(path=next(shipped.rglob("*.imgql"))).snapshot()["readOnly"] is True
+
+    ordinary = tmp_path / "mine.imgql"
+    ordinary.write_text("let a = 1\n")
+    assert Workspace(path=ordinary).snapshot()["readOnly"] is False
+
+
+def test_saving_it_somewhere_else_is_how_you_start_editing_one(tmp_path):
+    """Save As is not blocked -- it is the answer. What is blocked is putting it
+    back where it came from."""
+    from voxlogica.ui.workspace import Workspace
+
+    shipped = library.examples_root()
+    assert shipped is not None
+    workspace = Workspace(path=next(shipped.rglob("*.imgql")))
+
+    mine = tmp_path / "mine.imgql"
+    assert workspace.save(str(mine)) == str(mine)
+    assert mine.exists()
+    assert workspace.read_only is False, "the copy is mine to edit"
+
+    with pytest.raises(PermissionError):
+        workspace.save(str(next(shipped.rglob("*.imgql"))))

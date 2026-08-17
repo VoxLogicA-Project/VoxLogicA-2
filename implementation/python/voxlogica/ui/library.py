@@ -71,6 +71,27 @@ def examples_root() -> Path | None:
     return None
 
 
+def is_read_only(path: Path | None) -> bool:
+    """Whether this file is one of ours, and so not to be written to.
+
+    The project being read-only was not enough: it stopped a *new* file being
+    made in there, and said nothing about the file already open. Opening an
+    example and nudging a card wrote a layout comment into the checkout --
+    silently, because saving is what this application does instead of having a
+    Save. So the question is asked of the document too, at the one place that
+    writes.
+    """
+    if path is None:
+        return False
+    found = examples_root()
+    if found is None:
+        return False
+    try:
+        return found.resolve() in Path(path).resolve().parents
+    except OSError:
+        return False
+
+
 def is_builtin(folder: Path) -> bool:
     """Whether this project is one of ours rather than one of theirs.
 
