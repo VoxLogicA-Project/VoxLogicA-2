@@ -14,7 +14,8 @@ behind the program (see the end).
 | `voxlogica run program.imgql` | Runs a program, serving a UI beside it. |
 | `voxlogica serve program.imgql` | The UI on a program, computing nothing until asked. |
 
-The window is the operating system's own web view. If your machine has none, a
+The window is the operating system's own web view, with the application's own
+icon in the Dock and in ⌘-Tab. If your machine has none, a
 browser window is used instead — the same UI, a worse frame.
 `VOXLOGICA_DEVTOOLS=1` opens it with the inspector showing;
 `VOXLOGICA_NO_NATIVE_WINDOW=1` forces the browser.

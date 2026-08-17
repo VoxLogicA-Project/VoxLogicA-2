@@ -148,6 +148,12 @@ def run_native(
     if devtools is None:
         devtools = bool(os.environ.get(_DEVTOOLS))
 
+    # Before the window exists, so it never appears wearing the generic Python
+    # rocket and then changing. See icon.py.
+    from . import icon
+
+    icon.apply_to_dock()
+
     window = webview.create_window(
         title,
         url,

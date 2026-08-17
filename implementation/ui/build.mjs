@@ -10,7 +10,7 @@
 // On failure it prints esbuild's own formatted diagnostics to stderr and exits
 // nonzero; the server turns that into an in-page overlay rather than a 500.
 
-import { glob, mkdir, writeFile } from "node:fs/promises";
+import { copyFile, glob, mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -110,6 +110,13 @@ const result = await esbuild.build({
 // or a newly added import, still invalidates correctly because the server
 // hashes the whole tree -- this metafile is here for debugging which files a
 // bundle came from).
+// The mark, copied rather than redrawn. It is the single source: the page links
+// to it, the application window sets the Dock icon from it, and anything else
+// that needs one reads the same bytes. An icon inlined into the HTML was how
+// this drifted the first time -- two copies of one drawing, and only one of
+// them ever got updated.
+await copyFile(resolve(here, "icon.svg"), resolve(outdir, "icon.svg"));
+
 await writeFile(
   resolve(outdir, "meta.json"),
   JSON.stringify({ inputs: Object.keys(result.metafile.inputs) }, null, 2),

@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 _IGNORED_DIRS = {"node_modules", "dist", ".git", ".svelte-kit", "__pycache__"}
 
 # Files outside src/ that still change the output.
-_ROOT_INPUTS = ("index.html", "build.mjs", "package.json", "package-lock.json")
+_ROOT_INPUTS = ("index.html", "icon.svg", "build.mjs", "package.json", "package-lock.json")
 
 _BUILD_TIMEOUT = 180.0
 _INSTALL_TIMEOUT = 600.0
