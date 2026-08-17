@@ -95,7 +95,10 @@ Values are addressed by content, so anything computed before — by an earlier
 run, in another window, yesterday — is already `done` and shows at once.
 
 A node reads as **not computed**, **queued**, **computing**, **done**, or
-**failed**.
+**failed**. An image or a volume is *drawn*: hover it to make it live, and drag
+in it to move the crosshair. Only a handful of viewers can be live at once —
+the rest keep their last frame until you approach them, because a browser has
+about sixteen WebGL contexts to give and a board can hold more cards than that.
 
 ---
 

@@ -290,3 +290,31 @@ def test_an_observer_that_raises_does_not_fail_the_run():
         storage_backend=NoCacheStorageBackend(), no_cache=True, observe=hostile
     ).execute_workplan(plan)
     assert outcome.success
+
+
+# ------------------------------------------------------- the bytes themselves
+
+
+def test_bytes_come_from_the_store_when_it_has_them():
+    """The route a viewer that draws rather than describes actually uses."""
+    results = Results(FakeHub(), probe=lambda h: True, fetch=lambda h: {"a": 1})
+    payload = results.bytes_of("abc")
+    assert payload is not None
+    data, name = payload
+    assert data == b'{"a": 1}'
+    assert name.endswith(".json")
+
+
+def test_bytes_fall_back_to_what_the_engine_reported():
+    """The store does not hold everything the engine computes -- trivial
+    arithmetic is folded and never persisted. Answering "not computed" for a
+    node that plainly is would be the UI contradicting itself on one screen."""
+    results = Results(FakeHub())
+    results.observe("abc", "done", value=5.0)
+    data, _name = results.bytes_of("abc")
+    assert data == b"5.0"
+
+
+def test_bytes_are_absent_rather_than_invented():
+    results = Results(FakeHub())
+    assert results.bytes_of("never") is None

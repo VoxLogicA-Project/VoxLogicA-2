@@ -530,9 +530,17 @@
             {/if}
             {#if lens !== "source" && card.focus}
               {@const hash = results.hashFor(card.focus)}
+              {@const shown = results.get(hash)}
+              {@const how = viewerFor(card, shown)}
               <ResultSubscription node={card.focus} />
               <div class="value" class:only={lens === "value"}>
-                <ResultState result={results.get(hash)} node={card.focus} />
+                {#if how.bytes && shown.state === "done"}
+                  <!-- The bytes themselves, and only once the node is done:
+                       the URL is the hash, so it is immutable and cacheable. -->
+                  <how.component layers={[{ hash, url: `/api/node/${hash}` }]} />
+                {:else}
+                  <ResultState result={shown} node={card.focus} />
+                {/if}
               </div>
             {/if}
           </div>

@@ -15,6 +15,7 @@
 import TextEditor from "./TextEditor.svelte";
 import SourceEditor from "../source/SourceEditor.svelte";
 import ResultState from "./ResultState.svelte";
+import Volume from "./Volume.svelte";
 
 /** What a result's type is called, and who draws it.
  *
@@ -26,6 +27,9 @@ const BY_RESULT_TYPE = {
   number: { component: ResultState, mono: true, editable: false, result: true },
   string: { component: ResultState, mono: false, editable: false, result: true },
   boolean: { component: ResultState, mono: true, editable: false, result: true },
+  // The first viewer that draws the thing instead of describing it. A row,
+  // exactly as the table promised -- no branch anywhere else changed.
+  image: { component: Volume, mono: false, editable: false, result: true, bytes: true },
 };
 
 const BY_KIND = {

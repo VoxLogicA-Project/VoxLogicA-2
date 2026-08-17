@@ -134,6 +134,33 @@ def build_app(
             raise HTTPException(status_code=404, detail="no workspace")
         return JSONResponse(await screenshot(hub, captures, payload.get("target")))
 
+    @app.get("/api/node/{node_id}")
+    async def node_bytes(node_id: str) -> Response:
+        """A node's value as a file, for a viewer that wants the thing itself.
+
+        Everything else about a node travels as a description -- a card showing
+        a 240x240x155 volume wants to know that it is one. This is the one route
+        that hands over the bytes, and only a viewer that has decided to draw
+        them asks for it.
+
+        Immutable by construction: the URL *is* the content hash, so the browser
+        may cache it forever and never has to ask whether it changed.
+        """
+        if results is None:
+            raise HTTPException(status_code=404, detail="no results here")
+        payload = await asyncio.to_thread(results.bytes_of, node_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="not computed")
+        data, filename = payload
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "Content-Disposition": f'inline; filename="{filename}"',
+            },
+        )
+
     @app.get("/api/build")
     async def build_status() -> JSONResponse:
         bundle, error = await asyncio.to_thread(bundle_or_error)

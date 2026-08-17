@@ -246,6 +246,52 @@ class Results:
             event["summary"] = summary
         return event
 
+    def bytes_of(self, node_id: str) -> tuple[bytes, str] | None:
+        """A node's value as a file, and what to call it.
+
+        For viewers that draw the thing rather than describe it. Written to a
+        temporary file by the same writer `save` uses, so what a viewer receives
+        is byte-identical to what the program would have written -- one encoder,
+        and no second format for a volume to be wrong in.
+        """
+        value = None
+        if self._fetch is not None:
+            try:
+                value = self._fetch(node_id)
+            except Exception as exc:
+                logger.debug("could not fetch %s (%s)", node_id, exc)
+        if value is None:
+            # The store is asked first because it is where anything large lives,
+            # but it does not hold everything the engine computes: trivial
+            # arithmetic is folded and never persisted. What we saw go past is
+            # then the only copy, and a viewer asking for it should not be told
+            # "not computed" about a node that plainly is.
+            with self._lock:
+                known = self._states.get(node_id)
+            value = known.get("value") if known else None
+        if value is None:
+            return None
+
+        suffix = ".nii.gz" if hasattr(value, "GetSize") else ".json"
+        try:
+            import tempfile
+            from pathlib import Path as _Path
+
+            with tempfile.TemporaryDirectory() as folder:
+                target = _Path(folder) / f"{node_id[:16]}{suffix}"
+                if suffix == ".nii.gz":
+                    import SimpleITK as sitk
+
+                    sitk.WriteImage(value, str(target))
+                else:
+                    import json
+
+                    target.write_text(json.dumps(value, default=str))
+                return target.read_bytes(), target.name
+        except Exception as exc:
+            logger.debug("could not serialise %s (%s)", node_id, exc)
+            return None
+
     def observe(self, node_id: str, state: str, *, value: Any = None,
                 error: str | None = None) -> None:
         """A transition, from the engine. Safe from any thread, and cheap: this
