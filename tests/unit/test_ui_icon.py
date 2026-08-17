@@ -83,12 +83,33 @@ def test_asking_for_the_dock_never_raises(monkeypatch):
     assert icon.apply_to_dock() in (True, False)  # false on macOS, false elsewhere
 
 
+def test_the_application_is_called_what_it_is():
+    """Without a bundle, macOS names the window after the interpreter -- so the
+    menu bar and cmd-Tab said "Python 3.14t", which is not what anybody
+    launched."""
+    if sys.platform != "darwin":
+        pytest.skip("bundles are a macOS idea")
+    pytest.importorskip("Foundation")
+    from Foundation import NSBundle, NSProcessInfo
+
+    assert icon.name_the_application() is True
+    assert NSBundle.mainBundle().infoDictionary().get("CFBundleName") == icon.NAME
+    assert NSProcessInfo.processInfo().processName() == icon.NAME
+
+
+def test_naming_never_raises(monkeypatch):
+    """A name is never worth a window that did not open."""
+    monkeypatch.setattr(icon.sys, "platform", "linux")
+    assert icon.name_the_application() is False
+
+
 def test_the_window_sets_it_before_the_window_exists():
     """A window that appeared with the generic Python rocket and then changed
     would say "a script somebody left running" for exactly long enough."""
     from voxlogica.ui import window
 
     source = icon.Path(window.__file__).read_text()
-    before = source.index("icon.apply_to_dock()")
     creation = source.index("webview.create_window")
-    assert before < creation
+    # The menu bar is built once; a name set after it is a name nobody sees.
+    assert source.index("icon.name_the_application(") < creation
+    assert source.index("icon.apply_to_dock()") < creation
