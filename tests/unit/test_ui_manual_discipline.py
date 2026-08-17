@@ -118,8 +118,8 @@ def test_every_shortcut_is_in_the_manual():
     def spoken(keys: str) -> list[str]:
         return [
             part.strip()
+            .replace("shift+mod+", "⇧⌘")
             .replace("mod+", "⌘")
-            .replace("shift+⌘", "⇧⌘")
             .replace("Backspace", "⌫")
             .replace("shift+arrows", "⇧arrows")
             for part in keys.split("/")

@@ -60,6 +60,9 @@
     onselect,
     /** The card was asked to compute what it is about. Absent = no button. */
     onrun,
+    /** `(lens)` — this card shows something other than what the board shows.
+     * An empty string puts it back to following the board. */
+    onlens,
     /** Declare what this card is about as an output of the program. */
     onsaveThis,
     onprintThis,
@@ -94,6 +97,25 @@
           hint: "mod+R",
           onselect: onderive,
         },
+      onlens && { separator: true },
+      ...(onlens
+        ? [
+            // The footer control sets every card at once, which is right for a
+            // board you read at a glance and wrong for the one volume among
+            // twenty programs. This is where a card says otherwise -- and
+            // "follow the board" has to be here too, or an override is a
+            // decision with no way back.
+            { label: "Shows: follow the board", hint: "shift+mod+L", checked: !card.view,
+              onselect: () => onlens("") },
+            { label: "Shows: code", hint: "shift+mod+L", checked: card.view === "source",
+              onselect: () => onlens("source") },
+            { label: "Shows: code + value", hint: "shift+mod+L", checked: card.view === "both",
+              onselect: () => onlens("both") },
+            { label: "Shows: value", hint: "shift+mod+L", checked: card.view === "value",
+              onselect: () => onlens("value") },
+          ]
+        : []),
+      onsaveThis && { separator: true },
       onsaveThis && {
         label: "Save this",
         hint: "writes a save into the program",

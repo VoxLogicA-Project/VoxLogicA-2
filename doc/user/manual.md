@@ -109,14 +109,12 @@ about sixteen WebGL contexts to give and a board can hold more cards than that.
 
 ---
 
-## Three distances — ⌘L
-
-The program and its values are one thing seen from further back or closer in.
+## What cards show — ⌘L
 
 | | |
 |---|---|
-| **source** | The program. Every name it binds is underlined with the state of what it names. |
-| **both** | The program, and what the focused name currently comes to. *(default)* |
+| **code** | The program. Every name it binds is underlined with the state of what it names. |
+| **code + value** | The program, and what the focused name currently comes to. *(default)* |
 | **value** | The value alone. |
 
 **Select any part of a program** and the footer says what it is and whether this
@@ -125,8 +123,10 @@ document's context*, so `threshold(flair, 0.6)` means what it means there — an
 if the same expression was computed yesterday under a different name, it is
 already `computed`, because a value is its content (`results.hashOf`).
 
-⌘L moves the whole board. A single card can be set differently, and then stops
-following.
+**⌘L** changes it for every card at once — the control at the bottom of the
+window says which. **⇧⌘L** changes the selected card alone, cycling through the
+three and back to following the board; its own menu lists the same choices
+under **Shows:**.
 
 ---
 

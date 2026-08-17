@@ -189,6 +189,12 @@
           onclick={() => choose(item)}
           onmouseenter={() => (activeIndex = index)}
         >
+          <!-- A tick, in a column that is always there: items in a set of
+               choices must not shift sideways as the choice moves between
+               them. -->
+          {#if item.checked !== undefined}
+            <span class="tick" aria-hidden="true">{item.checked ? "✓" : ""}</span>
+          {/if}
           <span class="item-label">{item.label}</span>
           {#if item.hint}<span class="hint">{item.hint}</span>{/if}
         </button>
@@ -237,6 +243,12 @@
   .item:hover:not(:disabled),
   .item:focus-visible {
     background: var(--color-surface-hover);
+  }
+
+  .tick {
+    flex: none;
+    width: 1em;
+    color: var(--color-accent);
   }
 
   .item.danger {

@@ -79,6 +79,9 @@
     onactivate = undefined,
     /** `(id)` — a card asked to compute what it is about. */
     onrun = undefined,
+    /** `(id, lens)` — a card was told to show something other than the board's
+     * choice; an empty lens puts it back to following. */
+    onlens = undefined,
     /** `(id)` — declare what a card is about as an output of the program. */
     onsavethis = undefined,
     onprintthis = undefined,
@@ -240,8 +243,24 @@
   );
 
   /** A card's effective size: what it was given, or what it measured. */
+  /** A card's size in cells: what it just measured, or what it was given.
+   *
+   * The order matters and it is not the obvious one. For a self-sizing card the
+   * *measurement* wins, and the document's `w`/`h` are the last one it was
+   * told -- because the card re-measures whenever its content changes, and a
+   * measurement that never took effect here would be reported again on the next
+   * frame, and the next, forever. That is exactly what happened the day sizes
+   * started being written to the document: `card.w` began to exist for auto
+   * cards, took precedence, and the measure effect became an infinite loop
+   * reading the state it wrote.
+   *
+   * A card somebody sized by hand is not auto, and then the given size is the
+   * only truth there is.
+   */
   function sizeOf(card) {
-    return { w: card.w ?? measured[card.id]?.w ?? 1, h: card.h ?? measured[card.id]?.h ?? 1 };
+    const seen = measured[card.id];
+    if (card.auto && seen) return { w: seen.w, h: seen.h };
+    return { w: card.w ?? seen?.w ?? 1, h: card.h ?? seen?.h ?? 1 };
   }
 
   // The tokens own the geometry; JS asks the browser what they came to in
@@ -1056,6 +1075,7 @@
             oncut={oncutcards}
             ondragout={cardsText ? (event) => dragOut(card, event) : undefined}
             onrun={onrun ? () => onrun(card.id) : undefined}
+            onlens={onlens ? (lens) => onlens(card.id, lens) : undefined}
             onsaveThis={onsavethis ? () => onsavethis(card.id) : undefined}
             onprintThis={onprintthis ? () => onprintthis(card.id) : undefined}
             onfocusbinding={onfocusbinding ? (name) => onfocusbinding(card.id, name) : undefined}

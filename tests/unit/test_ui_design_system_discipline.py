@@ -311,3 +311,27 @@ def test_the_board_never_asks_a_rendering_filter_about_geometry():
     needed = text[text.index("const needed = $derived("):]
     needed = needed[: needed.index("  );")]
     assert "occupants" in needed and "visible" not in needed
+
+
+def test_a_self_sizing_card_trusts_its_own_measurement_first():
+    """An effect that reads the state it writes runs forever.
+
+    Twice now. The board reports a measurement; if the size it then lays out
+    with comes from the *document* instead, the measurement never takes effect
+    here, so the card reports it again next frame, and the next --
+    `effect_update_depth_exceeded`, which arrives as a frozen window.
+
+    So for an auto card the measurement wins and the stored size is the last
+    one the document was told. Named here because the fix is one line and the
+    symptom points nowhere near it.
+    """
+    board = _UI / "src" / "lib" / "components" / "Bento" / "Bento.svelte"
+    if not board.exists():
+        pytest.skip("no UI sources here")
+    text = board.read_text()
+    start = text.index("function sizeOf(")
+    body = text[start : text.index("\n  }", start)]
+    assert "card.auto && seen" in body, (
+        "sizeOf must prefer a fresh measurement for an auto card, or the "
+        "measure effect never settles"
+    )

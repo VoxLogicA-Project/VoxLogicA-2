@@ -280,7 +280,8 @@
       // mod+L, never a bare letter: the letters belong to whoever is typing
       // into a card, and that rule has no exceptions.
       event.preventDefault();
-      cycleLens();
+      if (event.shiftKey) cycleCardLens();
+      else cycleLens();
     }
   }
 
@@ -319,6 +320,23 @@
   function cycleLens() {
     const at = LENSES.indexOf(workspace.view.lens);
     view.setLens(LENSES[(at + 1) % LENSES.length]);
+  }
+
+  /** The selected card's own answer, cycled -- including back to "follow the
+   * board", because an override with no way back is a decision you cannot undo
+   * by the same means you made it.
+   *
+   * One chord for four choices rather than four chords: they are positions in
+   * one setting, and a keyboard that needed a key per position would be
+   * teaching the wrong shape. */
+  const CARD_LENSES = ["", ...LENSES];
+
+  function cycleCardLens() {
+    for (const id of workspace.view.selection) {
+      const card = workspace.cards.find((entry) => entry.id === id);
+      const at = CARD_LENSES.indexOf(card?.view ?? "");
+      cardActions.setViewMode(id, CARD_LENSES[(at + 1) % CARD_LENSES.length]);
+    }
   }
 
   /** How far back to stand from this card.
@@ -501,6 +519,7 @@
       onpastecards={() => pasteCards()}
       onmeasured={(id, w, h) => board.measured(id, w, h)}
       onrun={(id) => cardActions.run(id)}
+      onlens={(id, lens) => cardActions.setViewMode(id, lens)}
       onsavethis={(id) => cardActions.saveThis(id)}
       onprintthis={(id) => cardActions.printThis(id)}
       onfocusbinding={(id, name) => cardActions.setFocus(id, name)}
