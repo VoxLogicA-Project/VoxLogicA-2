@@ -532,11 +532,53 @@
    *
    * Without this the card snaps home for the length of one server round trip
    * and then jumps to where it was dropped -- the flash. The board keeps
-   * drawing what it was told until the layout it is given agrees, or until the
-   * grace period says the change was refused after all.
+   * drawing what it was told until the layout it is given agrees.
+   *
+   * **This is a preview, never a decision.** The document is the only authority
+   * on where a card is: it refuses an overlapping arrangement, and it applies a
+   * gesture whole or not at all. What is here is the board drawing its guess at
+   * the answer for the length of one round trip, and taking the guess back the
+   * instant the real answer disagrees.
+   *
+   * A refusal used to be *inferred from silence* -- nothing came back within
+   * 900ms, so the drop must have been refused. Two ways to be wrong, and both
+   * happened: a slow answer dropped a placement that had in fact been accepted,
+   * producing exactly the snap-home-then-jump this exists to prevent; and a
+   * refusal that arrived promptly still sat on screen for the rest of the grace
+   * period, showing a layout that was not real. The action returns whether it
+   * was applied, so nothing has to be inferred: `commit` below waits for the
+   * answer. The timer that remains is not a verdict, only the end of waiting for
+   * one that is never coming.
    */
   let pending = $state({});
   let pendingSince = 0;
+
+  /** Send an arrangement, and take the preview back if it was refused.
+   *
+   * Every optimistic placement goes through here, so there is one place where
+   * the browser's guess meets the document's answer -- and no caller has to
+   * remember to check.
+   */
+  async function commitArrangement(placements, ids = placements.map((spot) => spot.id)) {
+    // `ids` is the whole gesture, which is wider than the placements sent: a
+    // card that ended where it started is part of the arrangement and has
+    // nothing to say to the server, but its preview has to come back too if the
+    // arrangement was refused.
+    const outcome = await onarrange?.(placements);
+    // No answer at all (a host that wires `onarrange` to something returning
+    // nothing) leaves the preview to the layout echo, which is where it was
+    // before there was an answer at all.
+    if (outcome === undefined || outcome === null) return;
+    // Two different failures, and only one of them is an error. `ok: false` is
+    // the message never arriving -- a closed socket. `ok: true, result: false`
+    // is the document having considered this arrangement and declined it, which
+    // is the ordinary answer to dropping a card where one does not fit.
+    const applied = outcome === true || (outcome.ok === true && outcome.result !== false);
+    if (applied) return;
+    pending = Object.fromEntries(
+      Object.entries(pending).filter(([id]) => !ids.includes(id)),
+    );
+  }
 
   $effect(() => {
     if (Object.keys(pending).length === 0) return;
@@ -555,11 +597,14 @@
       }),
     );
     if (Object.keys(settled).length !== Object.keys(pending).length) pending = settled;
-    // A refusal never arrives as a change, so it has to time out. Long enough
-    // for a round trip, short enough that a rejected drop does not linger.
+    // Not the refusal signal -- `commitArrangement` has that from the document
+    // itself. This is only for an answer that never comes: a dropped socket, a
+    // server that went away. Generous, because a preview held a moment too long
+    // is a much smaller wrong than one taken back while the answer was still in
+    // flight.
     const timer = setTimeout(() => {
-      if (Date.now() - pendingSince >= 900) pending = {};
-    }, 900);
+      if (Date.now() - pendingSince >= 5000) pending = {};
+    }, 5000);
     return () => clearTimeout(timer);
   });
 
@@ -597,7 +642,7 @@
       if (canPlace(card.id, before.x, before.y, before.w, before.h)) {
         pending = { ...pending, [card.id]: before };
         pendingSince = Date.now();
-        onarrange?.([{ id: card.id, ...before }]);
+        commitArrangement([{ id: card.id, ...before }]);
         return;
       }
     }
@@ -627,7 +672,7 @@
     restored = { ...restored, [card.id]: { x: card.x, y: card.y, w: size.w, h: size.h } };
     pending = { ...pending, [card.id]: rect };
     pendingSince = Date.now();
-    onarrange?.([{ id: card.id, ...rect }]);
+    commitArrangement([{ id: card.id, ...rect }]);
   }
 
   /** Where a maximized card came from, so double-click can undo itself. */
@@ -799,7 +844,7 @@
     if (!room) return;
     pending = { ...pending, ...Object.fromEntries(spots.map((spot) => [spot.id, spot])) };
     pendingSince = Date.now();
-    onarrange?.(spots);
+    commitArrangement(spots);
   }
 
   function onWheel(event) {
@@ -839,7 +884,7 @@
         return Object.keys(placement).length > 1 ? placement : null;
       })
       .filter(Boolean);
-    if (changed.length) onarrange?.(changed);
+    if (changed.length) commitArrangement(changed, Object.keys(spots));
   }
 
   // ------------------------------------------------------------ adding cards

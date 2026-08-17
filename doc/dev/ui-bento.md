@@ -135,6 +135,41 @@ invariant -- a rule that lives in a component is a rule an agent over MCP walks
 straight past, and half the ways to overlap did not go through that component
 anyway.
 
+#### The preview, and how it ends
+
+The board keeps its own copy of the algebra, and that is not a contradiction of
+the rule above: a drag is answered every frame under the pointer, and a network
+round trip per frame is not a thing that can be made to feel right. So the board
+*predicts*, draws the prediction, and holds it for the length of one round trip
+so the card does not snap home and then jump to where it was dropped.
+
+What matters is how the prediction ends. It used to end by **timing out**: if no
+new layout arrived within 900ms, the drop was assumed refused. A guess about a
+refusal, on top of a guess about the placement, and both were wrong in practice
+-- a slow answer discarded a placement that had in fact been applied, producing
+exactly the flash the preview exists to prevent, while a prompt refusal still sat
+on screen for the rest of the grace period showing a layout that was not real.
+
+The document answers. `board.arrange` returns whether it applied the
+arrangement, so nothing has to be inferred:
+
+| what comes back | what it means | what the board does |
+|---|---|---|
+| `ok: true, result: true` | applied | hold the preview until the layout echoes it |
+| `ok: true, result: false` | considered and declined | drop the preview at once; the card snaps back |
+| `ok: false` | the message never arrived | leave it to the timer |
+
+Every optimistic placement goes through one function (`commitArrangement`), so
+the prediction meets the answer in exactly one place and no caller has to
+remember to check. The timer that remains is not a verdict on anything -- it is
+only the end of waiting for an answer that is never coming, and it is generous,
+because a preview held a moment too long is a far smaller wrong than one taken
+back while the answer was still in flight.
+
+Note that a refusal is `ok: true`. Being told "no" is not an error: dropping a
+card where one does not fit is an ordinary thing to do, and it is the board's
+job to show that it did not take, not to report a fault.
+
 ---
 
 ## 3. Auto-sizing
