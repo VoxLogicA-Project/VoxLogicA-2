@@ -723,6 +723,28 @@ class Document:
         in step with this one.
         """
         wanted = [card_id for card_id in card_ids]
+
+        if not self.annotated:
+            # A file nobody has arranged has no card directives to copy, but it
+            # does have cards -- derived, and one of them holds the whole
+            # program (see `_unarranged`). Copying used to return nothing here,
+            # so cut and copy quietly did nothing on the commonest document
+            # there is: one somebody has just opened.
+            out = []
+            for card in self.cards:
+                if card["id"] not in wanted:
+                    continue
+                attrs = {"id": card["id"], "title": card.get("title", card["id"]),
+                         "kind": card.get("kind", "code")}
+                if card.get("node"):
+                    attrs["node"] = card["node"]
+                pairs = " ".join(f"{k}={_quote(k, str(v))}" for k, v in attrs.items())
+                body = card.get("source") or ""
+                out.append(f"//@card {pairs}\n")
+                if body:
+                    out.append(body if body.endswith("\n") else body + "\n")
+            return "".join(out)
+
         out: list[str] = []
         for segment in self.segments:
             directive = segment.directive
