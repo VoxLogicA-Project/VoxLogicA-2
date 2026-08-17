@@ -21,6 +21,7 @@ from urllib import request as urlrequest
 
 from .actions import ACTIONS, json_schema
 from .manual import manual
+from . import tools
 from .registration import instances
 
 logger = logging.getLogger(__name__)
@@ -68,42 +69,8 @@ def build_stdio_server():
 
     server = Server("voxlogica")
 
-    reads = {
-        "workspace.instances": (
-            "Every running VoxLogicA instance: pid, port, url and the program it "
-            "is showing. Call this first when there might be more than one.",
-            {"type": "object", "properties": {}},
-        ),
-        "workspace.document": (
-            "The whole workspace: board geometry, every card with its mode and "
-            "contents, and the current view.",
-            {"type": "object", "properties": {}},
-        ),
-        "workspace.imgql": (
-            "The document as .imgql text, byte for byte what saving would write.",
-            {"type": "object", "properties": {}},
-        ),
-        "workspace.grid": (
-            "The lattice: columns, rows, cell pitch, and which cells each card "
-            "occupies. Read this before moving or resizing anything.",
-            {"type": "object", "properties": {}},
-        ),
-        "card.get": (
-            "One card: its kind, its geometry and its contents.",
-            {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
-        ),
-        "voxlogica.manual": (
-            "The manual: everything the application does, the same page the "
-            "user reads. Read this first -- an agent that guesses at the "
-            "vocabulary guesses wrong.",
-            {"type": "object", "properties": {}},
-        ),
-        "ui.screenshot": (
-            "A PNG of what a connected browser is showing: the whole board "
-            "('board'), the page ('page'), or one card by id.",
-            {"type": "object", "properties": {"target": {"type": "string"}}},
-        ),
-    }
+    # One catalogue, shared with the mounted server: see tools.py.
+    reads = tools.stdio()
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:

@@ -99,30 +99,44 @@ def test_the_view_a_person_changes_is_a_view_an_agent_can_read():
 
 
 def test_the_two_mcp_surfaces_offer_the_same_tools():
-    """There are two, and that is a trap worth a test.
+    """There are two, and they must not be two vocabularies.
 
     `mcp.py` is mounted on the running instance; `bridge.py` is the stdio
     server an MCP client launches, and it is the one agents actually reach --
     the registration names `voxlogica mcp`, not a URL, because a URL would name
-    a port that changes. They each carry their own read-tool table, so a tool
-    added to one is invisible from the other. That is exactly how the manual
-    tool was added to the wrong half first.
+    a port that changes. So both have to exist.
+
+    They used to carry a hand-written table each, which is how the manual tool
+    came to be on one of them only. The catalogue is shared now (tools.py), so
+    this asserts a property the structure already provides -- and it is still
+    worth asserting, because the next person to add a tool will find out here
+    rather than in a client.
+    """
+    from voxlogica.ui import tools
+
+    only_stdio = set(tools.stdio()) - set(tools.mounted())
+    assert only_stdio == {"workspace.instances"}, (
+        "the bridge answers something the mount does not, and only "
+        "workspace.instances has a reason to be that: it is the one question "
+        "asked from outside an instance"
+    )
+    assert set(tools.mounted()) - set(tools.stdio()) == set()
+
+
+def test_neither_surface_writes_its_own_catalogue():
+    """Structure rather than vigilance.
+
+    A test that catches drift is weaker than a shape that prevents it, so the
+    tables live in one module and this makes going back visible.
     """
     from voxlogica.ui import bridge, mcp
 
-    def reads(source: str) -> set[str]:
-        return set(re.findall(r'^\s{8}"([a-z]+\.[A-Za-z]+)": \(', source, re.M))
-
-    mounted = reads(Path(mcp.__file__).read_text())
-    stdio = reads(Path(bridge.__file__).read_text())
-    # The bridge alone can answer "which instances are running", because it is
-    # the only one not already inside one.
-    stdio -= {"workspace.instances"}
-    assert mounted == stdio, (
-        "the two MCP surfaces have drifted; a tool on one is invisible from "
-        f"the other. only mounted: {sorted(mounted - stdio)}; "
-        f"only stdio: {sorted(stdio - mounted)}"
-    )
+    for module in (mcp, bridge):
+        source = Path(module.__file__).read_text()
+        assert "tools." in source, f"{module.__name__} is not using the shared catalogue"
+        assert '": (' not in source.split("def build")[1][:2000], (
+            f"{module.__name__} has grown a tool table of its own again"
+        )
 
 
 def test_the_manual_is_read_from_one_place():

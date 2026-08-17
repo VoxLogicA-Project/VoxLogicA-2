@@ -29,6 +29,7 @@ from typing import Any
 
 from .actions import ACTIONS, json_schema
 from .manual import manual
+from . import tools
 
 logger = logging.getLogger(__name__)
 
@@ -199,49 +200,9 @@ def build_server(workspace, hub, captures: CaptureBroker):
     surface = WorkspaceMCP(workspace, hub, captures)
     server = Server("voxlogica-workspace")
 
-    reads: dict[str, tuple[str, dict[str, Any]]] = {
-        "workspace.document": (
-            "The whole workspace: board geometry, every card with its mode and "
-            "contents, and the current view.",
-            {"type": "object", "properties": {}},
-        ),
-        "workspace.imgql": (
-            "The document as .imgql text, byte for byte what saving would write.",
-            {"type": "object", "properties": {}},
-        ),
-        "workspace.grid": (
-            "The lattice: columns, rows, cell pitch, and which cells each card "
-            "occupies. Read this before moving or resizing anything.",
-            {"type": "object", "properties": {}},
-        ),
-        "card.get": (
-            "One card: its kind, its geometry and its contents.",
-            {
-                "type": "object",
-                "properties": {"id": {"type": "string"}},
-                "required": ["id"],
-            },
-        ),
-        "voxlogica.manual": (
-            "The manual: everything the application does, the same page the "
-            "user reads. Read this first -- an agent that guesses at the "
-            "vocabulary guesses wrong.",
-            {"type": "object", "properties": {}},
-        ),
-        "ui.screenshot": (
-            "A PNG of what a connected browser is showing: the whole board, the "
-            "page, or one card by id.",
-            {
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "'board' (default), 'page', or a card id",
-                    }
-                },
-            },
-        ),
-    }
+    # One catalogue, shared with the stdio bridge: see tools.py for why
+    # there are two servers and must not be two vocabularies.
+    reads = tools.mounted()
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
