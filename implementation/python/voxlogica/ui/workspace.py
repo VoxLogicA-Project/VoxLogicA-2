@@ -144,9 +144,27 @@ class Workspace:
             }
 
     def _nodes(self, source: str) -> dict[str, str]:
-        from .results import bindings_for
+        from .results import bindings_for, hash_of
 
         bindings = bindings_for(source)
+        # `let` names are not the only things a card can be about. A
+        # `print "x" volume(gt(1))` is about an expression nobody named, and it
+        # is just as much a node in the DAG -- so it is compiled the same way,
+        # in this document's context, and lands in the same map. Without this
+        # such a card has no node at all: its play button computes nothing and
+        # its state stays blank, which reads exactly like a broken button.
+        #
+        # Only for what a card actually asks about, so the cost is one extra
+        # reduction per unnamed output rather than per sub-expression in the
+        # file. Each is cached on the text it compiled.
+        if bindings:
+            for card in self.document.cards:
+                wanted = card.get("node")
+                if not wanted or wanted in bindings:
+                    continue
+                found = hash_of(source, wanted)
+                if found:
+                    bindings[wanted] = found
         if self.results is not None:
             self.results.set_bindings(bindings)
         return bindings

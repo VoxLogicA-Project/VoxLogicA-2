@@ -357,12 +357,18 @@ class Document:
                 "page": 0,
                 "auto": False,
             }
-            if output.binding:
-                card["node"] = output.binding
-                card["focus"] = output.binding
-            else:
-                #: No hash for a sub-expression yet, so the card says what it is
-                #: a view of rather than pretending to be bound to it.
+            #: What the card is about. A bare name is the common shape and the
+            #: tidy one -- it reads as a name everywhere it appears. Anything
+            #: larger is bound to the expression *as written*, which the
+            #: workspace resolves to a hash through the same reducer.
+            #:
+            #: Leaving those unbound is what made `print "x" volume(gt(1))`
+            #: a card with a play button that did nothing: no node, nothing to
+            #: compute, and no state to show. A print is a node in the DAG
+            #: whether or not somebody gave it a name first.
+            card["node"] = output.binding or output.expression
+            card["focus"] = card["node"]
+            if not output.binding:
                 card["expression"] = output.expression
             cards.append(card)
         return cards
