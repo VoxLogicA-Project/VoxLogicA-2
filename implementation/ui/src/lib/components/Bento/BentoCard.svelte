@@ -60,6 +60,9 @@
     onselect,
     /** The card was asked to compute what it is about. Absent = no button. */
     onrun,
+    /** Declare what this card is about as an output of the program. */
+    onsaveThis,
+    onprintThis,
     /** `(name)` — a different one of this card's bindings was chosen. */
     onfocusbinding,
     /** The names this card's fragment declares, in the order it declares them.
@@ -91,6 +94,16 @@
           hint: "mod+R",
           onselect: onderive,
         },
+      onsaveThis && {
+        label: "Save this",
+        hint: "writes a save into the program",
+        onselect: () => onsaveThis(),
+      },
+      onprintThis && {
+        label: "Print this",
+        hint: "writes a print into the program",
+        onselect: () => onprintThis(),
+      },
       onfocus && {
         label: focused ? "Leave focus" : "Focus",
         hint: focused ? "esc" : "long press",

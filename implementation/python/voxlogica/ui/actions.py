@@ -517,6 +517,34 @@ def _set_focus(workspace, params):
     return workspace.document.set_attr(params["id"], "focus", params.get("focus") or None)
 
 
+def _output_from(workspace, params, operation):
+    """Declare what a card is about as an output of the program.
+
+    A card shows you a value; it cannot put one on disk. `print` and `save` are
+    what a program says it produces, so asking for either writes the directive
+    into the text -- where a reader can see it, a diff can show it, and a
+    headless run can perform it. A button that wrote a file directly would be
+    an effect with no record.
+    """
+    card = next((entry for entry in workspace.document.cards
+                 if entry.get("id") == params["id"]), None)
+    if card is None:
+        raise ValueError(f"no card {params['id']!r}")
+    expression = card.get("focus") or card.get("node")
+    if not expression:
+        raise ValueError("this card is not about anything yet")
+    label = params.get("label") or expression
+    return workspace.document.add_output(operation, label, expression)
+
+
+def _save_this(workspace, params):
+    return _output_from(workspace, params, "save")
+
+
+def _print_this(workspace, params):
+    return _output_from(workspace, params, "print")
+
+
 def _run_card(workspace, params):
     """Ask for everything a card is about.
 
@@ -627,6 +655,12 @@ ACTIONS: dict[str, Action] = {
                 "Switch what a card is: code, result or note.", _set_kind),
         _action("card.setViewMode", {"id": "string", "view": "string"}, ("id", "view"),
                 "Switch how a result card renders: its state or its content.", _set_view_mode),
+        _action("card.saveThis", {"id": "string", "label": "string"}, ("id",),
+                "Write a `save` for what this card is about into the program, "
+                "as its own card.", _save_this),
+        _action("card.printThis", {"id": "string", "label": "string"}, ("id",),
+                "Write a `print` for what this card is about into the program, "
+                "as its own card.", _print_this),
         _action("card.run", {"id": "string"}, ("id",),
                 "Compute what a card is about. Its dependencies follow, and "
                 "every card showing one of them updates as it happens.",

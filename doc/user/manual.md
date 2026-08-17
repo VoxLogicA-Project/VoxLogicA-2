@@ -71,6 +71,11 @@ shortly after they stop arriving. `workspace.save` exists for scripts, and
 Cards never overlap: a drop onto occupied cells snaps back. Dragging a card onto
 a file or project in the sidebar **moves it into that file** (hold ⌥ to copy).
 
+**Save this** and **Print this**, in a card's menu, declare what it is about as
+an output: the `save` or `print` is written into the program, as its own card. A
+button that wrote a file directly would be an effect with no record — this way a
+diff shows it, a colleague reads it, and a headless run performs it.
+
 A card is a **code** card, a **note**, or a view of an output — a **print**, a
 **save**, or a **result** bound to any node.
 

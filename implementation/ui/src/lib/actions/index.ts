@@ -43,6 +43,13 @@ export const card = {
     invoke("card.setFocus", focus ? { id, focus } : { id }),
   setKind: (id: string, kind: string) => invoke("card.setKind", { id, kind }),
   setViewMode: (id: string, view: string) => invoke("card.setViewMode", { id, view }),
+  /** Declare what this card is about as an output of the program: the
+   * directive is written into the text, where a diff and a headless run can
+   * both see it. A button that wrote a file would be an effect with no record. */
+  saveThis: (id: string, label?: string) =>
+    invoke<string>("card.saveThis", label ? { id, label } : { id }),
+  printThis: (id: string, label?: string) =>
+    invoke<string>("card.printThis", label ? { id, label } : { id }),
   /** Compute what this card is about. Its dependencies follow on their own:
    * they are other cards' bindings, which are the same hashes. */
   run: (id: string) => invoke<Record<string, unknown>>("card.run", { id }),

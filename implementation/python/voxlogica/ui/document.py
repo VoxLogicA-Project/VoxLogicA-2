@@ -467,6 +467,42 @@ class Document:
         self.dirty = True
         return True
 
+    def add_output(self, operation: str, label: str, expression: str,
+                   card_id: str | None = None) -> str | None:
+        """Write a `print` or a `save` into the program, as its own card.
+
+        This is what "save this" means, and why it is a document change rather
+        than a button that writes a file: a `save` is an *effect the program
+        declares*. Put in the text, it can be read, diffed, committed, and run
+        again tomorrow by somebody with no UI at all -- which is the difference
+        between a workspace and a scratchpad.
+
+        Returns the new card's id.
+        """
+        if operation not in ("print", "save"):
+            raise ValueError("an output is a print or a save")
+        if not expression:
+            return None
+
+        identity = card_id or self.next_id(operation)
+        if not self.annotated:
+            self._annotate()
+        body = f'{operation} "{_escape(label)}" {expression}\n'
+        self.segments.append(
+            Segment(
+                Directive(
+                    kind="card",
+                    attrs={"id": identity, "title": label, "kind": operation,
+                           "node": expression},
+                    raw="",
+                    rewritten=True,
+                ),
+                body,
+            )
+        )
+        self.dirty = True
+        return identity
+
     def tidy(self) -> bool:
         """Put the cards in an order where every name is defined before use.
 

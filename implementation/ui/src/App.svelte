@@ -447,6 +447,8 @@
       oncutcards={() => copyCards({ cut: true })}
       onpastecards={() => pasteCards()}
       onrun={(id) => cardActions.run(id)}
+      onsavethis={(id) => cardActions.saveThis(id)}
+      onprintthis={(id) => cardActions.printThis(id)}
       onfocusbinding={(id, name) => cardActions.setFocus(id, name)}
       bindingsOf={(card) => (card.kind === "code" ? bindingsIn(card.source) : [])}
       {running}

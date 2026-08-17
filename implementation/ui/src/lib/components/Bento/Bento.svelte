@@ -79,6 +79,9 @@
     onactivate = undefined,
     /** `(id)` — a card asked to compute what it is about. */
     onrun = undefined,
+    /** `(id)` — declare what a card is about as an output of the program. */
+    onsavethis = undefined,
+    onprintthis = undefined,
     /** `(id, name)` — a card was pointed at a different one of its bindings. */
     onfocusbinding = undefined,
     /** `(card) -> string[]` — the names a card's fragment declares.
@@ -1033,6 +1036,8 @@
             oncut={oncutcards}
             ondragout={cardsText ? (event) => dragOut(card, event) : undefined}
             onrun={onrun ? () => onrun(card.id) : undefined}
+            onsaveThis={onsavethis ? () => onsavethis(card.id) : undefined}
+            onprintThis={onprintthis ? () => onprintthis(card.id) : undefined}
             onfocusbinding={onfocusbinding ? (name) => onfocusbinding(card.id, name) : undefined}
             bindings={bindingsOf?.(card) ?? []}
             running={running.includes(card.id)}
