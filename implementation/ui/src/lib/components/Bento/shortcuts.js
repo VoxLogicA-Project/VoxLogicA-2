@@ -30,7 +30,7 @@ export const SHORTCUTS = [
   { keys: "Tab", does: "Switch between the board and the document." },
   { keys: "mod+B", does: "Hide or show the file list." },
   { keys: "mod+X / mod+C / mod+V", does: "Cut, copy and paste cards — or files, in the list." },
-  { keys: "mod+L", does: "How close to stand: the program, both, or just the value." },
+  { keys: "mod+L", does: "What cards show: the code, the value, or both." },
   { keys: "mod+R", does: "New result card from the selection." },
   { keys: "mod+→ / mod+←", does: "Send the selection to the next or previous page." },
   { keys: "mod+K", does: "Filter the file list." },

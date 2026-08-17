@@ -299,10 +299,13 @@
     }, 220);
   }
 
-  /** The three distances, and how each is drawn in one glyph: the program
-   * filled, both halved, the value empty of text. */
+  /** What a card shows. Named as the thing it does, in words.
+   *
+   * It was three glyphs and a tooltip about "how close you stand", which is a
+   * metaphor the person using this has no reason to hold: a control whose
+   * meaning arrives only on hover is a control nobody uses on purpose. */
   const LENSES = ["source", "both", "value"];
-  const LENS_MARK = { source: "◑", both: "◐", value: "○" };
+  const LENS_WORD = { source: "code", both: "code + value", value: "value" };
 
   function cycleLens() {
     const at = LENSES.indexOf(workspace.view.lens);
@@ -615,9 +618,9 @@
       tone="quiet"
       size="sm"
       onclick={cycleLens}
-      title="How close to stand: source, both, value (⌘L)"
+      title="What every card shows — click for the next one (⌘L)"
     >
-      {LENS_MARK[workspace.view.lens] ?? "◐"}
+      all cards: {LENS_WORD[workspace.view.lens] ?? "code + value"}
     </Button>
     {#if probe}
       <!-- The editor as a probe into the store: what you highlighted, and
@@ -628,7 +631,18 @@
         {probe.state === "done" ? "computed" : probe.state}
       </span>
     {/if}
-    <span class="where">{showing === "document" ? "document" : "board"} · <kbd>tab</kbd></span>
+    <!-- What Tab does, said as what it does. "board · tab" was a label only
+         somebody who already knew could read, and it was being covered by the
+         dev button besides. -->
+    <Button
+      tone="quiet"
+      size="sm"
+      onclick={() => view.show(showing === "board" ? "document" : "board")}
+      title="Tab"
+    >
+      {showing === "document" ? "showing the file" : "showing the cards"}
+    </Button>
+    <span class="spacer"></span>
     <Button tone="quiet" size="sm" onclick={() => (helping = true)} title="Shortcuts (?)">
       ?
     </Button>
@@ -775,8 +789,18 @@
     color: var(--color-text-subtle);
   }
 
-  .where {
-    margin-left: auto;
+  /* Pushes whatever follows to the far end, without being a thing itself.
+     `margin-left: auto` on a label meant the label had to exist to do it, and
+     it was the label that had nothing useful to say. */
+  .spacer {
+    flex: 1;
+  }
+
+  /* Nothing in the footer may be squeezed into ellipsis by its neighbours: a
+     control whose name is cut in half is a control nobody can learn. */
+  footer :global(button) {
+    flex: none;
+    white-space: nowrap;
   }
 
 
