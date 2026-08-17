@@ -94,11 +94,11 @@
   const problems = $derived([
     // First: until the program parses, nothing else here is worth reading, and
     // every name is unresolved for the same one reason.
-    ...(workspace.issues.syntax
+    ...(workspace.issues.compile
       ? [
-          workspace.issues.syntax.line
-            ? `line ${workspace.issues.syntax.line}: ${workspace.issues.syntax.message}`
-            : workspace.issues.syntax.message,
+          workspace.issues.compile.line
+            ? `line ${workspace.issues.compile.line}: ${workspace.issues.compile.message}`
+            : workspace.issues.compile.message,
         ]
       : []),
     ...(workspace.issues.cycle.length
@@ -449,7 +449,17 @@
     <div class="pane">
 
   {#if !workspace.loaded}
-    <p class="pending">No workspace.</p>
+    <p class="pending">Connecting…</p>
+  {:else if !workspace.path}
+    <!-- Nothing open, and nothing invented. The application used to create a
+         file named after the minute at every launch, so a week of opening it
+         left a week of empty documents. An empty state that offers is better
+         than a file nobody asked for. -->
+    <section class="welcome">
+      <h1>VoxLogicA</h1>
+      <p>Nothing is open. Start something, or pick a file from the list.</p>
+      <Button onclick={() => libraryActions.newFile()}>New program</Button>
+    </section>
   {:else if showing === "document"}
     <!-- The file itself, read-only for now: seeing what the board is means
          seeing the program it writes, in the form it writes it. -->
@@ -690,6 +700,33 @@
     color: var(--color-text);
     font-family: var(--font-mono);
     text-overflow: ellipsis;
+  }
+
+  /* The whole pane, because there is nothing else in it -- and centred, because
+     a first screen with one thing on it should put that thing where the eye
+     already is. */
+  .welcome {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    text-align: center;
+  }
+
+  .welcome h1 {
+    margin: 0;
+    font-size: var(--text-2xl);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--tracking-tight, normal);
+  }
+
+  .welcome p {
+    margin: 0;
+    max-width: 34ch;
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
   }
 
   .pending {

@@ -127,7 +127,7 @@ def test_a_document_that_does_not_compile_says_so():
     happened -- true, and useless. The reason is a fact about the document and
     belongs with the other facts.
     """
-    where = analysis.syntax_error("let x = 3\n\nprint x+x\n")
+    where = analysis.compile_error("let x = 3\n\nprint x+x\n")
     assert where is not None
     assert where["line"] == 3
     assert "expected" in where["message"]
@@ -135,9 +135,21 @@ def test_a_document_that_does_not_compile_says_so():
     assert "<input>" not in where["message"]
 
 
+def test_a_program_that_parses_but_does_not_reduce_also_says_so():
+    """The more common half, and the one that was still silent.
+
+    `threshold(flair, 0.6)` with no `flair` parses perfectly -- it is what a
+    half-written program looks like -- and the reducer refuses it. Reporting
+    only parse errors left exactly the same silence for this.
+    """
+    where = analysis.compile_error("let mask = threshold(flair, 0.6)\n")
+    assert where is not None
+    assert "flair" in where["message"]
+
+
 def test_a_document_that_compiles_says_nothing():
-    assert analysis.syntax_error('let x = 3\nprint "x" x\n') is None
-    assert analysis.syntax_error("") is None
+    assert analysis.compile_error('let x = 3\nprint "x" x\n') is None
+    assert analysis.compile_error("") is None
 
 
 def test_the_workspace_reports_it_beside_the_other_facts(tmp_path):
@@ -146,4 +158,4 @@ def test_the_workspace_reports_it_beside_the_other_facts(tmp_path):
     path = tmp_path / "doc.imgql"
     path.write_text("let x = 3\n\nprint x+x\n")
     issues = Workspace(path=path).snapshot()["issues"]
-    assert issues["syntax"]["line"] == 3
+    assert issues["compile"]["line"] == 3

@@ -386,17 +386,19 @@ def serve_command(args: argparse.Namespace) -> int:
 
 
 def _workspace_path(args: argparse.Namespace):
-    """The file this session works on: the one named, or a fresh scratch.
+    """The file this session works on: the one named, then the last one open.
 
-    Starting work does not begin with a decision. With no path there is still a
-    file -- in the platform's application-data directory, named after now -- so
-    autosave has somewhere to write from the first keystroke, and moving it into
-    a repository later is moving one file.
+    `None` when there is neither, and that is a real state rather than a
+    problem to paper over -- the window offers to make one. Starting up used to
+    create a file named after the minute, every time, so a week of opening the
+    application left a week of empty documents nobody asked for.
     """
     from voxlogica.ui import home
 
     named = getattr(args, "workspace", None)
-    return Path(named).expanduser() if named else home.scratch_path()
+    if named:
+        return Path(named).expanduser()
+    return home.last_opened()
 
 
 def open_command(args: argparse.Namespace) -> int:

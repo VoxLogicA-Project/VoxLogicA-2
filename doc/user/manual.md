@@ -20,11 +20,14 @@ browser window is used instead — the same UI, a worse frame.
 `VOXLOGICA_DEVTOOLS=1` opens it with the inspector showing;
 `VOXLOGICA_NO_NATIVE_WINDOW=1` forces the browser.
 
-Nothing is asked on the way in. With no file named, your work goes to a fresh
-one in the platform's application-data folder. **Move…** in the footer opens the
-system's own panel to choose where it should live instead — typically a
-repository — and moves it there. That is `workspace.chooseLocation`; the
-location is chosen once, not asked for every time you start.
+Starting up reopens **the document you had open last**. With none — a first
+run, or a file since deleted — nothing is opened and the window offers to make
+one. No file is ever created that you did not ask for.
+
+A new document lives in the platform's application-data folder until you say
+otherwise. **Move…** in the footer opens the system's own panel to choose where
+it should live instead — typically a repository — and moves it there
+(`workspace.chooseLocation`). Chosen once, not asked every time you start.
 
 ---
 

@@ -63,12 +63,13 @@ class Workspace:
         #: change is only a change nobody has written down yet. Debounced
         #: because a drag is dozens of changes and the file is one.
         self._save_timer: threading.Timer | None = None
-        # A scratch workspace is a file from the start, not once it has earned
-        # one: "where is my work" must have an answer before there is any, or
-        # the answer is a process nobody can point at.
-        if self.path is not None and not self.path.exists():
-            self.document.dirty = True
-            self._write_now()
+        # Nothing is created here. A file exists because somebody asked for one,
+        # and an application that wrote a document on every launch left a week
+        # of empty files behind for a week of launches.
+        if self.path is not None:
+            from . import home
+
+            home.remember(self.path)
 
     # ------------------------------------------------------------------ state
 
@@ -160,9 +161,10 @@ class Workspace:
         except analysis.Cycle as found:
             cycle = list(found.ids)
         return {
-            #: Why the document does not compile, if it does not. First,
-            #: because nothing else in here means much until it does.
-            "syntax": analysis.syntax_error(self.document.to_imgql()),
+            #: Why the document does not compile, if it does not -- a parse
+            #: error or a reduction one. First, because nothing else in here
+            #: means much until it does.
+            "compile": analysis.compile_error(self.document.to_imgql()),
             "cycle": cycle,
             "duplicates": analysis.duplicates(cards),
             #: Cards sharing a cell. The board refuses placements that would
@@ -282,6 +284,7 @@ class Workspace:
         return True
 
     def open(self, path: str) -> bool:
+        """Open a document, and remember it as the one to reopen next time."""
         # Whatever the file being left still owed to disk, it is owed now: an
         # unwritten change must not survive as a change to a different file.
         self.flush()
@@ -294,6 +297,9 @@ class Workspace:
             # to: undoing into the previous file would be a trap.
             self._past.clear()
             self._future.clear()
+        from . import home
+
+        home.remember(target)
         return True
 
     def set_text(self, text: str) -> bool:

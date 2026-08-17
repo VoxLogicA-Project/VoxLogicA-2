@@ -302,21 +302,62 @@ def test_moving_a_workspace_is_not_an_edit(workspace, tmp_path):
     assert workspace.apply("workspace.undo") is False
 
 
-def test_a_scratch_workspace_is_a_file_before_it_holds_anything(tmp_path):
-    """"Where is my work" must have an answer before there is any work.
+def test_opening_a_workspace_creates_no_file(tmp_path):
+    """No file exists because the application started.
 
-    The file, and the directory under it, exist from the moment the workspace
-    does -- so it can be revealed in a file manager, found again tomorrow, and
-    written to by autosave without a first-time special case.
+    It used to: a document named after the minute, written at every launch, so
+    a week of opening the application left a week of empty files nobody had
+    asked for. The path is where the work *would* go; the file appears when
+    there is work.
     """
     from voxlogica.ui.workspace import Workspace
 
     path = tmp_path / "appdata" / "workspaces" / "2026-01-01-000000.imgql"
     space = Workspace(path=path)
-    assert path.exists()
+    assert not path.exists()
+
     space.apply("board.addCard", {"id": "c1", "kind": "code", "title": "First"})
     space.flush()
+    assert path.exists(), "the first real change is what makes the file"
     assert 'title="First"' in path.read_text()
+
+
+def test_a_workspace_with_nothing_open_is_a_state_rather_than_a_problem(tmp_path):
+    """A first run has no last document, and inventing one is what we stopped
+    doing. The window offers to make one instead."""
+    from voxlogica.ui.workspace import Workspace
+
+    space = Workspace(path=None)
+    snapshot = space.snapshot()
+    assert snapshot["path"] is None
+    # An empty document still derives its one code card -- that is R2 working,
+    # not a file existing. What matters is that there is nowhere to write.
+    assert snapshot["cards"] == [] or snapshot["cards"][0]["id"] == "program"
+    space.flush()  # must not raise, and must not write anywhere
+
+
+def test_the_document_opened_is_the_one_reopened(tmp_path, monkeypatch):
+    """Which file you had open is a fact about a session, so it is remembered
+    beside the application's own data rather than inside any program."""
+    from voxlogica.ui import home
+    from voxlogica.ui.workspace import Workspace
+
+    monkeypatch.setenv("VOXLOGICA_HOME", str(tmp_path))
+    path = tmp_path / "kept.imgql"
+    path.write_text("let a = 1\n")
+
+    Workspace(path=None).open(str(path))
+    assert home.last_opened() == path
+
+
+def test_a_remembered_file_that_is_gone_opens_nothing(tmp_path, monkeypatch):
+    """Deleted, renamed outside the app, or on a disk that is not mounted --
+    each must open nothing rather than recreate something."""
+    from voxlogica.ui import home
+
+    monkeypatch.setenv("VOXLOGICA_HOME", str(tmp_path))
+    home.remember(tmp_path / "vanished.imgql")
+    assert home.last_opened() is None
 
 
 def test_opening_an_existing_file_does_not_rewrite_it(tmp_path):
@@ -345,6 +386,9 @@ def test_a_folder_that_held_one_file_follows_it_out(tmp_path, monkeypatch):
     folder = home.workspaces() / "one-piece-of-work"
     folder.mkdir(parents=True)
     document = folder / "study.imgql"
+    # Written here rather than by the workspace: opening one creates nothing
+    # now, and this test is about a folder that already holds work.
+    document.write_text("//@board cols=9 rows=8\n")
     space = Workspace(path=document)
     (folder / "case.nii.gz").write_bytes(b"not really an image")
 

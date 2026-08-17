@@ -1,17 +1,17 @@
 """Where a workspace lives when nobody has said where it should live.
 
-Starting work must not begin with a decision. `voxlogica` with no arguments opens
-a workspace that already has a file behind it, in the place this platform keeps
-application data, named after the moment it was started. Nothing is asked, and
-nothing is lost: autosave has somewhere to write from the first keystroke.
+`voxlogica` with no arguments opens **the document you had open last**, and if
+there is none it opens nothing and offers to make one. It used to create a file
+named after the minute at every launch, which meant a week of opening the
+application left a week of empty documents nobody had asked for.
 
-Moving it into a repository is a later, deliberate act -- `workspace.moveTo` --
-and it is cheap because a workspace *is* one .imgql file: the layout lives in its
-own comments, so a scratch that turns out to matter becomes a tracked file by
-being moved, and diffs like source from then on.
+Nothing here creates a file. `scratch_path` says what a new one would be called;
+somebody has to ask for it.
 
-The file is not created until something changes. An opened-and-abandoned session
-leaves nothing behind.
+Moving a document into a repository is a later, deliberate act --
+`workspace.moveTo` -- and it is cheap because a workspace *is* one .imgql file:
+the layout lives in its own comments, so a scratch that turns out to matter
+becomes a tracked file by being moved, and diffs like source from then on.
 """
 
 from __future__ import annotations
@@ -56,6 +56,41 @@ def data_home() -> Path:
 
 def workspaces() -> Path:
     return data_home() / "workspaces"
+
+
+#: Where the last document opened is remembered. Not in any document: which
+#: file you had open is a fact about a person's session, not about a program,
+#: and putting it in one would put it in a diff.
+_LAST = "last-opened"
+
+
+def last_opened() -> Path | None:
+    """The document this user was working on, if it is still there.
+
+    Checked rather than trusted: a remembered path that has since been deleted,
+    renamed outside the app, or moved to a disk that is not mounted must open
+    nothing rather than recreate something.
+    """
+    record = data_home() / _LAST
+    try:
+        path = Path(record.read_text(encoding="utf-8").strip())
+    except OSError:
+        return None
+    return path if path.is_file() else None
+
+
+def remember(path: Path | str | None) -> None:
+    """Keep the last document opened. Best-effort: an unwritable state
+    directory is a worse next launch, not a failure now."""
+    record = data_home() / _LAST
+    try:
+        record.parent.mkdir(parents=True, exist_ok=True)
+        if path is None:
+            record.unlink(missing_ok=True)
+        else:
+            record.write_text(str(path), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def window_state_path() -> Path:

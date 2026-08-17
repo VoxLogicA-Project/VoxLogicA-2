@@ -27,6 +27,7 @@ loses somebody's work.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -169,34 +170,66 @@ def outputs(source: str) -> list[Output]:
     return found
 
 
-def syntax_error(source: str) -> dict[str, Any] | None:
+def compile_error(source: str) -> dict[str, Any] | None:
     """Why this document does not compile, or `None` when it does.
 
-    Silence was the old answer, and it made Run look broken: a program with a
-    missing label compiled to nothing, so no name resolved to a node, so a card
-    asked for nothing and reported that nothing happened -- which is true and
-    useless. A parse error is a fact about the document, exactly like a cycle or
-    a duplicate name, and it belongs beside them.
+    Silence was the old answer and it made Run look broken: nothing resolved to
+    a node, so a card asked for nothing and truthfully reported that nothing had
+    happened -- which is indistinguishable from a button that does not work.
+
+    **Both halves, because there are two ways to fail and only one was covered.**
+    `print x+x` does not parse. `let mask = threshold(flair, 0.6)` with no
+    `flair` parses perfectly and does not *reduce*: "Unbound variable 'flair'".
+    The second is the more common one -- it is what half-written programs look
+    like -- and reporting only the first left exactly the same silence for it.
+
+    A failure to compile is a fact about the document, like a cycle or a
+    duplicate name, and belongs beside them.
     """
     from voxlogica.parser import ProgramParseError, parse_program_content
 
     if not (source or "").strip():
         return None
+
     try:
-        parse_program_content(source)
+        program = parse_program_content(source)
     except ProgramParseError as error:
-        first = str(error).splitlines()[0]
-        # Drop the source name: the reader is looking at the document, and
-        # "<input>:3:7" tells them about a file they did not open.
-        _, _, message = first.partition(": ")
-        return {
-            "line": getattr(error, "line", None),
-            "column": getattr(error, "column", None),
-            "message": message or first,
-        }
-    except Exception as exc:  # noqa: BLE001 - anything else is still "it did not"
-        return {"line": None, "column": None, "message": str(exc)}
+        return _said(error, getattr(error, "line", None), getattr(error, "column", None))
+    except Exception as exc:  # noqa: BLE001 - unreadable is still not compiled
+        return _said(exc, None, None)
+
+    try:
+        from voxlogica.reducer import reduce_program_with_bindings
+
+        reduce_program_with_bindings(program)
+    except Exception as exc:  # noqa: BLE001 - StaticAnalysisError and anything else
+        return _said(exc, None, None)
     return None
+
+
+def _said(error: BaseException, line: int | None, column: int | None) -> dict[str, Any]:
+    """One line, without the name of a file the reader did not open.
+
+    The reducer's own message carries a call chain over several lines; the first
+    is what went wrong and the rest is where. The rest belongs in a detail view
+    that does not exist yet, so it is kept rather than dropped.
+    """
+    text = str(error).strip()
+    first, _, rest = text.partition("\n")
+    # `<input>:3:7: error: ...` -> `error: ...`, and only when that prefix is
+    # really there: a message with a colon in it must not lose its front half.
+    if re.match(r"^<[^>]*>:\d+:\d+: ", first):
+        first = first.split(": ", 1)[1]
+    return {
+        "line": line,
+        "column": column,
+        "message": first,
+        "detail": rest.strip() or None,
+    }
+
+
+#: The old name, kept because a parse error is the first thing this reports.
+syntax_error = compile_error
 
 
 class Cycle(ValueError):
