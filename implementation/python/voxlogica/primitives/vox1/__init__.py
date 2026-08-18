@@ -101,6 +101,7 @@ def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
             planner=default_planner_factory(qualified, kind="scalar"),
             kernel_name=qualified,
             description=(kernel.__doc__ or "").strip(),
+            type_rule=getattr(kernel, "primitive_type", None)
         )
         specs[primitive_name] = (spec, kernel)
     return specs

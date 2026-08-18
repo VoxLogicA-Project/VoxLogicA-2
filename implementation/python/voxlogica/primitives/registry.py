@@ -195,6 +195,7 @@ class PrimitiveRegistry:
         """Synthesize a modern spec for an old-style ``execute`` function."""
         arity = _infer_arity(kernel)
         qualified_name = f"{namespace}.{primitive_name}"
+        type_rule = getattr(kernel, "primitive_type", None)
         return PrimitiveSpec(
             name=primitive_name,
             namespace=namespace,
@@ -205,7 +206,7 @@ class PrimitiveRegistry:
             kernel_name=qualified_name,
             description="Legacy adapter primitive",
             is_legacy_adapter=True,
-            type_rule=None,
+            type_rule=type_rule,
         )
 
     def register(self, spec: PrimitiveSpec, kernel: KernelFn) -> None:

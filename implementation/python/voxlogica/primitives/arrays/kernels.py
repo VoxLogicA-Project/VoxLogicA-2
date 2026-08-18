@@ -11,12 +11,12 @@ import logging
 
 import numpy as np
 import SimpleITK as sitk
-from voxlogica.analysis.type_helpers import primitive_type, TypeRule
+from voxlogica.analysis.type_helpers import primitive_type, TypeRule, simple_type
 from voxlogica.analysis.types import VoxType, VoxInt, VoxFloat, VoxBool, VoxString, VoxImage, VoxSequence, VoxRecord, VoxMap, VoxNumber
 
 logger = logging.getLogger(__name__)
 
-@primitive_type(TypeRule([VoxSequence(VoxInt())], VoxSequence(VoxInt())))
+@primitive_type(simple_type([VoxSequence(VoxInt())], VoxSequence(VoxInt())))
 def vector_uint32(values: List[int]) -> List[int]:
     """
     Create a VectorUInt32 for SimpleITK functions.
@@ -29,7 +29,7 @@ def vector_uint32(values: List[int]) -> List[int]:
     """
     return [int(v) for v in values]
 
-@primitive_type(TypeRule([VoxSequence(VoxFloat())], VoxSequence(VoxFloat())))
+@primitive_type(simple_type([VoxSequence(VoxFloat())], VoxSequence(VoxFloat())))
 def vector_double(values: List[float]) -> List[float]:
     """
     Create a VectorDouble for SimpleITK functions.
@@ -42,7 +42,7 @@ def vector_double(values: List[float]) -> List[float]:
     """
     return [float(v) for v in values]
 
-@primitive_type(TypeRule([VoxImage()], VoxSequence(VoxInt())))
+@primitive_type(simple_type([VoxImage()], VoxSequence(VoxInt())))
 def _image_to_array(image):
     """Convert SimpleITK image to numpy array if needed"""
     if hasattr(image, 'GetArrayFromImage'):
@@ -55,7 +55,7 @@ def _image_to_array(image):
         # Assume it's already a numpy array
         return np.array(image)
 
-@primitive_type(TypeRule([VoxSequence(VoxImage()), VoxSequence(VoxImage())], VoxRecord({'accuracy': VoxFloat(), 'correct_pixels': VoxInt(), 'total_pixels': VoxInt(), 'incorrect_pixels': VoxInt()})))
+@primitive_type(simple_type([VoxSequence(VoxImage()), VoxSequence(VoxImage())], VoxRecord({'accuracy': VoxFloat(), 'correct_pixels': VoxInt(), 'total_pixels': VoxInt(), 'incorrect_pixels': VoxInt()})))
 def pixel_accuracy(**kwargs):
     """
     Calculate pixel-wise accuracy between predicted and ground truth images.
@@ -93,7 +93,7 @@ def pixel_accuracy(**kwargs):
         logger.error(f"pixel_accuracy failed: {e}")
         raise ValueError(f"pixel_accuracy failed: {e}") from e
 
-@primitive_type(TypeRule([VoxSequence(VoxImage()), VoxSequence(VoxImage()), VoxInt()], VoxRecord({'confusion_matrix': VoxSequence(VoxSequence(VoxInt())), 'num_classes': VoxInt(), 'precision': VoxSequence(VoxFloat()), 'recall': VoxSequence(VoxFloat()), 'f1_score': VoxSequence(VoxFloat()), 'mean_precision': VoxFloat(), 'mean_recall': VoxFloat(), 'mean_f1_score': VoxFloat()})))
+@primitive_type(simple_type([VoxSequence(VoxImage()), VoxSequence(VoxImage()), VoxInt()], VoxRecord({'confusion_matrix': VoxSequence(VoxSequence(VoxInt())), 'num_classes': VoxInt(), 'precision': VoxSequence(VoxFloat()), 'recall': VoxSequence(VoxFloat()), 'f1_score': VoxSequence(VoxFloat()), 'mean_precision': VoxFloat(), 'mean_recall': VoxFloat(), 'mean_f1_score': VoxFloat()})))
 def confusion_matrix(**kwargs):
     """
     Compute confusion matrix between predicted and ground truth images.
@@ -156,7 +156,7 @@ def confusion_matrix(**kwargs):
         logger.error(f"confusion_matrix failed: {e}")
         raise ValueError(f"confusion_matrix failed: {e}") from e
 
-@primitive_type(TypeRule([VoxSequence(VoxImage()), VoxSequence(VoxImage()), VoxInt()], VoxRecord({'dice_score': VoxSequence(VoxSequence(VoxInt())), 'intersection': VoxInt(), 'predicted_positive': VoxInt(), 'ground_truth_positive': VoxInt()})))
+@primitive_type(simple_type([VoxSequence(VoxImage()), VoxSequence(VoxImage()), VoxInt()], VoxRecord({'dice_score': VoxSequence(VoxSequence(VoxInt())), 'intersection': VoxInt(), 'predicted_positive': VoxInt(), 'ground_truth_positive': VoxInt()})))
 def dice_score(**kwargs):
     """
     Calculate Dice similarity coefficient between two binary images.
@@ -197,7 +197,7 @@ def dice_score(**kwargs):
         logger.error(f"dice_score failed: {e}")
         raise ValueError(f"dice_score failed: {e}") from e
 
-@primitive_type(TypeRule([VoxImage(), VoxImage(), VoxInt()], VoxMap(VoxString(), VoxNumber())))
+@primitive_type(simple_type([VoxImage(), VoxImage(), VoxInt()], VoxRecord({'jaccard_index': VoxFloat(), 'iou': VoxFloat(), 'intersection': VoxInt(), 'union': VoxInt()})))
 def jaccard_index(**kwargs):
     """
     Calculate Jaccard index (Intersection over Union) between two binary images.
@@ -240,7 +240,7 @@ def jaccard_index(**kwargs):
         logger.error(f"jaccard_index failed: {e}")
         raise ValueError(f"jaccard_index failed: {e}") from e
 
-@primitive_type(TypeRule([VoxSequence(VoxImage()), VoxInt()], VoxMap(VoxString(), VoxNumber())))
+@primitive_type(simple_type([VoxSequence(VoxImage()), VoxInt()], VoxMap(VoxString(), VoxType())))
 def count_pixels(**kwargs):
     """
     Count pixels with specific values in an image.
@@ -286,7 +286,7 @@ def count_pixels(**kwargs):
         logger.error(f"count_pixels failed: {e}")
         raise ValueError(f"count_pixels failed: {e}") from e
 
-@primitive_type(TypeRule([VoxSequence(VoxImage()), VoxNumber(),VoxNumber(), VoxNumber()], VoxImage()))
+@primitive_type(simple_type([VoxSequence(VoxImage()), VoxNumber(),VoxNumber(), VoxNumber()], VoxImage()))
 def threshold_equal(**kwargs):
     """
     Create binary mask where values equal threshold.
@@ -334,7 +334,7 @@ def threshold_equal(**kwargs):
         logger.error(f"threshold_equal failed: {e}")
         raise ValueError(f"threshold_equal failed: {e}") from e
 
-@primitive_type(TypeRule([VoxImage()], VoxRecord({'mean': VoxFloat(), 'std': VoxFloat(), 'min': VoxFloat(), 'max': VoxFloat(), 'median': VoxFloat(), 'shape': VoxSequence(VoxInt()), 'total_elements': VoxInt(), 'unique_values': VoxInt()})))
+@primitive_type(simple_type([VoxImage()], VoxRecord({'mean': VoxFloat(), 'std': VoxFloat(), 'min': VoxFloat(), 'max': VoxFloat(), 'median': VoxFloat(), 'shape': VoxSequence(VoxInt()), 'total_elements': VoxInt(), 'unique_values': VoxInt()})))
 def array_stats(**kwargs):
     """
     Compute basic statistics of an image array.
@@ -366,7 +366,7 @@ def array_stats(**kwargs):
         logger.error(f"array_stats failed: {e}")
         raise ValueError(f"array_stats failed: {e}") from e
 
-@primitive_type(TypeRule([VoxSequence(VoxImage()), VoxSequence(VoxImage())], VoxMap(VoxString(), VoxNumber())))
+@primitive_type(simple_type([VoxSequence(VoxImage()), VoxSequence(VoxImage())], VoxMap(VoxString(), VoxType())))
 def compare_arrays(**kwargs):
     """
     Compare two arrays element-wise and provide detailed comparison.
