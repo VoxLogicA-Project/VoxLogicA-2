@@ -205,6 +205,7 @@ class PrimitiveRegistry:
             kernel_name=qualified_name,
             description="Legacy adapter primitive",
             is_legacy_adapter=True,
+            type_rule=None,
         )
 
     def register(self, spec: PrimitiveSpec, kernel: KernelFn) -> None:

@@ -286,7 +286,7 @@ def count_pixels(**kwargs):
         logger.error(f"count_pixels failed: {e}")
         raise ValueError(f"count_pixels failed: {e}") from e
 
-@primitive_type(TypeRule([VoxSequence(VoxImage()), VoxNumber(),VoxNumber(), VoxNumber()], VoxMap(VoxString(), VoxNumber())))
+@primitive_type(TypeRule([VoxSequence(VoxImage()), VoxNumber(),VoxNumber(), VoxNumber()], VoxImage()))
 def threshold_equal(**kwargs):
     """
     Create binary mask where values equal threshold.
@@ -334,7 +334,7 @@ def threshold_equal(**kwargs):
         logger.error(f"threshold_equal failed: {e}")
         raise ValueError(f"threshold_equal failed: {e}") from e
 
-@primitive_type(TypeRule([VoxImage()], VoxMap(VoxString(), VoxNumber())))
+@primitive_type(TypeRule([VoxImage()], VoxRecord({'mean': VoxFloat(), 'std': VoxFloat(), 'min': VoxFloat(), 'max': VoxFloat(), 'median': VoxFloat(), 'shape': VoxSequence(VoxInt()), 'total_elements': VoxInt(), 'unique_values': VoxInt()})))
 def array_stats(**kwargs):
     """
     Compute basic statistics of an image array.
