@@ -36,7 +36,6 @@ class VoxString(VoxType):
 class VoxImage(VoxType):
     pass
 
-
 @dataclass(frozen=True)
 class VoxSequence(VoxType):
     element_type: VoxType
@@ -47,5 +46,13 @@ class VoxClosure(VoxType):
     argument_type: VoxType
     return_type: VoxType
 
+@dataclass(frozen=True)
+class VoxRecord(VoxType):
+    fields: dict[str, VoxType]
+
+@dataclass(frozen=True)
+class VoxMap(VoxType):
+    key_type: VoxType
+    value_type: VoxType
 
 TypeRule = Callable[[list[VoxType]], VoxType]

@@ -76,6 +76,7 @@ def register_specs() -> Dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
             planner=default_planner_factory(qualified, kind="scalar"),
             kernel_name=qualified,
             description=_PRIMITIVE_DESCRIPTIONS.get(primitive_name, "Array primitive"),
+            type_rule=getattr(kernel, "primitive_type", None)
         )
         specs[primitive_name] = (spec, kernel)
     return specs
