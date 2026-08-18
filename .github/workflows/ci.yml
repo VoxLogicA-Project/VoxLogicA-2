@@ -1,9 +1,11 @@
 name: CI
 
 on:
+  # Scheduled runs disabled: hourly cron was consuming GitHub Actions minutes.
+  # Re-enable by restoring the `schedule:` block below.
+  # schedule:
+  #   - cron: "0 * * * *"
   workflow_dispatch:
-  schedule:
-    - cron: "0 * * * *"
 
 permissions:
   contents: read
