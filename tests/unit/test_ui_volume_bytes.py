@@ -174,3 +174,47 @@ def test_both_ways_into_a_drawing_viewer_go_through_one_function():
     assert text.count("drawable(") == 3, "one definition, two call sites"
     assert "layers={drawing}" in text
     assert "layers={[{" not in text, "a layer list is being built somewhere else again"
+
+
+# --------------------------------------------------- the canvas follows the card
+
+
+def test_the_viewer_keeps_its_drawing_buffer_in_step_with_the_card() -> None:
+    """A card resizes without the window moving, and NiiVue only hears the window.
+
+    Measured before the fix, with the card shrunk from 224 to 96 CSS pixels: the
+    drawing buffer stayed at 448, so the ratio of buffer to box went from 2 --
+    the device pixel ratio, which is correct -- to 4.67, and the slice went on
+    being drawn for a canvas that no longer existed. The card clips, so nothing
+    spilled outside it; the picture inside was simply wrong, which looks the same
+    and is harder to explain.
+
+    NiiVue's own `resizeListener` does this arithmetic, but reaches it through
+    `requestAnimationFrame`, which a background tab never delivers -- so the
+    computation is done here, synchronously, and the assertion is that it stayed
+    that way.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "implementation/ui/src/lib/viewers/Volume.svelte"
+    ).read_text(encoding="utf-8")
+
+    assert "new ResizeObserver" in source, (
+        "the viewer must watch its own box: a card changes size without the "
+        "window moving, and that is the only event there is"
+    )
+    assert "canvas.offsetWidth" in source and "devicePixelRatio" in source, (
+        "the buffer is sized from the box it is drawn into, times the device "
+        "pixel ratio -- the same arithmetic NiiVue does when it is asked"
+    )
+    assert "nv.resizeListener()" not in source, (
+        "resizeListener reaches the resize through requestAnimationFrame, which "
+        "a background tab never delivers; it was tried and measured not to work"
+    )
+    # And it observes the host rather than the canvas it is about to resize.
+    assert "observer.observe(host)" in source, (
+        "observing the element you are about to resize is how a ResizeObserver "
+        "loop starts"
+    )

@@ -198,6 +198,45 @@
     if (canvas) wake();
   });
 
+  /** A card can change size without the window moving, and NiiVue only hears
+   * about the window.
+   *
+   * Its drawing buffer is sized from the canvas's client box when it attaches
+   * and on `window.resize`, so resizing a *card* left the buffer at the old
+   * size: the slice went on being drawn for a canvas that no longer existed,
+   * which is a volume in one corner with its orientation labels off the edge.
+   * The element could not overflow -- the card clips -- but the picture inside
+   * it was wrong, which looks the same and is worse.
+   *
+   * Observed on the host rather than the canvas: the canvas is what NiiVue
+   * resizes, and observing the thing you are about to resize is how a
+   * ResizeObserver loop starts. */
+  $effect(() => {
+    if (!host) return;
+    const observer = new ResizeObserver(() => {
+      if (!nv || !live || !canvas) return;
+      // NiiVue's own `resizeListener` does this arithmetic and then draws, but
+      // it reaches it through `requestAnimationFrame`, which a background tab
+      // never delivers -- so a card resized while the window was not in front
+      // came back with a buffer for the size it used to be. The canvas box is
+      // ours (the CSS above makes it fill the card), so its buffer is ours to
+      // keep in step: the same computation, synchronously, no frame required.
+      const ratio = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.round(canvas.offsetWidth * ratio));
+      const height = Math.max(1, Math.round(canvas.offsetHeight * ratio));
+      if (canvas.width === width && canvas.height === height) return;
+      canvas.width = width;
+      canvas.height = height;
+      try {
+        nv.drawScene();
+      } catch {
+        /* mid-teardown, or no context to draw into: the next wake redraws */
+      }
+    });
+    observer.observe(host);
+    return () => observer.disconnect();
+  });
+
   $effect(() => () => {
     contexts.drop(holder);
     teardown();
