@@ -1,5 +1,5 @@
-//@board cols=16 rows=8
-//@card id=program title="Program" kind=code x=12 y=0 w=4 h=8 auto=false
+//@board cols=12 rows=8
+//@card id=program title="Program" kind=code x=0 y=0 w=4 h=8 auto=false page=1
 import "simpleitk"
 import "vox1"
 
@@ -142,21 +142,21 @@ cases = [0, 1, 2, 3, 4]
 // Per case, as it finishes -- not only the average at the end. An average is
 // the one number that cannot tell you which case went wrong.
 
-//@card id=print1 kind=print x=4 y=0 w=2 h=2 page=1
+//@card id=print1 kind=print x=8 y=0 w=2 h=2 page=1
 print "case_002_best" best_dice(0)
-//@card id=print2 kind=print x=6 y=0 w=2 h=2 page=1
+//@card id=print2 kind=print x=10 y=0 w=2 h=2 page=1
 print "case_079_best" best_dice(1)
-//@card id=print3 kind=print x=8 y=0 w=2 h=2 page=1
+//@card id=print3 kind=print x=8 y=2 w=2 h=2 page=1
 print "case_089_best" best_dice(2)
-//@card id=print4 kind=print x=10 y=0 w=2 h=2 page=1
+//@card id=print4 kind=print x=10 y=2 w=2 h=2 page=1
 print "case_230_best" best_dice(3)
-//@card id=print5 kind=print x=12 y=0 w=2 h=2 page=1
+//@card id=print5 kind=print x=8 y=4 w=2 h=2 page=1
 print "case_328_best" best_dice(4)
 // And the whole sweep for one case, so the shape of the curve is visible: this
 // is what tells you whether the best value was a plateau or a spike.
-//@card id=print6 kind=print x=4 y=2 w=5 h=2 page=1
+//@card id=print6 kind=print x=4 y=4 w=4 h=2 page=1
 print "case_230_sweep" sweep(3)
-//@card id=print7 kind=print x=9 y=2 w=5 h=2 page=1
+//@card id=print7 kind=print x=4 y=6 w=4 h=2 page=1
 print "average_best" seq_avg(for g in cases do best_dice(g))
 // --- The method, drawn ---------------------------------------------------
 // Printing a region prints a *volume*, and the UI draws volumes rather than
@@ -186,10 +186,10 @@ print "5_ground_truth" gt(3)
 // method found that is not tumour, and everything it missed. A Dice of 0.95
 // says how much; only this says *where*, and where is what tells you whether
 // the next parameter is the right thing to reach for.
-//@card id=print14 kind=print x=0 y=0 w=4 h=4 page=1
+//@card id=print14 kind=print x=4 y=0 w=4 h=4 page=1
 print "6_disagreement" xor(segment(seed_level, 0.90, 3), gt(3))
 // And the same segmentation as a file on disk, for anything outside this
 // window. A save is an effect the program declares, so a headless run performs
 // it and a diff shows that it was asked for.
-//@card id=save15 kind=save x=0 y=4 w=4 h=2 page=1
+//@card id=save15 kind=save x=8 y=6 w=4 h=2 page=1
 save "case_230_segmentation.nii.gz" segment(seed_level, 0.90, 3)
