@@ -820,6 +820,14 @@
   }
 
   .content {
+    /* The card's height, handed on. Every viewer asks for `height: 100%` -- a
+     * volume fills its card, a result centres in it -- and a percentage height
+     * against an auto-height parent is not a height at all: it computes to
+     * `auto`, so a canvas fell back to its own drawing-buffer size and a card
+     * pulled taller grew a band of empty board under a picture that never
+     * followed. The one that grows instead of filling (the program, which
+     * scrolls) says `min-height` rather than `height`, and still does. */
+    height: 100%;
     padding: var(--space-1) var(--space-3) var(--space-3);
   }
 

@@ -218,3 +218,36 @@ def test_the_viewer_keeps_its_drawing_buffer_in_step_with_the_card() -> None:
         "observing the element you are about to resize is how a ResizeObserver "
         "loop starts"
     )
+
+
+def test_a_card_hands_its_height_to_whatever_is_inside_it() -> None:
+    """The other half of the same bug, and the half that was actually visible.
+
+    Keeping the drawing buffer in step with the canvas's box is no help when the
+    box itself never grew. Every viewer asks for `height: 100%` -- a volume fills
+    its card, a result centres in it -- and a percentage height resolved against
+    an auto-height parent is not a height: it computes to `auto`. The canvas then
+    fell back to its own drawing-buffer height, so a card pulled taller kept a
+    picture of one fixed shape with a band of empty board underneath it, which is
+    exactly "it always keeps the same aspect ratio".
+
+    Measured after: a card of 2x4 cells is 120x248, its volume 96x200 -- the body
+    in full, both axes -- and the buffer 192x400, twice each, which is the device
+    pixel ratio and nothing else. The program card, which grows rather than fills
+    and says `min-height` for that reason, still scrolls: 5730 pixels of source
+    in 472 of body.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "implementation/ui/src/lib/components/Bento/BentoCard.svelte"
+    ).read_text(encoding="utf-8")
+
+    body = source[source.index("<style>") :]
+    content = body[body.index(".content {") :]
+    content = content[: content.index("}")]
+    assert "height: 100%" in content, (
+        "a card whose content box has no height of its own cannot be filled by "
+        "anything inside it, however loudly the child asks"
+    )
