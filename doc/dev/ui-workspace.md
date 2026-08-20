@@ -706,3 +706,38 @@ avoids creating them.
 The order is stable: cards that do not depend on each other keep the order they
 had, so writing a file back is the smallest change that is still a correct
 program rather than a reshuffle.
+
+---
+
+## What a click is allowed to cost
+
+A snapshot is published after every action, and most actions do not touch the
+document: turning a page, pressing Tab, clicking a card, changing the zoom. Each
+of those was re-answering *"does this program compile"* and getting the answer it
+had just got — **81 ms of server work per click** with the BraTS example open,
+which is what made the board feel slow.
+
+Everything derived from the document is a pure function of the document **text**,
+so it is kept per text. The text is the key because the text *is* the document —
+the same principle the results store runs on: if the bytes did not change,
+nothing derived from them can have.
+
+The first answer for a document is the expensive one: saying which node a name
+compiled to warms the whole engine, **1.3 seconds**, once. So the interaction
+path does not wait for it. `snapshot(wait=False)` — used by `publish` — returns
+the last answer marked `analysing`, and a single coalescing worker computes the
+new one and publishes again. A caller that *asked* (an agent, a test, the HTTP
+endpoint) gets the real thing and pays for it: `snapshot()` still blocks.
+
+| | before | after |
+|---|---|---|
+| open the BraTS example | 1449 ms | 34 ms (nodes follow) |
+| Tab, page switch, click | 81 ms | 3–5 ms |
+| an edit that changes the text | 81 ms | 4–5 ms (analysis follows) |
+
+Stale rather than empty, while a new answer is on its way: an edit must not blank
+every card's node state for a beat and bring it back, which reads as a flicker
+and looks like a bug. Empty only before the first answer exists, when there is
+nothing else to show — and `analysing` says which of the two it is, because "this
+program has no errors" and "nobody has looked yet" are different things to draw
+and only one of them is a claim.
