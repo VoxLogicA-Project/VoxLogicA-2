@@ -53,7 +53,9 @@ _KEY_ORDER = (
     "page",
     "node",
     "focus",
+    "index",
     "view",
+    "style",
     "from",
     "cols",
     "rows",
@@ -96,7 +98,58 @@ def _comment(text: str) -> str:
 #: Always written quoted, whatever they contain. A title is prose -- somebody
 #: will type a space into it within the hour -- and a field that is only
 #: sometimes quoted teaches every reader of the file the wrong rule.
-_ALWAYS_QUOTED = ("title", "labels")
+_ALWAYS_QUOTED = ("title", "labels", "style")
+
+
+#: How one layer looks: a colormap, optionally an opacity, optionally switched
+#: off -- `gray`, `blue@0.35`, `red@0.45!off`.
+_STYLE = re.compile(r"^([A-Za-z_][\w-]*)(?:@([0-9]*\.?[0-9]+))?(!off)?$")
+
+#: A layer whose style this build could not read. Not dropped: a style list is
+#: positional, so dropping entry two would silently repaint entry three.
+_PLAIN: dict[str, Any] = {"colormap": None, "opacity": 1.0, "on": True}
+
+
+def styles(value: str) -> list[dict[str, Any]]:
+    """`"gray@1.00, blue@0.35!off"` as one entry per layer, in drawing order.
+
+    Appearance, and only appearance. It lives in the directive rather than in the
+    expression because *the expression is the cache key*: put opacity in the
+    program and moving a slider changes a hash, and changing a hash recomputes
+    three hundred megabytes of volume because somebody dragged a cursor.
+
+    The nth entry styles the nth element of the card's array, so the count of
+    entries is load-bearing and a value that does not parse still occupies its
+    place. The raw attribute is what gets written back regardless, so nothing a
+    later build understands is lost here.
+    """
+    out: list[dict[str, Any]] = []
+    for piece in value.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        match = _STYLE.match(piece)
+        if match is None:
+            out.append(dict(_PLAIN))
+            continue
+        colormap, opacity, off = match.groups()
+        out.append({
+            "colormap": colormap,
+            "opacity": 1.0 if opacity is None else float(opacity),
+            "on": off is None,
+        })
+    return out
+
+
+def style_text(layers: list[dict[str, Any]]) -> str:
+    """The other direction, for whoever moves a slider."""
+    written = []
+    for layer in layers:
+        text = f"{layer.get('colormap') or 'gray'}@{float(layer.get('opacity', 1.0)):.2f}"
+        if layer.get("on") is False:
+            text += "!off"
+        written.append(text)
+    return ", ".join(written)
 
 
 def _escape(value: str) -> str:
@@ -280,9 +333,13 @@ class Document:
                 value = directive.int_or(key, None)
                 if value is not None:
                     card[key] = value
-            for key in ("node", "view", "from", "focus"):
+            for key in ("node", "view", "from", "focus", "index"):
                 if key in attrs:
                     card[key] = attrs[key]
+            # A card that names an index is a card somebody can walk: that
+            # attribute is the whole of what used to be `kind=selector`.
+            if "style" in attrs:
+                card["style"] = styles(attrs["style"])
             if "aspect" in attrs:
                 try:
                     card["aspect"] = float(attrs["aspect"])
