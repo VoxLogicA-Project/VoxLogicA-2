@@ -262,7 +262,11 @@ class Workspace:
                 # layer. A layer is addressed by the expression it is, so the
                 # map the UI already reads is the map it arrives in: no second
                 # channel, and a layer shared by two cards is one entry.
-                for wanted in (card.get("node"), *(card.get("parts") or ())):
+                for wanted in (
+                    card.get("node"),
+                    card.get("over"),
+                    *(card.get("parts") or ()),
+                ):
                     if not wanted or wanted in bindings:
                         continue
                     found = hash_of(source, wanted)

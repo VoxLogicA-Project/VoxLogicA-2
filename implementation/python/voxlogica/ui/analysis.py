@@ -184,6 +184,35 @@ def outputs(source: str) -> list[Output]:
     return found
 
 
+def sequence_of(expression: str) -> str | None:
+    """The sequence an expression indexes into, or `None`.
+
+    `flairs[i]` is `index(flairs, i)` once the parser has it, and the first
+    argument is the thing being walked along. A selector needs it for one
+    reason: to know where the walk ends. Asked of the parser, because `[` also
+    means an array literal and telling the two apart is exactly its job.
+    """
+    from voxlogica import parser as vp
+
+    text = (expression or "").strip()
+    if not text:
+        return None
+    try:
+        program = vp.parse_program_content(f'print "p" {text}')
+    except Exception as exc:  # noqa: BLE001 - a half-typed expression indexes nothing
+        logger.debug("could not read a sequence out of %r (%s)", text, exc)
+        return None
+    for command in program.commands:
+        found = getattr(command, "expression", None)
+        if (
+            isinstance(found, vp.ECall)
+            and found.identifier == "index"
+            and len(found.arguments) == 2
+        ):
+            return found.arguments[0].to_syntax()
+    return None
+
+
 def compile_error(source: str) -> dict[str, Any] | None:
     """Why this document does not compile, or `None` when it does.
 

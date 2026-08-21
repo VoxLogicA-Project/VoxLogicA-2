@@ -264,6 +264,24 @@ def _split_layer(workspace, params):
     return new_id
 
 
+def _set_index(workspace, params):
+    """Walk a card's index to another element.
+
+    Reached from a card, applied to the program: the card carries the *name* of
+    the variable and the variable is one line of .imgql. So this is not "select
+    an item in a widget" -- it is an edit, undoable like any other, and every
+    card that mentions the name moves with it.
+    """
+    card = next(
+        (found for found in workspace.document.cards if found["id"] == params["id"]),
+        None,
+    )
+    name = (card or {}).get("index")
+    if not name:
+        return False
+    return workspace.document.set_index(name, int(params["value"]))
+
+
 def _set_view_mode(workspace, params):
     return workspace.document.set_attr(params["id"], "view", params["view"])
 
@@ -772,6 +790,9 @@ ACTIONS: dict[str, Action] = {
                 ("id", "at"),
                 "How one layer of a stack looks: colormap, opacity, on or off. "
                 "Appearance only -- nothing recomputes.", _set_layer_style),
+        _action("card.setIndex", {"id": "string", "value": "int"}, ("id", "value"),
+                "Walk this card's index to another element of the sequence. "
+                "Every card that mentions the same index follows.", _set_index),
         _action("card.moveLayer", {"id": "string", "at": "int", "to": "int"},
                 ("id", "at", "to"),
                 "Reorder a stack: which layer draws in front of which.", _move_layer),

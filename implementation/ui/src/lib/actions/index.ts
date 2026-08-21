@@ -57,6 +57,10 @@ export const card = {
     at: number,
     look: { colormap?: string; opacity?: number; on?: boolean },
   ) => invoke("card.setLayerStyle", { id, at, ...look }),
+  /** Walk this card's index to another element. An edit of one line of the
+   * program, so every card that mentions the same index follows -- which is all
+   * master and slave is: a shared name, not a link. */
+  setIndex: (id: string, value: number) => invoke("card.setIndex", { id, value }),
   /** Which layer draws in front of which. A rearrangement of the array the
    * card prints, written as one -- the elements keep the author's spelling. */
   moveLayer: (id: string, at: number, to: number) =>

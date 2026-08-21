@@ -402,3 +402,72 @@ def test_the_last_layer_cannot_be_taken_out(tmp_path):
 def test_a_card_cannot_be_dropped_on_itself(tmp_path):
     space = _space(tmp_path, MERGEABLE)
     assert space.apply("card.mergeCard", {"id": "scan", "from": "scan"}) is False
+
+
+# --------------------------------------------------------------- the selector
+
+WALKED = """\
+//@board cols=12 rows=8
+//@card id=data kind=code x=0 y=0
+let cases  = for k in [0.0, 1.0, 2.0, 3.0] do k
+let flairs = for c in cases do c + 1.0
+let masks  = for c in cases do c + 2.0
+let i = 1
+//@card id=scan kind=print index=i style="gray@1.00, red@0.45" x=4 y=0
+print "scan" [flairs[i], masks[i]]
+//@card id=sheet kind=print index=i x=8 y=0
+print "sheet" flairs[i]
+"""
+
+
+def test_a_card_that_owns_an_index_says_what_it_walks_along():
+    """`flairs[i]` is a step along `flairs`, which is where the walk ends."""
+    cards = {card["id"]: card for card in doc.parse(WALKED).cards}
+    assert cards["scan"]["over"] == "flairs"
+    assert cards["sheet"]["over"] == "flairs"
+
+
+def test_a_card_with_no_index_is_not_walking_anything():
+    text = '//@card id=one kind=print x=0 y=0\nprint "one" flairs[i]\n'
+    assert "over" not in doc.parse(text).cards[0]
+
+
+def test_walking_the_index_edits_one_line(tmp_path):
+    space = _space(tmp_path, WALKED)
+    assert space.apply("card.setIndex", {"id": "scan", "value": 3}) is True
+    source = space.snapshot()["source"]
+    assert "let i = 3" in source
+    assert "let i = 1" not in source
+
+
+def test_every_card_on_that_index_moved_with_it(tmp_path):
+    """There is no link to update: they mention the same name."""
+    space = _space(tmp_path, WALKED)
+    space.apply("card.setIndex", {"id": "sheet", "value": 2})
+    cards = {card["id"]: card for card in space.snapshot()["cards"]}
+    assert cards["scan"]["index"] == cards["sheet"]["index"] == "i"
+    assert "let i = 2" in space.snapshot()["source"]
+
+
+def test_the_sequence_is_bound_so_its_length_can_be_known(tmp_path):
+    space = _space(tmp_path, WALKED)
+    assert space.snapshot()["nodes"].get("flairs")
+
+
+def test_an_index_written_as_a_float_stays_one(tmp_path):
+    """The file is somebody's. `2.0` is not an invitation to write `3`."""
+    space = _space(tmp_path, WALKED.replace("let i = 1", "let i = 1.0"))
+    space.apply("card.setIndex", {"id": "scan", "value": 2})
+    assert "let i = 2.0" in space.snapshot()["source"]
+
+
+def test_an_index_bound_to_arithmetic_is_not_overwritten(tmp_path):
+    """Overwriting it would be deleting somebody's work to record a click."""
+    space = _space(tmp_path, WALKED.replace("let i = 1", "let i = add(j, 1)"))
+    assert space.apply("card.setIndex", {"id": "scan", "value": 2}) is False
+    assert "let i = add(j, 1)" in space.snapshot()["source"]
+
+
+def test_a_card_that_owns_no_index_cannot_walk_one(tmp_path):
+    space = _space(tmp_path, WALKED)
+    assert space.apply("card.setIndex", {"id": "data", "value": 2}) is False

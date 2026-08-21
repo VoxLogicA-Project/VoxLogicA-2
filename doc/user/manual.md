@@ -102,6 +102,14 @@ layer in front of or behind the others; **⤴ on a row** takes it back out as a
 card of its own. Merging and splitting are exactly each other, so a drop you did
 not mean is one click away from undone.
 
+**A card can walk a sequence.** Give it an **index** — `index=i` in its
+directive — and `print "scan" flairs[i]` grows chevrons, or numbered tabs when
+the sequence is short. Clicking one **sets** that index, which is one line of
+your program (`let i = 3`), so **every card that mentions `i` moves with it**.
+That is all master and slave is here: there is no link to make or break, just a
+name two cards happen to share. An index bound to arithmetic rather than to a
+plain number is left alone — it is your work, not a place to record a click.
+
 ---
 
 ## Running, and what a card is about

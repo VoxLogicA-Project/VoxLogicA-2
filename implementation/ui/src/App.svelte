@@ -13,6 +13,7 @@
   import { Bento, Button, SHORTCUTS } from "./lib/components/index.js";
   import { viewerFor } from "./lib/viewers/index.js";
   import Layers from "./lib/viewers/Layers.svelte";
+  import Walk from "./lib/viewers/Walk.svelte";
   import BuildError from "./lib/BuildError.svelte";
   import Help from "./lib/Help.svelte";
   import Library from "./lib/Library.svelte";
@@ -148,6 +149,24 @@
       };
     });
     return { layers, lead: results.get(results.hashFor(card.parts[0])) };
+  }
+
+  /** How far a selector can walk, and where it is.
+   *
+   * Both are questions about the program, not about a widget: the length is the
+   * sequence's own result and the position is the value of a `let`. Null length
+   * means nobody has computed the sequence yet -- and walking has to stay
+   * possible, or a card cannot be used to evaluate the thing it walks along.
+   */
+  function walkOf(card) {
+    if (!card.index) return null;
+    const over = results.get(results.hashFor(card.over));
+    const counted = /\bof (\d+)\b/.exec(over.summary ?? "");
+    const bound = results.get(results.hashFor(card.index));
+    return {
+      length: counted ? Number(counted[1]) : null,
+      at: Number.isFinite(bound.value) ? Math.trunc(bound.value) : 0,
+    };
   }
 
   const named = (id) => workspace.cards.find((card) => card.id === id)?.title ?? id;
@@ -641,8 +660,16 @@
             <!-- Picture and rows in one column: the rows are the cards that
                  were dropped in, so they belong to the card and not to the
                  viewer, which knows only about layers. -->
+            {@const walk = walkOf(card)}
             <div class="stacked">
-              <viewer.component layers={drawing} />
+              <div class="over">
+                <viewer.component layers={drawing} />
+                {#if walk}
+                  <ResultSubscription node={card.over} />
+                  <ResultSubscription node={card.index} />
+                  <Walk {card} length={walk.length} at={walk.at} />
+                {/if}
+              </div>
               {#if stack.layers.length > 1}
                 <Layers {card} layers={stack.layers} />
               {/if}
@@ -872,6 +899,20 @@
   }
 
   .stacked :global(.volume) {
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* The picture, and the means of walking it, in the same box: the navigation
+   * floats on the value rather than taking room from it. */
+  .over {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+
+  .over :global(.volume) {
     flex: 1;
     min-height: 0;
   }

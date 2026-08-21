@@ -147,6 +147,9 @@ _ARRAY_HEAD = re.compile(r'((?:print|save)\s+"(?:[^"\\]|\\.)*"\s*)\[')
 #: The first name in an expression, for labelling a layer taken out on its own.
 _LEADING_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
+#: A name in the language: what an index variable is allowed to be called.
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
 
 def array_of(source: str) -> tuple[str, list[str], str] | None:
     """`(before, elements, after)` for the array a print draws, or `None`.
@@ -450,6 +453,16 @@ class Document:
                         card.setdefault("title", declared[0].label)
                         if card["title"] == identity:
                             card["title"] = declared[0].label
+            # What a selector walks along, so it can know where the walk ends.
+            # Read from the first picture: `flairs[i]` is a step along `flairs`.
+            if card.get("index"):
+                from . import analysis
+
+                walked = analysis.sequence_of(
+                    (card.get("parts") or [card.get("node") or ""])[0]
+                )
+                if walked:
+                    card["over"] = walked
             card["focus"] = _focus_of(card)
             cards.append(card)
         return cards
@@ -1129,6 +1142,41 @@ class Document:
         while len(look) < len(elements):
             look.append(default_style(len(look)))
         return list(zip(elements, look))
+
+    def set_index(self, name: str, value: int) -> bool:
+        """Move an index: `let i = 2` becomes `let i = 3`.
+
+        The whole of master and slave. There is no link and no owner -- every
+        card whose expression mentions `i` follows, because that is what a free
+        variable does, and it is visible in the text rather than kept in
+        somebody's model of the session.
+
+        Only a `let` bound to a plain number is moved. One bound to an
+        expression is somebody's arithmetic, and overwriting it would be
+        deleting their work to record a click.
+        """
+        if not _NAME.fullmatch(name or "") or value < 0:
+            return False
+        pattern = re.compile(
+            rf"^([ \t]*let[ \t]+{re.escape(name)}[ \t]*=[ \t]*)([0-9]+(?:\.[0-9]+)?)([ \t]*)$",
+            re.MULTILINE,
+        )
+        for segment in self.segments:
+            match = pattern.search(segment.body)
+            if match is None:
+                continue
+            # Written the way it was written: an index that was `2.0` stays a
+            # float, because `index` is given a number and the file is somebody's.
+            was = match.group(2)
+            now = f"{value}.0" if "." in was else str(value)
+            if now == was:
+                return True
+            segment.body = (
+                segment.body[: match.start(2)] + now + segment.body[match.end(2) :]
+            )
+            self.dirty = True
+            return True
+        return False
 
     def set_source(self, card_id: str, text: str) -> bool:
         """Replace a card's body. Only that card's text moves."""
