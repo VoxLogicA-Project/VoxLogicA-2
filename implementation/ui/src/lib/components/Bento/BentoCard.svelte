@@ -239,6 +239,19 @@
     if (keep && text) onrename?.(text);
   }
   let content = $state(null);
+  /** What the pointer went down on, last time it did.
+   *
+   * `dragstart` does not fire on what you pressed -- it fires on the nearest
+   * *draggable ancestor*, which for anything inside a card is the body. So
+   * `event.target` in a dragstart handler is the body, always, and asking it
+   * "were you a slider?" answers no however the press began. The press is the
+   * only place that knows, so the press is where it gets recorded.
+   *
+   * Captured, because the layer panel stops pointerdown from bubbling -- and
+   * presses inside the layer panel are exactly the ones this has to see.
+   */
+  let pressedOn = null;
+
   /** True while a pointer owns this card. The card does not follow the pointer
    * in pixels: it snaps, cell by cell, as the pointer crosses each half-way
    * mark. A card that glides freely and then jumps on release shows you a
@@ -651,6 +664,7 @@
     <div
       class="body"
       class:landing={landing}
+      onpointerdowncapture={(event) => (pressedOn = event.target)}
       ondragover={(event) => {
         if (!ondropcards || !event.dataTransfer) return;
         if (!event.dataTransfer.types.includes(IDS)) return;
@@ -674,7 +688,8 @@
         // the thumb never moved, and a ghost with the card's name on it flew off
         // instead. Marking the row undraggable did nothing, because the body was
         // always the source.
-        const from = event.target;
+        // Where the press began, not where the browser says the drag did.
+        const from = pressedOn ?? event.target;
         if (from?.closest?.(".layers")) {
           // The rows own one drag of their own -- reordering, from the grip.
           // Anything else in there is a control, and controls are not handles.

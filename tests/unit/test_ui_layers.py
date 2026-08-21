@@ -856,21 +856,29 @@ def test_a_dragged_card_carries_its_name_and_not_a_photograph_of_itself():
 
 
 def test_a_press_on_a_control_never_starts_the_card_s_own_drag():
-    """`draggable` is inherited from the nearest draggable *ancestor*.
+    """Fixed twice before this, and both times the wrong thing.
 
-    So marking the layer row undraggable changed nothing: the card body was
-    always the source, and pressing a slider started a card drag -- the thumb
-    never moved and a ghost with the card's name on it flew off instead. Fixing
-    the row was fixing the wrong element.
+    First the layer row was marked undraggable, which changed nothing: `draggable`
+    is inherited from the nearest draggable *ancestor*, and the card body was
+    always the source.
 
-    Two rules, both about the body. Anything inside the rows: the grip carries
-    the one drag that belongs there, everything else carries none. Anything you
-    can operate, anywhere: never a handle.
+    Then the body's `dragstart` was made to refuse a press on a control -- by
+    asking `event.target`. But **`dragstart` does not fire on what you pressed**:
+    it fires on the draggable ancestor, so `event.target` there is the body,
+    always, and the question answered "no" however the press began. The test
+    passed because it dispatched `dragstart` on the slider directly, which no
+    browser ever does. A false positive of my own making, and it cost the user
+    two rounds.
 
-    Probed in the page, dispatching a real `dragstart` from each:
+    The press is the only moment that knows where it began, so the press records
+    it -- captured, because the layer panel stops pointerdown from bubbling and
+    presses in the panel are exactly the ones this must see.
+
+    Probed the way it really happens -- press the control, then start the drag on
+    the body:
 
         slider, eye, ramp   refused, carrying nothing
-        grip                text/plain only -- no card ids alongside it
+        grip                allowed, and the body adds no card ids to it
         the picture         text/voxlogica-card-ids, as before
     """
     from pathlib import Path
@@ -879,12 +887,15 @@ def test_a_press_on_a_control_never_starts_the_card_s_own_drag():
     card = (root / "lib/components/Bento/BentoCard.svelte").read_text(encoding="utf-8")
     layers = (root / "lib/viewers/Layers.svelte").read_text(encoding="utf-8")
 
+    # Recorded on the press, in the capture phase, or the panel's own
+    # `stopPropagation` hides exactly the presses that matter.
+    assert "onpointerdowncapture={(event) => (pressedOn = event.target)}" in card
     start = card[card.index("      ondragstart={(event) => {") :]
     start = start[: start.index("      }}")]
-    assert 'from?.closest?.(".layers")' in start
-    assert 'from.closest("[data-grip]")' in start, (
-        "the rows own exactly one drag, and it starts from the grip"
+    assert "const from = pressedOn ?? event.target;" in start, (
+        "asking the dragstart's own target answers about the body, always"
     )
+    assert 'from?.closest?.(".layers")' in start
+    assert 'from.closest("[data-grip]")' in start
     assert 'from?.closest?.("input, button, select, textarea, a, label")' in start
-    # The marker the card recognises without knowing what a layer row is.
     assert "data-grip" in layers
