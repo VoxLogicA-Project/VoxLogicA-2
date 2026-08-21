@@ -1,0 +1,172 @@
+//@board cols=12 rows=8
+//@card id=program title="The method" kind=code x=0 y=0 w=5 h=8 auto=false page=1
+import "simpleitk"
+import "vox1"
+
+// Whole-tumour segmentation on FLAIR alone -- the TACAS'19 recipe -- written so
+// that every step is a *sequence over the cases* rather than a function of one.
+//
+// That is the only difference from `brats-five-cases.imgql`, and it is the whole
+// point of this example. Once a step is a sequence, one number chooses which
+// case every card on the board is looking at:
+//
+//     let g = 3                     <- one line, in the card at the bottom left
+//     print "found"  found[g]
+//     print "truth"  truths[g]
+//
+// Both cards mention `g`. Walk it with the chevrons on either of them and both
+// move, because they were never linked -- they share a name. Deleting one
+// orphans nothing, and why the other changed is visible in the text.
+//
+// And a card can show more than one of them at once: `print "review" [a, b, c]`
+// draws three pictures, back to front. Drag a card onto another to lay them
+// together; drag a row out with ⤴ to take it apart again. What each layer
+// *looks* like -- its colour, its opacity, whether it is on -- lives in the
+// card's directive and never in the expression, so a slider costs nothing. The
+// expression is the cache key: an opacity inside it would recompute the volume.
+
+// --- Where the data is ----------------------------------------------------
+// Five cases, gzipped, in the layout BraTS ships. Point `dataset_root` at the
+// full dataset and nothing else here changes -- the sequences get longer and
+// the chevrons walk further.
+dataset_root = "./doc/gallery/programs/brats2020/data"
+
+flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
+seg_paths = dir(dataset_root, "*_seg.nii.gz", true, true)
+
+// --- The spatial vocabulary ----------------------------------------------
+// Four operators, and every region below is built from them. No classifier, no
+// training, no weights.
+//
+//   N(a)          `a` grown by one voxel -- its closure.
+//   touch(a,b)    the part of `a` spatially connected to `b`.
+//   pdt(x)        distance from every voxel to the region `x`.
+//   smoothen(a,x) a morphological opening: drop anything thinner than `x`.
+N(a) = near(a)
+touch(a, b) = through(N(b), a)
+pdt(x) = mask(dt(x), dt(x) > 0)
+distgeq(x, y) = x <= pdt(y)
+distleq(x, y) = x >= pdt(y)
+smoothen(a, x) = distleq(x, distgeq(x, not(a)))
+
+// A hole is interior exactly when the outside cannot reach it. Necrotic centres
+// are holes in the bright rim, and they are tumour.
+fill_holes(region) = not(touch(not(region), border(region)))
+
+read(path) = intensity(ReadImage(path))
+
+// The brain, found rather than given: background is what touches the edge of the
+// image while being nearly black. No atlas, no skull-stripping -- the border is
+// the only prior.
+brain_of(flair) =
+  let background = touch(leq_sv(0.1, flair), border(flair)) in
+  not(background)
+
+// Intensity is not comparable between scanners, so it is replaced by *rank*
+// within the brain: every voxel becomes its percentile. "Hyperintense" then
+// means the same thing in every case, which is what lets one pair of thresholds
+// apply to all of them.
+ranked(flair, brain) = percentiles(flair, brain, 0)
+
+// --- Every step, as a sequence over the cases ----------------------------
+// This is the shape that makes the board work. `cases` is the index set, and
+// each line below is one step of the method for *all* of them at once -- so a
+// card can say `seeds[g]` and mean "the seed of whichever case we are looking
+// at". The engine shares every intermediate between them; nothing here is
+// computed twice, and nothing is computed for a case nobody has opened.
+cases = [0.0, 1.0, 2.0, 3.0, 4.0]
+
+flairs = for p in flair_paths do read(p)
+brains = for f in flairs do brain_of(f)
+ranks = for k in cases do ranked(flairs[k], brains[k])
+
+// Whole tumour, as BraTS defines it: every non-zero label together.
+truths = for p in seg_paths do geq_sv(1.0, read(p))
+
+// --- The method ----------------------------------------------------------
+// Hysteresis: two thresholds and a reachability question, rather than one
+// threshold and a hope.
+//
+//   the *seed* is the small set bright enough to be tumour on its own, opened
+//   so that a scattering of bright noise does not qualify;
+//   the *pool* is the larger set that is plausibly tumour;
+//   the answer is the part of the pool spatially reachable from a seed.
+//
+// One threshold cannot do this. High, and the tumour is a fragment; low, and it
+// floods through the ventricles into the far hemisphere. "Connected to something
+// certain" is what separates the two failures -- and it is a *spatial* question,
+// which is the whole reason this language exists.
+//
+// Note the order in `grow`: `through(x, y)` returns the components of *y* that
+// meet *x*. Written the other way round it hands the seed back unchanged and the
+// pool threshold stops mattering at all.
+//
+// The closings are not decoration: a bright rim interrupted by a vessel leaves
+// the far side a separate component, which reachability will not cross to.
+seed_level = 0.95
+pool_level = 0.90
+
+seeds = for k in cases do smoothen(geq_sv(seed_level, ranks[k]), 5.0)
+pools = for k in cases do smoothen(geq_sv(pool_level, ranks[k]), 2.0)
+
+grown = for k in cases do grow(seeds[k], pools[k])
+regrown = for k in cases do grow(imclose(grown[k], 3.0), pools[k])
+found = for k in cases do
+  fill_holes(maxvol(and(imclose(regrown[k], 2.0), brains[k])))
+
+// Everything the method found that is not tumour, and everything it missed. A
+// Dice score says how much; only this says *where* -- and where is what tells
+// you which parameter to reach for next.
+missed = for k in cases do xor(found[k], truths[k])
+
+// --- Scoring -------------------------------------------------------------
+dice(pred, truth) =
+  let overlap = and(pred, truth) in
+  /(*(2.0, volume(overlap)), +(volume(pred), volume(truth)))
+
+scores = for k in cases do dice(found[k], truths[k])
+
+seq_avg(seq) = /(fold + 0 seq, fold + 0 (for x in seq do 1))
+//@card id=which title="Which case" kind=code x=0 y=6 w=3 h=2
+// One line, and the whole of master and slave.
+//
+// Every card on the board mentions `g`. The chevrons on any of them rewrite this
+// number, and all of them follow -- so this card is worth keeping on screen: it
+// is the state of the board, in the program, where a diff can see it.
+//
+// Type a different number here and the same thing happens. There is no
+// difference between navigating and editing, because navigating *is* editing.
+let g = 3
+//@card id=review title="Review" kind=print index=g style="gray@1.00, blue@0.30, red@0.45" x=0 y=0 w=6 h=6
+// Three pictures in one card, back to front: the scan, the ground truth over it,
+// and what the method found over that. Where red and blue disagree is where the
+// method is wrong, and you can see it without arithmetic.
+//
+// Take it apart: ⤴ on a row puts that layer back on the board as its own card.
+// Put it together again: drag a card by its body onto this one.
+print "review" [flairs[g], truths[g], found[g]]
+//@card id=dice title="Dice" kind=print index=g x=3 y=6 w=3 h=2
+print "dice" scores[g]
+//@card id=average title="Average" kind=print x=5 y=2 w=4 h=2 page=1
+// Over the five, at *one* pair of thresholds. Lower than the average in
+// `brats-five-cases.imgql`, and not a regression: that one sweeps the pool
+// threshold per case and keeps the best. This example is about reading a case,
+// not about the ceiling of the method -- and the average is the one number that
+// cannot tell you which case went wrong, which is what the board is for.
+print "average" seq_avg(scores)
+//@card id=brain title="1 · brain" kind=print index=g x=6 y=0 w=3 h=3
+print "brain" brains[g]
+//@card id=seed title="2 · seed" kind=print index=g x=9 y=0 w=3 h=3
+print "seed" seeds[g]
+//@card id=pool title="3 · pool" kind=print index=g x=6 y=3 w=3 h=3
+print "pool" pools[g]
+//@card id=missed title="4 · disagreement" kind=print index=g x=9 y=3 w=3 h=3
+print "missed" missed[g]
+//@card id=truth title="Ground truth" kind=print index=g style="blue@1.00" x=6 y=6 w=3 h=2
+print "truth" truths[g]
+//@card id=result title="Found" kind=print index=g style="red@1.00" x=9 y=6 w=3 h=2
+print "result" found[g]
+//@card id=save title="Write it out" kind=save index=g x=5 y=0 w=4 h=2 page=1
+// A save is an effect the program declares, so a headless run performs it and a
+// diff shows it was asked for.
+save "found.nii.gz" found[g]
