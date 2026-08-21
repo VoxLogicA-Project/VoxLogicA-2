@@ -11,7 +11,7 @@
    * why it stopped updating, and it has to appear wherever you are.
    */
   import { Bento, Button, SHORTCUTS } from "./lib/components/index.js";
-  import { viewerFor } from "./lib/viewers/index.js";
+  import { needsFor, viewerFor } from "./lib/viewers/index.js";
   import Layers from "./lib/viewers/Layers.svelte";
   import Walk from "./lib/viewers/Walk.svelte";
   import BuildError from "./lib/BuildError.svelte";
@@ -170,6 +170,21 @@
     // run yet, while the file plainly said 3.
     return { length: counted ? Number(counted[1]) : null, at: card.at ?? 0 };
   }
+
+  /** The cards, each carrying the smallest size its content is usable at.
+   *
+   * A floor is a property of what the card shows, so it comes from the viewer
+   * table rather than from the file: the document records the size somebody
+   * *chose*, and a floor is not a choice. `minW`/`minH` already in the document
+   * win -- an author who wrote one meant it.
+   */
+  const laid = $derived(
+    workspace.cards.map((card) => {
+      const floor = needsFor(card, results.forCard(card));
+      if (!floor) return card;
+      return { ...card, minW: card.minW ?? floor.w, minH: card.minH ?? floor.h };
+    }),
+  );
 
   const named = (id) => workspace.cards.find((card) => card.id === id)?.title ?? id;
 
@@ -584,7 +599,7 @@
     </section>
   {:else}
     <Bento
-      cards={workspace.cards}
+      cards={laid}
       cols={workspace.board.cols}
       rows={workspace.board.rows}
       page={workspace.view.page}

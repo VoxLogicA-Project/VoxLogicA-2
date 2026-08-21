@@ -551,3 +551,62 @@ def test_the_navigation_floats_over_a_picture_and_takes_a_line_over_anything_els
     strip = strip[: strip.index("}")]
     assert "position: absolute" not in strip
     assert "flex: none" in strip
+
+
+# ------------------------------------------------ a card too small to be used
+
+
+def test_a_card_declares_the_smallest_size_its_content_can_be_used_at():
+    """A volume in two cells is a black rectangle with three letters on it.
+
+    The floor lives in the viewer table -- the same table that decides *which*
+    viewer draws a card -- because it is a property of what the card shows. Not
+    in the document: the file records the size somebody chose, and a floor is not
+    a choice. A stack adds room per layer, since a card that fits the picture but
+    not its rows has its controls off the bottom edge.
+    """
+    from pathlib import Path
+
+    table = (
+        Path(__file__).resolve().parents[2] / "implementation/ui/src/lib/viewers/index.js"
+    ).read_text(encoding="utf-8")
+    assert "needs: { w: 3, h: 3 }" in table
+    assert "export function needsFor(" in table
+    assert "card?.parts?.length" in table, "a stack needs room for its rows"
+
+    app = (
+        Path(__file__).resolve().parents[2] / "implementation/ui/src/App.svelte"
+    ).read_text(encoding="utf-8")
+    # The document's own minimum wins: an author who wrote one meant it.
+    assert "card.minW ?? floor.w" in app and "card.minH ?? floor.h" in app
+
+
+def test_the_floor_reaches_the_layout_and_not_only_the_paint():
+    """`clamp` already refused to *draw* a card below its floor, which left the
+    drawn card overlapping a neighbour while the document said they were apart.
+
+    So the growth goes through the path a drag takes: one arrangement, the
+    displaced moved aside by `arrange`, accepted whole or refused. Measured on a
+    board with room: a 2x1 card grew to 3x4 and its neighbour stepped from x=2
+    to x=3, with no overlaps and nothing outside the board.
+    """
+    from pathlib import Path
+
+    bento = (
+        Path(__file__).resolve().parents[2]
+        / "implementation/ui/src/lib/components/Bento/Bento.svelte"
+    ).read_text(encoding="utf-8")
+
+    # Bounded by the document's board, never by the screen's.
+    assert "{ w: cols, h: rows }" in bento, (
+        "the board fills the viewport, so a wide window has columns past `cols`. "
+        "A drag may use them; the board rewriting somebody's file may not -- "
+        "measured putting a card at x=12 on a 12-column board."
+    )
+    assert "function arrange(ids, rects, push, bounds = { w: width, h: height })" in bento
+    # All short cards at once: growing two of three makes the floor look arbitrary.
+    assert "let asked = {};" in bento, "a refusal must not be retried every echo"
+    assert "asked = $state" not in bento, (
+        "reactive, this is a loop for Svelte to catch rather than a question "
+        "already answered"
+    )

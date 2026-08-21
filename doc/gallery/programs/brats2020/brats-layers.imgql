@@ -158,17 +158,17 @@ print "dice" scores[g]
 // not about the ceiling of the method -- and the average is the one number that
 // cannot tell you which case went wrong, which is what the board is for.
 print "average" seq_avg(scores)
-//@card id=brain title="1 · brain" kind=print index=g x=6 y=0 w=3 h=3
+//@card id=brain title="1 · brain" kind=print index=g x=0 y=0 w=6 h=4 page=2
 print "brain" brains[g]
-//@card id=seed title="2 · seed" kind=print index=g x=9 y=0 w=3 h=3
+//@card id=seed title="2 · seed" kind=print index=g x=6 y=0 w=6 h=4 page=2
 print "seed" seeds[g]
-//@card id=pool title="3 · pool" kind=print index=g x=6 y=3 w=3 h=3
+//@card id=pool title="3 · pool" kind=print index=g x=0 y=4 w=6 h=4 page=2
 print "pool" pools[g]
-//@card id=missed title="4 · disagreement" kind=print index=g x=9 y=3 w=3 h=3
+//@card id=missed title="4 · disagreement" kind=print index=g x=6 y=4 w=6 h=4
 print "missed" missed[g]
-//@card id=truth title="Ground truth" kind=print index=g style="blue@1.00" x=6 y=6 w=3 h=2
+//@card id=truth title="Ground truth" kind=print index=g style="blue@1.00" x=6 y=0 w=3 h=4
 print "truth" truths[g]
-//@card id=result title="Found" kind=print index=g style="red@1.00" x=9 y=6 w=3 h=2
+//@card id=result title="Found" kind=print index=g style="red@1.00" x=9 y=0 w=3 h=4
 print "result" found[g]
 //@card id=save title="Write it out" kind=save index=g x=5 y=0 w=4 h=2 page=1
 // A save is an effect the program declares, so a headless run performs it and a
