@@ -115,6 +115,40 @@
     return [{ hash: shown.hash, url: `/api/node/${shown.hash}` }];
   }
 
+  /** The pictures a stack card draws, or `null` when it is not a stack.
+   *
+   * `print "scan" [flairs[i], masks[i]]` is one output and two pictures. The
+   * server reads the elements off the array node and binds each to a hash of
+   * its own, so this is a lookup per element, in drawing order, with the style
+   * the directive gave that *position*.
+   *
+   * A stack is normally only partly ready -- one volume is done and the next is
+   * still running -- so a layer with no bytes yet is a layer not drawn, not a
+   * card that fails. `lead` is the first element's result, which is what
+   * chooses the viewer: a stack of images is drawn by whatever draws an image,
+   * so the table in `viewers/index.js` stays the only place that decides.
+   */
+  function stackFor(card) {
+    if (!card.parts?.length) return null;
+    const layers = card.parts.map((expression, at) => {
+      const shown = results.get(results.hashFor(expression));
+      const style = card.style?.[at] ?? {};
+      return {
+        expression,
+        hash: shown.hash,
+        state: shown.state,
+        url: shown.state === "done" && shown.hash ? `/api/node/${shown.hash}` : null,
+        // Position zero is the one underneath, and grey is what a scan is.
+        colormap: style.colormap ?? (at === 0 ? "gray" : "warm"),
+        opacity: style.opacity ?? 1,
+        // Switched off is not absent: `on` is somebody's choice, `url` is
+        // whether the bytes exist, and the layer row has to tell them apart.
+        visible: style.on !== false,
+      };
+    });
+    return { layers, lead: results.get(results.hashFor(card.parts[0])) };
+  }
+
   const named = (id) => workspace.cards.find((card) => card.id === id)?.title ?? id;
 
   const problems = $derived([
@@ -572,7 +606,8 @@
       onrename={(id, title) => cardActions.setTitle(id, title)}
     >
       {#snippet children(card)}
-        {@const result = results.forCard(card)}
+        {@const stack = stackFor(card)}
+        {@const result = stack ? stack.lead : results.forCard(card)}
         {@const viewer = viewerFor(card, result)}
         {#if viewer.result && !card.node}
           <!-- A print or save whose expression is not a bare name has nothing to
@@ -580,9 +615,21 @@
           <p class="pending">{card.expression ?? "Not bound to a node yet."}</p>
         {:else if viewer.result}
           <!-- Subscribed for as long as it is on screen, and only that long:
-               the server pushes updates for hashes somebody is looking at. -->
-          {@const drawing = viewer.bytes ? drawable(result) : null}
-          <ResultSubscription node={card.node} />
+               the server pushes updates for hashes somebody is looking at. A
+               stack subscribes per layer, because that is what it watches. -->
+          {@const drawing =
+            viewer.bytes
+              ? stack
+                ? stack.layers.filter((layer) => layer.url)
+                : drawable(result)
+              : null}
+          {#if stack}
+            {#each card.parts as part (part)}
+              <ResultSubscription node={part} />
+            {/each}
+          {:else}
+            <ResultSubscription node={card.node} />
+          {/if}
           {#if drawing}
             <viewer.component layers={drawing} />
           {:else}

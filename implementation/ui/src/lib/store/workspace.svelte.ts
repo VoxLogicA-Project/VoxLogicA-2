@@ -37,6 +37,17 @@ export interface Card {
    * source: it exists to show something that card produces. */
   from?: string;
   view?: string;
+  /** One expression per picture, when this card draws a stack. The server reads
+   * them off the array literal the card prints, so a card showing
+   * `[flairs[i], masks[i]]` arrives with both -- each one a node of its own. */
+  parts?: string[];
+  /** How each of those looks, in the same order. Appearance only: it lives in
+   * the directive and never in the expression, because the expression is the
+   * cache key and a slider must not invalidate a volume. */
+  style?: { colormap: string | null; opacity: number; on: boolean }[];
+  /** The name of the index variable this card walks, when it is a selector.
+   * There is no selector *kind*: a selector is a card that owns an index. */
+  index?: string;
 }
 
 export interface Board {

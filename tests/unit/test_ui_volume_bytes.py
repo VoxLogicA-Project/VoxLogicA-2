@@ -251,3 +251,45 @@ def test_a_card_hands_its_height_to_whatever_is_inside_it() -> None:
         "a card whose content box has no height of its own cannot be filled by "
         "anything inside it, however loudly the child asks"
     )
+
+
+# ------------------------------------------------------- and several at once
+
+
+def test_a_stack_draws_one_layer_per_element_of_its_array() -> None:
+    """A print of an array is one output and several pictures.
+
+    Asserted on the source, like the two above and for the same reason: this is
+    a shape. The hash still comes from the *result* -- one per element now -- and
+    the style comes from the directive, never from the expression, because the
+    expression is the cache key.
+    """
+    from pathlib import Path
+
+    app = Path(__file__).resolve().parents[2] / "implementation" / "ui" / "src" / "App.svelte"
+    text = app.read_text()
+
+    assert "function stackFor(card)" in text
+    # The viewer is still chosen by the table, from the first layer's result.
+    assert "lead:" in text, "a stack must pick its viewer the same way one picture does"
+    # Style is read positionally off the card, not computed from the data.
+    assert "card.style?.[at]" in text
+    # And a layer with no bytes yet is simply not drawn.
+    assert "filter((layer) => layer.url)" in text
+    # One subscription per layer: that is what the card is watching.
+    assert "{#each card.parts as part (part)}" in text
+
+
+def test_switched_off_and_not_there_yet_are_different_things() -> None:
+    """`visible` is somebody's choice; `url` is whether the bytes exist.
+
+    Collapsing them is the bug where you switch a layer off, walk to a case that
+    never had it, switch it back on and nothing happens -- so you go looking for
+    a fault in the program.
+    """
+    from pathlib import Path
+
+    app = Path(__file__).resolve().parents[2] / "implementation" / "ui" / "src" / "App.svelte"
+    text = app.read_text()
+    assert "visible: style.on !== false" in text
+    assert "visible: !!" not in text, "visibility is being derived from the data again"
