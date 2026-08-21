@@ -83,6 +83,7 @@
       <!-- The only draggable part, so every control beside it still works. -->
       <span
         class="grip"
+        data-grip
         draggable="true"
         title="drag to reorder"
         ondragstart={(event) => {

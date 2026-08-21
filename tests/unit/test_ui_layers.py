@@ -853,3 +853,38 @@ def test_a_dragged_card_carries_its_name_and_not_a_photograph_of_itself():
     # is how a refusal *verdict* used to be spelled and a discipline test keeps
     # it that way -- and not on a frame, since a background tab paints none.
     assert 'window.addEventListener("dragend", () => ghost.remove(), { once: true });' in bento
+
+
+def test_a_press_on_a_control_never_starts_the_card_s_own_drag():
+    """`draggable` is inherited from the nearest draggable *ancestor*.
+
+    So marking the layer row undraggable changed nothing: the card body was
+    always the source, and pressing a slider started a card drag -- the thumb
+    never moved and a ghost with the card's name on it flew off instead. Fixing
+    the row was fixing the wrong element.
+
+    Two rules, both about the body. Anything inside the rows: the grip carries
+    the one drag that belongs there, everything else carries none. Anything you
+    can operate, anywhere: never a handle.
+
+    Probed in the page, dispatching a real `dragstart` from each:
+
+        slider, eye, ramp   refused, carrying nothing
+        grip                text/plain only -- no card ids alongside it
+        the picture         text/voxlogica-card-ids, as before
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "implementation/ui/src"
+    card = (root / "lib/components/Bento/BentoCard.svelte").read_text(encoding="utf-8")
+    layers = (root / "lib/viewers/Layers.svelte").read_text(encoding="utf-8")
+
+    start = card[card.index("      ondragstart={(event) => {") :]
+    start = start[: start.index("      }}")]
+    assert 'from?.closest?.(".layers")' in start
+    assert 'from.closest("[data-grip]")' in start, (
+        "the rows own exactly one drag, and it starts from the grip"
+    )
+    assert 'from?.closest?.("input, button, select, textarea, a, label")' in start
+    # The marker the card recognises without knowing what a layer row is.
+    assert "data-grip" in layers

@@ -668,6 +668,23 @@
       }}
       draggable={ondragout ? "true" : undefined}
       ondragstart={(event) => {
+        // A press on something you can *operate* is never "take this card out
+        // of the board". `draggable` is inherited from the nearest draggable
+        // ancestor, so the body was starting a card drag from inside a slider:
+        // the thumb never moved, and a ghost with the card's name on it flew off
+        // instead. Marking the row undraggable did nothing, because the body was
+        // always the source.
+        const from = event.target;
+        if (from?.closest?.(".layers")) {
+          // The rows own one drag of their own -- reordering, from the grip.
+          // Anything else in there is a control, and controls are not handles.
+          if (!from.closest("[data-grip]")) event.preventDefault();
+          return;
+        }
+        if (from?.closest?.("input, button, select, textarea, a, label")) {
+          event.preventDefault();
+          return;
+        }
         if (gesture !== null) {
           event.preventDefault();
           return;
