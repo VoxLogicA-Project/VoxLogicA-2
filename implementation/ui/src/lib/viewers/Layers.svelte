@@ -1,131 +1,157 @@
 <script>
   /**
-   * The rows of a stack: one per picture, in drawing order.
+   * The layers of a stack: one row per picture, front-most last.
    *
    * Everything here writes a *comment* -- `style="gray@1.00, red@0.45!off"` on
    * the card's directive -- and never the expression. That is the whole reason
-   * these four controls can be free: the expression is the cache key, so an
-   * opacity inside it would mean dragging a slider changes a hash, and a changed
-   * hash recomputes the volume. Appearance has to be outside the program.
+   * these controls can be free: the expression is the cache key, so an opacity
+   * inside it would mean dragging a slider changes a hash, and a changed hash
+   * recomputes the volume. Appearance has to live outside the program.
    *
    * **The state that matters is the one nobody thinks of.** A layer can be
    * switched off, and a layer can be *not there* -- this case never had a mask,
-   * or that volume is still computing. Those look the same if you are careless,
-   * and then somebody switches a layer off, walks to a case that never had it,
-   * switches it back on, sees nothing happen, and goes looking for a fault in
-   * their program. So absent is drawn as absent: no switch, because there is
-   * nothing to switch.
+   * or that volume is still computing. Drawn alike, they produce the bug where
+   * you switch a layer off, walk to a case without it, switch it back on, see
+   * nothing happen, and go looking for a fault in your program. So absent is
+   * drawn as absent: no switch, because there is nothing to switch.
+   *
+   * **Only the grip is draggable.** The whole row was, and then a press on the
+   * slider began a native drag instead of moving the thumb -- so the one control
+   * people reach for most could not be used at all. A row that is draggable
+   * everywhere is a row whose contents are not usable anywhere.
    */
   import { card as cardActions } from "../actions/index.ts";
+  import { RAMPS, swatchOf } from "./colormaps.js";
 
   let { card, layers } = $props();
 
-  /** Real NiiVue colormap names, in the order the swatch walks them. Grey is
-   * what a scan is, so it is first; the rest are things laid over one. */
-  const WHEEL = ["gray", "red", "blue", "green", "warm", "winter", "bone"];
-
-  /** Live while the finger is down, written once when it lifts.
-   * Sixty writes a second would be sixty rewrites of the document. */
+  /** Live under the finger, written once when it lifts. Sixty writes a second
+   * would be sixty rewrites of the document. */
   let sliding = $state({});
+  /** Which row's palette is open, by index. */
+  let picking = $state(null);
+  /** Which row is being dragged, and which boundary it is over. */
+  let held = $state(null);
+  let over = $state(null);
 
   const opacityOf = (layer, at) => sliding[at] ?? layer.opacity;
 
-  /** What this row is: drawn, switched off, or not there at all. */
+  /** Drawn, switched off, or not there at all. */
   function stateOf(layer) {
     if (!layer.url) return layer.state === "done" ? "absent" : layer.state;
     return layer.visible ? "on" : "off";
   }
 
-  /** Which row is under the hand, while one is. */
-  let held = $state(null);
-  let over = $state(null);
+  const WORDS = {
+    absent: "not in this case",
+    running: "computing",
+    unknown: "not computed",
+    failed: "failed",
+  };
 
   function drop(at) {
     if (held !== null && held !== at) cardActions.moveLayer(card.id, held, at);
     held = null;
     over = null;
   }
-
-  const WORDS = {
-    absent: "assente",
-    running: "in corso",
-    unknown: "non calcolato",
-    failed: "errore",
-  };
 </script>
 
-<div class="layers">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="layers" onpointerdown={(event) => event.stopPropagation()}>
   {#each layers as layer, at (layer.expression)}
     {@const state = stateOf(layer)}
     {@const there = state === "on" || state === "off"}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="row"
       class:off={state === "off"}
       class:gone={!there}
       class:held={held === at}
       class:over={over === at}
-      draggable="true"
-      ondragstart={(event) => {
-        held = at;
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData("text/plain", layer.expression);
-      }}
-      ondragend={() => { held = null; over = null; }}
       ondragover={(event) => {
         if (held === null) return;
         event.preventDefault();
         over = at;
       }}
-      ondragleave={() => { if (over === at) over = null; }}
-      ondrop={(event) => { event.preventDefault(); drop(at); }}
+      ondragleave={() => {
+        if (over === at) over = null;
+      }}
+      ondrop={(event) => {
+        event.preventDefault();
+        drop(at);
+      }}
     >
-      <!-- The switch, and only when there is something to switch. -->
+      <!-- The only draggable part, so every control beside it still works. -->
+      <span
+        class="grip"
+        draggable="true"
+        title="drag to reorder"
+        ondragstart={(event) => {
+          held = at;
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", layer.expression);
+        }}
+        ondragend={() => {
+          held = null;
+          over = null;
+        }}
+      >
+        <svg viewBox="0 0 6 10" aria-hidden="true"
+          ><circle cx="1.5" cy="2" r="1" /><circle cx="4.5" cy="2" r="1" /><circle
+            cx="1.5"
+            cy="5"
+            r="1"
+          /><circle cx="4.5" cy="5" r="1" /><circle cx="1.5" cy="8" r="1" /><circle
+            cx="4.5"
+            cy="8"
+            r="1"
+          /></svg
+        >
+      </span>
+
       {#if there}
         <button
           class="eye"
-          title={layer.visible ? "spegni" : "accendi"}
+          class:shut={!layer.visible}
+          title={layer.visible ? "hide this layer" : "show this layer"}
           onclick={() => cardActions.setLayerStyle(card.id, at, { on: !layer.visible })}
         >
-          {layer.visible ? "◉" : "○"}
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M1 8s2.5-4.5 7-4.5S15 8 15 8s-2.5 4.5-7 4.5S1 8 1 8Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+            />
+            <circle cx="8" cy="8" r="2.1" fill="currentColor" />
+            {#if !layer.visible}
+              <path d="M2.5 13.5 13.5 2.5" stroke="currentColor" stroke-width="1.3" />
+            {/if}
+          </svg>
         </button>
       {:else}
-        <span class="eye" aria-hidden="true">–</span>
+        <span class="eye empty" aria-hidden="true"></span>
       {/if}
 
+      <!-- The colormap as the ramp it is. A single dot cannot say what a
+           colormap does; the gradient is the thing itself. -->
       <button
-        class="swatch"
+        class="ramp"
         style:background={swatchOf(layer.colormap)}
-        title={layer.colormap}
+        title={layer.colormap ?? "gray"}
         disabled={!there}
-        onclick={() =>
-          cardActions.setLayerStyle(card.id, at, {
-            colormap: WHEEL[(WHEEL.indexOf(layer.colormap) + 1) % WHEEL.length],
-          })}
+        onclick={() => (picking = picking === at ? null : at)}
       ></button>
 
       <span class="name" title={layer.expression}>{layer.expression}</span>
 
-      {#if layers.length > 1}
-        <!-- Out of the stack and onto the board, wearing the colour it had.
-             The other half of dropping a card in, and it has to be exactly the
-             other half or the gesture is not one anybody trusts. -->
-        <button
-          class="out"
-          title="portala fuori, come card"
-          onclick={() => cardActions.splitLayer(card.id, at)}
-        >
-          ⤴
-        </button>
-      {/if}
-
       {#if there}
         <input
+          class="opacity"
           type="range"
           min="0"
           max="100"
           value={Math.round(opacityOf(layer, at) * 100)}
-          title="trasparenza"
+          title="opacity"
           oninput={(event) => (sliding[at] = event.currentTarget.value / 100)}
           onchange={(event) => {
             const opacity = event.currentTarget.value / 100;
@@ -133,30 +159,62 @@
             cardActions.setLayerStyle(card.id, at, { opacity });
           }}
         />
+        <span class="pct">{Math.round(opacityOf(layer, at) * 100)}</span>
       {:else}
         <span class="why">{WORDS[state] ?? state}</span>
       {/if}
+
+      {#if layers.length > 1}
+        <!-- Out of the stack and onto the board, wearing the colour it had. The
+             other half of laying a card over another, and it has to be exactly
+             the other half or neither is a gesture anybody trusts. -->
+        <button
+          class="out"
+          title="take this layer out as its own card"
+          onclick={() => cardActions.splitLayer(card.id, at)}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M6 10 10.5 5.5M10.5 5.5H7M10.5 5.5V9"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linecap="round"
+            />
+            <rect
+              x="2.5"
+              y="2.5"
+              width="11"
+              height="11"
+              rx="2"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.1"
+              opacity="0.45"
+            />
+          </svg>
+        </button>
+      {/if}
     </div>
+
+    {#if picking === at}
+      <div class="palette">
+        {#each RAMPS as ramp (ramp.name)}
+          <button
+            class="chip"
+            class:on={(layer.colormap ?? "gray") === ramp.name}
+            style:background={ramp.css}
+            title={ramp.label}
+            onclick={() => {
+              picking = null;
+              cardActions.setLayerStyle(card.id, at, { colormap: ramp.name });
+            }}
+          ></button>
+        {/each}
+      </div>
+    {/if}
   {/each}
 </div>
-
-<script module>
-  /** A dot the eye can read, for a colormap the GPU renders. Not the colormap
-   * itself: one swatch cannot show a ramp, and a recognisable colour is what
-   * the row needs. */
-  const DOTS = {
-    gray: "#9aa0a6",
-    red: "#ff5f56",
-    blue: "#4c8dff",
-    green: "#39d353",
-    warm: "#d29922",
-    winter: "#4cc4ff",
-    bone: "#d8d2c4",
-  };
-  export function swatchOf(name) {
-    return DOTS[name] ?? "#8b949e";
-  }
-</script>
 
 <style>
   .layers {
@@ -164,88 +222,122 @@
     display: flex;
     flex-direction: column;
     gap: 0;
-    padding-top: var(--space-1);
+    margin-top: var(--space-1);
+    padding: var(--space-1);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-sunken);
   }
 
   .row {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
-    padding: 2px var(--space-1);
+    gap: var(--space-1);
+    padding: var(--space-1);
     border-radius: var(--radius-sm);
     font-size: var(--text-2xs);
+    transition: background var(--motion-fast) var(--easing-standard);
   }
 
   .row:hover {
-    background: var(--color-surface-raised);
+    background: var(--color-surface-hover);
   }
 
   .held {
-    opacity: 0.4;
+    opacity: 0.35;
   }
 
-  /* Where it would land: the boundary, not the row, because that is what a
-   * reorder moves things across. */
+  /* Where it would land: the boundary, because that is what a reorder crosses. */
   .over {
     box-shadow: inset 0 2px 0 var(--color-accent);
-  }
-
-  .out {
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--color-text-subtle);
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .out:hover {
-    color: var(--color-text);
   }
 
   .off {
     color: var(--color-text-subtle);
   }
 
-  /* Absent: the affordance is gone rather than broken. Nothing to switch,
-   * nothing to slide, and the reason said in words. */
+  /* Absent: the affordance is gone rather than broken. */
   .gone {
     color: var(--color-text-subtle);
-    opacity: 0.55;
+    opacity: 0.6;
   }
 
-  .eye {
-    width: 14px;
-    padding: 0;
-    border: 0;
-    background: none;
-    color: inherit;
-    font: inherit;
-    text-align: center;
-    cursor: pointer;
-  }
-
-  .gone .eye {
-    cursor: default;
-  }
-
-  .swatch {
-    width: 11px;
-    height: 11px;
+  .grip {
     flex: none;
+    display: grid;
+    place-items: center;
+    width: var(--space-3);
+    cursor: grab;
+    color: var(--color-text-subtle);
+    opacity: 0;
+    transition: opacity var(--motion-fast) var(--easing-standard);
+  }
+
+  .row:hover .grip {
+    opacity: 1;
+  }
+
+  .grip svg {
+    width: 6px;
+    fill: currentColor;
+  }
+
+  .eye,
+  .out {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: var(--space-4);
+    height: var(--space-4);
     padding: 0;
     border: 0;
     border-radius: var(--radius-sm);
+    background: none;
+    color: var(--color-text-subtle);
     cursor: pointer;
+    transition:
+      color var(--motion-fast) var(--easing-standard),
+      background var(--motion-fast) var(--easing-standard);
   }
 
-  .off .swatch,
-  .gone .swatch {
-    opacity: 0.25;
+  .eye svg,
+  .out svg {
+    width: 13px;
+    height: 13px;
   }
 
-  .swatch:disabled {
+  .eye:hover,
+  .out:hover {
+    color: var(--color-text);
+    background: var(--color-surface-active);
+  }
+
+  .eye:not(.shut) {
+    color: var(--color-text);
+  }
+
+  .eye.empty {
     cursor: default;
+  }
+
+  /* The colormap drawn as itself. */
+  .ramp {
+    flex: none;
+    width: var(--space-5);
+    height: var(--space-3);
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: transform var(--motion-fast) var(--easing-standard);
+  }
+
+  .ramp:hover:not(:disabled) {
+    transform: scale(1.08);
+  }
+
+  .ramp:disabled {
+    cursor: default;
+    opacity: 0.3;
   }
 
   .name {
@@ -260,10 +352,48 @@
   .why {
     font-style: italic;
     color: var(--color-text-subtle);
+    white-space: nowrap;
   }
 
-  input[type="range"] {
-    width: 58px;
+  .opacity {
+    flex: none;
+    width: var(--space-8);
     margin: 0;
+    accent-color: var(--color-accent);
+  }
+
+  .pct {
+    flex: none;
+    width: var(--space-4);
+    text-align: right;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text-subtle);
+  }
+
+  .palette {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-1) var(--space-2) var(--space-6);
+  }
+
+  .chip {
+    width: var(--space-6);
+    height: var(--space-3);
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: transform var(--motion-fast) var(--easing-standard);
+  }
+
+  .chip:hover {
+    transform: scale(1.08);
+  }
+
+  .chip.on {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 1px var(--color-accent);
   }
 </style>

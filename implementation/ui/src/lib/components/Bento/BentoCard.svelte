@@ -72,6 +72,9 @@
      * can read is the one route that cannot quietly not happen. */
     layTargets = [],
     onlayover,
+    /** True while a drop in flight would be laid over this card. Drawn, because
+     * a rule you can see beats a modifier you were told about once. */
+    laying = false,
     onselect,
     /** The card was asked to compute what it is about. Absent = no button. */
     onrun,
@@ -347,7 +350,7 @@
       edges: EDGES[mode] ?? {},
     };
     dragging = true;
-    onpreview?.(gesture.rect);
+    onpreview?.(gesture.rect, at_(event));
   }
 
   function move(event) {
@@ -393,8 +396,18 @@
         h: Math.min(ch, rows - Math.max(y, 0)),
       };
     }
-    onpreview?.(gesture.rect);
+    onpreview?.(gesture.rect, at_(event));
   }
+
+  /** Where the pointer is, and what is held. The board needs the point to say
+   * which card a drop would land *on*, which cells cannot answer: a card being
+   * dragged covers several, and the one being aimed at is the one under the
+   * cursor. */
+  const at_ = (event) => ({
+    clientX: event.clientX,
+    clientY: event.clientY,
+    alt: event.altKey,
+  });
 
   function end(event) {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
@@ -504,6 +517,7 @@
     class="card"
     class:running
     class:dragging
+    class:laying
     class:invalid
     class:focused
     class:selected
@@ -873,6 +887,30 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* A drop in flight would become a layer of this card. Deliberately unlike the
+   * displacement outline: one means "I am getting out of the way", the other
+   * means "I am taking it in", and they must not look alike. */
+  .laying {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  .laying::after {
+    content: "lay over";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent);
+    color: var(--color-surface);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    pointer-events: none;
   }
 
   /* Something is about to land here. The card says so; the rows appear after. */

@@ -95,12 +95,18 @@ anything, because a layer's **style** is kept in the card's comment and never in
 the expression. A layer that this case does not have, or that has not been computed
 yet, says so and has nothing to switch.
 
-**Right-click a card → “Lay over …”**, or **⌥-drag it onto another card**, and
-the two **merge**: what it drew becomes a layer of what it landed on, keeping its
-colour, and it stops being a card because it became a row. Alt is what
-distinguishes the gesture — dragging a card is arranging it, and a plain drop
-cannot mean both — and the menu is there because a modifier is easy to miss and
-easy for a window manager to swallow. **Drag a row** up or down to **move** that
+**Drop a card on the middle of another** and the two **merge**: what it drew
+becomes a layer of what it landed on, keeping its colour, and it stops being a
+card because it became a row. The target says so while the drag is in the air —
+it lights up and reads **lay over**. Aim at an *edge* instead and it is an
+ordinary arrangement, which is what dragging a card has always meant. ⌥ anywhere
+inside the card does the same thing, and **right-click → “Lay over …”** does it
+without a drag at all.
+
+In the rows underneath: **drag the grip** to reorder, the **ramp** opens a
+palette of colormaps drawn as themselves, the **slider** is opacity, the **eye**
+hides a layer, and **⤴** takes it back out as its own card. A layer this case
+does not have says so and has nothing to switch. **Drag a row** up or down to **move** that
 layer in front of or behind the others; **⤴ on a row** takes it back out as a
 card of its own. Merging and splitting are exactly each other, so a drop you did
 not mean is one click away from undone.

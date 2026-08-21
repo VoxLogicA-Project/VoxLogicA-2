@@ -623,39 +623,55 @@ def test_the_floor_bounds_the_gesture_and_rewrites_nobody_s_layout():
     assert "let asked" not in bento, "the automatic growth is gone, with its damage"
 
 
-def test_laying_a_card_over_another_is_the_drag_plus_a_modifier():
+def test_the_middle_of_a_card_means_lay_over_it_and_the_edges_mean_next_to_it():
     """The gesture was already taken, which is why it read as nothing happening.
 
     Dragging a card is arranging it -- that is what it has always meant, and the
-    hand reaches for the title bar to do it. A plain drop onto another card
-    cannot also mean "merge", because then neither is knowable. So it is the same
-    drag with alt held, and the modifier travels with the release: the key is up
-    by the time anything downstream could ask.
+    hand goes to the title bar to do it. So "lay over" needs a way to be said
+    that arranging cannot be mistaken for, and two say it: alt anywhere inside a
+    card, or -- with no modifier at all -- its *middle*, because the middle is
+    where you aim when you mean "on this" and the edges are where you aim when
+    you mean "beside this".
+
+    The middle is the one that matters, and not because it is more convenient: it
+    can be *shown* while the drag is in the air. A modifier cannot, so a modifier
+    nobody told you about is a feature nobody has.
+
+    One rule, in one function, asked by both the drawing and the release -- so
+    what the board highlighted is what the drop does.
     """
     from pathlib import Path
 
-    root = Path(__file__).resolve().parents[2] / "implementation/ui"
-    bento = (root / "src/lib/components/Bento/Bento.svelte").read_text(encoding="utf-8")
-    card = (root / "src/lib/components/Bento/BentoCard.svelte").read_text(encoding="utf-8")
+    root = Path(__file__).resolve().parents[2] / "implementation/ui/src/lib/components/Bento"
+    bento = (root / "Bento.svelte").read_text(encoding="utf-8")
+    card = (root / "BentoCard.svelte").read_text(encoding="utf-8")
 
-    # The release carries what was held and where the pointer was: the key is up
-    # and the pointer is gone by the time anything downstream could ask.
-    assert "alt: event.altKey," in card
-    assert "clientX: event.clientX," in card
-    assert "function commit(card, rect, drop = null) {" in bento
+    # The pointer travels with the move *and* the release: cells cannot answer
+    # "which card is being aimed at", since a dragged card covers several.
+    assert "onpreview?.(gesture.rect, at_(event));" in card
+    assert "alt: event.altKey," in card and "clientX: event.clientX," in card
 
+    assert "function layTarget(point, draggedId)" in bento
+    rule = bento[bento.index("function layTarget(point, draggedId)") :]
+    rule = rule[: rule.index("\n  }")]
+    assert "if (point.alt) return other;" in rule
+    assert "w / 3" in rule and "h / 3" in rule, "the middle third of each axis"
+
+    # Drawn while in the air, and drawn as taking-in rather than getting-out-of
+    # the way: those must not look alike.
+    assert "laying = target ? target.id : null;" in bento
+    assert "laying={laying === card.id}" in bento
+    assert 'content: "lay over";' in card
+
+    # And the release asks the same function, never a second opinion.
     body = bento[bento.index("function commit(card, rect, drop = null)") :]
     body = body[: body.index("\n  }")]
-    # The target is the card under the *pointer*. "The only card overlapped" was
-    # the first rule and it was measured wrong: a four-cell card dropped among
-    # four-cell cards covers two, so alt-drop sent an ordinary arrangement.
-    assert "const cell = cellAt(drop);" in body
-    assert "under.length" not in body
-    # And the preview is dropped the way the board drops one. Reaching for the
-    # card's own `onpreview` from here threw, which aborted `commit` before
-    # either the merge or the arrangement -- so alt-drop did nothing *and* the
-    # card came to rest overlapping, because the card clears its preview only
-    # after `oncommit` returns and it never returned.
+    assert "const under = layTarget(drop, card.id);" in body
+    # The preview is dropped the way the board drops one. Reaching for the card's
+    # own `onpreview` from here threw, which aborted `commit` before either the
+    # merge or the arrangement -- so alt-drop did nothing *and* the card came to
+    # rest overlapping, because the card clears its preview only after
+    # `oncommit` returns and it never returned.
     assert "onpreview?.(" not in body
 
 
@@ -755,3 +771,56 @@ def test_laying_a_card_over_another_has_a_named_route_and_not_only_a_gesture():
     # question about the board and not about a card.
     assert "layTargets={onmerge" in bento
     assert "onlayover={onmerge" in bento
+
+
+def test_only_the_grip_carries_the_row_s_drag():
+    """Reported as "I cannot drag the sliders".
+
+    The whole row was `draggable`, so a press on the slider began a native drag
+    instead of moving the thumb -- and the control people reach for most could
+    not be used at all. A row that is draggable everywhere is a row whose
+    contents are not usable anywhere.
+
+    Verified in the page: the row carries no `draggable`, the grip carries it,
+    and the slider writes nothing while it slides and once when it is released.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2] / "implementation/ui/src/lib/viewers/Layers.svelte"
+    ).read_text(encoding="utf-8")
+
+    row = source[source.index('<div\n      class="row"') : source.index('<!-- The only draggable')]
+    assert "draggable" not in row, "the row itself must not be draggable"
+    grip = source[source.index('class="grip"') :][:400]
+    assert 'draggable="true"' in grip
+    # And the panel does not hand its presses to the board's own gestures.
+    assert "onpointerdown={(event) => event.stopPropagation()}" in source
+
+
+def test_a_colormap_is_offered_as_the_ramp_it_is():
+    """A dot says "red". It cannot say whether the low end is black or white --
+    and for a mask laid over a scan that is the whole question, because a ramp
+    that starts white erases what is underneath.
+
+    Every name here is one NiiVue actually ships, checked against the package
+    rather than guessed: a name it does not know is a layer that silently keeps
+    the colour it had.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "implementation/ui"
+    ramps = (root / "src/lib/viewers/colormaps.js").read_text(encoding="utf-8")
+    shipped = (root / "node_modules/@niivue/niivue/dist/index.js")
+
+    import re
+
+    names = re.findall(r'name: "([a-z]+)"', ramps)
+    assert names[0] == "gray", "a scan is grey, and it is what a stack starts from"
+    assert len(names) >= 6
+    assert all("linear-gradient" in line for line in re.findall(r"css: \"([^\"]+)\"", ramps))
+
+    if shipped.exists():
+        text = shipped.read_text(encoding="utf-8", errors="ignore")
+        for name in names:
+            assert f'"{name}"' in text, f"NiiVue does not ship a colormap called {name}"

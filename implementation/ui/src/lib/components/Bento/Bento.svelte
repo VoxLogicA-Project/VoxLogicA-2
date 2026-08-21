@@ -479,11 +479,49 @@
     event.dataTransfer.setData("text/voxlogica-cards", cardsText.text);
   }
 
-  function preview(card, rect) {
+  /** The card a drop would be laid *over*, or null for an ordinary arrangement.
+   *
+   * Two ways to say it, and one rule underneath: the pointer has to be inside a
+   * card that is not this one. Alt anywhere in it, or -- without a modifier --
+   * the middle of it, because the middle is where you aim when you mean "on
+   * this" and the edges are where you aim when you mean "next to this". A
+   * modifier nobody told you about is a feature nobody has, and the middle can
+   * be *shown* while the drag is in the air, which a modifier cannot.
+   */
+  function layTarget(point, draggedId) {
+    if (!onmerge || !point || !pitch || !board) return null;
+    const box = board.getBoundingClientRect();
+    const px = point.clientX - box.left;
+    const py = point.clientY - box.top;
+    for (const other of occupants) {
+      if (other.id === draggedId) continue;
+      const r = rectOf(other);
+      const left = r.x * pitch;
+      const top = r.y * pitch;
+      const w = r.w * pitch;
+      const h = r.h * pitch;
+      if (px < left || px >= left + w || py < top || py >= top + h) continue;
+      if (point.alt) return other;
+      // The middle third of each axis. Small enough that arranging next to a
+      // card is still the easy thing, big enough to hit without aiming hard.
+      const inX = px >= left + w / 3 && px <= left + (2 * w) / 3;
+      const inY = py >= top + h / 3 && py <= top + (2 * h) / 3;
+      return inX && inY ? other : null;
+    }
+    return null;
+  }
+
+  /** The card the drop in flight would be laid over, for drawing. */
+  let laying = $state(null);
+
+  function preview(card, rect, point = null) {
     if (rect === null) {
       drag = null;
+      laying = null;
       return;
     }
+    const target = layTarget(point, card.id);
+    laying = target ? target.id : null;
     const party = partyFor(card.id);
     const lead = rectOf(card);
     const delta = { x: rect.x - lead.x, y: rect.y - lead.y, w: rect.w - lead.w, h: rect.h - lead.h };
@@ -886,28 +924,20 @@
     // was the first rule and it was measured wrong: a four-cell card dropped
     // among four-cell cards covers two of them, so alt-drop sent an ordinary
     // arrangement and the gesture looked like it did nothing.
-    if (drop?.alt && onmerge && pitch) {
-      const cell = cellAt(drop);
-      const under = cell
-        ? occupants.find((other) => {
-            if (other.id === card.id) return false;
-            const box = rectOf(other);
-            return (
-              cell.x >= box.x && cell.x < box.x + box.w &&
-              cell.y >= box.y && cell.y < box.y + box.h
-            );
-          })
-        : undefined;
-      if (under) {
-        // `drag = null` is how the board drops a preview -- `onpreview` is the
-        // *card's* prop, and reaching for it here threw, which aborted `commit`
-        // before either the merge or the arrangement. That is why alt-drop did
-        // nothing *and* why the card came to rest overlapping: the card clears
-        // its own preview after `oncommit` returns, and it never returned.
-        drag = null;
-        onmerge(under, [card.id]);
-        return;
-      }
+    // The same rule that was being drawn a moment ago, asked once more. Not a
+    // second opinion: `layTarget` is the only place it lives, so what the board
+    // highlighted is what the release does.
+    const under = layTarget(drop, card.id);
+    if (under) {
+      // `drag = null` is how the board drops a preview -- `onpreview` is the
+      // *card's* prop, and reaching for it here threw, which aborted `commit`
+      // before either the merge or the arrangement. That is why alt-drop did
+      // nothing *and* why the card came to rest overlapping: the card clears
+      // its own preview after `oncommit` returns, and it never returned.
+      drag = null;
+      laying = null;
+      onmerge(under, [card.id]);
+      return;
     }
     // The whole arrangement is committed, not just the card under the finger:
     // everyone dragged with it, and everyone that stepped aside to make room.
@@ -1173,6 +1203,7 @@
             oncut={oncutcards}
             ondragout={(event) => dragOut(card, event)}
             ondropcards={onmerge ? (ids) => onmerge(card, ids) : undefined}
+            laying={laying === card.id}
             layTargets={onmerge
               ? occupants
                   .filter((other) => other.id !== card.id)
@@ -1199,7 +1230,7 @@
             onsendtopage={onsendtopage && !focus
               ? (next) => onsendtopage(card.id, Math.max(0, next))
               : undefined}
-            onpreview={(rect) => preview(card, rect)}
+            onpreview={(rect, point) => preview(card, rect, point)}
             oncommit={(rect, drop) => commit(card, rect, drop)}
             onmeasure={(w, h) => {
               // Kept locally so the board can lay out this frame, and reported
