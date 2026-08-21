@@ -471,3 +471,49 @@ def test_an_index_bound_to_arithmetic_is_not_overwritten(tmp_path):
 def test_a_card_that_owns_no_index_cannot_walk_one(tmp_path):
     space = _space(tmp_path, WALKED)
     assert space.apply("card.setIndex", {"id": "data", "value": 2}) is False
+
+
+# ------------------------------- the selector before anything has been computed
+
+
+def test_where_the_walk_is_comes_from_the_text(tmp_path):
+    """A selector has to work on a board nobody has run yet.
+
+    `let g = 3` is a node like any other, so before a run it has no value. Read
+    the value and the chevrons say 0 while the file plainly says 3 -- and a
+    selector you cannot trust is a selector you cannot use to *start* the run,
+    which is the one thing it is for.
+    """
+    cards = {card["id"]: card for card in doc.parse(WALKED).cards}
+    assert cards["scan"]["at"] == 1
+    assert cards["sheet"]["at"] == 1
+
+
+def test_the_walk_follows_a_step(tmp_path):
+    space = _space(tmp_path, WALKED)
+    space.apply("card.setIndex", {"id": "scan", "value": 3})
+    cards = {card["id"]: card for card in space.snapshot()["cards"]}
+    assert cards["scan"]["at"] == cards["sheet"]["at"] == 3
+
+
+def test_a_float_index_still_reads_as_a_position():
+    cards = {card["id"]: card for card in doc.parse(WALKED.replace("let i = 1", "let i = 2.0")).cards}
+    assert cards["scan"]["at"] == 2
+
+
+def test_the_navigation_is_not_gated_on_there_being_a_picture():
+    """The bug this replaces: chevrons rendered only inside the branch that had
+    layers to draw, so a board of uncomputed cards had no way to walk."""
+    from pathlib import Path
+
+    app = (
+        Path(__file__).resolve().parents[2] / "implementation/ui/src/App.svelte"
+    ).read_text(encoding="utf-8")
+    body = app[app.index("{:else if viewer.result}") : app.index("{:else if viewer.source}")]
+    walk = body.index("<Walk {card}")
+    drawing = body.index("{#if drawing}")
+    # The Walk sits beside the viewer, in the same box, not inside the branch
+    # that chose whether there was anything to draw.
+    assert body.index("{@const walk = card.index ? walkOf(card) : null}") < drawing
+    assert "{#if walk}" in body and walk > drawing
+    assert "{#if drawing && stack}" not in app

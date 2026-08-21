@@ -160,13 +160,15 @@
    */
   function walkOf(card) {
     if (!card.index) return null;
+    // How far: the sequence's own result, when somebody has computed it. Null
+    // until then, and walking forward stays possible -- a card that refuses to
+    // move until its sequence is evaluated cannot be used to evaluate it.
     const over = results.get(results.hashFor(card.over));
     const counted = /\bof (\d+)\b/.exec(over.summary ?? "");
-    const bound = results.get(results.hashFor(card.index));
-    return {
-      length: counted ? Number(counted[1]) : null,
-      at: Number.isFinite(bound.value) ? Math.trunc(bound.value) : 0,
-    };
+    // Where: from the program text, which the server read off `let g = 3`.
+    // Reading the *value* of that node instead showed 0 on a board nobody had
+    // run yet, while the file plainly said 3.
+    return { length: counted ? Number(counted[1]) : null, at: card.at ?? 0 };
   }
 
   const named = (id) => workspace.cards.find((card) => card.id === id)?.title ?? id;
@@ -656,29 +658,31 @@
           {:else}
             <ResultSubscription node={card.node} />
           {/if}
-          {#if drawing && stack}
-            <!-- Picture and rows in one column: the rows are the cards that
-                 were dropped in, so they belong to the card and not to the
-                 viewer, which knows only about layers. -->
-            {@const walk = walkOf(card)}
-            <div class="stacked">
-              <div class="over">
+          <!-- One shape for every result card, because the navigation belongs to
+               the *card* and not to the picture. Gated on there being something
+               drawn, chevrons appeared only on a stack that had already been
+               computed -- so the board opened with no way to walk to the case
+               you wanted to compute, which is the one thing a selector is for. -->
+          {@const walk = card.index ? walkOf(card) : null}
+          <div class="stacked">
+            <div class="over">
+              {#if drawing}
                 <viewer.component layers={drawing} />
-                {#if walk}
-                  <ResultSubscription node={card.over} />
-                  <ResultSubscription node={card.index} />
-                  <Walk {card} length={walk.length} at={walk.at} />
-                {/if}
-              </div>
-              {#if stack.layers.length > 1}
-                <Layers {card} layers={stack.layers} />
+              {:else}
+                <!-- What the author wrote, not the reducer's spelling of it. -->
+                <viewer.component {result} node={card.written ?? card.node ?? ""} />
+              {/if}
+              {#if walk}
+                <ResultSubscription node={card.over} />
+                <Walk {card} length={walk.length} at={walk.at} />
               {/if}
             </div>
-          {:else if drawing}
-            <viewer.component layers={drawing} />
-          {:else}
-            <viewer.component {result} node={card.node ?? ""} />
-          {/if}
+            <!-- The rows are the cards that were dropped in, so they belong to
+                 the card rather than to the viewer, which knows only layers. -->
+            {#if stack && stack.layers.length > 1}
+              <Layers {card} layers={stack.layers} />
+            {/if}
+          </div>
         {:else if viewer.source}
           {@const lens = lensFor(card)}
           <!-- One movement, three distances. The program and its values are the

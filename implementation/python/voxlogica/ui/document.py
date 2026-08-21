@@ -453,6 +453,22 @@ class Document:
                         card.setdefault("title", declared[0].label)
                         if card["title"] == identity:
                             card["title"] = declared[0].label
+            # What the author wrote, for showing to the author.
+            #
+            # `card["node"]` is the reducer's spelling -- `index(brains,g)` for a
+            # line that says `brains[g]` -- which is right for addressing and
+            # wrong for reading. A board of uncomputed cards showed nothing but
+            # desugared text, which reads as debug output rather than as the
+            # program somebody wrote.
+            if card["kind"] in ("print", "save"):
+                written = array_of(card["source"]) or self._sole_expression(
+                    Segment(directive, card["source"])
+                )
+                if written is not None:
+                    _before, pieces, _after = written
+                    card["written"] = (
+                        f"[{', '.join(pieces)}]" if len(pieces) > 1 else pieces[0]
+                    )
             # What a selector walks along, so it can know where the walk ends.
             # Read from the first picture: `flairs[i]` is a step along `flairs`.
             if card.get("index"):
@@ -463,6 +479,15 @@ class Document:
                 )
                 if walked:
                     card["over"] = walked
+                # Where the walk is *now*, read from the program text.
+                #
+                # Not from the index's computed value: `let g = 3` is a node like
+                # any other, so on a board nobody has run yet it has no value,
+                # and a selector that reads 0 while the file plainly says 3 is a
+                # selector nobody can use to start the run.
+                where = self.index_value(card["index"])
+                if where is not None:
+                    card["at"] = where
             card["focus"] = _focus_of(card)
             cards.append(card)
         return cards
@@ -1142,6 +1167,24 @@ class Document:
         while len(look) < len(elements):
             look.append(default_style(len(look)))
         return list(zip(elements, look))
+
+    def index_value(self, name: str) -> int | None:
+        """The number an index is bound to, straight out of the text.
+
+        Cheap and exact, and available before anything has been computed --
+        which is when a selector is needed most.
+        """
+        if not _NAME.fullmatch(name or ""):
+            return None
+        pattern = re.compile(
+            rf"^[ \t]*let[ \t]+{re.escape(name)}[ \t]*=[ \t]*([0-9]+)(?:\.0+)?[ \t]*$",
+            re.MULTILINE,
+        )
+        for segment in self.segments:
+            match = pattern.search(segment.body)
+            if match is not None:
+                return int(match.group(1))
+        return None
 
     def set_index(self, name: str, value: int) -> bool:
         """Move an index: `let i = 2` becomes `let i = 3`.

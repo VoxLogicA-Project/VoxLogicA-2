@@ -48,6 +48,17 @@ export interface Card {
   /** The name of the index variable this card walks, when it is a selector.
    * There is no selector *kind*: a selector is a card that owns an index. */
   index?: string;
+  /** The sequence that index walks along, when the card's first picture is a
+   * step into one. What the walk's length is a question about. */
+  over?: string;
+  /** The card's expression as the author spelled it -- `brains[g]`, where
+   * `node` carries the reducer's `index(brains,g)`. For showing, never for
+   * addressing. */
+  written?: string;
+  /** Where the walk is, read by the server off `let g = 3` in the program.
+   * From the text and not from the node's value: on a board nobody has run,
+   * that node has no value and the file plainly says 3. */
+  at?: number;
 }
 
 export interface Board {
