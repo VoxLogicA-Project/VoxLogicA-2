@@ -61,6 +61,8 @@
      * gesture is pointer-driven and starts on the header, so an HTML5 drop
      * here is unambiguous: it came from another card's body. */
     ondropcards,
+    /** `(card) -> {w, h} | undefined` — the floor, asked rather than carried. */
+    floorOf,
     onselect,
     /** The card was asked to compute what it is about. Absent = no button. */
     onrun,
@@ -241,11 +243,16 @@
   const AUTO_FLOOR = { w: 4, h: 2 };
 
   function clamp(w, h) {
-    let cw = Math.min(Math.max(w, card.minW ?? 1), card.maxW ?? cols, cols);
-    let ch = Math.min(Math.max(h, card.minH ?? 1), card.maxH ?? rows, rows);
+    // The file's own minimum wins over the content's: an author who wrote one
+    // meant it. Otherwise the smallest size this card's content is usable at.
+    const floor = floorOf?.(card);
+    const minW = card.minW ?? floor?.w ?? 1;
+    const minH = card.minH ?? floor?.h ?? 1;
+    let cw = Math.min(Math.max(w, minW), card.maxW ?? cols, cols);
+    let ch = Math.min(Math.max(h, minH), card.maxH ?? rows, rows);
     if (card.aspect) {
       // Width leads: it is the axis the eye compares across a row of cards.
-      ch = Math.min(Math.max(Math.round(cw / card.aspect), card.minH ?? 1), rows);
+      ch = Math.min(Math.max(Math.round(cw / card.aspect), minH), rows);
     }
     return [cw, ch];
   }
@@ -381,9 +388,17 @@
     // top of cards that had politely stepped out of its way.
     if (rect.x !== from.x || rect.y !== from.y || rect.w !== from.w || rect.h !== from.h) {
       movedAt = Date.now();
-      // `altKey` travels with the release rather than being read later: the key
-      // is up by the time anything downstream could ask.
-      oncommit?.(rect, event.altKey);
+      // Where the pointer was, and what was held, travel *with* the release:
+      // the key is up and the pointer is gone by the time anything downstream
+      // could ask. The board needs the point because the card under the cursor
+      // is the target -- "the only card overlapped" was measured wrong, since a
+      // four-cell card dropped on a grid of four-cell cards covers two of them
+      // and the intent is plainly the one being pointed at.
+      oncommit?.(rect, {
+        alt: event.altKey,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
     } else if (!event.shiftKey && !event.metaKey && !event.ctrlKey) {
       // A press that never became a drag was a click, and clicking one of
       // several selected cards means "just this one" -- otherwise a selection

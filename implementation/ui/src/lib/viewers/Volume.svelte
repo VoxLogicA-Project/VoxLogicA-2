@@ -189,12 +189,33 @@
     }
   }
 
-  // Layers and family are props; a change to either is a reconcile, and a
-  // change to the family is a rebuild inside it.
+  /** What this viewer would draw, as a string.
+   *
+   * `layers` is rebuilt by the caller on every render -- it is a lookup per
+   * element, not a stored array -- so identity says nothing about whether the
+   * *picture* changed. Waking on identity meant a NiiVue reconcile and a
+   * `drawScene` for every volume card on every re-render, several times a
+   * second while dragging, which is exactly as heavy as it sounds.
+   *
+   * Everything that can change what is on screen is in here and nothing else
+   * is, so equal signatures really do mean an identical picture.
+   */
+  const signature = $derived(
+    [
+      view,
+      ...layers.map(
+        (layer) =>
+          `${keyOf(layer)}|${layer.url ?? ""}|${layer.colormap ?? ""}|` +
+          `${layer.opacity ?? 1}|${layer.visible === false ? 0 : 1}`,
+      ),
+    ].join("\n"),
+  );
+
+  // A change to the picture is a reconcile, and a change to the viewer family is
+  // a rebuild inside it. A change to neither is nothing.
   $effect(() => {
-    // Read them so this re-runs when they move.
-    void layers;
-    void view;
+    // Read it so this re-runs when the picture moves -- and only then.
+    void signature;
     if (canvas) wake();
   });
 

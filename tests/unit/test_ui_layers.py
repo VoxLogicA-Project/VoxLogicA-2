@@ -574,11 +574,22 @@ def test_a_card_declares_the_smallest_size_its_content_can_be_used_at():
     assert "export function needsFor(" in table
     assert "card?.parts?.length" in table, "a stack needs room for its rows"
 
+    # Asked per card, not folded into the cards array. Measured: computing it
+    # into the array rebuilt every card object on every result event, every
+    # rebuilt card handed its viewer a fresh `layers` array, and a fresh array
+    # made NiiVue reconcile and redraw -- which is what a heavy drag was.
     app = (
         Path(__file__).resolve().parents[2] / "implementation/ui/src/App.svelte"
     ).read_text(encoding="utf-8")
+    assert "function floorOf(card)" in app
+    assert "cards={workspace.cards}" in app, "the cards array must keep its identity"
+
+    card = (
+        Path(__file__).resolve().parents[2]
+        / "implementation/ui/src/lib/components/Bento/BentoCard.svelte"
+    ).read_text(encoding="utf-8")
     # The document's own minimum wins: an author who wrote one meant it.
-    assert "card.minW ?? floor.w" in app and "card.minH ?? floor.h" in app
+    assert "card.minW ?? floor?.w ?? 1" in card
 
 
 def test_the_floor_bounds_the_gesture_and_rewrites_nobody_s_layout():
@@ -605,7 +616,8 @@ def test_the_floor_bounds_the_gesture_and_rewrites_nobody_s_layout():
     # The floor reaches the two gestures that change a size, and nothing else.
     assert "const [cw, ch] = clamp(w, h);" in card, "the pointer resize"
     assert "const [w, h] = clamp(size.w + dx, size.h + dy);" in card, "the keyboard resize"
-    assert "card.minW ?? 1" in card and "card.minH ?? 1" in card
+    assert "card.minW ?? floor?.w ?? 1" in card
+    assert "card.minH ?? floor?.h ?? 1" in card
 
     # And nothing grows a card behind the user's back.
     assert "let asked" not in bento, "the automatic growth is gone, with its damage"
@@ -626,13 +638,25 @@ def test_laying_a_card_over_another_is_the_drag_plus_a_modifier():
     bento = (root / "src/lib/components/Bento/Bento.svelte").read_text(encoding="utf-8")
     card = (root / "src/lib/components/Bento/BentoCard.svelte").read_text(encoding="utf-8")
 
-    assert "oncommit?.(rect, event.altKey);" in card
-    assert "function commit(card, rect, over = false) {" in bento
-    body = bento[bento.index("function commit(card, rect, over = false)") :]
+    # The release carries what was held and where the pointer was: the key is up
+    # and the pointer is gone by the time anything downstream could ask.
+    assert "alt: event.altKey," in card
+    assert "clientX: event.clientX," in card
+    assert "function commit(card, rect, drop = null) {" in bento
+
+    body = bento[bento.index("function commit(card, rect, drop = null)") :]
     body = body[: body.index("\n  }")]
-    assert "if (under.length === 1)" in body, (
-        "two cards under the drop is not 'lay it over both', it is bad aim"
-    )
+    # The target is the card under the *pointer*. "The only card overlapped" was
+    # the first rule and it was measured wrong: a four-cell card dropped among
+    # four-cell cards covers two, so alt-drop sent an ordinary arrangement.
+    assert "const cell = cellAt(drop);" in body
+    assert "under.length" not in body
+    # And the preview is dropped the way the board drops one. Reaching for the
+    # card's own `onpreview` from here threw, which aborted `commit` before
+    # either the merge or the arrangement -- so alt-drop did nothing *and* the
+    # card came to rest overlapping, because the card clears its preview only
+    # after `oncommit` returns and it never returned.
+    assert "onpreview?.(" not in body
 
 
 def test_a_card_can_be_dragged_onto_another_without_being_selected_first():
@@ -674,3 +698,33 @@ def test_a_card_can_be_dragged_onto_another_without_being_selected_first():
         Path(__file__).resolve().parents[2] / "implementation/ui/src/App.svelte"
     ).read_text(encoding="utf-8")
     assert "if (payload.copy && !text && payload.ids.length)" in app
+
+
+def test_an_absorbed_layer_takes_the_colour_of_its_new_position(tmp_path):
+    """Measured wrong first: grey over grey, and the second layer invisible.
+
+    A card of one picture has no `style=`, so its only layer was padded with
+    *that card's* default -- and position zero is grey. Absorbed as position one
+    it carried the grey with it. A layer nobody styled has no opinion, and the
+    position it lands in supplies one.
+    """
+    space = _space(
+        tmp_path,
+        '//@card id=scan kind=print x=0 y=0\nprint "scan" flair\n'
+        '//@card id=mask kind=print x=4 y=0\nprint "mask" tumour\n',
+    )
+    assert space.apply("card.mergeCard", {"id": "scan", "from": "mask"}) is True
+    style = space.snapshot()["cards"][0]["style"]
+    assert [layer["colormap"] for layer in style] == ["gray", "warm"]
+
+
+def test_a_colour_somebody_chose_travels_with_its_layer(tmp_path):
+    """The other half: what was said explicitly is not a default to override."""
+    space = _space(
+        tmp_path,
+        '//@card id=scan kind=print x=0 y=0\nprint "scan" flair\n'
+        '//@card id=mask kind=print style="red@0.45" x=4 y=0\nprint "mask" tumour\n',
+    )
+    space.apply("card.mergeCard", {"id": "scan", "from": "mask"})
+    style = space.snapshot()["cards"][0]["style"]
+    assert (style[1]["colormap"], style[1]["opacity"]) == ("red", 0.45)

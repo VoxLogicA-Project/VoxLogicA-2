@@ -171,20 +171,20 @@
     return { length: counted ? Number(counted[1]) : null, at: card.at ?? 0 };
   }
 
-  /** The cards, each carrying the smallest size its content is usable at.
+  /** The smallest size a card's content is usable at, asked per card.
    *
-   * A floor is a property of what the card shows, so it comes from the viewer
-   * table rather than from the file: the document records the size somebody
-   * *chose*, and a floor is not a choice. `minW`/`minH` already in the document
-   * win -- an author who wrote one meant it.
+   * A function rather than a field folded into the cards array, and the reason
+   * is measured: computing it into the array rebuilt every card object on every
+   * result event, every rebuilt card handed its viewer a fresh `layers` array,
+   * and a fresh array made NiiVue reconcile and redraw -- six volume cards,
+   * several times a second, which is what "dragging feels heavy" was.
+   *
+   * The document's own `minW`/`minH` still win inside the card: an author who
+   * wrote one meant it.
    */
-  const laid = $derived(
-    workspace.cards.map((card) => {
-      const floor = needsFor(card, results.forCard(card));
-      if (!floor) return card;
-      return { ...card, minW: card.minW ?? floor.w, minH: card.minH ?? floor.h };
-    }),
-  );
+  function floorOf(card) {
+    return needsFor(card, results.forCard(card));
+  }
 
   const named = (id) => workspace.cards.find((card) => card.id === id)?.title ?? id;
 
@@ -607,7 +607,7 @@
     </section>
   {:else}
     <Bento
-      cards={laid}
+      cards={workspace.cards}
       cols={workspace.board.cols}
       rows={workspace.board.rows}
       page={workspace.view.page}
@@ -629,6 +629,7 @@
       onprintthis={(id) => cardActions.printThis(id)}
       onfocusbinding={(id, name) => cardActions.setFocus(id, name)}
       bindingsOf={(card) => (card.kind === "code" ? bindingsIn(card.source) : [])}
+      {floorOf}
       {running}
       onactivate={(id) => (editing = id)}
       onsendtopage={(id, page) => board.setPage(id, page)}

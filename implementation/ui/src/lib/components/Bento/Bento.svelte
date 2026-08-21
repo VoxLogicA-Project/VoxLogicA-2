@@ -96,6 +96,15 @@
     onmeasured = undefined,
     /** `(id, name)` — a card was pointed at a different one of its bindings. */
     onfocusbinding = undefined,
+    /** `(card) -> {w, h} | undefined` — the smallest size a card's content is
+     * usable at, asked per card rather than carried on it.
+     *
+     * A function for the same reason `bindingsOf` is one, and for a second that
+     * cost real frames: computing it into the cards array rebuilt every card
+     * object on every result event, and a card whose object identity changed
+     * handed its viewer a fresh `layers` array, which made NiiVue reconcile and
+     * redraw. Six volume cards, several times a second, while dragging. */
+    floorOf = undefined,
     /** `(card) -> string[]` — the names a card's fragment declares.
      *
      * A function rather than a field on the card, because what a fragment
@@ -867,23 +876,36 @@
     stepZoom(event.deltaY < 0 ? 1 : -1);
   }
 
-  function commit(card, rect, over = false) {
+  function commit(card, rect, drop = null) {
     // Alt held on release: not "put it here" but "put it *on* that one". The
-    // same gesture the hand is already making, with a modifier, because a card
-    // dragged onto another card is already the drag everybody tries -- and
-    // without the modifier there is no way to tell it from arranging, which is
-    // what the drag has always meant.
-    if (over && onmerge) {
-      const box = drag?.rects.get(card.id) ?? rect;
-      const under = occupants.filter(
-        (other) => other.id !== card.id && overlaps(box, rectOf(other)),
-      );
-      // Exactly one, or the intent is a guess: two cards under the drop is not
-      // "lay it over both", it is somebody who has not finished aiming.
-      if (under.length === 1) {
+    // same gesture the hand is already making, with a modifier, because
+    // dragging a card is arranging it and without a modifier neither meaning
+    // would be knowable.
+    //
+    // The target is the card under the *pointer*. "The only card overlapped"
+    // was the first rule and it was measured wrong: a four-cell card dropped
+    // among four-cell cards covers two of them, so alt-drop sent an ordinary
+    // arrangement and the gesture looked like it did nothing.
+    if (drop?.alt && onmerge && pitch) {
+      const cell = cellAt(drop);
+      const under = cell
+        ? occupants.find((other) => {
+            if (other.id === card.id) return false;
+            const box = rectOf(other);
+            return (
+              cell.x >= box.x && cell.x < box.x + box.w &&
+              cell.y >= box.y && cell.y < box.y + box.h
+            );
+          })
+        : undefined;
+      if (under) {
+        // `drag = null` is how the board drops a preview -- `onpreview` is the
+        // *card's* prop, and reaching for it here threw, which aborted `commit`
+        // before either the merge or the arrangement. That is why alt-drop did
+        // nothing *and* why the card came to rest overlapping: the card clears
+        // its own preview after `oncommit` returns, and it never returned.
         drag = null;
-        onpreview?.(null);
-        onmerge(under[0], [card.id]);
+        onmerge(under, [card.id]);
         return;
       }
     }
@@ -1157,6 +1179,7 @@
             onprintThis={onprintthis ? () => onprintthis(card.id) : undefined}
             onfocusbinding={onfocusbinding ? (name) => onfocusbinding(card.id, name) : undefined}
             bindings={bindingsOf?.(card) ?? []}
+            {floorOf}
             running={running.includes(card.id)}
             onderive={onderive ? () => onderive(card.id, copySpot(card)) : undefined}
             onmaximize={() => maximize(card)}
@@ -1166,7 +1189,7 @@
               ? (next) => onsendtopage(card.id, Math.max(0, next))
               : undefined}
             onpreview={(rect) => preview(card, rect)}
-            oncommit={(rect, over) => commit(card, rect, over)}
+            oncommit={(rect, drop) => commit(card, rect, drop)}
             onmeasure={(w, h) => {
               // Kept locally so the board can lay out this frame, and reported
               // so the document can keep it. A card whose footprint exists only

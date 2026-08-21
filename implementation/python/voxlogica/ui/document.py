@@ -1164,8 +1164,13 @@ class Document:
             return []
         _before, elements, _after = cut
         look = styles(segment.directive.attrs.get("style", ""))
+        # Padded with *nothing*, not with this card's defaults. A layer nobody
+        # styled has no opinion about its colour, and carrying one into another
+        # card would carry the wrong one: position zero is grey, so a card
+        # absorbed as the second layer arrived grey over grey and could not be
+        # seen. What it never said, it does not say.
         while len(look) < len(elements):
-            look.append(default_style(len(look)))
+            look.append({})
         return list(zip(elements, look))
 
     def index_value(self, name: str) -> int | None:

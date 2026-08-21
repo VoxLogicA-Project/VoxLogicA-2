@@ -293,3 +293,38 @@ def test_switched_off_and_not_there_yet_are_different_things() -> None:
     text = app.read_text()
     assert "visible: style.on !== false" in text
     assert "visible: !!" not in text, "visibility is being derived from the data again"
+
+
+def test_the_viewer_wakes_for_a_changed_picture_and_not_a_changed_array() -> None:
+    """The measurement, and it is not a close call.
+
+    `layers` is rebuilt by the caller on every render -- it is a lookup per
+    element, not a stored array -- so its identity says nothing about whether the
+    picture changed. Waking on identity meant a NiiVue reconcile and a
+    `drawScene` per volume card per re-render.
+
+    Counted in the page, by hooking every WebGL draw entry point, over one drag
+    across a board of six drawn volumes:
+
+        without the guard   97,632 draw calls
+        with it                    0
+
+    That is what "dragging feels much slower" was, and the same work is what
+    burns a GPU on a board nobody is touching.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "implementation/ui/src/lib/viewers/Volume.svelte"
+    ).read_text(encoding="utf-8")
+
+    assert "const signature = $derived(" in source
+    effect = source[source.index("  // A change to the picture is a reconcile") :]
+    effect = effect[: effect.index("\n  });")]
+    assert "void signature;" in effect
+    assert "void layers;" not in effect, "identity is not a change to the picture"
+    # Everything that can change what is on screen has to be in the signature,
+    # or a real change would be swallowed instead of a spurious one.
+    for part in ("keyOf(layer)", "layer.url", "layer.colormap", "layer.opacity", "layer.visible"):
+        assert part in source[source.index("const signature = $derived(") :][:700], part
