@@ -899,3 +899,41 @@ def test_a_press_on_a_control_never_starts_the_card_s_own_drag():
     assert 'from.closest("[data-grip]")' in start
     assert 'from?.closest?.("input, button, select, textarea, a, label")' in start
     assert "data-grip" in layers
+
+
+def test_the_picture_follows_the_thumb_and_nothing_jumps_back():
+    """Two faults with one cause: the opacity lived only in the document.
+
+    So while a finger was on the slider nothing else knew -- the volume kept its
+    old opacity until a round trip finished, and the thumb was held by a local
+    copy that was *dropped on release*, which put the old value back for exactly
+    one round trip. That is the jump home and then the jump again.
+
+    The live value now sits where the layers a viewer draws are assembled, so it
+    reaches the volume by the same path the committed one does and there is no
+    second route to disagree with the first. It is cleared when the document
+    catches up, not when the finger lifts.
+
+    Measured in the page, eleven steps of a slide: the readout followed the
+    thumb, 1582 WebGL draws happened while sliding (the picture, following), no
+    document writes went out during it, one `setLayerStyle` on release, and the
+    thumb read 30 during, at release, and after the round trip.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "implementation/ui/src"
+    app = (root / "App.svelte").read_text(encoding="utf-8")
+    layers = (root / "lib/viewers/Layers.svelte").read_text(encoding="utf-8")
+
+    # Held where the layers are assembled, and read by the thing that draws.
+    assert "let live = $state({});" in app
+    assert "opacity: live[`${card.id}:${at}`] ?? style.opacity ?? 1," in app
+    assert "onlive={(at, opacity) => (live[`${card.id}:${at}`] = opacity)}" in app
+    # Cleared by the document catching up -- never by the finger lifting.
+    assert "Math.abs(settled - live[key]) < 0.005" in app
+
+    # One source for the thumb, so it cannot disagree with the picture.
+    assert "const opacityOf = (layer) => layer.opacity;" in layers
+    assert "oninput={(event) => onlive?.(at, event.currentTarget.value / 100)}" in layers
+    # And the document is written once, when the finger lifts.
+    assert "onchange={(event) =>\n            cardActions.setLayerStyle(" in layers

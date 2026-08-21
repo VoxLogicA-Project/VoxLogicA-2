@@ -130,6 +130,28 @@
    * chooses the viewer: a stack of images is drawn by whatever draws an image,
    * so the table in `viewers/index.js` stays the only place that decides.
    */
+  /** Opacities under a finger right now, by `cardId:position`.
+   *
+   * A slider has to move the *picture*, not just the thumb, and the picture is
+   * drawn from the card's directive -- which is a round trip away. Held here
+   * because this is where the layers a viewer draws are assembled, so a live
+   * value reaches the volume by the same path the committed one does and no
+   * second route exists to disagree with the first.
+   *
+   * Kept until the document catches up rather than dropped on release: dropping
+   * it there put the old opacity back for the length of one round trip, which is
+   * the thumb jumping home and then jumping again.
+   */
+  let live = $state({});
+
+  $effect(() => {
+    for (const key of Object.keys(live)) {
+      const [id, at] = key.split(":");
+      const settled = workspace.cards.find((card) => card.id === id)?.style?.[+at]?.opacity;
+      if (settled != null && Math.abs(settled - live[key]) < 0.005) delete live[key];
+    }
+  });
+
   function stackFor(card) {
     if (!card.parts?.length) return null;
     const layers = card.parts.map((expression, at) => {
@@ -142,7 +164,7 @@
         url: shown.state === "done" && shown.hash ? `/api/node/${shown.hash}` : null,
         // Position zero is the one underneath, and grey is what a scan is.
         colormap: style.colormap ?? (at === 0 ? "gray" : "warm"),
-        opacity: style.opacity ?? 1,
+        opacity: live[`${card.id}:${at}`] ?? style.opacity ?? 1,
         // Switched off is not absent: `on` is somebody's choice, `url` is
         // whether the bytes exist, and the layer row has to tell them apart.
         visible: style.on !== false,
@@ -714,7 +736,11 @@
             <!-- The rows are the cards that were dropped in, so they belong to
                  the card rather than to the viewer, which knows only layers. -->
             {#if stack && stack.layers.length > 1}
-              <Layers {card} layers={stack.layers} />
+              <Layers
+                {card}
+                layers={stack.layers}
+                onlive={(at, opacity) => (live[`${card.id}:${at}`] = opacity)}
+              />
             {/if}
           </div>
         {:else if viewer.source}

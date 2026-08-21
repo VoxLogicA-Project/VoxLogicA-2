@@ -23,18 +23,29 @@
   import { card as cardActions } from "../actions/index.ts";
   import { RAMPS, swatchOf } from "./colormaps.js";
 
-  let { card, layers } = $props();
-
-  /** Live under the finger, written once when it lifts. Sixty writes a second
-   * would be sixty rewrites of the document. */
-  let sliding = $state({});
+  let {
+    card,
+    layers,
+    /** `(at, opacity)` while a slider is under the finger.
+     *
+     * The picture has to follow the thumb, and the picture is drawn from the
+     * card's directive -- a round trip away. So the value goes two ways: up to
+     * whoever assembles the layers, at once and for free, and into the document
+     * once, when the finger lifts. Sixty writes a second would be sixty rewrites
+     * of the program. */
+    onlive,
+  } = $props();
   /** Which row's palette is open, by index. */
   let picking = $state(null);
   /** Which row is being dragged, and which boundary it is over. */
   let held = $state(null);
   let over = $state(null);
 
-  const opacityOf = (layer, at) => sliding[at] ?? layer.opacity;
+  /** What the thumb shows: whatever the layer says, which already carries the
+   * live value while there is one. One source, so the thumb and the picture
+   * cannot disagree -- and no snap-back on release, because nothing local is
+   * dropped at a moment when the document has not caught up yet. */
+  const opacityOf = (layer) => layer.opacity;
 
   /** Drawn, switched off, or not there at all. */
   function stateOf(layer) {
@@ -151,16 +162,15 @@
           type="range"
           min="0"
           max="100"
-          value={Math.round(opacityOf(layer, at) * 100)}
+          value={Math.round(opacityOf(layer) * 100)}
           title="opacity"
-          oninput={(event) => (sliding[at] = event.currentTarget.value / 100)}
-          onchange={(event) => {
-            const opacity = event.currentTarget.value / 100;
-            delete sliding[at];
-            cardActions.setLayerStyle(card.id, at, { opacity });
-          }}
+          oninput={(event) => onlive?.(at, event.currentTarget.value / 100)}
+          onchange={(event) =>
+            cardActions.setLayerStyle(card.id, at, {
+              opacity: event.currentTarget.value / 100,
+            })}
         />
-        <span class="pct">{Math.round(opacityOf(layer, at) * 100)}</span>
+        <span class="pct">{Math.round(opacityOf(layer) * 100)}</span>
       {:else}
         <span class="why">{WORDS[state] ?? state}</span>
       {/if}
