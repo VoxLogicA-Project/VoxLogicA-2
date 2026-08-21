@@ -137,3 +137,43 @@ def test_the_expressions_this_format_writes_are_the_language(tmp_path):
         'print "stack" [flairs[i], masks[i]]\n'
     )
     assert parse_program(program) is not None
+
+
+# ------------------------------------------------- the stack, read by the parser
+
+
+def test_an_array_output_is_read_as_its_elements():
+    """And in the reducer's own spelling, not the author's.
+
+    `xs[i]` is sugar: the parser produces `index(xs, i)`, which is the form the
+    reducer hashes. Handing back what was typed would mean asking for the hash
+    of a string the reducer has to desugar again -- so the canonical spelling is
+    the useful answer, not a lossy one.
+    """
+    from voxlogica.ui import analysis
+
+    (output,) = analysis.outputs('print "scan" [flairs[i], gts[i], masks[i]]')
+    assert output.parts == ("index(flairs,i)", "index(gts,i)", "index(masks,i)")
+
+
+def test_an_ordinary_output_has_no_parts():
+    from voxlogica.ui import analysis
+
+    (output,) = analysis.outputs('print "one" flairs[i]')
+    assert output.parts == ()
+    assert output.expression == "index(flairs,i)"
+
+
+def test_a_comma_inside_a_call_is_not_a_layer_boundary():
+    """Which is the whole reason this is read from the parser and not split."""
+    from voxlogica.ui import analysis
+
+    (output,) = analysis.outputs('print "scan" [add(a, b), threshold(c, 0.6)]')
+    assert output.parts == ("add(a,b)", "threshold(c,0.6)")
+
+
+def test_a_stack_of_one_is_still_a_stack():
+    from voxlogica.ui import analysis
+
+    (output,) = analysis.outputs('print "scan" [flairs[i]]')
+    assert output.parts == ("index(flairs,i)",)

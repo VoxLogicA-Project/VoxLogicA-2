@@ -120,6 +120,15 @@ class Output:
     #: without anyone hashing a sub-expression. `None` for anything else --
     #: honest until a selection can be resolved to a hash on its own.
     binding: str | None
+    #: When the expression is an array literal, its elements as written --
+    #: `print "scan" [flairs[i], masks[i]]` is one output *drawn as a stack*,
+    #: and a stack is a list of things each of which is a node of its own.
+    #: Empty for everything else, which is most outputs.
+    #:
+    #: Read from the array node rather than by splitting on commas: a comma
+    #: inside a call (`add(a, b)`) or inside a nested array belongs to that,
+    #: and the parser is the only thing that knows the difference.
+    parts: tuple[str, ...] = ()
 
 
 def outputs(source: str) -> list[Output]:
@@ -165,6 +174,11 @@ def outputs(source: str) -> list[Output]:
                 label=command.identifier,
                 expression=expression.to_syntax(),
                 binding=binding,
+                parts=(
+                    tuple(item.to_syntax() for item in expression.items)
+                    if isinstance(expression, vp.EArray)
+                    else ()
+                ),
             )
         )
     return found
