@@ -36,6 +36,16 @@
     return layer.visible ? "on" : "off";
   }
 
+  /** Which row is under the hand, while one is. */
+  let held = $state(null);
+  let over = $state(null);
+
+  function drop(at) {
+    if (held !== null && held !== at) cardActions.moveLayer(card.id, held, at);
+    held = null;
+    over = null;
+  }
+
   const WORDS = {
     absent: "assente",
     running: "in corso",
@@ -48,7 +58,28 @@
   {#each layers as layer, at (layer.expression)}
     {@const state = stateOf(layer)}
     {@const there = state === "on" || state === "off"}
-    <div class="row" class:off={state === "off"} class:gone={!there}>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="row"
+      class:off={state === "off"}
+      class:gone={!there}
+      class:held={held === at}
+      class:over={over === at}
+      draggable="true"
+      ondragstart={(event) => {
+        held = at;
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", layer.expression);
+      }}
+      ondragend={() => { held = null; over = null; }}
+      ondragover={(event) => {
+        if (held === null) return;
+        event.preventDefault();
+        over = at;
+      }}
+      ondragleave={() => { if (over === at) over = null; }}
+      ondrop={(event) => { event.preventDefault(); drop(at); }}
+    >
       <!-- The switch, and only when there is something to switch. -->
       {#if there}
         <button
@@ -74,6 +105,19 @@
       ></button>
 
       <span class="name" title={layer.expression}>{layer.expression}</span>
+
+      {#if layers.length > 1}
+        <!-- Out of the stack and onto the board, wearing the colour it had.
+             The other half of dropping a card in, and it has to be exactly the
+             other half or the gesture is not one anybody trusts. -->
+        <button
+          class="out"
+          title="portala fuori, come card"
+          onclick={() => cardActions.splitLayer(card.id, at)}
+        >
+          ⤴
+        </button>
+      {/if}
 
       {#if there}
         <input
@@ -134,6 +178,29 @@
 
   .row:hover {
     background: var(--color-surface-raised);
+  }
+
+  .held {
+    opacity: 0.4;
+  }
+
+  /* Where it would land: the boundary, not the row, because that is what a
+   * reorder moves things across. */
+  .over {
+    box-shadow: inset 0 2px 0 var(--color-accent);
+  }
+
+  .out {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--color-text-subtle);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .out:hover {
+    color: var(--color-text);
   }
 
   .off {

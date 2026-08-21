@@ -601,6 +601,12 @@
       onremove={(id) => board.removeCard(id)}
       onduplicate={duplicate}
       onderive={derive}
+      onmerge={(card, ids) => {
+        // Dropped onto a card: what each one drew becomes a layer of this one,
+        // and it stops existing -- it became a row. Itself excluded, because a
+        // card cannot be laid on top of itself.
+        for (const id of ids) if (id !== card.id) cardActions.mergeCard(card.id, id);
+      }}
       onselect={(ids) => view.select(ids)}
       selection={workspace.view.selection}
       {cardsText}

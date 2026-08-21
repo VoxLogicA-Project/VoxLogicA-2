@@ -57,6 +57,10 @@
      * selection's text and only the board knows what is selected. Refusing the
      * drag is `event.preventDefault()` inside it, as it is anywhere else. */
     ondragout,
+    /** `(ids)` when cards are dropped onto this one. The board's own arrange
+     * gesture is pointer-driven and starts on the header, so an HTML5 drop
+     * here is unambiguous: it came from another card's body. */
+    ondropcards,
     onselect,
     /** The card was asked to compute what it is about. Absent = no button. */
     onrun,
@@ -152,6 +156,12 @@
       },
     ].filter(Boolean),
   );
+
+  /** The type a dragged card carries its ids in, set by `Bento`'s `dragOut`. */
+  const IDS = "text/voxlogica-card-ids";
+
+  /** True while a card is held over this one. */
+  let landing = $state(false);
 
   let headerEl = $state(null);
   /** The title while it is being edited, or null. Double-clicking the title
@@ -590,6 +600,22 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="body"
+      class:landing={landing}
+      ondragover={(event) => {
+        if (!ondropcards || !event.dataTransfer) return;
+        if (!event.dataTransfer.types.includes(IDS)) return;
+        event.preventDefault();
+        landing = true;
+      }}
+      ondragleave={() => (landing = false)}
+      ondrop={(event) => {
+        landing = false;
+        const carried = event.dataTransfer?.getData(IDS);
+        if (!carried) return;
+        event.preventDefault();
+        event.stopPropagation();
+        ondropcards?.(carried.split("\n").filter(Boolean));
+      }}
       draggable={ondragout ? "true" : undefined}
       ondragstart={(event) => {
         if (gesture !== null) {
@@ -811,6 +837,12 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* Something is about to land here. The card says so; the rows appear after. */
+  .landing {
+    box-shadow: inset 0 0 0 2px var(--color-accent);
+    border-radius: var(--radius-sm);
   }
 
   .body {

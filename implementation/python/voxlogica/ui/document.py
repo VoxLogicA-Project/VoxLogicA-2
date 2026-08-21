@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 # A directive is a comment first and metadata second: `//` is a comment in
 # .imgql, and the `@` makes the marker specific enough to grep for and unlikely
@@ -139,6 +139,62 @@ def styles(value: str) -> list[dict[str, Any]]:
             "on": off is None,
         })
     return out
+
+
+#: `print "label" [` -- the shape whose array can be rearranged in place.
+_ARRAY_HEAD = re.compile(r'((?:print|save)\s+"(?:[^"\\]|\\.)*"\s*)\[')
+
+#: The first name in an expression, for labelling a layer taken out on its own.
+_LEADING_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def array_of(source: str) -> tuple[str, list[str], str] | None:
+    """`(before, elements, after)` for the array a print draws, or `None`.
+
+    Cut from the text exactly as typed, rather than rebuilt from the parser.
+    Rebuilding would respell the author's program -- `xs[i]` is sugar for
+    `index(xs, i)`, so reordering two layers would rewrite every line it touched
+    into a form nobody wrote. Reordering is a *rearrangement*, and it has to
+    read like one in the diff.
+
+    The scanner tracks nesting and strings, because a comma inside `add(a, b)`
+    or a nested array is not a boundary. Anything but the plain shape --
+    `print "label" [ ... ]` -- returns `None`, and the caller refuses the edit
+    instead of guessing at it.
+    """
+    head = _ARRAY_HEAD.search(source)
+    if head is None:
+        return None
+    open_at = head.end() - 1
+    depth = 0
+    quoted = False
+    escaped = False
+    cuts = [open_at + 1]
+    for at in range(open_at, len(source)):
+        char = source[at]
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+            continue
+        if char == '"':
+            quoted = True
+        elif char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+            if depth == 0:
+                pieces = [source[a:b] for a, b in zip(cuts, cuts[1:] + [at])]
+                elements = [piece.strip().lstrip(",").strip() for piece in pieces]
+                if not all(elements):
+                    return None
+                return source[:open_at + 1], elements, source[at:]
+        elif char == "," and depth == 1:
+            cuts.append(at)
+    return None
 
 
 def default_style(at: int) -> dict[str, Any]:
@@ -964,6 +1020,115 @@ class Document:
         segment.directive.set("style", style_text(current))
         self.dirty = True
         return True
+
+    def _rewrite_stack(
+        self, card_id: str, move: Callable[[list[str], list[dict[str, Any]]], Any]
+    ) -> Any:
+        """Rearrange a card's layers, and its styles with them.
+
+        One place, because the two lists are one thing seen twice: a style finds
+        its layer by *position*, so moving an element without moving its style
+        repaints every layer at once. Anything that touches one list here
+        touches the other in the same breath.
+        """
+        segment = self._writable(card_id)
+        if segment is None:
+            return None
+        cut = array_of(segment.body)
+        if cut is None:
+            return None
+        before, elements, after = cut
+        look = styles(segment.directive.attrs.get("style", ""))
+        while len(look) < len(elements):
+            look.append(default_style(len(look)))
+        outcome = move(elements, look)
+        if outcome is None or not elements:
+            return None
+        segment.body = f"{before}{', '.join(elements)}{after}"
+        segment.directive.set("style", style_text(look[: len(elements)]))
+        self.dirty = True
+        return outcome
+
+    def move_layer(self, card_id: str, at: int, to: int) -> bool:
+        """Which layer is in front. Order is the whole reason a stack is a list."""
+
+        def move(elements: list[str], look: list[dict[str, Any]]) -> bool | None:
+            if not (0 <= at < len(elements)) or not (0 <= to < len(elements)) or at == to:
+                return None
+            elements.insert(to, elements.pop(at))
+            look.insert(to, look.pop(at))
+            return True
+
+        return bool(self._rewrite_stack(card_id, move))
+
+    def take_layer(self, card_id: str, at: int) -> tuple[str, dict[str, Any]] | None:
+        """Lift one layer out, and its style with it. The caller gives it a card."""
+
+        def move(
+            elements: list[str], look: list[dict[str, Any]]
+        ) -> tuple[str, dict[str, Any]] | None:
+            if not (0 <= at < len(elements)) or len(elements) == 1:
+                return None
+            return elements.pop(at), look.pop(at)
+
+        return self._rewrite_stack(card_id, move)
+
+    def add_layers(self, card_id: str, wanted: list[tuple[str, dict[str, Any]]]) -> bool:
+        """Lay expressions on top of what this card already draws.
+
+        A card of one picture is not an array yet, so it becomes one -- which is
+        exactly what dropping a card onto another means, and it reads that way in
+        the program: `print "scan" flair` becomes `print "scan" [flair, mask]`.
+        """
+        if not wanted:
+            return False
+        segment = self._writable(card_id)
+        if segment is None:
+            return False
+        cut = array_of(segment.body)
+        if cut is None:
+            alone = self._sole_expression(segment)
+            if alone is None:
+                return False
+            before, elements, after = alone
+        else:
+            before, elements, after = cut
+        look = styles(segment.directive.attrs.get("style", ""))
+        while len(look) < len(elements):
+            look.append(default_style(len(look)))
+        for expression, style in wanted:
+            elements.append(expression)
+            look.append({**default_style(len(look)), **style})
+        segment.body = f"{before}{', '.join(elements)}{after}"
+        segment.directive.set("style", style_text(look[: len(elements)]))
+        self.dirty = True
+        return True
+
+    def _sole_expression(self, segment: Segment) -> tuple[str, list[str], str] | None:
+        """A one-picture print, read as an array of one so it can become several."""
+        head = re.search(r'((?:print|save)\s+"(?:[^"\\]|\\.)*"\s*)', segment.body)
+        if head is None:
+            return None
+        rest = segment.body[head.end():]
+        expression = rest.strip()
+        if not expression or "\n" in expression.strip("\n"):
+            return None
+        trailing = rest[len(rest.rstrip()):]
+        return f"{segment.body[:head.end()]}[", [expression], f"]{trailing}"
+
+    def layers_of(self, card_id: str) -> list[tuple[str, dict[str, Any]]]:
+        """What a card draws, each with its look: what a merge takes away."""
+        segment = self._writable(card_id)
+        if segment is None:
+            return []
+        cut = array_of(segment.body) or self._sole_expression(segment)
+        if cut is None:
+            return []
+        _before, elements, _after = cut
+        look = styles(segment.directive.attrs.get("style", ""))
+        while len(look) < len(elements):
+            look.append(default_style(len(look)))
+        return list(zip(elements, look))
 
     def set_source(self, card_id: str, text: str) -> bool:
         """Replace a card's body. Only that card's text moves."""

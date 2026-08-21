@@ -57,6 +57,9 @@
     onduplicate = undefined,
     /** `(id, {x, y, w, h})` — a card showing what this one produces. */
     onderive = undefined,
+    /** `(card, ids)` — cards were dropped onto another card. What that means
+     * is the caller's business; the board only reports the gesture. */
+    onmerge = undefined,
     /** `(ids)` — the cards the user is working with. */
     onselect = undefined,
     selection = [],
@@ -1119,6 +1122,7 @@
             oncopy={oncopycards}
             oncut={oncutcards}
             ondragout={cardsText ? (event) => dragOut(card, event) : undefined}
+            ondropcards={onmerge ? (ids) => onmerge(card, ids) : undefined}
             onrun={onrun ? () => onrun(card.id) : undefined}
             onlens={onlens ? (lens) => onlens(card.id, lens) : undefined}
             onsaveThis={onsavethis ? () => onsavethis(card.id) : undefined}

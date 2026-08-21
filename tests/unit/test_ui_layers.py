@@ -307,3 +307,98 @@ def test_the_browser_agrees_with_the_server_about_an_unstyled_layer():
     assert 'style.colormap ?? (at === 0 ? "gray" : "warm")' in app
     assert document_module.default_style(0)["colormap"] == "gray"
     assert document_module.default_style(1)["colormap"] == "warm"
+
+
+# ------------------------------------------------------ separate, and separable
+
+MERGEABLE = """\
+//@board cols=12 rows=8
+//@card id=scan kind=print x=0 y=0 style="gray@1.00, blue@0.35"
+print "scan" [flairs[i], gts[i]]
+//@card id=found kind=print x=4 y=0 style="red@0.45"
+print "found" masks[i]
+"""
+
+
+def test_the_elements_are_cut_from_the_text_and_not_respelled():
+    """`xs[i]` is sugar. Rebuilding the line from the parser would write the
+    sugar out, so reordering two layers would rewrite lines nobody touched."""
+    before, elements, after = doc.array_of('print "scan" [flairs[i], masks[i]]\n')
+    assert elements == ["flairs[i]", "masks[i]"]
+    assert before.endswith("[") and after.startswith("]")
+
+
+def test_a_comma_inside_a_call_or_a_string_is_not_a_boundary():
+    _b, elements, _a = doc.array_of('print "s" [add(a, b), "x, y", [c, d]]\n')
+    assert elements == ["add(a, b)", '"x, y"', "[c, d]"]
+
+
+def test_a_print_that_is_not_an_array_is_left_alone():
+    assert doc.array_of('print "one" flairs[i]\n') is None
+
+
+def test_reordering_moves_the_style_with_the_layer(tmp_path):
+    """The bug this exists to prevent: styles find their layer by position, so
+    moving an element and not its style repaints the whole stack."""
+    space = _space(tmp_path, MERGEABLE)
+    assert space.apply("card.moveLayer", {"id": "scan", "at": 1, "to": 0}) is True
+    scan = space.snapshot()["cards"][0]
+    assert scan["parts"] == ["index(gts,i)", "index(flairs,i)"]
+    assert [layer["colormap"] for layer in scan["style"]] == ["blue", "gray"]
+    assert [layer["opacity"] for layer in scan["style"]] == [0.35, 1.0]
+
+
+def test_reordering_rearranges_and_does_not_rewrite(tmp_path):
+    space = _space(tmp_path, MERGEABLE)
+    space.apply("card.moveLayer", {"id": "scan", "at": 1, "to": 0})
+    assert 'print "scan" [gts[i], flairs[i]]' in space.snapshot()["cards"][0]["source"]
+
+
+def test_dropping_a_card_on_another_makes_it_a_layer(tmp_path):
+    space = _space(tmp_path, MERGEABLE)
+    assert space.apply("card.mergeCard", {"id": "scan", "from": "found"}) is True
+    cards = space.snapshot()["cards"]
+    assert [card["id"] for card in cards] == ["scan"], "the dropped card became a row"
+    assert cards[0]["parts"] == ["index(flairs,i)", "index(gts,i)", "index(masks,i)"]
+    # And it kept the colour it had.
+    assert [layer["colormap"] for layer in cards[0]["style"]] == ["gray", "blue", "red"]
+
+
+def test_a_card_of_one_picture_becomes_an_array_when_something_lands_on_it(tmp_path):
+    space = _space(tmp_path, MERGEABLE)
+    space.apply("card.mergeCard", {"id": "found", "from": "scan"})
+    source = space.snapshot()["cards"][0]["source"]
+    assert 'print "found" [masks[i], flairs[i], gts[i]]' in source
+
+
+def test_a_layer_dragged_out_becomes_a_card_again(tmp_path):
+    space = _space(tmp_path, MERGEABLE)
+    made = space.apply("card.splitLayer", {"id": "scan", "at": 1, "x": 8, "y": 0})
+    assert made
+    cards = {card["id"]: card for card in space.snapshot()["cards"]}
+    assert 'print "gts" gts[i]' in cards[made]["source"]
+    assert cards[made]["style"][0]["colormap"] == "blue", "it wears the colour it had"
+    assert cards["scan"]["parts"] == ["index(flairs,i)"]
+
+
+def test_merging_and_splitting_are_each_other(tmp_path):
+    """A gesture that does not undo itself is a gesture nobody trusts."""
+    space = _space(tmp_path, MERGEABLE)
+    before = space.snapshot()["cards"][0]["source"]
+    space.apply("card.mergeCard", {"id": "scan", "from": "found"})
+    space.apply("card.splitLayer", {"id": "scan", "at": 2, "newId": "found", "x": 4, "y": 0})
+    after = {card["id"]: card for card in space.snapshot()["cards"]}
+    assert after["scan"]["source"] == before
+    assert 'masks[i]' in after["found"]["source"]
+    assert after["found"]["style"][0]["colormap"] == "red"
+
+
+def test_the_last_layer_cannot_be_taken_out(tmp_path):
+    """A stack of nothing is not a card, and emptying one is a different act."""
+    space = _space(tmp_path, MERGEABLE)
+    assert space.apply("card.splitLayer", {"id": "found", "at": 0}) is False
+
+
+def test_a_card_cannot_be_dropped_on_itself(tmp_path):
+    space = _space(tmp_path, MERGEABLE)
+    assert space.apply("card.mergeCard", {"id": "scan", "from": "scan"}) is False

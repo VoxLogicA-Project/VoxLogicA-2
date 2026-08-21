@@ -57,6 +57,16 @@ export const card = {
     at: number,
     look: { colormap?: string; opacity?: number; on?: boolean },
   ) => invoke("card.setLayerStyle", { id, at, ...look }),
+  /** Which layer draws in front of which. A rearrangement of the array the
+   * card prints, written as one -- the elements keep the author's spelling. */
+  moveLayer: (id: string, at: number, to: number) =>
+    invoke("card.moveLayer", { id, at, to }),
+  /** Lay what one card draws on top of another. The first stops existing: it
+   * became a row. */
+  mergeCard: (id: string, from: string) => invoke("card.mergeCard", { id, from }),
+  /** And the other half: a layer out of the stack, into a card of its own. */
+  splitLayer: (id: string, at: number, where: Record<string, unknown> = {}) =>
+    invoke<string>("card.splitLayer", { id, at, ...where }),
   /** Declare what this card is about as an output of the program: the
    * directive is written into the text, where a diff and a headless run can
    * both see it. A button that wrote a file would be an effect with no record. */
