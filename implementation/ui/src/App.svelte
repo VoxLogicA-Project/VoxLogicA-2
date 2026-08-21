@@ -672,11 +672,21 @@
                 <!-- What the author wrote, not the reducer's spelling of it. -->
                 <viewer.component {result} node={card.written ?? card.node ?? ""} />
               {/if}
-              {#if walk}
-                <ResultSubscription node={card.over} />
+              {#if walk && drawing}
+                <!-- Over a picture: floating, taking no room from it. -->
                 <Walk {card} length={walk.length} at={walk.at} />
               {/if}
             </div>
+            {#if walk}
+              <ResultSubscription node={card.over} />
+            {/if}
+            {#if walk && !drawing}
+              <!-- Over anything else: a line of its own, *in the flow*. Absolute
+                   and out of the way was the first attempt and it still landed on
+                   the value on a card three cells tall -- measured. In the flow it
+                   cannot collide, because the content box is that much shorter. -->
+              <Walk {card} length={walk.length} at={walk.at} floating={false} />
+            {/if}
             <!-- The rows are the cards that were dropped in, so they belong to
                  the card rather than to the viewer, which knows only layers. -->
             {#if stack && stack.layers.length > 1}

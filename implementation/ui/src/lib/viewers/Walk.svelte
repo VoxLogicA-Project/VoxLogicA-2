@@ -24,6 +24,18 @@
     length = null,
     /** Where the walk is now. */
     at = 0,
+    /** Is there a picture under this?
+     *
+     * Floating the navigation over a *volume* is right: the card exists to show
+     * the volume, and chrome that took a strip away from it would be chrome
+     * competing with the thing it is chrome for. Floating it over *text* is just
+     * two things printed in the same place -- measured, on a card whose value is
+     * a number: the tabs occupied 432-457 and the value 432-451. So when there
+     * is nothing to cover, it takes a line of its own instead -- and takes it in
+     * the flow, since an absolute strip pinned to the bottom still collided on a
+     * card three cells tall.
+     */
+    floating = true,
   } = $props();
 
   /** Tabs are for a handful; past that they are a scrollbar with numbers on it.
@@ -45,25 +57,49 @@
   }
 </script>
 
-{#if style === "tabs" && length != null}
-  <div class="tabs">
-    {#each Array(length) as _, n (n)}
-      <button class="tab" class:on={n === at} onclick={() => go(n)}>{n}</button>
-    {/each}
-  </div>
-{:else}
-  <button class="chevron back" disabled={at <= 0} onclick={() => go(at - 1)}>‹</button>
-  <button
-    class="chevron on"
-    disabled={last != null && at >= last}
-    onclick={() => go(at + 1)}>›</button
-  >
-  <span class="where">{at}{#if last != null}/{last}{/if}</span>
-{/if}
+<div class="walk" class:floating class:strip={!floating}>
+  {#if style === "tabs" && length != null}
+    <div class="tabs">
+      {#each Array(length) as _, n (n)}
+        <button class="tab" class:on={n === at} onclick={() => go(n)}>{n}</button>
+      {/each}
+    </div>
+  {:else}
+    <button class="chevron back" disabled={at <= 0} onclick={() => go(at - 1)}>‹</button>
+    <button
+      class="chevron next"
+      disabled={last != null && at >= last}
+      onclick={() => go(at + 1)}>›</button
+    >
+    <span class="where">{at}{#if last != null}/{last}{/if}</span>
+  {/if}
+</div>
 
 <style>
-  /* Every rule here sits above the picture, and none of it takes room from it:
-   * a card that is mostly chrome is a card you cannot see the volume in. */
+  /* Over a picture: absolute, and taking no room from it -- a card that is
+   * mostly chrome is a card you cannot see the volume in. */
+  .floating {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .floating > * {
+    pointer-events: auto;
+  }
+
+  /* Over anything else: a line of its own, in the flow. Not absolute -- the
+   * point is that the content box is shorter by exactly this much, so there is
+   * no arrangement of card size and content in which the two can land on each
+   * other. */
+  .strip {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding-top: var(--space-1);
+  }
+
   .tabs {
     position: absolute;
     top: 0;
@@ -74,6 +110,13 @@
     padding: var(--space-1);
     overflow-x: auto;
     background: linear-gradient(var(--color-overlay), transparent);
+  }
+
+  /* In a strip the tabs are simply the strip's content. */
+  .strip .tabs {
+    position: static;
+    padding: 0;
+    background: none;
   }
 
   .tab {
@@ -118,9 +161,17 @@
     border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   }
 
-  .chevron.on {
+  .next {
     right: 0;
     border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  }
+
+  .strip .chevron {
+    position: static;
+    transform: none;
+    width: var(--space-5);
+    height: var(--space-5);
+    border-radius: var(--radius-sm);
   }
 
   .where {
@@ -130,5 +181,9 @@
     font-family: var(--font-mono);
     font-size: var(--text-2xs);
     color: var(--color-text-subtle);
+  }
+
+  .strip .where {
+    position: static;
   }
 </style>

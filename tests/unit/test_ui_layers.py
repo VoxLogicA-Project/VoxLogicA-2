@@ -517,3 +517,37 @@ def test_the_navigation_is_not_gated_on_there_being_a_picture():
     assert body.index("{@const walk = card.index ? walkOf(card) : null}") < drawing
     assert "{#if walk}" in body and walk > drawing
     assert "{#if drawing && stack}" not in app
+
+
+def test_the_navigation_floats_over_a_picture_and_takes_a_line_over_anything_else():
+    """Two printed things in the same place, and it was measured that way.
+
+    On a card whose value is a number, the tabs occupied 432-457 and the value
+    432-451 -- the same region. Floating chrome over a *volume* is right: the
+    card exists to show the volume. Over text it is just overprinting.
+
+    Pinning the strip to the bottom instead was the next attempt and it still
+    collided on a card three cells tall, so the strip goes in the *flow*: the
+    content box is shorter by exactly that much and no arrangement of card size
+    and content can put them on top of each other.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "implementation/ui"
+    app = (root / "src/App.svelte").read_text(encoding="utf-8")
+    walk = (root / "src/lib/viewers/Walk.svelte").read_text(encoding="utf-8")
+
+    body = app[app.index("{:else if viewer.result}") : app.index("{:else if viewer.source}")]
+    over = body[body.index('<div class="over">') : body.index('{#if walk}\n              <ResultSubscription')]
+    # Floating only where there is a picture to float over, and inside the box
+    # that holds it.
+    assert "{#if walk && drawing}" in over
+    # The strip is a sibling of that box, not a child: in the flow.
+    assert body.index("{#if walk && !drawing}") > body.index("</div>")
+    assert "floating={false}" in body
+
+    # And the strip is not positioned out of the flow after all.
+    strip = walk[walk.index("  .strip {") :]
+    strip = strip[: strip.index("}")]
+    assert "position: absolute" not in strip
+    assert "flex: none" in strip
