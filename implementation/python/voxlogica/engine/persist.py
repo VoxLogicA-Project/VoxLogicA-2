@@ -143,6 +143,26 @@ class AsyncPersister:
         # this run's results without touching SQLite. Single set ops from this
         # thread are GIL-atomic; no lock needed.
         self._persisted_ids = persisted_ids
+        # Sparse caching (--sparse-cache). When armed, a value whose consumers
+        # have ALL already run is dropped instead of written: nothing in this run
+        # can ask for it again, so the only thing lost is reuse by a LATER run.
+        #
+        # This is safe against the memory bound, which is the non-obvious part.
+        # The store doubles as the engine's spill space -- RAM may only drop a
+        # value once a disk copy exists -- so skipping writes sounds like it
+        # could strand the live tier. It cannot: the predicate skips only values
+        # that are already DEAD, and a dead value is dropped from the live tier
+        # outright rather than spilled. Live values are still written, always.
+        #
+        # The persister lagging behind compute makes this MORE effective, not
+        # less: the longer a value waits in the queue, the likelier its consumers
+        # have finished by the time the batch is written. On a parameter sweep --
+        # hundreds of thousands of intermediate 3D masks, each read once by the
+        # scalar that scores it -- that is nearly all of them.
+        self._live_probe = None
+        self._skip_dead = False
+        self.skipped_dead = 0
+        self.skipped_bytes = 0
         self._queue: "queue.SimpleQueue[tuple[NodeId, Any, dict, int, float, tuple[Any, ...]] | None]" = queue.SimpleQueue()
         self._lock = threading.Lock()
         self._pending_bytes = 0
@@ -265,6 +285,16 @@ class AsyncPersister:
                 batch.append(extra)
             self._write_batch(batch)
 
+    def set_live_probe(self, probe, *, skip_dead: bool = False) -> None:
+        """Arm sparse caching with the engine's liveness predicate.
+
+        Called once at engine start (see ComputationEngine.__init__). Without a
+        probe the flag does nothing, so an engine that cannot supply liveness
+        degrades to writing everything rather than to writing nothing.
+        """
+        self._live_probe = probe
+        self._skip_dead = bool(skip_dead and probe is not None)
+
     def _write_batch(self, batch) -> None:
         lineage = [item for item in batch if item[0] is self._LINEAGE]
         if lineage:
@@ -289,6 +319,23 @@ class AsyncPersister:
                 fresh = [b for b in batch if b[0] not in self._persisted_ids]
             else:
                 fresh = [b for b in batch if not self._backend.has(b[0])]
+            if fresh and self._skip_dead:
+                # A stale answer here is harmless in both directions: a value
+                # wrongly kept is merely written, a value wrongly dropped is
+                # regenerable from lineage. So no lock, matching how the same
+                # predicate is already read for eviction.
+                keep = []
+                for b in fresh:
+                    try:
+                        alive = self._live_probe(b[0])
+                    except Exception:  # noqa: BLE001 — a dying engine must not block writes
+                        alive = True
+                    if alive:
+                        keep.append(b)
+                    else:
+                        self.skipped_dead += 1
+                        self.skipped_bytes += b[3] or 0
+                fresh = keep
             if fresh:
                 entries = [(nid, value, metadata, compute_ms, snap)
                            for nid, value, metadata, _size, compute_ms, _leases, snap in fresh]

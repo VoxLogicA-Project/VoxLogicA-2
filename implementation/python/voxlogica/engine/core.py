@@ -105,7 +105,8 @@ class ComputationEngine:
                  backend: StorageBackend | None = None, max_concurrency: int = 0,
                  progress: bool = False, debug: bool = False, max_live_bytes: int = 0,
                  threads_auto: str = "balanced",
-                 observe: Callable[..., None] | None = None):
+                 observe: Callable[..., None] | None = None,
+                 sparse_cache: bool = False):
         self.registry = registry or PrimitiveRegistry()
         # Somebody watching what happens to individual nodes -- the UI, so a
         # result card can say `computing` while it is. Optional and checked
@@ -196,6 +197,17 @@ class ComputationEngine:
         self.graph.pinned = lambda nid: self._dispatch_pins.get(nid, 0) > 0
         self.graph.defer = self._track_ownerless
         self.liveness = LivenessProbe(self.graph)
+        # --sparse-cache: hand the same predicate the disk cache uses for
+        # EVICTION to the writer, so a value that is already dead is never
+        # written in the first place. Evicting later costs the write plus the
+        # delete; not writing costs nothing. On a parameter sweep the
+        # intermediate masks are read exactly once, by the scalar that scores
+        # them, so almost every one of them is dead before its turn to be
+        # written comes up.
+        self.sparse_cache = sparse_cache
+        persister = getattr(self.table, "_persister", None)
+        if persister is not None and hasattr(persister, "set_live_probe"):
+            persister.set_live_probe(self.liveness.is_live, skip_dead=sparse_cache)
         self.liveness.install(self.table._backend)
         self.admission = LoopAdmission(
             self.expander, self.graph, self.ready, self.liveness,
@@ -396,6 +408,16 @@ class ComputationEngine:
                 self._progress.close()
                 self._progress = None
         self.table.flush()
+        # Say what sparse caching actually bought. A flag whose effect is
+        # invisible is a flag nobody can tell is working, and the number is the
+        # whole justification for having it: on a sweep it should account for
+        # nearly every intermediate.
+        persister = getattr(self.table, "_persister", None)
+        skipped = getattr(persister, "skipped_dead", 0) if persister else 0
+        if skipped:
+            gb = getattr(persister, "skipped_bytes", 0) / 1e9
+            print(f"sparse cache: {skipped} dead values not written ({gb:.2f} GB)",
+                  file=sys.stderr, flush=True)
         if self._first_error is not None:
             raise self._first_error
 

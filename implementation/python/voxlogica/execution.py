@@ -95,6 +95,7 @@ class ExecutionEngine:
         dynamic_expansion: bool = True,
         threads_auto: str = "balanced",
         observe=None,
+        sparse_cache: bool = False,
     ):
         """Create an engine bound to one primitive registry and one strategy.
 
@@ -111,6 +112,13 @@ class ExecutionEngine:
         it computes. Engine strategy only, and a spectator by construction --
         see ``ComputationEngine._report``.
 
+        ``sparse_cache`` stops the writer from persisting values that are
+        already dead -- every consumer has run, so nothing in this run can ask
+        for the value again and only a LATER run could reuse it. Off by default,
+        because cross-run reuse is what makes an iterative session fast. Worth
+        turning on for a large parameter sweep, where the intermediates are read
+        exactly once and writing them is the bottleneck: see AsyncPersister.
+
         ``threads_auto`` picks the auto-detection heuristic used when
         ``threads=0`` (engine strategy only): ``"p-cores"`` (default) corrects
         for hybrid P/E CPUs, where os.cpu_count() overcounts (see
@@ -124,7 +132,7 @@ class ExecutionEngine:
             from voxlogica.engine.strategy import EngineExecutionStrategy
             self._strategy = EngineExecutionStrategy(
                 self.registry, self.storage, threads=threads, debug=engine_debug,
-                threads_auto=threads_auto, observe=observe)
+                threads_auto=threads_auto, observe=observe, sparse_cache=sparse_cache)
         else:
             self._strategy = LazyExecutionStrategy(
                 self.registry, self.storage, threads=threads, dynamic_expansion=dynamic_expansion)

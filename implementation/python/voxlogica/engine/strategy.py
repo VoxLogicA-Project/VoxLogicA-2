@@ -127,7 +127,7 @@ class EngineExecutionStrategy:
 
     def __init__(self, registry: PrimitiveRegistry | None = None, results_database: StorageBackend | None = None,
                  threads: int = 0, debug: bool = False, threads_auto: str = "balanced",
-                 observe=None):
+                 observe=None, sparse_cache: bool = False):
         self.registry = registry or PrimitiveRegistry()
         self._serializer_cache: dict[str, dict] | None = None
         self.results_database = results_database
@@ -136,6 +136,8 @@ class EngineExecutionStrategy:
         self.threads_auto = threads_auto
         # Passed straight through to the engine: see ComputationEngine._report.
         self.observe = observe
+        # Do not write values that are already dead (see AsyncPersister).
+        self.sparse_cache = sparse_cache
 
     def compile(self, plan: SymbolicPlan) -> PreparedPlan:
         """Prepare a plan; the engine owns its own node table at run time."""
@@ -162,7 +164,8 @@ class EngineExecutionStrategy:
         plan = prepared.plan
         engine = ComputationEngine(registry=self.registry, backend=self.results_database,
                                    max_concurrency=self.threads, progress=True, debug=self.debug,
-                                   threads_auto=self.threads_auto, observe=self.observe)
+                                   threads_auto=self.threads_auto, observe=self.observe,
+                                   sparse_cache=self.sparse_cache)
         engine.adopt_plan(plan)
 
         target = plan.goals if goals is None else [g for g in plan.goals if g.id in set(goals)]
