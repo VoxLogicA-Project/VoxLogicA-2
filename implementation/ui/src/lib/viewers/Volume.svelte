@@ -276,7 +276,15 @@
        component makes. It is the only way anything outside the GPU can tell
        them apart -- a WebGL drawing buffer reads back empty once the frame has
        been composited, so counting lit pixels answers the wrong question. -->
-  <canvas bind:this={canvas} class:hidden={!live} data-drawn={loaded.length}
+  <!-- `draggable=false`: the picture is a view, not a thing to pick up. Left
+       draggable, a press on it starts the browser's own image drag, and the
+       card's drag has to snapshot a WebGL canvas to make a ghost out of it --
+       paying for a picture of the picture on every drag. -->
+  <canvas
+    bind:this={canvas}
+    draggable="false"
+    class:hidden={!live}
+    data-drawn={loaded.length}
   ></canvas>
 
   {#if !live && frozen}

@@ -467,6 +467,7 @@
     // silently did nothing. Dropping a card on another card needs only the ids.
     event.dataTransfer.setData("text/voxlogica-card-ids", ids.join("\n"));
     event.dataTransfer.effectAllowed = "copyMove";
+    setGhost(event, ids);
     // The program text only when it is genuinely this selection's text. A drag
     // into an editor or a file carries .imgql, and inventing a second way to
     // produce it is how the two spellings start to differ.
@@ -513,6 +514,39 @@
 
   /** The card the drop in flight would be laid over, for drawing. */
   let laying = $state(null);
+
+  /** What the cursor carries during a drag: a label, not a photograph.
+   *
+   * Left to itself the browser makes the ghost out of the dragged element, which
+   * for a card means snapshotting a WebGL canvas -- an expensive picture of a
+   * picture, and one that says less than the card's own name does. It also
+   * *privileges the image*: the thing you see moving is the volume rather than
+   * the card, which is not what is being moved.
+   */
+  function setGhost(event, ids) {
+    if (!event.dataTransfer?.setDragImage) return;
+    const ghost = document.createElement("div");
+    ghost.textContent = ids.length > 1 ? `${ids.length} cards` : byId(ids[0])?.title ?? ids[0];
+    Object.assign(ghost.style, {
+      position: "fixed",
+      top: "-1000px",
+      left: "-1000px",
+      padding: "6px 10px",
+      borderRadius: "8px",
+      font: "12px ui-monospace, monospace",
+      background: "#161b22",
+      color: "#c9d1d9",
+      border: "1px solid #30363d",
+      pointerEvents: "none",
+    });
+    document.body.append(ghost);
+    event.dataTransfer.setDragImage(ghost, 12, 12);
+    // Cleared when the drag ends, which is the moment it stops being needed.
+    // Not on a timer: a short timer in this file is how a *verdict* used to be
+    // spelled, and not on a frame either, since a background tab paints none.
+    // A ghost left in the DOM is a leak per drag.
+    window.addEventListener("dragend", () => ghost.remove(), { once: true });
+  }
 
   function preview(card, rect, point = null) {
     if (rect === null) {

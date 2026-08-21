@@ -824,3 +824,32 @@ def test_a_colormap_is_offered_as_the_ramp_it_is():
         text = shipped.read_text(encoding="utf-8", errors="ignore")
         for name in names:
             assert f'"{name}"' in text, f"NiiVue does not ship a colormap called {name}"
+
+
+def test_a_dragged_card_carries_its_name_and_not_a_photograph_of_itself():
+    """The picture is a view, not a thing to pick up.
+
+    Left to itself the browser builds the drag ghost out of the dragged element,
+    which for a card means snapshotting a WebGL canvas: an expensive picture of a
+    picture that says less than the card's own name. And it privileges the image
+    -- the thing seen moving is the volume rather than the card, which is not
+    what is being moved. The canvas also offered itself as a drag source of its
+    own, so a press on it started the browser's image drag.
+
+    Verified in the page: the canvas carries `draggable="false"`, the ghost handed
+    to `setDragImage` is a DIV reading the card's title, and nothing is left in
+    the DOM afterwards -- a ghost per drag would be a leak per drag.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "implementation/ui/src"
+    volume = (root / "lib/viewers/Volume.svelte").read_text(encoding="utf-8")
+    bento = (root / "lib/components/Bento/Bento.svelte").read_text(encoding="utf-8")
+
+    assert 'draggable="false"' in volume
+    assert "function setGhost(event, ids)" in bento
+    assert "setDragImage(ghost, 12, 12)" in bento
+    # Cleared on `dragend`: not on a timer, because a short timer in this file
+    # is how a refusal *verdict* used to be spelled and a discipline test keeps
+    # it that way -- and not on a frame, since a background tab paints none.
+    assert 'window.addEventListener("dragend", () => ghost.remove(), { once: true });' in bento
