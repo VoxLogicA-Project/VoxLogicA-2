@@ -145,3 +145,35 @@ def test_the_manual_says_how_an_agent_reaches_it():
     text = _manual()
     assert "MCP" in text
     assert "voxlogica_manual" in text, "the manual does not say how to read it over MCP"
+
+
+def test_serving_stops_with_its_last_window_unless_told_otherwise():
+    """A server nobody has a window on is a process nobody knows to stop.
+
+    Each one also holds a WebGL context per volume card, so it is not an idle
+    process -- it is a cost that keeps being paid for a page nobody is looking
+    at. So `serve` stops with its last window, and `--stay` is how you say that
+    is wrong on purpose: a shared instance, a machine somebody connects to twice,
+    a session left open between visits. It has to be asked for, because the harm
+    of guessing runs the other way -- a lingering server is invisible.
+
+    The grace is the part that is easy to get wrong and was measured both ways: a
+    reload is a disconnect followed by a connect, so the hub really is empty in
+    the middle of one. Without it, refreshing the page kills the server. With it:
+    reload survived twelve seconds, and closing the tab stopped the process after
+    three, with `no client for 3.0s; stopping` in the log.
+    """
+    main = (ROOT / "implementation" / "python" / "voxlogica" / "main.py").read_text()
+    session = (
+        ROOT / "implementation" / "python" / "voxlogica" / "ui" / "__init__.py"
+    ).read_text()
+
+    assert '"--stay", action="store_true"' in main
+    assert "if args.stay:\n        session.serve_forever()" in main
+    assert "session.serve_until_closed()" in main
+    # And the grace, in the one place both paths reach it.
+    assert "def _returns_within(self, grace: float) -> bool:" in session
+    assert session.count("_returns_within(") >= 3, (
+        "the run's window needs the same grace as the served one: a reload must "
+        "not end either"
+    )

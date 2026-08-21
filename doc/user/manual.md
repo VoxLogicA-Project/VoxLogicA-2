@@ -212,3 +212,16 @@ loopback only.
 `tests/unit/test_ui_manual_discipline.py` fails when an action or a shortcut
 exists and is not mentioned here. Adding a feature therefore means adding a line
 to this file — not because somebody remembers to, but because the build says so.
+
+---
+
+## Stopping
+
+The server **stops when its last window closes**, the way an application does —
+a server nobody has a window on is a process nobody knows to stop, and it is
+holding a GPU context for every volume card on a page nobody is looking at.
+Reloading the page is safe: a refresh empties the connection for a moment, and
+that moment is not the window going away.
+
+`voxlogica serve --stay` keeps it running with nothing connected — for a shared
+instance, or a session you mean to come back to.

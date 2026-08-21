@@ -364,8 +364,15 @@ def mcp_command(args: argparse.Namespace) -> int:
 def serve_command(args: argparse.Namespace) -> int:
     """Implement the ``serve`` subcommand: the UI with no computation attached.
 
-    Unlike ``run``, this never auto-exits -- there is no computation whose end
-    would be the cue -- so it stops on Ctrl-C.
+    Stops when the last window closes, the way an application does. A server
+    outliving every window it was opened for is a process nobody knows to stop
+    -- and each one holds a WebGL context per volume card, which is a cost that
+    keeps being paid for a page nobody is looking at.
+
+    ``--stay`` is for the case where that is wrong on purpose: a shared instance,
+    a machine somebody connects to more than once, a session left open between
+    two visits. It has to be asked for, because the harm of guessing runs the
+    other way -- a server that lingers is invisible.
     """
     _configure_logging(args.debug)
     from voxlogica.ui import start_ui
@@ -377,11 +384,15 @@ def serve_command(args: argparse.Namespace) -> int:
         store_db=args.store_db,
         instance_info={"version": __version__, "program": None, "storeDb": args.store_db},
     )
-    print(f"[voxlogica] UI at {session.url} (Ctrl-C to stop)", file=sys.stderr)
+    how = "Ctrl-C to stop" if args.stay else "stops when the last window closes"
+    print(f"[voxlogica] UI at {session.url} ({how})", file=sys.stderr)
     if session.dev_url is not None:
         print(f"[voxlogica] dev page at {session.dev_url} (or press Cmd/Ctrl+.)",
               file=sys.stderr)
-    session.serve_forever()
+    if args.stay:
+        session.serve_forever()
+    else:
+        session.serve_until_closed()
     return 0
 
 
@@ -604,6 +615,9 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--open", dest="open_browser", action="store_true",
                               help="Open the UI in a browser once it is up")
     serve_parser.add_argument("--store-db", help="Path to the persistent results SQLite database")
+    serve_parser.add_argument("--stay", action="store_true",
+                              help="Keep serving after the last window closes "
+                                   "(default: stop, the way an application does)")
     serve_parser.add_argument("--debug", action="store_true")
     serve_parser.set_defaults(handler=serve_command)
 
