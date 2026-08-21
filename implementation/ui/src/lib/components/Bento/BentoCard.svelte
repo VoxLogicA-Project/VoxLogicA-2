@@ -381,7 +381,9 @@
     // top of cards that had politely stepped out of its way.
     if (rect.x !== from.x || rect.y !== from.y || rect.w !== from.w || rect.h !== from.h) {
       movedAt = Date.now();
-      oncommit?.(rect);
+      // `altKey` travels with the release rather than being read later: the key
+      // is up by the time anything downstream could ask.
+      oncommit?.(rect, event.altKey);
     } else if (!event.shiftKey && !event.metaKey && !event.ctrlKey) {
       // A press that never became a drag was a click, and clicking one of
       // several selected cards means "just this one" -- otherwise a selection

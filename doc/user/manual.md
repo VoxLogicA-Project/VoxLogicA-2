@@ -95,9 +95,10 @@ anything, because a layer's **style** is kept in the card's comment and never in
 the expression. A layer that this case does not have, or that has not been computed
 yet, says so and has nothing to switch.
 
-**Drag a card by its body onto another card** and the two **merge**: what it
-drew becomes a layer of what it landed on, keeping its colour, and it stops
-being a card because it became a row. **Drag a row** up or down to **move** that
+**⌥-drag one card onto another** and the two **merge**: what it drew becomes a
+layer of what it landed on, keeping its colour, and it stops being a card
+because it became a row. Alt is what distinguishes it — dragging a card is
+arranging it, and a plain drop cannot mean both. **Drag a row** up or down to **move** that
 layer in front of or behind the others; **⤴ on a row** takes it back out as a
 card of its own. Merging and splitting are exactly each other, so a drop you did
 not mean is one click away from undone.

@@ -338,7 +338,7 @@
    * than as cards teleporting to wherever there was room. Returns `null` if
    * somebody cannot be housed, which is what makes the drop refuse.
    */
-  function arrange(ids, rects, push, bounds = { w: width, h: height }) {
+  function arrange(ids, rects, push) {
     const others = occupants.filter((card) => !ids.includes(card.id));
     // Counted before anything is searched for. A drag big enough to leave less
     // free space than the cards it displaces cannot be arranged however hard
@@ -348,7 +348,7 @@
       const box = rectOf(card);
       return total + box.w * box.h;
     }, 0);
-    if (covered + wanted > bounds.w * bounds.h) return null;
+    if (covered + wanted > width * height) return null;
     const moving = [...rects.values()];
     const fixed = [];
     const homeless = [];
@@ -370,71 +370,13 @@
     );
 
     for (const { card, box } of homeless) {
-      const spot = findSpot(box, taken, push, bounds);
+      const spot = findSpot(box, taken, push);
       if (!spot) return null;
       taken.push({ ...box, ...spot });
       moved.set(card.id, spot);
     }
     return moved;
   }
-
-  /** Floors already asked for, so a refusal is not retried forever.
-   *
-   * Deliberately not `$state`: the effect below reads it and writes it, and a
-   * reactive object would make that a loop for Svelte to catch rather than a
-   * question already answered. Keyed by card *and* size, so a floor that grows
-   * -- a layer added to a stack -- is asked again.
-   */
-  let asked = {};
-
-  /** Grant every card the smallest size its content can be used at.
-   *
-   * `clamp` in the card already refuses to *draw* one below its floor, and that
-   * was not enough: the drawn card overlapped a neighbour while the document
-   * said the two were apart, because a floor that never reaches the layout is a
-   * floor only the paint knows about.
-   *
-   * So it goes through the same path a drag takes -- `arrange` finds room for
-   * whoever is in the way, and the document takes the arrangement whole or
-   * refuses it. Which is the point of doing it here rather than in the card: a
-   * card can say how small it may be, and only the board can move anybody.
-   */
-  $effect(() => {
-    const short = [];
-    for (const card of occupants) {
-      const size = sizeOf(card);
-      const w = Math.min(Math.max(size.w, card.minW ?? 1), width);
-      const h = Math.min(Math.max(size.h, card.minH ?? 1), height);
-      if (w === size.w && h === size.h) continue;
-      if (asked[`${card.id}:${w}x${h}`]) continue;
-      short.push({ card, spot: { x: card.x, y: card.y, w, h } });
-    }
-    if (!short.length) return;
-    for (const { card, spot } of short) asked[`${card.id}:${spot.w}x${spot.h}`] = true;
-
-    const rects = new Map(short.map(({ card, spot }) => [card.id, spot]));
-    // Inside `cols` x `rows`, not inside the screen.
-    //
-    // The board fills the viewport -- a wide window really does have columns
-    // past `cols`, and a drag may use them. This may not: it is not somebody
-    // arranging, it is the board rewriting their file, and a card shoved into a
-    // column that exists only on this monitor is a layout that opens broken on
-    // the next one. Measured doing exactly that before this line: a card landed
-    // at x=12 on a 12-column board.
-    //
-    // One arrangement for every short card at once, or none. Card by card, a
-    // board with room for two of three grows two and leaves the third -- which
-    // is worse than leaving all three, because now the floor looks arbitrary.
-    const moved = arrange([...rects.keys()], rects, { dx: 0, dy: 0 }, { w: cols, h: rows });
-    if (!moved) return;
-    const spots = { ...Object.fromEntries(rects), ...Object.fromEntries(moved) };
-    pending = { ...pending, ...spots };
-    pendingSince = Date.now();
-    commitArrangement(
-      Object.entries(spots).map(([id, spot]) => ({ id, ...spot })),
-      Object.keys(spots),
-    );
-  });
 
   /** How far a displaced card may be shoved before the drag is simply refused.
    *
@@ -448,12 +390,12 @@
   const REACH = 4;
 
   /** The closest free position for `box`, preferring the push direction. */
-  function findSpot(box, taken, push, bounds = { w: width, h: height }) {
+  function findSpot(box, taken, push) {
     const free = (x, y) =>
       x >= 0 &&
       y >= 0 &&
-      x + box.w <= bounds.w &&
-      y + box.h <= bounds.h &&
+      x + box.w <= width &&
+      y + box.h <= height &&
       !taken.some((other) => overlaps({ x, y, w: box.w, h: box.h }, other));
 
     // 1. Straight along the shove, as far as it takes to clear.
@@ -925,7 +867,26 @@
     stepZoom(event.deltaY < 0 ? 1 : -1);
   }
 
-  function commit(card, rect) {
+  function commit(card, rect, over = false) {
+    // Alt held on release: not "put it here" but "put it *on* that one". The
+    // same gesture the hand is already making, with a modifier, because a card
+    // dragged onto another card is already the drag everybody tries -- and
+    // without the modifier there is no way to tell it from arranging, which is
+    // what the drag has always meant.
+    if (over && onmerge) {
+      const box = drag?.rects.get(card.id) ?? rect;
+      const under = occupants.filter(
+        (other) => other.id !== card.id && overlaps(box, rectOf(other)),
+      );
+      // Exactly one, or the intent is a guess: two cards under the drop is not
+      // "lay it over both", it is somebody who has not finished aiming.
+      if (under.length === 1) {
+        drag = null;
+        onpreview?.(null);
+        onmerge(under[0], [card.id]);
+        return;
+      }
+    }
     // The whole arrangement is committed, not just the card under the finger:
     // everyone dragged with it, and everyone that stepped aside to make room.
     // A card that avoided the drag and then snapped back the moment the drag
@@ -1205,7 +1166,7 @@
               ? (next) => onsendtopage(card.id, Math.max(0, next))
               : undefined}
             onpreview={(rect) => preview(card, rect)}
-            oncommit={(rect) => commit(card, rect)}
+            oncommit={(rect, over) => commit(card, rect, over)}
             onmeasure={(w, h) => {
               // Kept locally so the board can lay out this frame, and reported
               // so the document can keep it. A card whose footprint exists only

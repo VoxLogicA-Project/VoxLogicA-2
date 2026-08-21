@@ -581,34 +581,57 @@ def test_a_card_declares_the_smallest_size_its_content_can_be_used_at():
     assert "card.minW ?? floor.w" in app and "card.minH ?? floor.h" in app
 
 
-def test_the_floor_reaches_the_layout_and_not_only_the_paint():
-    """`clamp` already refused to *draw* a card below its floor, which left the
-    drawn card overlapping a neighbour while the document said they were apart.
+def test_the_floor_bounds_the_gesture_and_rewrites_nobody_s_layout():
+    """A constraint on resizing, which is what was asked for -- and no more.
 
-    So the growth goes through the path a drag takes: one arrangement, the
-    displaced moved aside by `arrange`, accepted whole or refused. Measured on a
-    board with room: a 2x1 card grew to 3x4 and its neighbour stepped from x=2
-    to x=3, with no overlaps and nothing outside the board.
+    The first attempt also *granted* the floor: a card below it grew, and other
+    cards were moved aside to let it. That did real damage. It pushed a card to
+    x=12 on a twelve-column board -- the board fills the viewport, so a wide
+    window has columns past `cols`, and a drag may use them, but the board
+    rewriting somebody's file may not or the layout opens broken elsewhere. And
+    it left a preview behind after an ordinary move, so cards came to rest
+    overlapping, which is the one state this board exists never to be in.
+
+    So the floor bounds the *gesture*: `clamp` refuses a resize below it, by
+    pointer or by keyboard, and a card whose file says less is drawn at what the
+    file says. Cramped is a worse card; overlapping is a broken board.
     """
     from pathlib import Path
 
-    bento = (
-        Path(__file__).resolve().parents[2]
-        / "implementation/ui/src/lib/components/Bento/Bento.svelte"
-    ).read_text(encoding="utf-8")
+    root = Path(__file__).resolve().parents[2] / "implementation/ui"
+    bento = (root / "src/lib/components/Bento/Bento.svelte").read_text(encoding="utf-8")
+    card = (root / "src/lib/components/Bento/BentoCard.svelte").read_text(encoding="utf-8")
 
-    # Bounded by the document's board, never by the screen's.
-    assert "{ w: cols, h: rows }" in bento, (
-        "the board fills the viewport, so a wide window has columns past `cols`. "
-        "A drag may use them; the board rewriting somebody's file may not -- "
-        "measured putting a card at x=12 on a 12-column board."
-    )
-    assert "function arrange(ids, rects, push, bounds = { w: width, h: height })" in bento
-    # All short cards at once: growing two of three makes the floor look arbitrary.
-    assert "let asked = {};" in bento, "a refusal must not be retried every echo"
-    assert "asked = $state" not in bento, (
-        "reactive, this is a loop for Svelte to catch rather than a question "
-        "already answered"
+    # The floor reaches the two gestures that change a size, and nothing else.
+    assert "const [cw, ch] = clamp(w, h);" in card, "the pointer resize"
+    assert "const [w, h] = clamp(size.w + dx, size.h + dy);" in card, "the keyboard resize"
+    assert "card.minW ?? 1" in card and "card.minH ?? 1" in card
+
+    # And nothing grows a card behind the user's back.
+    assert "let asked" not in bento, "the automatic growth is gone, with its damage"
+
+
+def test_laying_a_card_over_another_is_the_drag_plus_a_modifier():
+    """The gesture was already taken, which is why it read as nothing happening.
+
+    Dragging a card is arranging it -- that is what it has always meant, and the
+    hand reaches for the title bar to do it. A plain drop onto another card
+    cannot also mean "merge", because then neither is knowable. So it is the same
+    drag with alt held, and the modifier travels with the release: the key is up
+    by the time anything downstream could ask.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "implementation/ui"
+    bento = (root / "src/lib/components/Bento/Bento.svelte").read_text(encoding="utf-8")
+    card = (root / "src/lib/components/Bento/BentoCard.svelte").read_text(encoding="utf-8")
+
+    assert "oncommit?.(rect, event.altKey);" in card
+    assert "function commit(card, rect, over = false) {" in bento
+    body = bento[bento.index("function commit(card, rect, over = false)") :]
+    body = body[: body.index("\n  }")]
+    assert "if (under.length === 1)" in body, (
+        "two cards under the drop is not 'lay it over both', it is bad aim"
     )
 
 
