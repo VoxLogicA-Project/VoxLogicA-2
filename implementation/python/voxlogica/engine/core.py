@@ -994,6 +994,20 @@ class ComputationEngine:
             # recompute than to store would tax dispatch for nothing (and the
             # cache's cost-aware eviction would drop it first anyway).
             worth_it = critical or compute_ms >= self.config.persist_min_compute_ms
+            if worth_it and self.sparse_cache and not critical:
+                # --sparse-cache: a value with at most ONE consumer left is read
+                # once and then never again in this run, so writing it can only
+                # serve a LATER run. On a parameter sweep that is nearly every
+                # intermediate mask -- each is consumed by the single scalar that
+                # scores it -- and at 4 MB apiece the writes, not the arithmetic,
+                # were what bounded the run.
+                #
+                # The cut is at one consumer rather than at `critical` (fan-out
+                # >= 8) on purpose. A value shared by two to seven consumers is
+                # still needed after its first read, and the store is the spill
+                # space that lets RAM drop it in between; dropping those writes
+                # would trade disk for recomputation instead of saving anything.
+                worth_it = self.graph.consumers.get(nid, 0) > 1
             will_be_durable = self.table.complete(nid, value, compute_ms,
                                                   critical=critical, persist=worth_it)
             if node.operator in _SEQUENCE_OPERATORS:
