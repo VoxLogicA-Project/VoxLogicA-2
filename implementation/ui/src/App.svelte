@@ -12,6 +12,7 @@
    */
   import { Bento, Button, SHORTCUTS } from "./lib/components/index.js";
   import { viewerFor } from "./lib/viewers/index.js";
+  import Layers from "./lib/viewers/Layers.svelte";
   import BuildError from "./lib/BuildError.svelte";
   import Help from "./lib/Help.svelte";
   import Library from "./lib/Library.svelte";
@@ -630,7 +631,17 @@
           {:else}
             <ResultSubscription node={card.node} />
           {/if}
-          {#if drawing}
+          {#if drawing && stack}
+            <!-- Picture and rows in one column: the rows are the cards that
+                 were dropped in, so they belong to the card and not to the
+                 viewer, which knows only about layers. -->
+            <div class="stacked">
+              <viewer.component layers={drawing} />
+              {#if stack.layers.length > 1}
+                <Layers {card} layers={stack.layers} />
+              {/if}
+            </div>
+          {:else if drawing}
             <viewer.component layers={drawing} />
           {:else}
             <viewer.component {result} node={card.node ?? ""} />
@@ -845,6 +856,20 @@
   /* The two surfaces stacked, with the program taking whatever the value does
      not. At `source` there is one child and at `value` there is one child, so
      the same rule draws all three distances without a branch per lens. */
+  /* Picture above, rows below. The viewer takes what is left rather than what
+   * it wants: a stack of three rows must not push the volume out of the card. */
+  .stacked {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .stacked :global(.volume) {
+    flex: 1;
+    min-height: 0;
+  }
+
   .lensed {
     display: flex;
     flex-direction: column;

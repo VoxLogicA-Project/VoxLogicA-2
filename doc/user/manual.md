@@ -87,6 +87,14 @@ diff shows it, a colleague reads it, and a headless run performs it.
 A card is a **code** card, a **note**, or a view of an output — a **print**, a
 **save**, or a **result** bound to any node.
 
+**A card can show several pictures at once.** A `print` of an array is a stack:
+`print "scan" [flair, gt, mask]` draws all three, back to front, and the card
+grows a row per layer. The row's dot cycles its **colormap**, the slider sets its
+**opacity**, and the ◉ switches the layer off — none of which recomputes
+anything, because a layer's **style** is kept in the card's comment and never in
+the expression. A layer that this case does not have, or that has not been computed
+yet, says so and has nothing to switch.
+
 ---
 
 ## Running, and what a card is about

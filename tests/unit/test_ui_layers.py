@@ -231,3 +231,79 @@ def test_two_cards_drawing_the_same_layer_agree_on_its_node(tmp_path):
 def test_a_card_with_one_picture_has_no_parts():
     text = '//@card id=one kind=print x=0 y=0\nprint "one" flairs[i]\n'
     assert "parts" not in doc.parse(text).cards[0]
+
+
+# ------------------------------------------------------ writing one layer's look
+
+STYLED = """\
+//@board cols=12 rows=8
+//@card id=scan kind=print x=0 y=0
+print "scan" [flairs[i], gts[i], masks[i]]
+"""
+
+
+def _space(tmp_path, text):
+    from voxlogica.ui.workspace import Workspace
+
+    path = tmp_path / "doc.imgql"
+    path.write_text(text)
+    return Workspace(path=path)
+
+
+def test_styling_a_layer_writes_only_that_layer(tmp_path):
+    space = _space(tmp_path, STYLED)
+    assert space.apply("card.setLayerStyle", {"id": "scan", "at": 2, "opacity": 0.8}) is True
+    style = space.snapshot()["cards"][0]["style"]
+    assert style[2]["opacity"] == 0.8
+    assert [layer["opacity"] for layer in style[:2]] == [1.0, 1.0]
+
+
+def test_styling_layer_two_of_an_unstyled_card_does_not_become_layer_zero(tmp_path):
+    """The list is positional, so it has to be padded before the change lands.
+
+    Without the padding, "set entry two" written into an empty list is entry
+    zero, and the scan underneath silently takes the colour of the mask.
+    """
+    space = _space(tmp_path, STYLED)
+    space.apply("card.setLayerStyle", {"id": "scan", "at": 2, "colormap": "red"})
+    style = space.snapshot()["cards"][0]["style"]
+    assert len(style) == 3
+    assert [layer["colormap"] for layer in style] == ["gray", "warm", "red"]
+
+
+def test_switching_a_layer_off_keeps_its_opacity(tmp_path):
+    space = _space(tmp_path, STYLED)
+    space.apply("card.setLayerStyle", {"id": "scan", "at": 1, "opacity": 0.35})
+    space.apply("card.setLayerStyle", {"id": "scan", "at": 1, "on": False})
+    layer = space.snapshot()["cards"][0]["style"][1]
+    assert layer["on"] is False
+    assert layer["opacity"] == 0.35
+
+
+def test_a_style_change_never_touches_the_program(tmp_path):
+    """The reason the style is a comment: the expression is the cache key, and a
+    slider that changes a hash recomputes three hundred megabytes."""
+    space = _space(tmp_path, STYLED)
+    before = space.snapshot()["cards"][0]["source"]
+    space.apply("card.setLayerStyle", {"id": "scan", "at": 0, "opacity": 0.5})
+    assert space.snapshot()["cards"][0]["source"] == before
+
+
+def test_a_negative_layer_is_refused_rather_than_wrapping(tmp_path):
+    space = _space(tmp_path, STYLED)
+    assert space.apply("card.setLayerStyle", {"id": "scan", "at": -1, "opacity": 0.5}) is False
+
+
+def test_the_browser_agrees_with_the_server_about_an_unstyled_layer():
+    """Two answers to "what colour is layer two" is a card that repaints itself
+    when somebody touches a different layer."""
+    from pathlib import Path
+
+    from voxlogica.ui import document as document_module
+
+    app = (
+        Path(__file__).resolve().parents[2] / "implementation/ui/src/App.svelte"
+    ).read_text(encoding="utf-8")
+    assert 'style.colormap ?? (at === 0 ? "gray" : "warm")' in app
+    assert document_module.default_style(0)["colormap"] == "gray"
+    assert document_module.default_style(1)["colormap"] == "warm"

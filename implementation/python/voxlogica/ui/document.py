@@ -141,6 +141,18 @@ def styles(value: str) -> list[dict[str, Any]]:
     return out
 
 
+def default_style(at: int) -> dict[str, Any]:
+    """How a layer nobody has styled looks, by position.
+
+    Position zero is the one underneath and a scan is grey; anything laid over
+    it wants to be told apart from it. The browser falls back to the same rule
+    for a position the file says nothing about, and a test holds the two
+    together -- two answers to "what colour is layer two" is a card that repaints
+    itself when somebody touches a different layer.
+    """
+    return {"colormap": "gray" if at == 0 else "warm", "opacity": 1.0, "on": True}
+
+
 def style_text(layers: list[dict[str, Any]]) -> str:
     """The other direction, for whoever moves a slider."""
     written = []
@@ -925,6 +937,31 @@ class Document:
         if segment is None:
             return False
         segment.directive.set(key, value)
+        self.dirty = True
+        return True
+
+    def set_layer_style(self, card_id: str, at: int, **changes: Any) -> bool:
+        """One layer's appearance, by position.
+
+        Appearance only: this writes a comment, so nothing recomputes and moving
+        a slider costs nothing. The list is padded up to the card's own depth
+        before the change lands -- writing entry two into an empty list would
+        make it entry *zero* and repaint the scan underneath.
+        """
+        if at < 0:
+            return False
+        segment = self._writable(card_id)
+        if segment is None:
+            return False
+        card = next((found for found in self.cards if found["id"] == card_id), None)
+        depth = max(len(card.get("parts") or ()) if card else 0, at + 1)
+        current = styles(segment.directive.attrs.get("style", ""))
+        while len(current) < depth:
+            current.append(default_style(len(current)))
+        for key in ("colormap", "opacity", "on"):
+            if changes.get(key) is not None:
+                current[at][key] = changes[key]
+        segment.directive.set("style", style_text(current))
         self.dirty = True
         return True
 

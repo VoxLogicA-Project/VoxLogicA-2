@@ -187,6 +187,22 @@ def _set_kind(workspace, params):
     return workspace.document.set_attr(params["id"], "kind", params["kind"])
 
 
+def _set_layer_style(workspace, params):
+    """How one layer of a stack looks. Never what it is.
+
+    A slider moves at sixty frames a second and this must stay free, which is
+    exactly why the style is a directive and not part of the expression: the
+    expression is the cache key, and a hash that changes recomputes a volume.
+    """
+    return workspace.document.set_layer_style(
+        params["id"],
+        int(params["at"]),
+        colormap=params.get("colormap"),
+        opacity=params.get("opacity"),
+        on=params.get("on"),
+    )
+
+
 def _set_view_mode(workspace, params):
     return workspace.document.set_attr(params["id"], "view", params["view"])
 
@@ -689,6 +705,12 @@ ACTIONS: dict[str, Action] = {
                 "Switch what a card is: code, result or note.", _set_kind),
         _action("card.setViewMode", {"id": "string", "view": "string"}, ("id", "view"),
                 "Switch how a result card renders: its state or its content.", _set_view_mode),
+        _action("card.setLayerStyle",
+                {"id": "string", "at": "int", "colormap": "string", "opacity": "number",
+                 "on": "bool"},
+                ("id", "at"),
+                "How one layer of a stack looks: colormap, opacity, on or off. "
+                "Appearance only -- nothing recomputes.", _set_layer_style),
         _action("card.saveThis", {"id": "string", "label": "string"}, ("id",),
                 "Write a `save` for what this card is about into the program, "
                 "as its own card.", _save_this),

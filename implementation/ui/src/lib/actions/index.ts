@@ -49,6 +49,14 @@ export const card = {
     invoke("card.setFocus", focus ? { id, focus } : { id }),
   setKind: (id: string, kind: string) => invoke("card.setKind", { id, kind }),
   setViewMode: (id: string, view: string) => invoke("card.setViewMode", { id, view }),
+  /** How one layer of a stack looks, by position. A comment, not the program:
+   * the expression is the cache key, so appearance has to stay outside it or a
+   * slider would recompute a volume. */
+  setLayerStyle: (
+    id: string,
+    at: number,
+    look: { colormap?: string; opacity?: number; on?: boolean },
+  ) => invoke("card.setLayerStyle", { id, at, ...look }),
   /** Declare what this card is about as an output of the program: the
    * directive is written into the text, where a diff and a headless run can
    * both see it. A button that wrote a file would be an effect with no record. */
