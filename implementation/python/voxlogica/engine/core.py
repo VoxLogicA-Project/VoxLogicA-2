@@ -999,15 +999,28 @@ class ComputationEngine:
                 # once and then never again in this run, so writing it can only
                 # serve a LATER run. On a parameter sweep that is nearly every
                 # intermediate mask -- each is consumed by the single scalar that
-                # scores it -- and at 4 MB apiece the writes, not the arithmetic,
-                # were what bounded the run.
+                # scores it -- and at 4 MB apiece those writes ran a 369-patient
+                # sweep 1.9 TB past the free space on its disk.
                 #
-                # The cut is at one consumer rather than at `critical` (fan-out
-                # >= 8) on purpose. A value shared by two to seven consumers is
-                # still needed after its first read, and the store is the spill
-                # space that lets RAM drop it in between; dropping those writes
-                # would trade disk for recomputation instead of saving anything.
-                worth_it = self.graph.consumers.get(nid, 0) > 1
+                # AND IT MUST YIELD TO THE MEMORY BOUND, which the first version
+                # of this did not, and which wedged a run solid: a value with one
+                # PENDING consumer is not dead, it is live, and declining to
+                # write it leaves it with no disk copy to be reloaded from. RAM
+                # may only drop a value once such a copy exists, so past the
+                # budget the engine had 8.5 GB it could neither use nor release,
+                # parked every worker, and sat at 94% idle with the node count
+                # frozen.
+                #
+                # Hence the headroom gate. Below half the soft budget, skipping
+                # is free: whatever it makes unspillable, the other half of the
+                # budget is still spillable and reclaim keeps working. At or
+                # above it, values are written again, so the spill space grows
+                # back exactly when the engine starts to need it. The undurable
+                # set this can create is therefore bounded by half the budget
+                # instead of by nothing at all -- self-regulating, rather than a
+                # number someone has to guess right.
+                if self.table.accounted_bytes * 2 < self.governor.budget:
+                    worth_it = self.graph.consumers.get(nid, 0) > 1
             will_be_durable = self.table.complete(nid, value, compute_ms,
                                                   critical=critical, persist=worth_it)
             if node.operator in _SEQUENCE_OPERATORS:
