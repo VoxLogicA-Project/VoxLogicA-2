@@ -610,3 +610,44 @@ def test_the_floor_reaches_the_layout_and_not_only_the_paint():
         "reactive, this is a loop for Svelte to catch rather than a question "
         "already answered"
     )
+
+
+def test_a_card_can_be_dragged_onto_another_without_being_selected_first():
+    """Reported as "I dragged the brain over the scan and nothing happened".
+
+    And it could not have: the body was `draggable` only when `cardsText` was
+    ready, `cardsText` is the *selection* as .imgql, and an unselected card has
+    none -- so no drag began at all. Selecting first worked, which is why it
+    looked arbitrary rather than broken: press-and-drag in one motion cannot
+    work that way, because the selection has to make a round trip before the
+    text exists and `dragstart` has already fired by then.
+
+    A DataTransfer may only be written inside `dragstart`, so the text really
+    does have to be ready in advance -- but only the *text*. Dropping a card on
+    another card needs the ids, and those are known on the spot. So the ids go
+    on every drag and the text goes on when it is genuinely this selection's.
+    """
+    from pathlib import Path
+
+    bento = (
+        Path(__file__).resolve().parents[2]
+        / "implementation/ui/src/lib/components/Bento/Bento.svelte"
+    ).read_text(encoding="utf-8")
+
+    assert "ondragout={(event) => dragOut(card, event)}" in bento, (
+        "gated on cardsText, an unselected card is not draggable at all"
+    )
+    out = bento[bento.index("function dragOut(card, event)") :]
+    out = out[: out.index("\n  }")]
+    ids = out.index('setData("text/voxlogica-card-ids"')
+    text = out.index('setData("text/plain"')
+    assert ids < out.index("const ready ="), "the ids are known here and now"
+    assert text > out.index("if (!ready) return;"), (
+        "the program text is the one thing that has to be ready in advance"
+    )
+
+    # And a copy dropped on the sidebar can now arrive without text, so it asks.
+    app = (
+        Path(__file__).resolve().parents[2] / "implementation/ui/src/App.svelte"
+    ).read_text(encoding="utf-8")
+    assert "if (payload.copy && !text && payload.ids.length)" in app

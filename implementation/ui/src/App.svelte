@@ -288,6 +288,14 @@
    */
   async function dropCardsInLibrary(target, payload) {
     let text = payload.text;
+    // A drag can now begin before the selection's text has come back, so a copy
+    // may arrive without one. Asking for it here costs one message and is the
+    // same text a paste would have produced.
+    if (payload.copy && !text && payload.ids.length) {
+      const copied = await board.copyCards(payload.ids);
+      if (!copied.ok || !copied.result) return;
+      text = copied.result;
+    }
     if (!payload.copy && payload.ids.length) {
       const cut = await board.cutCards(payload.ids);
       if (!cut.ok || !cut.result) return;

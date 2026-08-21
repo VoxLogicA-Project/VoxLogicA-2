@@ -504,19 +504,28 @@
    * the drop has to know what to take away if it was a move.
    */
   function dragOut(card, event) {
+    if (!event.dataTransfer) {
+      event.preventDefault();
+      return;
+    }
     const ids = partyFor(card.id);
+    // The ids always, because they are known here and now. This used to refuse
+    // the whole drag until the *text* was ready, and the text takes a round
+    // trip: so a card had to be selected in one gesture and dragged in another,
+    // and pressing and dragging in one motion -- which is what a person does --
+    // silently did nothing. Dropping a card on another card needs only the ids.
+    event.dataTransfer.setData("text/voxlogica-card-ids", ids.join("\n"));
+    event.dataTransfer.effectAllowed = "copyMove";
+    // The program text only when it is genuinely this selection's text. A drag
+    // into an editor or a file carries .imgql, and inventing a second way to
+    // produce it is how the two spellings start to differ.
     const ready =
       cardsText &&
       ids.length === cardsText.ids.length &&
       ids.every((id) => cardsText.ids.includes(id));
-    if (!ready || !event.dataTransfer) {
-      event.preventDefault();
-      return;
-    }
+    if (!ready) return;
     event.dataTransfer.setData("text/plain", cardsText.text);
     event.dataTransfer.setData("text/voxlogica-cards", cardsText.text);
-    event.dataTransfer.setData("text/voxlogica-card-ids", ids.join("\n"));
-    event.dataTransfer.effectAllowed = "copyMove";
   }
 
   function preview(card, rect) {
@@ -1179,7 +1188,7 @@
             onduplicate={onduplicate ? () => onduplicate(card.id, copySpot(card)) : undefined}
             oncopy={oncopycards}
             oncut={oncutcards}
-            ondragout={cardsText ? (event) => dragOut(card, event) : undefined}
+            ondragout={(event) => dragOut(card, event)}
             ondropcards={onmerge ? (ids) => onmerge(card, ids) : undefined}
             onrun={onrun ? () => onrun(card.id) : undefined}
             onlens={onlens ? (lens) => onlens(card.id, lens) : undefined}
