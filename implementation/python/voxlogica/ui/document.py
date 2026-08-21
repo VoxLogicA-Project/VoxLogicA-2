@@ -101,9 +101,14 @@ def _comment(text: str) -> str:
 _ALWAYS_QUOTED = ("title", "labels", "style")
 
 
-#: How one layer looks: a colormap, optionally an opacity, optionally switched
-#: off -- `gray`, `blue@0.35`, `red@0.45!off`.
-_STYLE = re.compile(r"^([A-Za-z_][\w-]*)(?:@([0-9]*\.?[0-9]+))?(!off)?$")
+#: How one layer looks: a colour or a colormap, optionally an opacity,
+#: optionally switched off -- `gray`, `blue@0.35`, `#e5484d@0.45!off`.
+#:
+#: A colour is written as hex and a colormap by name, which is the whole
+#: difference the file needs to record: the viewer turns a colour into a
+#: single-hue colormap because that is the only thing the GPU draws with, and
+#: that is the viewer's business rather than the document's.
+_STYLE = re.compile(r"^(#[0-9A-Fa-f]{6}|[A-Za-z_][\w-]*)(?:@([0-9]*\.?[0-9]+))?(!off)?$")
 
 #: A layer whose style this build could not read. Not dropped: a style list is
 #: positional, so dropping entry two would silently repaint entry three.

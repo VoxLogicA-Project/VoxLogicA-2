@@ -59,6 +59,34 @@
 
   const SLICE = { axial: 0, coronal: 1, sagittal: 2, multi: 3 };
 
+  /** Colours already registered with this instance, by hex.
+   *
+   * NiiVue paints with colormaps and nothing else, so a chosen colour has to
+   * become one: a single hue ramping up from transparent, which is the shape
+   * the package's own single-hue maps use (`red`, `violet`) -- so a colour and a
+   * built-in behave the same way over a scan. Registered once per instance and
+   * remembered, because `addColormap` on every frame would be a table rebuilt
+   * sixty times a second while a slider moves.
+   */
+  let painted = new Set();
+
+  function colormapFor(name) {
+    if (typeof name !== "string" || !name.startsWith("#")) return name;
+    const key = `colour${name.slice(1).toLowerCase()}`;
+    if (!painted.has(key)) {
+      const value = (at) => parseInt(name.slice(at, at + 2), 16);
+      nv.addColormap(key, {
+        R: [0, value(1)],
+        G: [0, value(3)],
+        B: [0, value(5)],
+        A: [0, 255],
+        I: [0, 255],
+      });
+      painted.add(key);
+    }
+    return key;
+  }
+
   /** The identity of a layer, for diffing. The hash *is* the identity -- two
    * layers with one hash are one volume, however they are styled. */
   const keyOf = (layer) => layer.hash ?? layer.url;
@@ -95,6 +123,8 @@
     nv = null;
     loaded = [];
     family = null;
+    // The colormap table belongs to the instance that is going away.
+    painted = new Set();
   }
 
   async function build() {
@@ -160,9 +190,8 @@
       }
       const volume = nv.volumes?.[index];
       if (!volume) return;
-      if (layer.colormap && volume.colormap !== layer.colormap) {
-        nv.setColormap(volume.id, layer.colormap);
-      }
+      const wanted = colormapFor(layer.colormap);
+      if (wanted && volume.colormap !== wanted) nv.setColormap(volume.id, wanted);
       const opacity = layer.visible === false ? 0 : (layer.opacity ?? 1);
       if (volume.opacity !== opacity) nv.setOpacity(index, opacity);
     });

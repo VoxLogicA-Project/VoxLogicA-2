@@ -21,7 +21,7 @@
    * everywhere is a row whose contents are not usable anywhere.
    */
   import { card as cardActions } from "../actions/index.ts";
-  import { RAMPS, swatchOf } from "./colormaps.js";
+  import { COLOURS, GROUPS, RAMPS, isColour, nameOf, swatchOf } from "./colormaps.js";
 
   let {
     card,
@@ -149,7 +149,7 @@
       <button
         class="ramp"
         style:background={swatchOf(layer.colormap)}
-        title={layer.colormap ?? "gray"}
+        title={nameOf(layer.colormap)}
         disabled={!there}
         onclick={() => (picking = picking === at ? null : at)}
       ></button>
@@ -209,18 +209,47 @@
     </div>
 
     {#if picking === at}
-      <div class="palette">
-        {#each RAMPS as ramp (ramp.name)}
-          <button
-            class="chip"
-            class:on={(layer.colormap ?? "gray") === ramp.name}
-            style:background={ramp.css}
-            title={ramp.label}
-            onclick={() => {
-              picking = null;
-              cardActions.setLayerStyle(card.id, at, { colormap: ramp.name });
-            }}
-          ></button>
+      {@const chosen = layer.colormap ?? "gray"}
+      <div class="picker">
+        <!-- Colours first: most overlays are a region rather than a quantity,
+             and a ramp claims a magnitude a mask does not have. -->
+        <p class="heading">Colour</p>
+        <div class="swatches">
+          {#each COLOURS as colour (colour.hex)}
+            <button
+              class="swatch"
+              class:on={isColour(chosen) && chosen.toLowerCase() === colour.hex}
+              style:background={colour.hex}
+              title={colour.name}
+              aria-label={colour.name}
+              onclick={() => {
+                picking = null;
+                cardActions.setLayerStyle(card.id, at, { colormap: colour.hex });
+              }}
+            ></button>
+          {/each}
+        </div>
+
+        <!-- And the colormaps the package actually ships, drawn from its own
+             data, so the chip is the ramp rather than an impression of it. -->
+        {#each GROUPS as group (group)}
+          <p class="heading">{group}</p>
+          <div class="maps">
+            {#each RAMPS.filter((ramp) => ramp.group === group) as ramp (ramp.name)}
+              <button
+                class="map"
+                class:on={chosen === ramp.name}
+                title={ramp.name}
+                onclick={() => {
+                  picking = null;
+                  cardActions.setLayerStyle(card.id, at, { colormap: ramp.name });
+                }}
+              >
+                <span class="bar" style:background={ramp.css}></span>
+                <span class="mapname">{ramp.name}</span>
+              </button>
+            {/each}
+          </div>
         {/each}
       </div>
     {/if}
@@ -382,16 +411,32 @@
     color: var(--color-text-subtle);
   }
 
-  .palette {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-1);
-    padding: var(--space-1) var(--space-1) var(--space-2) var(--space-6);
+  .picker {
+    padding: var(--space-1) var(--space-2) var(--space-2);
   }
 
-  .chip {
-    width: var(--space-6);
-    height: var(--space-3);
+  .heading {
+    margin: var(--space-2) 0 var(--space-1);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-text-subtle);
+  }
+
+  .heading:first-child {
+    margin-top: 0;
+  }
+
+  /* A classic grid: solid colours, square, tight. */
+  .swatches {
+    display: grid;
+    grid-template-columns: repeat(10, 1fr);
+    gap: var(--space-1);
+  }
+
+  .swatch {
+    aspect-ratio: 1;
     padding: 0;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
@@ -399,12 +444,53 @@
     transition: transform var(--motion-fast) var(--easing-standard);
   }
 
-  .chip:hover {
-    transform: scale(1.08);
+  .swatch:hover {
+    transform: scale(1.15);
   }
 
-  .chip.on {
+  .swatch.on {
+    border-color: var(--color-text);
+    box-shadow: 0 0 0 2px var(--color-accent);
+  }
+
+  .maps {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-1);
+  }
+
+  .map {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: none;
+    overflow: hidden;
+    cursor: pointer;
+  }
+
+  .map:hover {
+    border-color: var(--color-text-subtle);
+  }
+
+  .map.on {
     border-color: var(--color-accent);
     box-shadow: 0 0 0 1px var(--color-accent);
+  }
+
+  .bar {
+    height: var(--space-2);
+  }
+
+  .mapname {
+    padding: 0 var(--space-1);
+    font-family: var(--font-mono);
+    font-size: var(--text-3xs, var(--text-2xs));
+    color: var(--color-text-subtle);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

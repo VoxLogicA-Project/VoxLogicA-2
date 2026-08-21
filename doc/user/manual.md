@@ -103,8 +103,9 @@ ordinary arrangement, which is what dragging a card has always meant. ⌥ anywhe
 inside the card does the same thing, and **right-click → “Lay over …”** does it
 without a drag at all.
 
-In the rows underneath: **drag the grip** to reorder, the **ramp** opens a
-palette of colormaps drawn as themselves, the **slider** is opacity, the **eye**
+In the rows underneath: **drag the grip** to reorder, the **swatch** opens a picker —
+a grid of plain colours first, because most overlays are a region rather than a
+quantity, then the colormaps NiiVue ships, each drawn as the ramp it actually is, the **slider** is opacity, the **eye**
 hides a layer, and **⤴** takes it back out as its own card. A layer this case
 does not have says so and has nothing to switch. **Drag a row** up or down to **move** that
 layer in front of or behind the others; **⤴ on a row** takes it back out as a
