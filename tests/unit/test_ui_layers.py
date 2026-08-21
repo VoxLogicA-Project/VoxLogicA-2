@@ -728,3 +728,30 @@ def test_a_colour_somebody_chose_travels_with_its_layer(tmp_path):
     space.apply("card.mergeCard", {"id": "scan", "from": "mask"})
     style = space.snapshot()["cards"][0]["style"]
     assert (style[1]["colormap"], style[1]["opacity"]) == ("red", 0.45)
+
+
+def test_laying_a_card_over_another_has_a_named_route_and_not_only_a_gesture():
+    """Alt-drag is fast once you know it and invisible until then.
+
+    And a modifier is the part of a gesture most likely to be eaten before it
+    arrives -- by a window manager, by a trackpad setting, by the compositor.
+    After three rounds of "it does not work" on a mechanism that demonstrably
+    sends and applies, the useful thing is a route with a name on it: a menu item
+    per card on the page, which cannot quietly not happen.
+
+    Verified in the page: the item appears once per other card, clicking one
+    sends `card.mergeCard`, and the target grows two layer rows -- grey
+    underneath, warm over it -- with one canvas drawing both.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "implementation/ui/src/lib/components/Bento"
+    card = (root / "BentoCard.svelte").read_text(encoding="utf-8")
+    bento = (root / "Bento.svelte").read_text(encoding="utf-8")
+
+    assert 'label: `Lay over “${target.title}”`' in card
+    assert 'hint: "or alt-drag"' in card, "the gesture is worth teaching from the menu"
+    # The board supplies the candidates, because who else is on the page is a
+    # question about the board and not about a card.
+    assert "layTargets={onmerge" in bento
+    assert "onlayover={onmerge" in bento

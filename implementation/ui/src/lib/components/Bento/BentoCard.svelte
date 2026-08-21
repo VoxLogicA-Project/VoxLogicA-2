@@ -63,6 +63,15 @@
     ondropcards,
     /** `(card) -> {w, h} | undefined` — the floor, asked rather than carried. */
     floorOf,
+    /** `[{id, title}]` — the other cards this one could be laid over, and
+     * `(id)` to do it.
+     *
+     * A menu as well as a gesture, and not as a fallback. Alt-drag is fast once
+     * you know it and undiscoverable until then, and a modifier is also the part
+     * of a gesture most likely to be eaten by a window manager. A named item you
+     * can read is the one route that cannot quietly not happen. */
+    layTargets = [],
+    onlayover,
     onselect,
     /** The card was asked to compute what it is about. Absent = no button. */
     onrun,
@@ -103,6 +112,16 @@
           hint: "mod+R",
           onselect: onderive,
         },
+      ...(onlayover && layTargets.length
+        ? [
+            { separator: true },
+            ...layTargets.map((target) => ({
+              label: `Lay over “${target.title}”`,
+              hint: "or alt-drag",
+              onselect: () => onlayover(target.id),
+            })),
+          ]
+        : []),
       onlens && { separator: true },
       ...(onlens
         ? [

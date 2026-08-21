@@ -1173,6 +1173,17 @@
             oncut={oncutcards}
             ondragout={(event) => dragOut(card, event)}
             ondropcards={onmerge ? (ids) => onmerge(card, ids) : undefined}
+            layTargets={onmerge
+              ? occupants
+                  .filter((other) => other.id !== card.id)
+                  .map((other) => ({ id: other.id, title: other.title ?? other.id }))
+              : []}
+            onlayover={onmerge
+              ? (id) => {
+                  const target = byId(id);
+                  if (target) onmerge(target, [card.id]);
+                }
+              : undefined}
             onrun={onrun ? () => onrun(card.id) : undefined}
             onlens={onlens ? (lens) => onlens(card.id, lens) : undefined}
             onsaveThis={onsavethis ? () => onsavethis(card.id) : undefined}
