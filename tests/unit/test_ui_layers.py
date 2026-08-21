@@ -177,3 +177,57 @@ def test_a_stack_of_one_is_still_a_stack():
 
     (output,) = analysis.outputs('print "scan" [flairs[i]]')
     assert output.parts == ("index(flairs,i)",)
+
+
+# ----------------------------------------------- a hash per layer, from the reducer
+
+STACK = """\
+//@board cols=12 rows=8
+//@card id=data kind=code x=0 y=0
+let cases  = for k in [0.0, 1.0, 2.0] do k
+let flairs = for c in cases do c + 1.0
+let masks  = for c in cases do c + 2.0
+let i = 1.0
+//@card id=scan kind=print index=i style="gray@1.00, red@0.45" x=4 y=0
+print "scan" [flairs[i], masks[i]]
+"""
+
+
+def test_a_stack_card_carries_one_expression_per_layer():
+    scan = doc.parse(STACK).cards[1]
+    assert scan["parts"] == ["index(flairs,i)", "index(masks,i)"]
+
+
+def test_each_layer_is_bound_to_its_own_node(tmp_path):
+    """The whole reason a stack can be drawn: every element has a hash.
+
+    Asked of the real reducer in the document's own context, which is the only
+    thing that can answer it -- what `flairs` means here is what makes the hash.
+    """
+    from voxlogica.ui.workspace import Workspace
+
+    path = tmp_path / "doc.imgql"
+    path.write_text(STACK)
+    space = Workspace(path=path)
+    nodes = space.snapshot()["nodes"]
+
+    layers = doc.parse(STACK).cards[1]["parts"]
+    hashes = [nodes.get(layer) for layer in layers]
+    assert all(hashes), f"every layer needs a node, got {hashes}"
+    assert len(set(hashes)) == 2, "two different layers are two different nodes"
+
+
+def test_two_cards_drawing_the_same_layer_agree_on_its_node(tmp_path):
+    """Because a layer is addressed by the expression it is, not by whose it is."""
+    from voxlogica.ui.workspace import Workspace
+
+    path = tmp_path / "doc.imgql"
+    path.write_text(STACK + '//@card id=again kind=print x=8 y=0\nprint "again" flairs[i]\n')
+    space = Workspace(path=path)
+    nodes = space.snapshot()["nodes"]
+    assert nodes["index(flairs,i)"]
+
+
+def test_a_card_with_one_picture_has_no_parts():
+    text = '//@card id=one kind=print x=0 y=0\nprint "one" flairs[i]\n'
+    assert "parts" not in doc.parse(text).cards[0]

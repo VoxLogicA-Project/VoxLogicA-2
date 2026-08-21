@@ -368,6 +368,13 @@ class Document:
 
                 declared = analysis.outputs(card["source"])
                 if declared:
+                    # A stack: one output, several pictures. Each element is a
+                    # node of its own, so the card carries them all and the
+                    # workspace asks the reducer for a hash per element. The
+                    # single `node` below stays what it was -- the whole array --
+                    # which is what Run computes and what the state is about.
+                    if declared[0].parts:
+                        card["parts"] = list(declared[0].parts)
                     card["node"] = declared[0].binding or declared[0].expression
                     if not declared[0].binding:
                         card["expression"] = declared[0].expression

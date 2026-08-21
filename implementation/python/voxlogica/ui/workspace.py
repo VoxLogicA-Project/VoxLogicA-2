@@ -258,12 +258,16 @@ class Workspace:
         # file. Each is cached on the text it compiled.
         if bindings:
             for card in self.document.cards:
-                wanted = card.get("node")
-                if not wanted or wanted in bindings:
-                    continue
-                found = hash_of(source, wanted)
-                if found:
-                    bindings[wanted] = found
+                # The card's own node, and -- when it draws a stack -- one per
+                # layer. A layer is addressed by the expression it is, so the
+                # map the UI already reads is the map it arrives in: no second
+                # channel, and a layer shared by two cards is one entry.
+                for wanted in (card.get("node"), *(card.get("parts") or ())):
+                    if not wanted or wanted in bindings:
+                        continue
+                    found = hash_of(source, wanted)
+                    if found:
+                        bindings[wanted] = found
         if self.results is not None:
             self.results.set_bindings(bindings)
         return bindings
