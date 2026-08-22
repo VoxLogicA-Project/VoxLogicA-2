@@ -202,12 +202,39 @@ then every candidate is requeued and the sweep frees nothing. Meanwhile admissio
 refuses new work because accounted bytes are at budget, and the values that would
 free memory are exactly the ones no exit applies to.
 
-**Observed?** *Suspected, unproven.* In the incident of
-`doc/dev/engine-verification-strategy.md` the event-loop thread ran at 64.6% CPU
-while 24 workers sat at ~1.1%, with 20.0 GB undurable against 2.3 GB durable. But
-`write_queued ≈ 0` means the writer was *not* saturated, which contradicts the
-mechanism above, and no stack sample was obtainable. This is the single most
-important open question about the engine.
+**Observed? Yes, and the mechanism is now measured — but it is not the one
+above.** A second occurrence, on a 31-case batch, was instrumented while live:
+
+| observation | value |
+|---|---|
+| threads in state `R` | **1**, and its tid equals the pid — the asyncio **event loop** |
+| that thread's CPU | utime 76609 → 77563 jiffies in 10 s wall = **95% continuous** |
+| other threads | **71 sleeping**, none in `D` |
+| `_in_flight` | 15 coroutines suspended mid-`await` |
+| ready queue | **2041** units, parked |
+| retired nodes | frozen |
+| static plan size | **782,925 nodes** for 31 cases |
+
+So the engine is not short of memory exits: **the event loop is executing
+synchronous work and never returning to the scheduler**. Workers sleep because
+nothing dispatches to them; the 15 suspended coroutines are never resumed;
+admission never runs, so 2041 ready units stay parked.
+
+This also explains the watchdog's silence *definitively*, and more simply than
+§4-F13 does: `_join_with_watchdog` is a coroutine **on that same loop**. If the
+loop does not yield, the watchdog does not run at all. Zero `[watchdog]` lines in
+five hours was never evidence that completions continued — it was the guard being
+unable to execute.
+
+The plan size is the quantitative hint: at 783k statically-reduced nodes for one
+batch (and 9.3M for the single-process run that wedged first, harder, and
+sooner), **any synchronous O(plan) operation on the loop costs minutes**.
+Candidates on the loop path include subgraph scheduling and priority raising.
+
+**Still unknown: which function.** The failure is not deterministic — the same
+batch, same store, wedged once and completed the second time — and no stack could
+be obtained (§6.7). Naming the function is what turns this from a class into a
+defect.
 
 **Why testing is structurally weak.** A livelock is an infinite execution. Tests
 observe timeouts, and a timeout is indistinguishable from slowness — which is
@@ -544,6 +571,26 @@ rather than written by hand.
 **Fit:** very good here, because the engine's failures are rare and
 load-dependent — exactly the population that testing under-samples and production
 over-samples.
+
+### 6.7 A note on external profilers: they do not work here
+
+Worth recording because it changes the cost of everything else. `py-spy` cannot
+read this interpreter. Tested with py-spy as the **parent** process, so
+`ptrace_scope = 1` is satisfied and no privileges are needed: against a healthy
+31-case batch it produced a 921 KB profile containing **one** frame, a synthetic
+process placeholder, and zero Python frames across all 33 thread profiles. This
+is free-threaded CPython 3.14 and the profiler does not support it.
+
+**Consequence.** There is no external route to a stack trace. Every diagnostic
+must be **in-process**: `faulthandler`, a signal-triggered dump, or invariants
+evaluated by the engine itself. That is an argument for §6.1 and §6.5 over any
+plan that assumes a profiler can be attached when something goes wrong, and it
+raises the priority of the on-demand dump (#42) from convenience to necessity.
+
+A zero-code partial mitigation is in place: `run_iter.sh` exports
+`PYTHONFAULTHANDLER=1`, so `kill -ABRT <pid>` prints every thread's stack before
+aborting. Destructive, but a run that has stopped advancing was going to be
+killed anyway.
 
 ### 6.6 Abstract interpretation
 
