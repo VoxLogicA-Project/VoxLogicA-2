@@ -61,15 +61,29 @@ def set_limit_bytes(limit: int) -> None:
 
 
 def _limit_bytes() -> int:
+    """The pool's byte limit: explicit configuration first, then the engine's.
+
+    PRECEDENCE MATTERS AND WAS THE WRONG WAY ROUND. The engine calls
+    ``set_limit_bytes`` unconditionally at startup (ComputationEngine.__init__),
+    so a value set through the environment was read only when no engine had run
+    -- which is never, on the engine path. VOXLOGICA_BUFFER_POOL_MB was
+    therefore a documented knob that silently did nothing, and a run launched
+    with VOXLOGICA_BUFFER_POOL_MB=0 to work around VoxLogicA-2#50 pooled buffers
+    exactly as before and hit the same crash two and a half hours later.
+
+    An explicit request from whoever launched the run outranks a value the engine
+    derived for itself. The engine's figure remains the default, which is what it
+    is for.
+    """
+    raw = os.environ.get("VOXLOGICA_BUFFER_POOL_MB", "").strip()
+    if raw:
+        try:
+            return max(0, int(float(raw) * 1024 * 1024))
+        except ValueError:
+            pass
     if _LIMIT_BYTES is not None:
         return _LIMIT_BYTES
-    raw = os.environ.get("VOXLOGICA_BUFFER_POOL_MB", "").strip()
-    if not raw:
-        return _DEFAULT_LIMIT_BYTES
-    try:
-        return max(0, int(float(raw) * 1024 * 1024))
-    except ValueError:
-        return _DEFAULT_LIMIT_BYTES
+    return _DEFAULT_LIMIT_BYTES
 
 
 def _per_key_limit(nbytes: int = 0) -> int:
