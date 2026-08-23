@@ -120,8 +120,22 @@ def run_cli(command: list[str], *, cwd: Path, env: dict[str, str], step: str) ->
     logger.info("Completed %s", step)
 
 
+#: nnU-Net selects an architecture preset through its PLANS, not through the
+#: trainer: the ResEnc presets are a different planner at preprocessing time and
+#: a different plans identifier at training time, and they land in a differently
+#: named results directory. Each entry maps the plans identifier a caller asks
+#: for to the planner that produces it; the default needs no planner flag.
+PLANS_PLANNER = {
+    "nnUNetResEncUNetMPlans": "nnUNetPlannerResEncM",
+    "nnUNetResEncUNetLPlans": "nnUNetPlannerResEncL",
+    "nnUNetResEncUNetXLPlans": "nnUNetPlannerResEncXL",
+}
+
+DEFAULT_PLANS = "nnUNetPlans"
+
+
 def trainer_dir(nnunet_results: Path, dataset_folder: str, configuration: str,
-                trainer: str | None = None) -> Path:
+                trainer: str | None = None, plans: str = DEFAULT_PLANS) -> Path:
     """The results directory of THIS trainer, not of whichever one is there.
 
     Resolving by shape instead of by identity was wrong in both directions. Two
@@ -135,7 +149,7 @@ def trainer_dir(nnunet_results: Path, dataset_folder: str, configuration: str,
     dataset_results = nnunet_results / dataset_folder
     if not dataset_results.is_dir():
         raise ValueError(f"nnUNet results folder not found: {dataset_results}")
-    suffix = f"__nnUNetPlans__{configuration}"
+    suffix = f"__{plans or DEFAULT_PLANS}__{configuration}"
     if trainer:
         exact = dataset_results / f"{trainer}{suffix}"
         if exact.is_dir():
@@ -188,6 +202,7 @@ def train_model(
     device: str,
     labels: dict[str, int],
     trainer: str = DEFAULT_TRAINER,
+    plans: str = DEFAULT_PLANS,
 ) -> dict[str, Any]:
     require_nnunet()
     work_root = Path(layout["work_dir"])
@@ -196,6 +211,7 @@ def train_model(
     if device in {"cpu", "none"}:
         env["CUDA_VISIBLE_DEVICES"] = ""
 
+    plans_id = (plans or DEFAULT_PLANS).strip() or DEFAULT_PLANS
     plan_cmd = [
         nnunet_command("nnUNetv2_plan_and_preprocess"),
         "-d",
@@ -204,6 +220,14 @@ def train_model(
         configuration,
         "--verify_dataset_integrity",
     ]
+    # A non-default plans identifier needs its planner named at preprocessing
+    # time, otherwise nnU-Net writes nnUNetPlans and training then fails to find
+    # what it was asked for. An unknown identifier is passed through to the
+    # trainer anyway: the caller may have produced it by other means, and
+    # refusing here would be this module deciding what nnU-Net supports.
+    planner = PLANS_PLANNER.get(plans_id)
+    if planner is not None:
+        plan_cmd.extend(["-pl", planner])
     run_cli(plan_cmd, cwd=work_root, env=env, step="plan")
 
     results_root = Path(layout["nnunet_results"])
@@ -216,7 +240,7 @@ def train_model(
     # program's question with someone else's answer.
     current_trainer: Path | None = None
     try:
-        current_trainer = trainer_dir(results_root, folder, configuration, trainer_class)
+        current_trainer = trainer_dir(results_root, folder, configuration, trainer_class, plans_id)
     except ValueError:
         pass
 
@@ -237,13 +261,15 @@ def train_model(
         ]
         if trainer_class and trainer_class != DEFAULT_TRAINER:
             train_cmd.extend(["-tr", trainer_class])
+        if plans_id != DEFAULT_PLANS:
+            train_cmd.extend(["-p", plans_id])
         if current_trainer is not None and fold_resumable(current_trainer, fold):
             logger.info("Resuming train fold %s from checkpoint_latest", fold)
             train_cmd.append("--c")
         run_cli(train_cmd, cwd=work_root, env=env, step=f"train fold {fold}")
         trained_folds.append(fold)
 
-    resolved_trainer = trainer_dir(results_root, folder, configuration, trainer_class)
+    resolved_trainer = trainer_dir(results_root, folder, configuration, trainer_class, plans_id)
     state = load_state(work_root) or {}
     state.update(
         {
@@ -251,6 +277,7 @@ def train_model(
             "trained_folds": trained_folds,
             "trainer_dir": str(resolved_trainer),
             "trainer": trainer_class,
+            "plans": plans_id,
             "device": device,
         }
     )

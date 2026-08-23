@@ -70,6 +70,12 @@ def train(**kwargs: Any) -> dict[str, Any]:
         dataset_name = _require_str(kwargs, "5", "dataset_name") if "5" in kwargs else "VoxLogicA"
         device = str(_arg(kwargs, "6", "cpu")).lower()
         trainer = _optional_str(kwargs, "7", DEFAULT_TRAINER) or DEFAULT_TRAINER
+        # Argument 8: the plans identifier, which is how nnU-Net selects an
+        # architecture preset -- "nnUNetResEncUNetLPlans" for the residual
+        # encoder presets, the default otherwise. It belongs in the program
+        # rather than in the environment: which network was trained is part of
+        # what an experiment says it did, and the cache key must change with it.
+        plans = _optional_str(kwargs, "8", runtime.DEFAULT_PLANS) or runtime.DEFAULT_PLANS
         labels = DEFAULT_LABELS
 
         if nfolds <= 0:
@@ -95,6 +101,7 @@ def train(**kwargs: Any) -> dict[str, Any]:
             device=device,
             labels=labels,
             trainer=trainer,
+            plans=plans,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("nnUNet training failed: %s", exc)
@@ -157,7 +164,7 @@ def list_primitives() -> dict[str, str]:
 
 def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
     arities = {
-        "train": AritySpec(min_args=2, max_args=8),
+        "train": AritySpec(min_args=2, max_args=9),
         "make_predictor": AritySpec(min_args=1, max_args=3),
         "predict": AritySpec.fixed(2),
         "env_check": AritySpec.variadic(0),
