@@ -80,3 +80,42 @@ Profiling (`--profile wall`) adds ~2-3x overhead. When profiling is needed:
 - Run on small cases (5–10 cases, not 369).
 - Set explicit timeout and fail fast if it exceeds budget.
 - Capture profile output separately (not just stdout tail).
+
+## Communication mistakes to avoid
+
+Collected from corrections received while working on the BraTS experiment. Each
+line is a mistake that was actually made, repeatedly.
+
+**Answer only what was asked.** A question with two clauses gets two clauses. Do
+not append status, context, or the next step unless asked. Extra material is
+noise, and it buries the answer.
+
+**Do not invent terminology.** Words like "target", "blind", "search",
+"agreement", "grid", "box", "branch", "band" were used as if they were
+established names. They were not. Either use a standard English term, or define
+it in the same sentence, every time — a definition given three messages ago does
+not count.
+
+**Never show a number without the number it should be compared to.** A Dice of
+0.87 means nothing on its own. If the headline is 0.9014 over 369 cases and the
+figure being reported is one formula over 30 cases, say so in the same table row.
+This caused "why don't I see 0.9 anywhere" twice.
+
+**Every result table row states: target, inputs, method.** What the Dice is
+measured against; what information was available to produce it, and in
+particular whether the ground truth was among them; and how it was produced. Two
+rows that differ in whether they used the truth must not look comparable.
+
+**Separate measured from inferred, in the wording.** "The reclaim path only
+evicts durable values" and "the grid shares its prefixes, so each point is cheap"
+were both stated as findings and both were wrong — they were guesses that had
+never been run. Say "measured" or say "I think"; do not let a mechanism arrive in
+the register of a fact.
+
+**Short by default.** A status is three lines. A result is a table plus two
+sentences. If the explanation needs more, ask whether it is wanted before writing
+it.
+
+**When corrected, fix the thing — not the framing.** A workaround that makes an
+error disappear is not a fix, and reporting it as one wastes the reader's trust
+along with their time.
