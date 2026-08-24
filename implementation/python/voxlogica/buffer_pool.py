@@ -38,6 +38,9 @@ _STATS = {
     # Invariant violations caught rather than left to corrupt memory.
     "leased_reuse_blocked": 0,
     "unsafe_recycle_blocked": 0,
+    # Pooled buffers taken back by their own holder rather than by a new
+    # allocation -- see BufferState.retain.
+    "resurrections": 0,
 }
 _POOLED_NDARRAY_CLS: Any = None
 
@@ -111,7 +114,8 @@ def _per_key_limit(nbytes: int = 0) -> int:
 class BufferState:
     """One reusable allocation plus the number of outstanding engine leases."""
 
-    __slots__ = ("kind", "key", "buffer_ref", "pooled_buffer", "nbytes", "leases", "pooled")
+    __slots__ = ("kind", "key", "buffer_ref", "pooled_buffer", "nbytes", "leases",
+                 "pooled", "recycled")
 
     def __init__(self, kind: str, key: tuple[Any, ...], buffer: Any, nbytes: int):
         self.kind = kind
@@ -121,14 +125,45 @@ class BufferState:
         self.nbytes = int(nbytes)
         self.leases = 0
         self.pooled = False
+        #: True once this state's buffer has been handed to a DIFFERENT value.
+        #: The state is then a tombstone: whoever still reaches it is holding a
+        #: reference to memory that now belongs to someone else, and must be
+        #: told so rather than allowed to lease it. See _take_locked.
+        self.recycled = False
 
     def current_buffer(self) -> Any | None:
         return self.pooled_buffer if self.pooled_buffer is not None else self.buffer_ref()
 
     def retain(self) -> None:
+        """Take a lease, resurrecting the buffer from the pool if it is there.
+
+        WHY RESURRECTING IS THE FIX AND RAISING WAS NOT. `buffer_states` walks
+        into containers, so one buffer is reachable from several values -- a
+        loop body's element and the sequence assembled from it, for instance --
+        while leases are taken per node. The element can therefore be evicted,
+        drop the last lease and be pooled while a container that still
+        references it is alive. Retaining through that container then found a
+        pooled state and raised, killing runs hours in (VoxLogicA-2#50).
+
+        Raising was diagnosing the wrong half of the problem. A state that is
+        pooled and unleased is held by nobody: under _LOCK it can simply be
+        taken back, and doing so is not merely safe but *protective*, because it
+        removes the buffer from the pool before some later allocation can be
+        handed it while the original holder still points at it. That silent
+        aliasing is the real hazard, and it is what the old guard let through:
+        by the time the buffer has been recycled the state reads pooled=False
+        again, so retain succeeded and two values shared one allocation.
+
+        The dangerous case now raises instead, with an accurate message.
+        """
         with _LOCK:
+            if self.recycled:
+                raise RuntimeError(
+                    f"buffer-pool: this allocation was recycled for another value "
+                    f"and no longer holds what the caller expects "
+                    f"(kind={self.kind} key={self.key}); the reference is stale")
             if self.pooled:
-                raise RuntimeError("cannot retain a buffer while it is pooled")
+                _unpool_locked(self)
             self.leases += 1
 
     def release(self) -> None:
@@ -152,6 +187,23 @@ def _pooled_ndarray_cls():
 
         _POOLED_NDARRAY_CLS = PooledNDArray
     return _POOLED_NDARRAY_CLS
+
+
+def _unpool_locked(state: "BufferState") -> None:
+    """Take a pooled, unleased buffer back out of the pool for its own holder."""
+    global _POOLED_BYTES
+    bucket = _POOLS.get(state.key)
+    if bucket:
+        try:
+            bucket.remove(state)
+        except ValueError:
+            pass
+        if not bucket:
+            _POOLS.pop(state.key, None)
+    state.pooled = False
+    state.pooled_buffer = None
+    _POOLED_BYTES -= state.nbytes
+    _STATS["resurrections"] += 1
 
 
 def _take_locked(key: tuple[Any, ...]) -> tuple[BufferState, Any] | None:
@@ -179,11 +231,31 @@ def _take_locked(key: tuple[Any, ...]) -> tuple[BufferState, Any] | None:
     _POOLED_BYTES -= state.nbytes
     _STATS["reuses"] += 1
     _STATS[f"{state.kind}_reuses"] += 1
-    return state, buffer
+    # The buffer object is reused, so anything still pointing at it from its
+    # PREVIOUS value now points at someone else's data. Give the new owner a
+    # fresh state and leave the old one as a tombstone, so a stale holder that
+    # tries to lease it is told the truth instead of silently sharing the
+    # allocation. Reusing one state object for successive values is what made
+    # that sharing invisible.
+    state.recycled = True
+    fresh = BufferState(state.kind, state.key, buffer, state.nbytes)
+    try:
+        setattr(buffer, _STATE_ATTR, fresh)
+    except AttributeError:
+        # Not all buffer kinds accept attributes; such a buffer keeps the old
+        # state, which is exactly the pre-existing behaviour.
+        state.recycled = False
+        return state, buffer
+    return fresh, buffer
 
 
 def _return_locked(state: BufferState) -> None:
     global _POOLED_BYTES, _PEAK_POOLED_BYTES
+    if state.recycled:
+        # A tombstone: its buffer belongs to another value now, so returning it
+        # would offer the same allocation to the pool twice.
+        state.pooled_buffer = None
+        return
     limit = _limit_bytes()
     bucket = _POOLS[state.key]
     if limit <= 0 or state.nbytes > limit or len(bucket) >= _per_key_limit(state.nbytes) \
