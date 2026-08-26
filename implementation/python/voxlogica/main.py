@@ -87,6 +87,7 @@ import time
 from pathlib import Path
 import json
 import logging
+import socket
 from typing import Any
 from dataclasses import replace
 
@@ -457,6 +458,23 @@ def open_command(args: argparse.Namespace) -> int:
     if how == "browser":
         print("[voxlogica] no application window available; opened in your browser",
               file=sys.stderr)
+    elif how == "none":
+        # Nothing on this machine can hold a window -- no display, typically an
+        # ssh session on a compute server. The workspace is running regardless,
+        # and the only thing missing is a way to reach it, so say what that is.
+        # Waiting the usual half-minute for a window that was never opened would
+        # shut the server down just as the person finished reading how to
+        # connect to it, which is why the patience is dropped here: this one
+        # ends on Ctrl-C, the way any other server does.
+        port = session.server.port
+        print("[voxlogica] no display here, so no window to open.", file=sys.stderr)
+        print(f"[voxlogica] open {session.url} yourself. Over ssh, forward the port first:",
+              file=sys.stderr)
+        print(f"[voxlogica]     ssh -L {port}:127.0.0.1:{port} {socket.gethostname()}",
+              file=sys.stderr)
+        print("[voxlogica] serving until interrupted (Ctrl-C).", file=sys.stderr)
+        session.serve_until_closed(patience=float("inf"))
+        return 0
     session.serve_until_closed()
     return 0
 
