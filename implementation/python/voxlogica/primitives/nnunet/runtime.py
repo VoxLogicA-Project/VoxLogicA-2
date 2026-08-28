@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -191,6 +192,174 @@ def fold_resumable(trainer_path: Path, fold: int) -> bool:
             and not (fold_dir / "checkpoint_final.pth").is_file())
 
 
+# ---------------------------------------------------------------------------
+# Postprocessing: nnU-Net's own last documented step, which this module skipped
+# ---------------------------------------------------------------------------
+# The documented workflow is train -> nnUNetv2_find_best_configuration ->
+# nnUNetv2_apply_postprocessing -> predict. The middle step asks, on the fold's
+# own validation predictions, whether keeping only the largest connected
+# component scores better than the raw output, and inference then applies what
+# it decided. Skipping it is not a neutral simplification: it leaves the
+# spurious-component failures that step exists to remove.
+#
+# The decision is a property of a trained model, so it is computed once, cached
+# on disk where nnU-Net itself caches it (postprocessing.pkl next to the
+# validation predictions), and carried on the model handle.
+
+_PP_LOCK = threading.Lock()
+_PP_RESOLVED: dict[str, dict[str, Any] | None] = {}
+
+
+def postprocessing_pkl(trainer_path: Path, fold: int) -> Path:
+    """Where nnU-Net itself leaves the decision it made for one fold."""
+    return trainer_path / f"fold_{fold}" / "validation" / "postprocessing.pkl"
+
+
+def _decision_from_pickle(path: Path) -> dict[str, Any] | None:
+    """Read the decision nnU-Net left on disk, as values a model can carry.
+
+    Function objects cannot travel on a model handle -- the handle is a value
+    the engine content-addresses and persists -- so the operations are named
+    here and looked back up when they are applied.
+    """
+    if not path.is_file():
+        return None
+    try:
+        from batchgenerators.utilities.file_and_folder_operations import load_pickle  # type: ignore
+
+        pp_fns, pp_kwargs = load_pickle(str(path))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("%s is unreadable (%s)", path.name, exc)
+        return None
+    return {
+        "operations": [getattr(fn, "__name__", str(fn)) for fn in pp_fns],
+        "kwargs": [dict(kw) for kw in pp_kwargs],
+    }
+
+
+def determine_postprocessing_for(trainer_path: Path, labels_dir: Path,
+                                 folds: list[int], work_root: Path) -> dict[str, Any] | None:
+    """Ask nnU-Net whether postprocessing helps this model, the way it asks itself.
+
+    Runs ``nnUNetv2_determine_postprocessing`` as a child process, like every
+    other nnU-Net step here. That is not only for consistency: the function
+    behind that command builds a multiprocessing pool, and under Python 3.14 the
+    default start method re-imports the parent's ``__main__`` -- which, in a
+    VoxLogicA run, is the VoxLogicA run. Measured: called in-process it failed
+    with the freeze_support bootstrap error and re-entered the caller several
+    times before one attempt got through. A child process cannot do that.
+
+    Returns the decision -- possibly ``{"operations": []}``, which is a real
+    answer meaning the raw output was already best -- or ``None`` when the
+    question cannot be put (no validation predictions, no reference labels, the
+    command failing). A failure here must never fail a training: postprocessing
+    is an improvement, not a correctness requirement.
+    """
+    fold = folds[0] if folds else 0
+    cached = postprocessing_pkl(trainer_path, fold)
+    decision = _decision_from_pickle(cached)
+    if decision is not None:
+        return decision
+
+    validation = cached.parent
+    plans = trainer_path / "plans.json"
+    dataset_json = trainer_path / "dataset.json"
+    if not (validation.is_dir() and labels_dir.is_dir()
+            and plans.is_file() and dataset_json.is_file()):
+        logger.info("postprocessing: nothing to determine from (%s)", validation)
+        return None
+
+    try:
+        _set_nnunet_env(Path(work_root))
+        run_cli(
+            [
+                nnunet_command("nnUNetv2_determine_postprocessing"),
+                "-i", str(validation),
+                "-ref", str(labels_dir),
+                "-plans_json", str(plans),
+                "-dataset_json", str(dataset_json),
+                "-np", "4",
+                "--remove_postprocessed",
+            ],
+            cwd=Path(work_root), env=nnunet_env(), step="postprocessing",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("postprocessing could not be determined (%s); predicting raw", exc)
+        return None
+
+    decision = _decision_from_pickle(cached)
+    if decision is None:
+        logger.warning("postprocessing left no decision in %s; predicting raw", cached)
+        return None
+    logger.info("postprocessing determined: %s",
+                decision["operations"] or "none (raw output is best)")
+    return decision
+
+
+def model_labels_dir(model: dict[str, Any]) -> Path:
+    """The reference labels a model was trained against, from the model alone."""
+    return (Path(model["work_root"]) / "nnUNet_raw"
+            / str(model["dataset_folder"]) / "labelsTr")
+
+
+def resolve_postprocessing(model: dict[str, Any]) -> dict[str, Any] | None:
+    """The decision for a model, determining it if the model predates this step.
+
+    A model trained before postprocessing existed here carries no ``"postprocessing"``
+    key at all, and it should not have to be retrained to gain one: everything
+    the decision needs is the trained fold's own validation output, which is
+    still on disk. A key that is present and ``None`` means the question was
+    already put and could not be answered -- do not ask again on every case.
+
+    Answers None for anything it cannot work out, including a model handle that
+    does not carry the fields this needs. Postprocessing is an improvement, not
+    a correctness requirement: a prediction that could have been postprocessed
+    and was not is a slightly worse prediction, while a prediction that fails is
+    no prediction at all.
+    """
+    if "postprocessing" in model:
+        return model.get("postprocessing")
+    cache_key = str(model.get("trainer_dir", ""))
+    with _PP_LOCK:
+        if cache_key in _PP_RESOLVED:
+            return _PP_RESOLVED[cache_key]
+        decision = None
+        try:
+            folds = [int(f) for f in model.get("trained_folds", (0,))] or [0]
+            decision = determine_postprocessing_for(
+                Path(model["trainer_dir"]), model_labels_dir(model), folds,
+                Path(model["work_root"]))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("postprocessing not resolved for this model (%s); predicting raw", exc)
+        _PP_RESOLVED[cache_key] = decision
+        return decision
+
+
+def apply_postprocessing_to_array(segmentation: Any, decision: dict[str, Any] | None) -> Any:
+    """Apply what determine_postprocessing_for decided, to one segmentation."""
+    if not decision or not decision.get("operations"):
+        return segmentation
+    try:
+        from nnunetv2.postprocessing.remove_connected_components import (  # type: ignore
+            remove_all_but_largest_component_from_segmentation,
+        )
+    except Exception:  # noqa: BLE001
+        return segmentation
+    known = {"remove_all_but_largest_component_from_segmentation":
+             remove_all_but_largest_component_from_segmentation}
+    out = segmentation
+    for name, kwargs in zip(decision["operations"], decision.get("kwargs", [])):
+        fn = known.get(name)
+        if fn is None:
+            # Named by a future nnU-Net and not implemented here. Say so: a
+            # silently unapplied step is a result that quietly is not the one
+            # the model was measured with.
+            logger.warning("postprocessing step %r is not applied: unknown here", name)
+            continue
+        out = fn(out, **kwargs)
+    return out
+
+
 def train_model(
     *,
     layout: dict[str, Any],
@@ -203,6 +372,7 @@ def train_model(
     labels: dict[str, int],
     trainer: str = DEFAULT_TRAINER,
     plans: str = DEFAULT_PLANS,
+    postprocess: bool = True,
 ) -> dict[str, Any]:
     require_nnunet()
     work_root = Path(layout["work_dir"])
@@ -270,6 +440,12 @@ def train_model(
         trained_folds.append(fold)
 
     resolved_trainer = trainer_dir(results_root, folder, configuration, trainer_class, plans_id)
+    postprocessing = (
+        determine_postprocessing_for(
+            resolved_trainer, Path(layout["dataset_dir"]) / "labelsTr",
+            trained_folds, work_root)
+        if postprocess else None
+    )
     state = load_state(work_root) or {}
     state.update(
         {
@@ -278,6 +454,7 @@ def train_model(
             "trainer_dir": str(resolved_trainer),
             "trainer": trainer_class,
             "plans": plans_id,
+            "postprocessing": postprocessing,
             "device": device,
         }
     )
@@ -294,6 +471,7 @@ def train_model(
         labels=labels,
         device=device,
         trainer=trainer_class,
+        postprocessing=postprocessing,
     )
 
 
@@ -406,6 +584,12 @@ def predict_image(predictor_handle: dict[str, Any], volumes: Any) -> Any:
     with predictor_lock(predictor_id):
         predictor = _predictor_engine(predictor_handle)
         segmentation = predictor.predict_single_npy_array(array, properties, None, None, False)
+    # The documented workflow applies the postprocessing that
+    # nnUNetv2_find_best_configuration selected; skipping it was this module
+    # departing from nnU-Net's own protocol, silently and in the direction of a
+    # worse result. It runs before the array becomes an image, because
+    # nnU-Net's own function works on labels.
+    segmentation = apply_postprocessing_to_array(segmentation, resolve_postprocessing(model))
     return segmentation_to_sitk(segmentation, properties)
 
 

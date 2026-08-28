@@ -41,6 +41,21 @@ def _require_int(kwargs: dict[str, Any], key: str, name: str, default: int) -> i
         raise ValueError(f"{name} must be int-like: {_arg(kwargs, key, default)!r}") from exc
 
 
+def _optional_bool(kwargs: dict[str, Any], key: str, default: bool) -> bool:
+    """A program's yes/no, written as a number or as a word."""
+    if key not in kwargs or _arg(kwargs, key) is None:
+        return default
+    value = _arg(kwargs, key)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "yes", "on", "1", "1.0"}:
+        return True
+    if text in {"false", "no", "off", "0", "0.0"}:
+        return False
+    raise ValueError(f"expected true or false, got {value!r}")
+
+
 def _optional_str(kwargs: dict[str, Any], key: str, default: str = "") -> str:
     if key not in kwargs or _arg(kwargs, key) is None:
         return default
@@ -76,6 +91,12 @@ def train(**kwargs: Any) -> dict[str, Any]:
         # rather than in the environment: which network was trained is part of
         # what an experiment says it did, and the cache key must change with it.
         plans = _optional_str(kwargs, "8", runtime.DEFAULT_PLANS) or runtime.DEFAULT_PLANS
+        # Argument 9: whether to run nnU-Net's own postprocessing step, which
+        # the documented workflow runs between training and inference and which
+        # is therefore on by default. It is a parameter because it is a claim
+        # about the result -- a program that wants the raw network output must
+        # be able to say so, and to say so where the reader can see it.
+        postprocess = _optional_bool(kwargs, "9", True)
         labels = DEFAULT_LABELS
 
         if nfolds <= 0:
@@ -102,6 +123,7 @@ def train(**kwargs: Any) -> dict[str, Any]:
             labels=labels,
             trainer=trainer,
             plans=plans,
+            postprocess=postprocess,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("nnUNet training failed: %s", exc)
@@ -164,7 +186,7 @@ def list_primitives() -> dict[str, str]:
 
 def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
     arities = {
-        "train": AritySpec(min_args=2, max_args=9),
+        "train": AritySpec(min_args=2, max_args=10),
         "make_predictor": AritySpec(min_args=1, max_args=3),
         "predict": AritySpec.fixed(2),
         "env_check": AritySpec.variadic(0),

@@ -30,7 +30,7 @@ Trains an nnU-Net model from a sequence of training cases.
 **Signature:**
 
 ```voxlogica
-nnunet.train(training_cases, work_root, modalities, configuration, nfolds, dataset_name, device, trainer)
+nnunet.train(training_cases, work_root, modalities, configuration, nfolds, dataset_name, device, trainer, plans, postprocess)
 ```
 
 **Arguments:**
@@ -45,8 +45,26 @@ nnunet.train(training_cases, work_root, modalities, configuration, nfolds, datas
 | 5 | `dataset_name` | no | Human-readable dataset name. Default: `"VoxLogicA"` |
 | 6 | `device` | no | `"cpu"` or `"cuda"`. Default: `"cpu"` |
 | 7 | `trainer` | no | nnU-Net trainer class. Default: `"nnUNetTrainer"` |
+| 8 | `plans` | no | Plans identifier, i.e. the architecture preset. Default: `"nnUNetPlans"`; the residual-encoder presets are `"nnUNetResEncUNetMPlans"`, `"…LPlans"`, `"…XLPlans"` |
+| 9 | `postprocess` | no | Run nnU-Net's own postprocessing step. Default: `"true"` |
 
 Use `"nnUNetTrainer_10epochs"` for short CPU demos and tests.
+
+**Defaults follow nnU-Net's own recommendations.** `nfolds` is 5 because the
+documented workflow trains five folds and predicts with the ensemble, and
+postprocessing is on because the documented workflow runs
+`nnUNetv2_find_best_configuration` between training and inference. Each is a
+program argument, so a program that wants something else says so where the
+reader can see it -- one fold, or the raw network output.
+
+**Postprocessing.** After training, nnU-Net measures its own validation
+predictions with and without keeping only the largest connected component, and
+keeps the variant that scored better. `train` asks that question once, caches
+the answer where nnU-Net caches it (`postprocessing.pkl` beside the validation
+predictions), carries it on the model handle, and `predict` applies it. Often
+the answer is "raw output is best", which is a real answer and costs nothing.
+A model trained before this existed gains the answer the first time it is used
+to predict, without being retrained.
 
 **Training case shape:**
 

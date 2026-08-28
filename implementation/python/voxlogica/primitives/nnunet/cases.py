@@ -146,6 +146,7 @@ def build_model(
     labels: dict[str, int] | None = None,
     device: str = "cpu",
     trainer: str = DEFAULT_TRAINER,
+    postprocessing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "vox_kind": MODEL_KIND,
@@ -155,6 +156,10 @@ def build_model(
         "dataset_folder": dataset_folder,
         "configuration": configuration,
         "modalities": list(modalities),
+        # What nnU-Net's own determine_postprocessing decided for THIS model, or
+        # None if it could not be run. Carried on the model rather than looked up
+        # at prediction time so that a model handed around is self-describing.
+        "postprocessing": postprocessing,
         "file_ending": FILE_ENDING,
         "trained_folds": list(trained_folds),
         "trainer_dir": trainer_dir,
