@@ -74,12 +74,38 @@ This applies to source files, `.imgql` files, and any other tracked content
 — not just Python. Untracked/generated artifacts (caches, datasets, `.db`
 files) are not code and are not covered by this rule.
 
-## Profiling Commands
+## Where the time went
 
-Profiling (`--profile wall`) adds ~2-3x overhead. When profiling is needed:
-- Run on small cases (5–10 cases, not 369).
-- Set explicit timeout and fail fast if it exceeds budget.
-- Capture profile output separately (not just stdout tail).
+**Do not answer a performance question with `--profile`.** It is deprecated and
+the CLI says so on every use. cProfile has one global call stack and no
+representation for this engine's concurrent workers, so its numbers can be
+arbitrarily wrong -- measured: 1389 s of cumulative time reported inside a 52 s
+run. A profile that confident and that wrong is worse than no profile.
+
+Use instead:
+
+```bash
+/usr/bin/time -v ./voxlogica run PROGRAM.imgql        # %CPU is the real signal
+```
+
+together with the saturation and cpu-per-wall figures the run prints itself.
+Those come from the engine and do count every worker.
+
+`--profile` survives for one narrow job: single-threaded debugging of the
+reducer. If you use it for that, it must come AFTER the filename --
+`--profile` takes an optional PATH, so written before it, argparse consumes the
+filename as its value:
+
+```bash
+./voxlogica run PROGRAM.imgql --profile                 # to stderr
+./voxlogica run PROGRAM.imgql --profile=/tmp/out.pstats # then: snakeviz /tmp/out.pstats
+```
+
+It has no effect with `--no-engine`, and it costs 2-3x. Run it on 5-10 cases,
+never on 369, and give it a timeout.
+
+For a real bottleneck this once found -- `percentiles`' sort dominating a BraTS
+case, not the scheduler -- see `HANDOVER.md` sections 0b and 0c.
 
 ## Communication mistakes to avoid
 
