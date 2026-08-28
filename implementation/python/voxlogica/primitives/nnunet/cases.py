@@ -147,6 +147,7 @@ def build_model(
     device: str = "cpu",
     trainer: str = DEFAULT_TRAINER,
     postprocessing: dict[str, Any] | None = None,
+    pretrained: str = "",
 ) -> dict[str, Any]:
     return {
         "vox_kind": MODEL_KIND,
@@ -160,6 +161,10 @@ def build_model(
         # None if it could not be run. Carried on the model rather than looked up
         # at prediction time so that a model handed around is self-describing.
         "postprocessing": postprocessing,
+        # The checkpoint this model was started from, "" for scratch. Part of
+        # what the model IS, not of how it was run: two models with the same
+        # data and different starting weights are two different models.
+        "pretrained": pretrained,
         "file_ending": FILE_ENDING,
         "trained_folds": list(trained_folds),
         "trainer_dir": trainer_dir,

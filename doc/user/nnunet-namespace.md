@@ -30,7 +30,7 @@ Trains an nnU-Net model from a sequence of training cases.
 **Signature:**
 
 ```voxlogica
-nnunet.train(training_cases, work_root, modalities, configuration, nfolds, dataset_name, device, trainer, plans, postprocess)
+nnunet.train(training_cases, work_root, modalities, configuration, nfolds, dataset_name, device, trainer, plans, postprocess, pretrained)
 ```
 
 **Arguments:**
@@ -47,6 +47,7 @@ nnunet.train(training_cases, work_root, modalities, configuration, nfolds, datas
 | 7 | `trainer` | no | nnU-Net trainer class. Default: `"nnUNetTrainer"` |
 | 8 | `plans` | no | Plans identifier, i.e. the architecture preset. Default: `"nnUNetPlans"`; the residual-encoder presets are `"nnUNetResEncUNetMPlans"`, `"…LPlans"`, `"…XLPlans"` |
 | 9 | `postprocess` | no | Run nnU-Net's own postprocessing step. Default: `"true"` |
+| 10 | `pretrained` | no | Path to a checkpoint to start from instead of random init. Default: none |
 
 Use `"nnUNetTrainer_10epochs"` for short CPU demos and tests.
 
@@ -56,6 +57,13 @@ postprocessing is on because the documented workflow runs
 `nnUNetv2_find_best_configuration` between training and inference. Each is a
 program argument, so a program that wants something else says so where the
 reader can see it -- one fold, or the raw network output.
+
+**Starting weights.** `pretrained` maps to `nnUNetv2_train -pretrained_weights`.
+The checkpoint must come from a model with the same `plans` and `configuration`,
+or nnU-Net refuses to load it. The path is resolved to an absolute one and
+checked before any preprocessing runs. It is an argument, not a setting: two
+models trained on the same data from different starting weights are two
+different models, and the cache key has to say so.
 
 **Postprocessing.** After training, nnU-Net measures its own validation
 predictions with and without keeping only the largest connected component, and

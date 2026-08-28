@@ -97,6 +97,10 @@ def train(**kwargs: Any) -> dict[str, Any]:
         # about the result -- a program that wants the raw network output must
         # be able to say so, and to say so where the reader can see it.
         postprocess = _optional_bool(kwargs, "9", True)
+        # Argument 10: a checkpoint to start from instead of random init. This
+        # is how a program says "pretrained on the oracle" -- the weights are an
+        # input to the experiment, so they belong in the expression that keys it.
+        pretrained = _optional_str(kwargs, "10", "")
         labels = DEFAULT_LABELS
 
         if nfolds <= 0:
@@ -124,6 +128,7 @@ def train(**kwargs: Any) -> dict[str, Any]:
             trainer=trainer,
             plans=plans,
             postprocess=postprocess,
+            pretrained=pretrained,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("nnUNet training failed: %s", exc)
@@ -186,7 +191,7 @@ def list_primitives() -> dict[str, str]:
 
 def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
     arities = {
-        "train": AritySpec(min_args=2, max_args=10),
+        "train": AritySpec(min_args=2, max_args=11),
         "make_predictor": AritySpec(min_args=1, max_args=3),
         "predict": AritySpec.fixed(2),
         "env_check": AritySpec.variadic(0),

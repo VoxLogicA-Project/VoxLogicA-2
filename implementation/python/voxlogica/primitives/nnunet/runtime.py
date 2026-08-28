@@ -380,6 +380,7 @@ def train_model(
     trainer: str = DEFAULT_TRAINER,
     plans: str = DEFAULT_PLANS,
     postprocess: bool = True,
+    pretrained: str = "",
 ) -> dict[str, Any]:
     require_nnunet()
     work_root = Path(layout["work_dir"])
@@ -423,6 +424,17 @@ def train_model(
 
     train_device = "cpu" if device in {"cpu", "none"} else "cuda"
 
+    # Absolute, and checked here rather than eight minutes into a training: the
+    # command runs with cwd=work_root, so a relative path would be read from
+    # somewhere else, and nnU-Net's own failure for a missing file arrives after
+    # preprocessing has already been paid for.
+    pretrained_path = ""
+    if pretrained:
+        candidate = Path(pretrained).expanduser().resolve()
+        if not candidate.is_file():
+            raise ValueError(f"pretrained weights not found: {candidate}")
+        pretrained_path = str(candidate)
+
     for fold in range(nfolds):
         if current_trainer is not None and fold_complete(current_trainer, fold):
             logger.info("Skipping train fold %s (checkpoint already exists)", fold)
@@ -440,6 +452,11 @@ def train_model(
             train_cmd.extend(["-tr", trainer_class])
         if plans_id != DEFAULT_PLANS:
             train_cmd.extend(["-p", plans_id])
+        if pretrained_path:
+            # nnU-Net applies this only when it actually trains, and only if the
+            # architecture matches: the weights must come from a model built by
+            # the same plans and configuration, or it refuses to load them.
+            train_cmd.extend(["-pretrained_weights", pretrained_path])
         if current_trainer is not None and fold_resumable(current_trainer, fold):
             logger.info("Resuming train fold %s from checkpoint_latest", fold)
             train_cmd.append("--c")
@@ -461,6 +478,7 @@ def train_model(
             "trainer_dir": str(resolved_trainer),
             "trainer": trainer_class,
             "plans": plans_id,
+            "pretrained": pretrained_path,
             "postprocessing": postprocessing,
             "device": device,
         }
@@ -479,6 +497,7 @@ def train_model(
         device=device,
         trainer=trainer_class,
         postprocessing=postprocessing,
+        pretrained=pretrained_path,
     )
 
 
