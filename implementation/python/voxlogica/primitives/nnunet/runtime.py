@@ -134,6 +134,13 @@ PLANS_PLANNER = {
 
 DEFAULT_PLANS = "nnUNetPlans"
 
+#: nnU-Net's own inference defaults, which are what nnUNetv2_predict uses when
+#: told nothing: half-patch sliding window, test-time augmentation by mirroring
+#: on, and the final rather than the best checkpoint. Named here so a program can
+#: depart from them deliberately and so the departure is visible in the handle.
+DEFAULT_STEP_SIZE = 0.5
+DEFAULT_CHECKPOINT = "checkpoint_final.pth"
+
 
 def trainer_dir(nnunet_results: Path, dataset_folder: str, configuration: str,
                 trainer: str | None = None, plans: str = DEFAULT_PLANS) -> Path:
@@ -513,7 +520,10 @@ def _torch_device(device: str) -> Any:
 
 
 def _load_predictor_engine(model: dict[str, Any], resolved_device: str,
-                           fold_list: tuple[int, ...]) -> Any:
+                           fold_list: tuple[int, ...], *,
+                           step_size: float = DEFAULT_STEP_SIZE,
+                           tta: bool = True,
+                           checkpoint: str = DEFAULT_CHECKPOINT) -> Any:
     """Build the nnU-Net predictor object itself (no registry, no handle)."""
     require_nnunet()
     from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor  # type: ignore
@@ -525,9 +535,9 @@ def _load_predictor_engine(model: dict[str, Any], resolved_device: str,
     perform_on_device = torch_device.type == "cuda"
 
     predictor = nnUNetPredictor(
-        tile_step_size=0.5,
+        tile_step_size=step_size,
         use_gaussian=True,
-        use_mirroring=True,
+        use_mirroring=tta,
         perform_everything_on_device=perform_on_device,
         device=torch_device,
         verbose=False,
@@ -537,7 +547,7 @@ def _load_predictor_engine(model: dict[str, Any], resolved_device: str,
     predictor.initialize_from_trained_model_folder(
         str(model["trainer_dir"]),
         use_folds=fold_list,
-        checkpoint_name="checkpoint_final.pth",
+        checkpoint_name=checkpoint,
     )
     return predictor
 
@@ -547,17 +557,34 @@ def create_predictor(
     *,
     device: str | None = None,
     folds: list[int] | None = None,
+    step_size: float = DEFAULT_STEP_SIZE,
+    tta: bool = True,
+    checkpoint: str = DEFAULT_CHECKPOINT,
 ) -> dict[str, Any]:
-    """Load an nnU-Net predictor once for repeated image inference."""
+    """Load an nnU-Net predictor once for repeated image inference.
+
+    The three inference knobs default to nnU-Net's own and are carried ON THE
+    HANDLE, because the handle is what a later process rebuilds the predictor
+    from: a knob kept only in this call would silently revert to the default the
+    first time the registry is cold.
+    """
+    if not 0 < float(step_size) <= 1:
+        raise ValueError(f"step_size must be in (0, 1]; got {step_size}")
     resolved_device = str(device or model.get("device", "cpu")).lower()
     fold_list = tuple(folds if folds is not None else model.get("trained_folds", (0,)))
-    predictor = _load_predictor_engine(model, resolved_device, fold_list)
+    checkpoint_name = str(checkpoint or DEFAULT_CHECKPOINT)
+    predictor = _load_predictor_engine(
+        model, resolved_device, fold_list,
+        step_size=float(step_size), tta=bool(tta), checkpoint=checkpoint_name)
     return {
         "vox_kind": PREDICTOR_KIND,
         "predictor_id": store_predictor(predictor),
         "model": model,
         "device": resolved_device,
         "folds": list(fold_list),
+        "step_size": float(step_size),
+        "tta": bool(tta),
+        "checkpoint": checkpoint_name,
     }
 
 
@@ -583,7 +610,13 @@ def _predictor_engine(handle: dict[str, Any]) -> Any:
         resolved_device = str(handle.get("device") or model.get("device", "cpu")).lower()
         fold_list = tuple(handle.get("folds") or model.get("trained_folds", (0,)))
         logger.info("Reloading nnU-Net predictor %s from %s", predictor_id, model["trainer_dir"])
-        store_predictor(_load_predictor_engine(model, resolved_device, fold_list), predictor_id)
+        store_predictor(
+            _load_predictor_engine(
+                model, resolved_device, fold_list,
+                step_size=float(handle.get("step_size", DEFAULT_STEP_SIZE)),
+                tta=bool(handle.get("tta", True)),
+                checkpoint=str(handle.get("checkpoint") or DEFAULT_CHECKPOINT)),
+            predictor_id)
     return load_predictor(predictor_id)
 
 

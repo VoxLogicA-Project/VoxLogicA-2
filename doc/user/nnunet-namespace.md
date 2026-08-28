@@ -95,7 +95,7 @@ Loads an nnU-Net predictor from a trained model handle. Call once, then reuse wi
 **Signature:**
 
 ```voxlogica
-nnunet.make_predictor(model, [device], [folds])
+nnunet.make_predictor(model, [device], [folds], [step_size], [tta], [checkpoint])
 ```
 
 | # | Name | Required | Description |
@@ -103,6 +103,15 @@ nnunet.make_predictor(model, [device], [folds])
 | 0 | `model` | yes | Handle returned by `nnunet.train` |
 | 1 | `device` | no | `"cpu"` or `"cuda"`. Default: device stored on the model handle |
 | 2 | `folds` | no | Folds to use. Default: folds trained in the model handle |
+| 3 | `step_size` | no | Sliding-window step. Default: `0.5`; must be in `(0, 1]` |
+| 4 | `tta` | no | Test-time augmentation by mirroring. Default: `"true"` |
+| 5 | `checkpoint` | no | Checkpoint file name. Default: `"checkpoint_final.pth"` |
+
+These are nnU-Net's own inference options (`-step_size`, `--disable_tta`, `-chk`)
+with nnU-Net's own defaults, so saying nothing keeps the documented behaviour.
+They are carried on the handle, not just used when it is built: a handle is a
+value the engine persists and rebuilds from in a later process, and a knob kept
+elsewhere would revert to the default exactly then.
 
 **Returns:** predictor handle (`vox_kind = "nnunet_predictor"`).
 

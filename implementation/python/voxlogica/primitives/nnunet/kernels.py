@@ -148,10 +148,20 @@ def make_predictor(**kwargs: Any) -> dict[str, Any]:
         if folds_value is not None:
             fold_list = [int(fold) for fold in as_list(folds_value, name="folds")]
 
+        # Arguments 3-5: nnU-Net's own inference knobs, which the documented
+        # nnUNetv2_predict exposes and this namespace did not. Defaults are
+        # nnU-Net's, so saying nothing keeps the documented behaviour.
+        step_size = float(_arg(kwargs, "3", runtime.DEFAULT_STEP_SIZE))
+        tta = _optional_bool(kwargs, "4", True)
+        checkpoint = _optional_str(kwargs, "5", runtime.DEFAULT_CHECKPOINT)
+
         return runtime.create_predictor(
             model,
             device=str(device).lower() if device is not None else None,
             folds=fold_list,
+            step_size=step_size,
+            tta=tta,
+            checkpoint=checkpoint or runtime.DEFAULT_CHECKPOINT,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("nnUNet make_predictor failed: %s", exc)
@@ -192,7 +202,7 @@ def list_primitives() -> dict[str, str]:
 def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
     arities = {
         "train": AritySpec(min_args=2, max_args=11),
-        "make_predictor": AritySpec(min_args=1, max_args=3),
+        "make_predictor": AritySpec(min_args=1, max_args=6),
         "predict": AritySpec.fixed(2),
         "env_check": AritySpec.variadic(0),
     }
