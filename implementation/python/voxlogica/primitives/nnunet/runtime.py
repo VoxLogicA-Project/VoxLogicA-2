@@ -389,6 +389,17 @@ def train_model(
     if device in {"cpu", "none"}:
         env["CUDA_VISIBLE_DEVICES"] = ""
 
+    # Absolute, and checked here rather than eight minutes into a training: the
+    # command runs with cwd=work_root, so a relative path would be read from
+    # somewhere else, and nnU-Net's own failure for a missing file arrives after
+    # preprocessing has already been paid for.
+    pretrained_path = ""
+    if pretrained:
+        candidate = Path(pretrained).expanduser().resolve()
+        if not candidate.is_file():
+            raise ValueError(f"pretrained weights not found: {candidate}")
+        pretrained_path = str(candidate)
+
     plans_id = (plans or DEFAULT_PLANS).strip() or DEFAULT_PLANS
     plan_cmd = [
         nnunet_command("nnUNetv2_plan_and_preprocess"),
@@ -423,17 +434,6 @@ def train_model(
         pass
 
     train_device = "cpu" if device in {"cpu", "none"} else "cuda"
-
-    # Absolute, and checked here rather than eight minutes into a training: the
-    # command runs with cwd=work_root, so a relative path would be read from
-    # somewhere else, and nnU-Net's own failure for a missing file arrives after
-    # preprocessing has already been paid for.
-    pretrained_path = ""
-    if pretrained:
-        candidate = Path(pretrained).expanduser().resolve()
-        if not candidate.is_file():
-            raise ValueError(f"pretrained weights not found: {candidate}")
-        pretrained_path = str(candidate)
 
     for fold in range(nfolds):
         if current_trainer is not None and fold_complete(current_trainer, fold):
