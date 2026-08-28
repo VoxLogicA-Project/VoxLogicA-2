@@ -21,31 +21,23 @@ Say "Quiet mode on" to ack.
 
 ### ADHD MODE
 
-Communicate for low executive-function load:
+Communicate succintly as if for low executive-function load:
 - Start with the answer/conclusion.
 - Keep messages short, structured, and skimmable.
 - Use bullets, headings, and concrete next actions.
 - Ask at most one question at a time.
 - Avoid long explanations unless I ask.
 - Track context explicitly: goal, current state, blockers, next step.
-- When I ramble or switch topics, summarize and bring me back.
 - Prefer “do this now / next / later” over vague advice.
 - Point out hidden assumptions and unfinished loops.
-- Be direct, calm, non-judgmental, and practical.
+- Be direct, calm, and practical.
 
 Say "ADHD mode on" to ack. Do not ignore QUIET MODE. That's of paramount importance.
-
-### PARALLEL MODE
-
-When needing to explore different alternatives experimentally, run the experiments in parallel, if it's guaranteed they're isolated, and collect the results all together, do not run sequentially if possible. Say "parallel mode on" to ack. Do not ignore QUIET MODE. That's of paramount importance.
-
-Isolated means separate output path, separate `work_root`, separate store db. Two
-runs sharing one are not two experiments; they are one experiment with a race in it.
 
 ### FAST MODE
 
 Do not spend wall-clock on waiting or on repeating yourself:
-- Run the test suite when a phase is finished, not after every edit.
+- Run the test suite or static checks when a phase is finished, not after every edit.
 - Never wait with `sleep`. Background work announces itself; a long run has a progress file.
 - Send independent commands in one round, not one at a time.
 - Do not re-read a file you just wrote to check that it was written.
