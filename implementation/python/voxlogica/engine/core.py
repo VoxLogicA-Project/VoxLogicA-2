@@ -994,33 +994,27 @@ class ComputationEngine:
             # recompute than to store would tax dispatch for nothing (and the
             # cache's cost-aware eviction would drop it first anyway).
             worth_it = critical or compute_ms >= self.config.persist_min_compute_ms
-            if worth_it and self.sparse_cache and not critical:
-                # --sparse-cache: a value with at most ONE consumer left is read
-                # once and then never again in this run, so writing it can only
-                # serve a LATER run. On a parameter sweep that is nearly every
-                # intermediate mask -- each is consumed by the single scalar that
-                # scores it -- and at 4 MB apiece those writes ran a 369-patient
-                # sweep 1.9 TB past the free space on its disk.
-                #
-                # AND IT MUST YIELD TO THE MEMORY BOUND, which the first version
-                # of this did not, and which wedged a run solid: a value with one
-                # PENDING consumer is not dead, it is live, and declining to
-                # write it leaves it with no disk copy to be reloaded from. RAM
-                # may only drop a value once such a copy exists, so past the
-                # budget the engine had 8.5 GB it could neither use nor release,
-                # parked every worker, and sat at 94% idle with the node count
-                # frozen.
-                #
-                # Hence the headroom gate. Below half the soft budget, skipping
-                # is free: whatever it makes unspillable, the other half of the
-                # budget is still spillable and reclaim keeps working. At or
-                # above it, values are written again, so the spill space grows
-                # back exactly when the engine starts to need it. The undurable
-                # set this can create is therefore bounded by half the budget
-                # instead of by nothing at all -- self-regulating, rather than a
-                # number someone has to guess right.
-                if self.table.accounted_bytes * 2 < self.governor.budget:
-                    worth_it = self.graph.consumers.get(nid, 0) > 1
+            # --sparse-cache DELIBERATELY DOES NOTHING HERE, and the reason is
+            # worth keeping: skipping the write for a value with one PENDING
+            # consumer was tried twice and wedged a 369-patient sweep both times.
+            #
+            # Such a value is not dead, it is live and about to be read, and a
+            # value with no disk copy cannot be dropped from RAM -- the store IS
+            # the spill space. The second attempt gated the skip on having half
+            # the soft budget free, on the argument that the other half would
+            # stay spillable. It does not: measured at the wedge, 4.1 GB was
+            # undurable against 0.3 GB durable, the rest being pinned or goal
+            # values. There is no fraction of the budget that makes this safe,
+            # because the spillable share is not something this decision
+            # controls.
+            #
+            # What survives is the write-time filter in AsyncPersister, which
+            # drops values whose consumers have ALL already run by the time their
+            # batch comes up. That one cannot strand anything, because a dead
+            # value leaves the live tier outright rather than spilling. It buys
+            # less -- the persist backlog is byte-budgeted, so the queue rarely
+            # holds a value long enough to outlive its consumers -- but it buys
+            # it safely.
             will_be_durable = self.table.complete(nid, value, compute_ms,
                                                   critical=critical, persist=worth_it)
             if node.operator in _SEQUENCE_OPERATORS:
