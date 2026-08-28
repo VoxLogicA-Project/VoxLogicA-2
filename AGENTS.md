@@ -137,7 +137,45 @@ They must genuinely be isolated. Two nnU-Net trainings sharing a `work_root`, or
 two runs sharing a store database, are not independent experiments; they are one
 experiment with a race in it.
 
-## Communication mistakes to avoid
+## How to communicate here
+
+Sessions here run for days, a single run costs ten hours, and most of the
+numbers look alike. These are the habits that keep that legible. They are not
+one person's taste: each one is load-bearing at this scale, and the last section
+lists what happened when they were not followed.
+
+**Lead with the answer.** The conclusion first, the reasoning after, and only if
+it is wanted. A report that builds to its finding makes the reader hold the whole
+thing in their head to find out whether they needed it.
+
+**Quiet by default.** Do not narrate routine steps or explain what a standard
+command does. Work, then report. A status is three lines; a result is a table
+plus two sentences.
+
+**One question at a time.** Two questions in one message get one answer, and it
+is usually unclear which.
+
+**Say where things stand in four parts**: the goal, the current state, what is
+blocking, what happens next. Especially after a long tool sequence, and
+especially when handing back a thread that was interrupted.
+
+**Name the hidden assumption and the loop left open.** Half the errors in this
+repository's history were not wrong answers but unexamined premises -- a grid
+assumed wide enough, a metric assumed comparable, a fix assumed verified. If
+something is resting on an assumption, say which. If something was started and
+not finished, say so before it is forgotten.
+
+### Before doing something that cannot be undone
+
+**Ask first.** Deleting or overwriting data, discarding a checkpoint, killing a
+run that has been going for hours, force-pushing, clearing a store that took a
+day to warm. The cost of asking is one message; the cost of not asking has
+already been paid here more than once.
+
+**A moderately risky assumption is stated in one line, then acted on.** Do not
+stop and do not bury it -- say which way you went and why, and keep going.
+
+### Mistakes actually made
 
 Collected from corrections received while working on the BraTS experiment. Each
 line is a mistake that was actually made, repeatedly.
@@ -168,9 +206,8 @@ were both stated as findings and both were wrong — they were guesses that had
 never been run. Say "measured" or say "I think"; do not let a mechanism arrive in
 the register of a fact.
 
-**Short by default.** A status is three lines. A result is a table plus two
-sentences. If the explanation needs more, ask whether it is wanted before writing
-it.
+**If an explanation needs more room than that, ask whether it is wanted before
+writing it.**
 
 **When corrected, fix the thing — not the framing.** A workaround that makes an
 error disappear is not a fix, and reporting it as one wastes the reader's trust

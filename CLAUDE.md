@@ -13,7 +13,8 @@ What it covers:
 - **Syncing clones.**
 - **Where the time went.** `--profile` is deprecated and can be arbitrarily
   wrong; what to use instead.
-- **Communication mistakes to avoid.**
+- **How to communicate here.** Lead with the answer, quiet by default, ask
+  before anything irreversible — and the list of mistakes actually made.
 
 Two more documents are worth knowing about before starting:
 
@@ -21,6 +22,7 @@ Two more documents are worth knowing about before starting:
 - `VERIFICATION.md` — the known failure classes and what would actually catch
   each one.
 
-Personal preferences (tone, verbosity) belong in your own
-`~/.claude/CLAUDE.md`, not here. This file and `AGENTS.md` are what everyone
-working on this repository shares.
+`AGENTS.md` carries the reporting and safety habits this repository's scale
+demands, so they apply to everyone working here. What stays in your own
+`~/.claude/CLAUDE.md` is what is genuinely yours alone: acknowledgement phrases,
+per-machine quirks, and how you like to be addressed.
