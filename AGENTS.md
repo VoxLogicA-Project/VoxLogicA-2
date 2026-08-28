@@ -107,6 +107,36 @@ never on 369, and give it a timeout.
 For a real bottleneck this once found -- `percentiles`' sort dominating a BraTS
 case, not the scheduler -- see `HANDOVER.md` sections 0b and 0c.
 
+## Command output belongs in a file, not in the conversation
+
+Runs here produce logs measured in megabytes: a 369-case sweep, an nnU-Net
+training, a pytest suite over a thousand tests. Piping any of that straight into
+the conversation buries the finding under the transcript and costs context that
+is then not available for the actual work.
+
+Redirect it, check the size, and read only the part that answers the question:
+
+```bash
+<command> > /tmp/thing.out 2>&1; echo "EXIT=$?"; wc -l /tmp/thing.out
+grep -E "FAILED|Error" /tmp/thing.out | head
+```
+
+The same applies to reporting: quote the lines that carry the result, not the
+run. For a long run the progress file is the interface -- see "Long-Running
+Commands" above, and watch it with a bare `tail -f`.
+
+## Run independent experiments at the same time
+
+When a question needs several variants tried, and the variants cannot interfere
+-- separate output paths, separate work roots, separate store databases -- launch
+them together and collect the results at the end. Running them one after another
+turns an afternoon into a week, and this repository's experiments are long
+enough that the difference decides what gets asked at all.
+
+They must genuinely be isolated. Two nnU-Net trainings sharing a `work_root`, or
+two runs sharing a store database, are not independent experiments; they are one
+experiment with a race in it.
+
 ## Communication mistakes to avoid
 
 Collected from corrections received while working on the BraTS experiment. Each
