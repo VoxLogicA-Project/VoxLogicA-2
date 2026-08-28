@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -208,3 +209,26 @@ def test_a_decision_already_on_disk_is_read_rather_than_determined_again(tmp_pat
 
     assert decision == {"operations": ["keep_largest"],
                         "kwargs": [{"labels_or_regions": [1]}]}
+
+
+def test_the_child_process_is_given_absolute_paths(tmp_path, monkeypatch):
+    """The command runs with cwd=work_root, so a relative path would move.
+
+    Passed through as given, a relative trainer directory was read from inside
+    work_root and the child died on a plans.json that was plainly there.
+    """
+    (tmp_path / "trainer" / "fold_0" / "validation").mkdir(parents=True)
+    (tmp_path / "trainer" / "plans.json").write_text("{}")
+    (tmp_path / "trainer" / "dataset.json").write_text("{}")
+    (tmp_path / "labelsTr").mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    seen: list[list[str]] = []
+    monkeypatch.setattr(runtime, "run_cli",
+                        lambda command, **kwargs: seen.append(command))
+
+    runtime.determine_postprocessing_for(Path("trainer"), Path("labelsTr"), [0], Path("."))
+
+    paths = [arg for arg in seen[0] if "/" in arg]
+    assert paths, "the command names files"
+    assert all(Path(arg).is_absolute() for arg in paths), paths

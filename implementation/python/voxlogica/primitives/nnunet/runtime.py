@@ -255,6 +255,13 @@ def determine_postprocessing_for(trainer_path: Path, labels_dir: Path,
     command failing). A failure here must never fail a training: postprocessing
     is an improvement, not a correctness requirement.
     """
+    # Absolute, because the command runs with cwd=work_root: a relative path a
+    # caller passed in would be read from somewhere else entirely, and the child
+    # would fail on a file that is plainly there.
+    trainer_path = Path(trainer_path).resolve()
+    labels_dir = Path(labels_dir).resolve()
+    work_root = Path(work_root).resolve()
+
     fold = folds[0] if folds else 0
     cached = postprocessing_pkl(trainer_path, fold)
     decision = _decision_from_pickle(cached)
@@ -270,7 +277,7 @@ def determine_postprocessing_for(trainer_path: Path, labels_dir: Path,
         return None
 
     try:
-        _set_nnunet_env(Path(work_root))
+        _set_nnunet_env(work_root)
         run_cli(
             [
                 nnunet_command("nnUNetv2_determine_postprocessing"),
@@ -281,7 +288,7 @@ def determine_postprocessing_for(trainer_path: Path, labels_dir: Path,
                 "-np", "4",
                 "--remove_postprocessed",
             ],
-            cwd=Path(work_root), env=nnunet_env(), step="postprocessing",
+            cwd=work_root, env=nnunet_env(), step="postprocessing",
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("postprocessing could not be determined (%s); predicting raw", exc)
