@@ -60,6 +60,32 @@ def normalize_modalities(value: Any) -> list[str]:
     return modalities
 
 
+def normalize_configurations(value: Any) -> list[str]:
+    """One configuration or several, always returned as a list.
+
+    A program may name `"3d_fullres"` or `["2d", "3d_fullres", "3d_lowres"]`.
+    Duplicates are dropped rather than trained twice, and order is kept: the
+    first one is what the program asked for first, and it is what a failed
+    choice falls back to.
+    """
+    if value is None:
+        raise ValueError("configuration cannot be empty")
+    if isinstance(value, str):
+        raw = [value]
+    elif isinstance(value, (list, tuple)):
+        raw = [str(item) for item in value]
+    else:
+        raise ValueError("configuration must be a string or a list of strings")
+    seen: list[str] = []
+    for item in raw:
+        name = item.strip()
+        if name and name not in seen:
+            seen.append(name)
+    if not seen:
+        raise ValueError("configuration cannot be empty")
+    return seen
+
+
 @dataclass(frozen=True)
 class TrainingCase:
     case_id: str
@@ -148,6 +174,8 @@ def build_model(
     trainer: str = DEFAULT_TRAINER,
     postprocessing: dict[str, Any] | None = None,
     pretrained: str = "",
+    configurations: list[str] | None = None,
+    selection: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     return {
         "vox_kind": MODEL_KIND,
@@ -165,6 +193,12 @@ def build_model(
         # what the model IS, not of how it was run: two models with the same
         # data and different starting weights are two different models.
         "pretrained": pretrained,
+        # Every configuration that was trained, and the one or two that
+        # nnUNetv2_find_best_configuration chose to predict with. With a single
+        # configuration these say the same thing, which is the point: the
+        # one-configuration case is not a special case.
+        "configurations": list(configurations or [configuration]),
+        "selection": [dict(m) for m in (selection or [])],
         "file_ending": FILE_ENDING,
         "trained_folds": list(trained_folds),
         "trainer_dir": trainer_dir,

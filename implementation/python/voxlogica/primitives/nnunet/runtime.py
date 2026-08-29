@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 import os
 import shutil
@@ -333,6 +334,11 @@ def resolve_postprocessing(model: dict[str, Any]) -> dict[str, Any] | None:
     """
     if "postprocessing" in model:
         return model.get("postprocessing")
+    if len(model.get("selection") or []) > 1:
+        # An ensemble's decision is nnU-Net's own, made over the ensembled
+        # cross-validation and left beside it, not beside either member. There
+        # is nothing to determine here from one trainer directory.
+        return None
     cache_key = str(model.get("trainer_dir", ""))
     with _PP_LOCK:
         if cache_key in _PP_RESOLVED:
@@ -374,12 +380,70 @@ def apply_postprocessing_to_array(segmentation: Any, decision: dict[str, Any] | 
     return out
 
 
+def find_best_configuration_for(*, dataset_id: int, results_root: Path, folder: str,
+                                configurations: list[str], plans_id: str,
+                                trainer_class: str, folds: list[int],
+                                work_root: Path, env: dict[str, str]
+                                ) -> tuple[list[dict[str, str]], str]:
+    """Let nnU-Net choose among the configurations that were trained.
+
+    This is `nnUNetv2_find_best_configuration`: it scores every trained
+    configuration on the cross-validation, tries ensembling them, and names the
+    single model or the pair that scored best. Without it, training several
+    configurations only produces several models and no answer about which to
+    believe -- the choice would fall to whoever wrote the program, on no evidence.
+
+    Returns the selected members as ``{configuration, plans, trainer}`` together
+    with the postprocessing file nnU-Net decided for that selection -- for an
+    ensemble that decision is made over the ensembled cross-validation and
+    exists nowhere else. An empty list means the question could not be answered,
+    and the caller falls back to the first configuration, which is what the
+    program asked for first.
+    """
+    cmd = [
+        nnunet_command("nnUNetv2_find_best_configuration"),
+        str(dataset_id),
+        "-c", *configurations,
+        "-p", plans_id,
+        "-tr", trainer_class or DEFAULT_TRAINER,
+        "-f", *[str(f) for f in (folds or [0])],
+        "-np", "4",
+    ]
+    try:
+        run_cli(cmd, cwd=work_root, env=env, step="find best configuration")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not choose a configuration (%s); using %s",
+                       exc, configurations[0])
+        return [], ""
+
+    info = results_root / folder / "inference_information.json"
+    if not info.is_file():
+        logger.warning("no inference_information.json in %s; using %s",
+                       info.parent, configurations[0])
+        return [], ""
+    try:
+        chosen = json.loads(info.read_text(encoding="utf-8"))
+        best = chosen["best_model_or_ensemble"]
+        selection = [{"configuration": str(m["configuration"]),
+                      "plans": str(m["plans"]),
+                      "trainer": str(m["trainer"])}
+                     for m in best["selected_model_or_models"]]
+        pp_file = str(best.get("postprocessing_file") or "")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("inference_information.json unreadable (%s); using %s",
+                       exc, configurations[0])
+        return [], ""
+
+    logger.info("chosen: %s", " + ".join(m["configuration"] for m in selection))
+    return selection, pp_file
+
+
 def train_model(
     *,
     layout: dict[str, Any],
     dataset_id: int,
     dataset_name: str,
-    configuration: str,
+    configurations: list[str],
     modalities: list[str],
     nfolds: int,
     device: str,
@@ -413,7 +477,7 @@ def train_model(
         "-d",
         str(dataset_id),
         "-c",
-        configuration,
+        *configurations,
         "--verify_dataset_integrity",
     ]
     # A non-default plans identifier needs its planner named at preprocessing
@@ -428,59 +492,104 @@ def train_model(
 
     results_root = Path(layout["nnunet_results"])
     folder = str(layout["dataset_folder"])
-    trained_folds: list[int] = []
     trainer_class = (trainer or DEFAULT_TRAINER).strip()
-
-    # Only THIS trainer's checkpoints may satisfy "already trained": another
-    # trainer's fold_0 is a different model, and reusing it would answer the
-    # program's question with someone else's answer.
-    current_trainer: Path | None = None
-    try:
-        current_trainer = trainer_dir(results_root, folder, configuration, trainer_class, plans_id)
-    except ValueError:
-        pass
-
     train_device = "cpu" if device in {"cpu", "none"} else "cuda"
 
-    for fold in range(nfolds):
-        if current_trainer is not None and fold_complete(current_trainer, fold):
-            logger.info("Skipping train fold %s (checkpoint already exists)", fold)
-            trained_folds.append(fold)
-            continue
-        train_cmd = [
-            nnunet_command("nnUNetv2_train"),
-            str(dataset_id),
-            configuration,
-            str(fold),
-            "-device",
-            train_device,
-        ]
-        if trainer_class and trainer_class != DEFAULT_TRAINER:
-            train_cmd.extend(["-tr", trainer_class])
-        if plans_id != DEFAULT_PLANS:
-            train_cmd.extend(["-p", plans_id])
-        if pretrained_path:
-            # nnU-Net applies this only when it actually trains, and only if the
-            # architecture matches: the weights must come from a model built by
-            # the same plans and configuration, or it refuses to load them.
-            train_cmd.extend(["-pretrained_weights", pretrained_path])
-        if current_trainer is not None and fold_resumable(current_trainer, fold):
-            logger.info("Resuming train fold %s from checkpoint_latest", fold)
-            train_cmd.append("--c")
-        run_cli(train_cmd, cwd=work_root, env=env, step=f"train fold {fold}")
-        trained_folds.append(fold)
+    # Softmax is saved only when there is something to ensemble WITH. It is
+    # large -- one array per validation case -- and nnUNetv2_find_best_configuration
+    # needs it to try ensembles, so the cost is paid exactly when it buys
+    # something.
+    save_probabilities = len(configurations) > 1
+    trained_folds: list[int] = []
 
-    resolved_trainer = trainer_dir(results_root, folder, configuration, trainer_class, plans_id)
-    postprocessing = (
-        determine_postprocessing_for(
+    for configuration in configurations:
+        # Only THIS trainer's checkpoints may satisfy "already trained": another
+        # trainer's fold_0 is a different model, and reusing it would answer the
+        # program's question with someone else's answer.
+        current_trainer: Path | None = None
+        try:
+            current_trainer = trainer_dir(results_root, folder, configuration,
+                                          trainer_class, plans_id)
+        except ValueError:
+            pass
+
+        for fold in range(nfolds):
+            if current_trainer is not None and fold_complete(current_trainer, fold):
+                logger.info("Skipping %s fold %s (checkpoint already exists)",
+                            configuration, fold)
+                if fold not in trained_folds:
+                    trained_folds.append(fold)
+                continue
+            train_cmd = [
+                nnunet_command("nnUNetv2_train"),
+                str(dataset_id),
+                configuration,
+                str(fold),
+                "-device",
+                train_device,
+            ]
+            if trainer_class and trainer_class != DEFAULT_TRAINER:
+                train_cmd.extend(["-tr", trainer_class])
+            if plans_id != DEFAULT_PLANS:
+                train_cmd.extend(["-p", plans_id])
+            if save_probabilities:
+                train_cmd.append("--npz")
+            if pretrained_path:
+                # nnU-Net applies this only when it actually trains, and only if
+                # the architecture matches: the weights must come from a model
+                # built by the same plans and configuration, or it refuses.
+                train_cmd.extend(["-pretrained_weights", pretrained_path])
+            if current_trainer is not None and fold_resumable(current_trainer, fold):
+                logger.info("Resuming %s fold %s from checkpoint_latest",
+                            configuration, fold)
+                train_cmd.append("--c")
+            run_cli(train_cmd, cwd=work_root, env=env,
+                    step=f"train {configuration} fold {fold}")
+            if fold not in trained_folds:
+                trained_folds.append(fold)
+
+    trained_folds.sort()
+
+    # With one configuration there is nothing to choose between, and asking
+    # would cost a full cross-validation evaluation for a foregone answer.
+    selection: list[dict[str, str]]
+    chosen_pp_file = ""
+    if len(configurations) > 1:
+        selection, chosen_pp_file = find_best_configuration_for(
+            dataset_id=dataset_id, results_root=results_root, folder=folder,
+            configurations=configurations, plans_id=plans_id,
+            trainer_class=trainer_class, folds=trained_folds,
+            work_root=work_root, env=env)
+    else:
+        selection = []
+    if not selection:
+        selection = [{"configuration": configurations[0], "plans": plans_id,
+                      "trainer": trainer_class}]
+    for member in selection:
+        member["trainer_dir"] = str(trainer_dir(
+            results_root, folder, member["configuration"],
+            member["trainer"], member["plans"]))
+
+    configuration = selection[0]["configuration"]
+    resolved_trainer = Path(selection[0]["trainer_dir"])
+
+    # For an ensemble the decision was already made, over the ensembled
+    # cross-validation, by the command that chose the ensemble; determining one
+    # from a single member's validation would answer a different question.
+    if not postprocess:
+        postprocessing = None
+    elif chosen_pp_file:
+        postprocessing = _decision_from_pickle(Path(chosen_pp_file))
+    else:
+        postprocessing = determine_postprocessing_for(
             resolved_trainer, Path(layout["dataset_dir"]) / "labelsTr",
             trained_folds, work_root)
-        if postprocess else None
-    )
     state = load_state(work_root) or {}
     state.update(
         {
             "configuration": configuration,
+            "configurations": list(configurations),
+            "selection": selection,
             "trained_folds": trained_folds,
             "trainer_dir": str(resolved_trainer),
             "trainer": trainer_class,
@@ -505,6 +614,8 @@ def train_model(
         trainer=trainer_class,
         postprocessing=postprocessing,
         pretrained=pretrained_path,
+        configurations=list(configurations),
+        selection=selection,
     )
 
 
@@ -552,6 +663,15 @@ def _load_predictor_engine(model: dict[str, Any], resolved_device: str,
     return predictor
 
 
+def model_members(model: dict[str, Any]) -> list[dict[str, str]]:
+    """The models inference must run, one entry when nothing was ensembled."""
+    selection = model.get("selection") or []
+    if selection:
+        return [dict(m) for m in selection]
+    return [{"configuration": str(model.get("configuration", "")),
+             "trainer_dir": str(model["trainer_dir"])}]
+
+
 def create_predictor(
     model: dict[str, Any],
     *,
@@ -563,6 +683,9 @@ def create_predictor(
 ) -> dict[str, Any]:
     """Load an nnU-Net predictor once for repeated image inference.
 
+    One predictor per selected model: nnUNetv2_find_best_configuration may name
+    two, and an ensemble is only an ensemble if both of them run.
+
     The three inference knobs default to nnU-Net's own and are carried ON THE
     HANDLE, because the handle is what a later process rebuilds the predictor
     from: a knob kept only in this call would silently revert to the default the
@@ -573,12 +696,25 @@ def create_predictor(
     resolved_device = str(device or model.get("device", "cpu")).lower()
     fold_list = tuple(folds if folds is not None else model.get("trained_folds", (0,)))
     checkpoint_name = str(checkpoint or DEFAULT_CHECKPOINT)
-    predictor = _load_predictor_engine(
-        model, resolved_device, fold_list,
-        step_size=float(step_size), tta=bool(tta), checkpoint=checkpoint_name)
+
+    members = []
+    for member in model_members(model):
+        engine = _load_predictor_engine(
+            {**model, "trainer_dir": member["trainer_dir"]},
+            resolved_device, fold_list,
+            step_size=float(step_size), tta=bool(tta), checkpoint=checkpoint_name)
+        members.append({
+            "predictor_id": store_predictor(engine),
+            "trainer_dir": member["trainer_dir"],
+            "configuration": member.get("configuration", ""),
+        })
+
     return {
         "vox_kind": PREDICTOR_KIND,
-        "predictor_id": store_predictor(predictor),
+        # The first member's id also stands as THE id of the handle, so a handle
+        # of one member is byte-for-byte what it was before ensembling existed.
+        "predictor_id": members[0]["predictor_id"],
+        "members": members,
         "model": model,
         "device": resolved_device,
         "folds": list(fold_list),
@@ -588,7 +724,8 @@ def create_predictor(
     }
 
 
-def _predictor_engine(handle: dict[str, Any]) -> Any:
+def _predictor_engine(handle: dict[str, Any],
+                      member: dict[str, Any] | None = None) -> Any:
     """The live predictor for a handle, rebuilding it if this process lacks it.
 
     Call this holding ``predictor_lock(predictor_id)``: the rebuild must be as
@@ -602,11 +739,14 @@ def _predictor_engine(handle: dict[str, Any]) -> Any:
     takes to load the predictor again. So a miss reloads and re-registers under
     the SAME id, and the handle means the same thing in any process.
     """
-    predictor_id = str(handle.get("predictor_id", "")).strip()
+    member = member or {"predictor_id": handle.get("predictor_id", "")}
+    predictor_id = str(member.get("predictor_id", "")).strip()
     if not predictor_id:
         raise ValueError("predictor handle is missing predictor_id")
     if not predictor_registered(predictor_id):
         model = handle["model"]
+        if member.get("trainer_dir"):
+            model = {**model, "trainer_dir": member["trainer_dir"]}
         resolved_device = str(handle.get("device") or model.get("device", "cpu")).lower()
         fold_list = tuple(handle.get("folds") or model.get("trained_folds", (0,)))
         logger.info("Reloading nnU-Net predictor %s from %s", predictor_id, model["trainer_dir"])
@@ -620,12 +760,25 @@ def _predictor_engine(handle: dict[str, Any]) -> Any:
     return load_predictor(predictor_id)
 
 
+def handle_members(handle: dict[str, Any]) -> list[dict[str, Any]]:
+    """The members of a predictor handle, tolerating handles that predate them.
+
+    A handle is a persisted value: one written before ensembling existed has a
+    single ``predictor_id`` and no ``members``, and must keep working.
+    """
+    members = handle.get("members")
+    if members:
+        return [dict(m) for m in members]
+    return [{"predictor_id": handle.get("predictor_id", ""),
+             "trainer_dir": handle.get("model", {}).get("trainer_dir", "")}]
+
+
 def predict_image(predictor_handle: dict[str, Any], volumes: Any) -> Any:
     """Run nnU-Net inference on one case and return a segmentation image."""
     from voxlogica.primitives.nnunet.cases import normalize_modality_volumes
 
-    predictor_id = str(predictor_handle.get("predictor_id", "")).strip()
-    if not predictor_id:
+    members = handle_members(predictor_handle)
+    if not members or not str(members[0].get("predictor_id", "")).strip():
         raise ValueError("predictor handle is missing predictor_id")
 
     model = predictor_handle["model"]
@@ -635,14 +788,38 @@ def predict_image(predictor_handle: dict[str, Any], volumes: Any) -> Any:
         name="image",
     )
     array, properties = volumes_to_nnunet_array(modality_volumes)
+
     # The lock covers the RELOAD as well as the inference. Reloading outside it
     # let two workers that both found the registry empty each build a predictor
     # and load a second copy of the weights onto the GPU -- the same "who is
     # inside this object" question the lock exists to answer. Preparing the
     # input above needs no lock.
-    with predictor_lock(predictor_id):
-        predictor = _predictor_engine(predictor_handle)
-        segmentation = predictor.predict_single_npy_array(array, properties, None, None, False)
+    if len(members) == 1:
+        predictor_id = str(members[0]["predictor_id"])
+        with predictor_lock(predictor_id):
+            predictor = _predictor_engine(predictor_handle, members[0])
+            segmentation = predictor.predict_single_npy_array(
+                array, properties, None, None, False)
+    else:
+        # An ensemble, the way nnU-Net ensembles: average the probabilities, not
+        # the labels. Averaging labels would be a vote among two, which has no
+        # tie-break and throws away how sure either model was. Both come back
+        # resampled to the original geometry, so they are directly comparable
+        # even when one model is 2d and the other 3d.
+        summed = None
+        label_manager = None
+        for member in members:
+            predictor_id = str(member["predictor_id"])
+            with predictor_lock(predictor_id):
+                predictor = _predictor_engine(predictor_handle, member)
+                _, probabilities = predictor.predict_single_npy_array(
+                    array, properties, None, None, True)
+                label_manager = predictor.label_manager
+            summed = probabilities if summed is None else summed + probabilities
+        segmentation = label_manager.convert_probabilities_to_segmentation(
+            summed / len(members))
+        segmentation = _as_numpy(segmentation)
+
     # The documented workflow applies the postprocessing that
     # nnUNetv2_find_best_configuration selected; skipping it was this module
     # departing from nnU-Net's own protocol, silently and in the direction of a
@@ -650,6 +827,11 @@ def predict_image(predictor_handle: dict[str, Any], volumes: Any) -> Any:
     # nnU-Net's own function works on labels.
     segmentation = apply_postprocessing_to_array(segmentation, resolve_postprocessing(model))
     return segmentation_to_sitk(segmentation, properties)
+
+
+def _as_numpy(array: Any) -> Any:
+    """nnU-Net's label conversion may hand back a torch tensor."""
+    return array.cpu().numpy() if hasattr(array, "cpu") else array
 
 
 def env_check() -> dict[str, Any]:

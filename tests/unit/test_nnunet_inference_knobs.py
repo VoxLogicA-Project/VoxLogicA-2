@@ -85,3 +85,74 @@ def test_a_step_size_nnunet_would_refuse_is_refused_here(capture, bad):
         runtime.create_predictor(MODEL, step_size=bad)
 
     assert "step_size" in str(excinfo.value)
+
+
+# --- ensembling ------------------------------------------------------------
+
+
+class ProbPredictor:
+    """Returns fixed probabilities, so an average has a value one can check."""
+
+    def __init__(self, probabilities):
+        self.probabilities = probabilities
+        self.label_manager = self
+
+    def predict_single_npy_array(self, array, properties, prev, out, want_probs):
+        assert want_probs, "an ensemble needs probabilities, not labels"
+        return None, self.probabilities
+
+    @staticmethod
+    def convert_probabilities_to_segmentation(probabilities):
+        import numpy as np
+        return np.argmax(probabilities, axis=0)
+
+
+def test_two_selected_models_are_averaged_as_probabilities_not_as_labels(monkeypatch):
+    """Averaging labels is a vote between two: no tie-break, and it throws away
+    how sure either model was."""
+    import numpy as np
+
+    from voxlogica.primitives.nnunet import cases as nncases
+
+    engines = {
+        "a": ProbPredictor(np.array([[0.6, 0.6], [0.4, 0.4]])),   # says background
+        "b": ProbPredictor(np.array([[0.1, 0.1], [0.9, 0.9]])),   # says foreground, surer
+    }
+    handle = {
+        "model": {"modalities": ["FLAIR"], "trainer_dir": "/w/t", "postprocessing": None},
+        "members": [{"predictor_id": "a"}, {"predictor_id": "b"}],
+    }
+    monkeypatch.setattr(runtime, "_predictor_engine",
+                        lambda h, m=None: engines[m["predictor_id"]])
+    monkeypatch.setattr(nncases, "normalize_modality_volumes", lambda v, **k: v)
+    monkeypatch.setattr(runtime, "volumes_to_nnunet_array", lambda v: (v, {}))
+    monkeypatch.setattr(runtime, "segmentation_to_sitk", lambda seg, props: seg)
+
+    out = runtime.predict_image(handle, ["image"])
+
+    # mean is [[0.35, 0.35], [0.65, 0.65]] -> foreground everywhere. A label
+    # vote would have been one each, with nothing to break the tie.
+    assert out.tolist() == [1, 1]
+
+
+def test_a_handle_written_before_ensembling_still_predicts(monkeypatch):
+    """Handles are persisted values; one from an older run has no members."""
+    seen: list[str] = []
+
+    class Single:
+        def predict_single_npy_array(self, array, properties, prev, out, want_probs):
+            seen.append("called")
+            return "segmentation"
+
+    from voxlogica.primitives.nnunet import cases as nncases
+
+    monkeypatch.setattr(runtime, "_predictor_engine", lambda h, m=None: Single())
+    monkeypatch.setattr(nncases, "normalize_modality_volumes", lambda v, **k: v)
+    monkeypatch.setattr(runtime, "volumes_to_nnunet_array", lambda v: (v, {}))
+    monkeypatch.setattr(runtime, "segmentation_to_sitk", lambda seg, props: seg)
+    monkeypatch.setattr(runtime, "resolve_postprocessing", lambda model: None)
+
+    handle = {"predictor_id": "old", "model": {"modalities": ["FLAIR"], "trainer_dir": "/w/t"}}
+
+    assert runtime.predict_image(handle, ["image"]) == "segmentation"
+    assert seen == ["called"]

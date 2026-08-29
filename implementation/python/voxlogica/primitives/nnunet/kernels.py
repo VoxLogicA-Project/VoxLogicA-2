@@ -11,6 +11,7 @@ from voxlogica.primitives.nnunet import materialize as mat
 from voxlogica.primitives.nnunet import runtime
 from voxlogica.primitives.nnunet.cases import (
     DEFAULT_LABELS,
+    normalize_configurations,
     DEFAULT_TRAINER,
     as_list,
     infer_modalities,
@@ -80,7 +81,13 @@ def train(**kwargs: Any) -> dict[str, Any]:
             if modalities_value is None
             else normalize_modalities(modalities_value)
         )
-        configuration = _require_str(kwargs, "3", "configuration") if "3" in kwargs else "2d"
+        # Argument 3 may name ONE configuration or several. Several is the
+        # documented workflow: nnU-Net plans 2d, 3d_fullres and 3d_lowres,
+        # trains each, and picks -- so a program that wants that answer has to
+        # be able to ask for it.
+        configurations = (
+            normalize_configurations(_arg(kwargs, "3")) if "3" in kwargs else ["2d"]
+        )
         nfolds = _require_int(kwargs, "4", "nfolds", 5)
         dataset_name = _require_str(kwargs, "5", "dataset_name") if "5" in kwargs else "VoxLogicA"
         device = str(_arg(kwargs, "6", "cpu")).lower()
@@ -120,7 +127,7 @@ def train(**kwargs: Any) -> dict[str, Any]:
             layout=materialized["layout"],
             dataset_id=dataset_id,
             dataset_name=dataset_name,
-            configuration=configuration,
+            configurations=configurations,
             modalities=modalities,
             nfolds=nfolds,
             device=device,

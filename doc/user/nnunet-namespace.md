@@ -40,7 +40,7 @@ nnunet.train(training_cases, work_root, modalities, configuration, nfolds, datas
 | 0 | `training_cases` | yes | Sequence of training cases (see below) |
 | 1 | `work_root` | yes | Directory for nnU-Net raw/preprocessed/results data |
 | 2 | `modalities` | no | Modality names, e.g. `["T1"]`. Omitted → auto `ch0`, `ch1`, … |
-| 3 | `configuration` | no | nnU-Net config (`"2d"`, `"3d_fullres"`, …). Default: `"2d"` |
+| 3 | `configuration` | no | One config (`"3d_fullres"`) or several (`["2d", "3d_fullres", "3d_lowres"]`). Default: `"2d"` |
 | 4 | `nfolds` | no | Folds to train. Default: `5` |
 | 5 | `dataset_name` | no | Human-readable dataset name. Default: `"VoxLogicA"` |
 | 6 | `device` | no | `"cpu"` or `"cuda"`. Default: `"cpu"` |
@@ -57,6 +57,16 @@ postprocessing is on because the documented workflow runs
 `nnUNetv2_find_best_configuration` between training and inference. Each is a
 program argument, so a program that wants something else says so where the
 reader can see it -- one fold, or the raw network output.
+
+**Several configurations.** Naming a list is the documented workflow: nnU-Net
+preprocesses each configuration, trains each (with `--npz`, so softmax is kept),
+and then `nnUNetv2_find_best_configuration` scores them on the cross-validation
+and names the single model — or the ensemble of two — that did best. The model
+handle carries that selection, and `predict` runs it: for an ensemble it averages
+the **probabilities**, which is how nnU-Net ensembles, and not the labels.
+
+The cost is roughly one training per configuration. Naming one configuration
+costs exactly what it did before, asks nobody, and writes no softmax.
 
 **Starting weights.** `pretrained` maps to `nnUNetv2_train -pretrained_weights`.
 The checkpoint must come from a model with the same `plans` and `configuration`,
