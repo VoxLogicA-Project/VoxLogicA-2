@@ -47,7 +47,7 @@ def test_a_missing_checkpoint_is_refused_before_anything_is_computed(tmp_path, m
             layout={"work_dir": str(tmp_path), "nnunet_results": str(tmp_path),
                     "dataset_folder": "Dataset900_Demo",
                     "dataset_dir": str(tmp_path / "Dataset900_Demo")},
-            dataset_id=900, dataset_name="Demo", configuration="3d_fullres",
+            dataset_id=900, dataset_name="Demo", configurations=["3d_fullres"],
             modalities=["FLAIR"], nfolds=1, device="cpu", labels={"background": 0},
             pretrained=str(tmp_path / "absent.pth"),
         )
@@ -71,7 +71,7 @@ def test_the_checkpoint_reaches_the_command_line_absolute(tmp_path, monkeypatch)
         layout={"work_dir": str(tmp_path), "nnunet_results": str(tmp_path),
                 "dataset_folder": "Dataset900_Demo",
                 "dataset_dir": str(tmp_path / "Dataset900_Demo")},
-        dataset_id=900, dataset_name="Demo", configuration="3d_fullres",
+        dataset_id=900, dataset_name="Demo", configurations=["3d_fullres"],
         modalities=["FLAIR"], nfolds=1, device="cpu", labels={"background": 0},
         pretrained="ckpt.pth",
     )
@@ -94,7 +94,7 @@ def test_training_from_scratch_names_no_checkpoint(tmp_path, monkeypatch):
         layout={"work_dir": str(tmp_path), "nnunet_results": str(tmp_path),
                 "dataset_folder": "Dataset900_Demo",
                 "dataset_dir": str(tmp_path / "Dataset900_Demo")},
-        dataset_id=900, dataset_name="Demo", configuration="3d_fullres",
+        dataset_id=900, dataset_name="Demo", configurations=["3d_fullres"],
         modalities=["FLAIR"], nfolds=1, device="cpu", labels={"background": 0},
     )
 
