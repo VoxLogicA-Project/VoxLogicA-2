@@ -719,7 +719,46 @@ frontier test's own program folds 64 elements and completes, so the wedge is not
 "frontier over window" on its own -- it involves chained loops, and what exactly
 is not diagnosed.
 
-So the honest position: the memory argument for a graph-shaped fold stands, the
-structural objection to it does not, and there is an undiagnosed scheduler
-interaction in the way. Reverted, twice, with the reasoning kept so the next
-attempt starts from what is known rather than from the wrong explanation.
+### And then the wedge turned out to be a different bug
+
+The hang was not the fold. On `incoming`, with no handles involved at all:
+
+    for i in range(0, 20) do i          + fold   ->  hangs (>45 s)
+    for i in range(0, 20) do spin(i,0)  + fold   ->  0.5 s
+
+An IDENTITY loop body wedges, and every measurement that condemned the rewriter
+used one. Filed separately: `for i in xs do i` is a legitimate program.
+
+Measured again with a body that does not trip it, the tail-step rewriter is
+healthy and linear: 20 elements 0.5 s, 64 0.6 s, 200 0.8 s, 800 1.8 s. And it
+halves the memory -- 60 bodies of 4 MB each, peak live 480 MB on `incoming`
+against 240 MB with it.
+
+Half, not the "two values" predicted. The chain releases each accumulator, but
+the SEQUENCE still names every element and its handles count as references, so
+the elements stay resident. That is the limitation section 6 already records:
+evicting a container does not release what it names.
+
+### What it costs, and the open decision
+
+`fold` used to be ONE node with N dependencies, which complete and are released
+as they go: frontier stays under the window. The rewriter makes N nodes, each
+open until the next completes, because that is how forwarding works. Frontier
+becomes N -- 64 for 64 elements, against the bound of 40 that
+`test_frontier_bounded_by_window_not_plan` asserts.
+
+| | memory | frontier |
+|---|---|---|
+| kernel fold | all N elements | 1 node |
+| rewritten fold | half | N nodes |
+
+It does NOT wedge -- 800 elements, linear -- so the frontier cost here is
+bookkeeping. But that bound was put there deliberately, and this design already
+raised it once on reasoning that was wrong and had to withdraw it. Raising it a
+second time is not a call to make quietly.
+
+So the branch keeps the kernel fold and stays green. The rewriter is complete at
+commit `2ae2392` with the measurements above, ready to restore if the frontier
+bound is relaxed on purpose. The alternative that costs neither -- frontier O(1)
+and half the memory -- needs the consumer's edge re-pointed at each step, which
+is scheduler surgery and changes the consumer's identity.
