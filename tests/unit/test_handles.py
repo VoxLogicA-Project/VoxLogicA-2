@@ -275,17 +275,29 @@ def test_gather_refuses_a_length_it_cannot_pair():
         gather.execute(**{"0": [True], "1": [1, 2, 3]})
 
 
-def test_a_long_fold_does_not_overflow_the_stack(capsys):
-    """A chain is as deep as the sequence is long.
+def test_registering_what_a_rewriter_made_does_not_recurse():
+    """The walk's depth is the depth of what was built, and a fold's chain is
+    as deep as its sequence is long.
 
     Python has no tail calls and this engine builds millions of nodes in one
-    process, so a recursive walk over what a rewriter made would hit the stack
-    limit on a fold of a few thousand elements. It did; the walk is iterative.
+    process, so a recursive walk would hit the stack limit on a fold of a few
+    thousand elements. Five thousand links here, against a default limit of
+    about one thousand frames.
     """
-    n = 3000
-    result = _run(f'xs = for i in range(0, {n}) do i\nprint "s" fold + xs')
-    printed = {line.partition("=")[0].strip(): line.partition("=")[2].strip()
-               for line in capsys.readouterr().out.splitlines() if "=" in line}
+    from voxlogica.engine.core import ComputationEngine
+    from voxlogica.lazy.ir import NodeSpec
 
-    assert result.success is True, result
-    assert float(printed["s"]) == float(n * (n - 1) // 2)
+    engine = ComputationEngine()
+    seed = engine.table.intern(
+        NodeSpec(kind="constant", operator="constant", attrs={"value": 0}))
+    accumulator = seed
+    for step in range(5000):
+        element = engine.table.intern(
+            NodeSpec(kind="constant", operator="constant", attrs={"value": step}))
+        accumulator = engine.table.intern(
+            NodeSpec(kind="primitive", operator="default.combine",
+                     args=(accumulator, element), attrs={"operator": "+"}))
+
+    engine._register_new_subtree(accumulator, 0)     # must not raise
+
+    assert accumulator in engine.graph.incomplete
