@@ -76,6 +76,12 @@ class Executor:
         # Whether an operator takes handles. Read once per operator, not once
         # per dispatch: this sits on the hot path of every kernel call.
         self._lazy_ops: dict[str, bool] = {}
+        # How a handle is turned into what it names. `lookup` alone sees only the
+        # live tier, which is right for a node's own dependencies (the scheduler
+        # guarantees those are resident) and wrong for a handle, which can name a
+        # node this run never computed -- a warm store hands back a sequence
+        # whose elements are on disk. The engine installs the full hierarchy.
+        self._handle_resolver: Callable[[NodeId], Any] | None = None
 
     async def run(self, table: NodeTable, node_id: NodeId) -> Any:
         """Materialize one primitive node off the event loop."""
@@ -285,7 +291,8 @@ class Executor:
         handle in it. The extra work exists only where a lazy producer upstream
         actually put a reference in a value.
         """
-        return resolve_deep(_unwrap(value), lambda node_id: _unwrap(lookup(node_id)))
+        resolver = self._handle_resolver or lookup
+        return resolve_deep(_unwrap(value), lambda node_id: _unwrap(resolver(node_id)))
 
     def _invoke(self, kernel, args: list[Any], kwargs: dict[str, Any], attrs: dict[str, Any] | None = None) -> Any:
         """Adapt engine arguments to the kernel's declared Python signature."""

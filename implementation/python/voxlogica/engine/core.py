@@ -247,6 +247,7 @@ class ComputationEngine:
         # ── Per-node scheduling extras (pruned at completion) ──
         self._priority: dict[NodeId, int] = {}
         self._alias: dict[NodeId, NodeId] = {}      # a loop node -> its spliced sequence node
+        self.executor._handle_resolver = self._rematerialize
         self._reload_deferred: set[NodeId] = set()  # deferred once to prefer resident-ready work
 
         # ── Cache-admission policy + metrics ──

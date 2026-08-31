@@ -298,7 +298,12 @@ class EngineExecutionStrategy:
         engine.shutdown()
 
         if goals is None:
-            resolve = engine.table.values.__getitem__
+            # THROUGH THE CACHE HIERARCHY, not the live tier. On a warm run the
+            # sequence comes back from the store naming elements that were never
+            # computed in this process, so `table.values` does not have them and
+            # `_rematerialize` is the only answer that is right in both cases:
+            # resident, else reload, else rebuild from lineage.
+            resolve = engine._rematerialize
             for goal in target:
                 if goal.id in values:
                     self._side_effect(goal.operation, goal.name, values[goal.id], resolve)
