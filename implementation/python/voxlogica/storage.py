@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Union
 from abc import ABC, abstractmethod
 import logging
+import hashlib
 import os
 import queue
 import shutil
@@ -522,8 +523,7 @@ class SQLiteResultsDatabase:
             payload_file = None
             payload_bytes = 0
             if encoded.payload_bin is not None:
-                payload_file = f"{node_id}.bin"
-                self._write_payload_atomically(payload_file, encoded.payload_bin)
+                payload_file = self._store_payload(encoded.payload_bin)
                 payload_bytes = len(encoded.payload_bin)
             prepared.append((node_id, encoded, payload_file, payload_bytes,
                              dumps_json(dict(metadata or {})), compute_ms))
@@ -668,6 +668,36 @@ class SQLiteResultsDatabase:
     _EVICT_SCAN = ("SELECT node_id, payload_file, payload_bytes, gd_key FROM results "
                    "WHERE payload_bytes > 0 ORDER BY gd_key ASC LIMIT 128")
 
+    def _store_payload(self, payload_bin: bytes) -> str:
+        """Put bytes in the payload store, ADDRESSED BY WHAT THEY ARE.
+
+        Payloads used to be named `<node_id>.bin`: two nodes whose value happens
+        to be identical stored two copies, and there are many such nodes -- a
+        sweep that varies one parameter recomputes the same mask under a dozen
+        expressions. Naming a payload by its own digest stores it once, however
+        many nodes point at it. That is Git's blob, the Nix store, and the
+        sister project NEARBYTES's `blocks/<hash>.bin`.
+
+        THE STORE COMPUTES THE HASH, and callers do not pass one in. Taken from
+        NEARBYTES's log API, which says why: the store is the sole authority of
+        the content-address namespace, because an address asserted by a caller
+        is an address nobody verified.
+
+        Sharded two hex digits deep, because a flat directory of a million
+        entries is slow to open on every filesystem that matters.
+
+        Writing is idempotent: identical bytes have an identical name, so a
+        payload already present is already correct and is not rewritten. Merging
+        two stores is therefore the union of two directories.
+        """
+        digest = hashlib.sha256(payload_bin).hexdigest()
+        relative = f"{digest[:2]}/{digest[2:]}.bin"
+        target = self.payload_dir / relative
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self._write_payload_atomically(relative, payload_bin)
+        return relative
+
     def _write_payload_atomically(self, payload_file: str, payload_bin: bytes) -> None:
         """Write a payload so it is either wholly there or not there at all.
 
@@ -683,7 +713,7 @@ class SQLiteResultsDatabase:
         the temp name carries the pid so concurrent writers never collide.
         """
         target = self.payload_dir / payload_file
-        tmp = self.payload_dir / f"{payload_file}.{os.getpid()}.part"
+        tmp = target.with_name(f"{target.name}.{os.getpid()}.part")
         try:
             tmp.write_bytes(payload_bin)
             os.replace(tmp, target)
