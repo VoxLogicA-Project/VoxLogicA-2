@@ -335,15 +335,6 @@ class NodeTable:
         if record is None or record.value is None:
             return None
         value = record.value
-        if not self._references_are_answerable(value):
-            # A stored container names its elements by handle. If this run can
-            # answer none of those questions -- the node is not in its graph
-            # (a warm hit skipped the expansion that would have interned it) and
-            # not in the store either -- then the container is not a usable cache
-            # hit, however intact its own bytes are. Reporting a miss costs a
-            # recompute of a list of hashes; returning it costs a KeyError deep
-            # inside a goal, which is what this was measured as.
-            return None
         sitk = _simpleitk()
         if sitk is not None and isinstance(value, sitk.Image):
             value = PolyArray.from_sitk(value)
