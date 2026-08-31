@@ -92,6 +92,23 @@ def resolve_deep(value: object, resolve):
     return _rebuild(value, resolve)
 
 
+def resolve_shallow(value: object, resolve):
+    """Give back the container, without unpacking what is inside it.
+
+    For an operator that reaches into a value without caring what it holds:
+    `index` wants element *i*, and resolving the whole sequence to hand back one
+    element is issue #51 in miniature.
+
+    The value ITSELF is still resolved, and repeatedly: with nested indexing the
+    inner `index` returns a handle, so the outer one is handed a handle where a
+    container belongs and cannot subscript it. Measured as exactly that error.
+    Only the CONTENTS are left alone.
+    """
+    while isinstance(value, Handle):
+        value = resolve(value.node)
+    return value
+
+
 def _rebuild(value: object, resolve):
     if isinstance(value, Handle):
         return _rebuild(resolve(value.node), resolve)

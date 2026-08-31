@@ -31,7 +31,7 @@ from voxlogica.arrays import PolyArray
 from voxlogica.buffer_pool import acquire_numpy, buffer_states, recycle_unleased_states
 from voxlogica.engine.inflight import executing
 from voxlogica.engine.node_table import NodeTable
-from voxlogica.handles import Handle, resolve_deep
+from voxlogica.handles import Handle, resolve_deep, resolve_shallow
 from voxlogica.engine.numba_fusion import resolve_out_dtype, shape_of
 from voxlogica.lazy.ir import NodeId
 from voxlogica.primitives.registry import PrimitiveRegistry
@@ -269,9 +269,13 @@ class Executor:
             kwargs = {key: Handle(arg_id) for key, arg_id in node.kwargs}
             return self._invoke(kernel, args, kwargs, node.attrs)
         if shallow:
-            # The value, with whatever handles it contains left in place.
-            args = [_unwrap(lookup(arg_id)) for arg_id in node.args]
-            kwargs = {key: _unwrap(lookup(arg_id)) for key, arg_id in node.kwargs}
+            # The container itself, with whatever handles it holds left in place.
+            resolver = self._handle_resolver or lookup
+            def _shallow(arg_id):
+                return resolve_shallow(_unwrap(lookup(arg_id)),
+                                       lambda node_id: _unwrap(resolver(node_id)))
+            args = [_shallow(arg_id) for arg_id in node.args]
+            kwargs = {key: _shallow(arg_id) for key, arg_id in node.kwargs}
             return self._invoke(kernel, args, kwargs, node.attrs)
         args = [self._eager(lookup(arg_id), lookup) for arg_id in node.args]
         kwargs = {key: self._eager(lookup(arg_id), lookup) for key, arg_id in node.kwargs}
