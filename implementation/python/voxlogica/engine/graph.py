@@ -234,6 +234,16 @@ class DependencyGraph:
         """Add one consumer reference (a hold) to a value."""
         self.consumers[nid] = self.consumers.get(nid, 0) + 1
 
+    def names_handles(self, nid: NodeId) -> bool:
+        """Whether this node's VALUE names other nodes. O(1), and on the hot path.
+
+        Walking a value to find out costs O(size) per argument per dispatch, and
+        this engine dispatches thousands of nodes a second. The set is already
+        maintained by `hold_handles`, so the question is a dict membership test
+        and the walk happens once, at completion, for the few values that need it.
+        """
+        return nid in self._handle_refs
+
     def hold_handles(self, holder: NodeId, value: Any) -> None:
         """Count the handles INSIDE a value as references to what they name.
 

@@ -82,6 +82,13 @@ class Executor:
         # node this run never computed -- a warm store hands back a sequence
         # whose elements are on disk. The engine installs the full hierarchy.
         self._handle_resolver: Callable[[NodeId], Any] | None = None
+        #: `(NodeId) -> bool`, installed by the engine: does this node's value
+        #: name others? Without it every eager argument is walked.
+        self._names_handles: Callable[[NodeId], bool] | None = None
+        #: operator -> Modes, per executor. `modes_of` memoizes too, but on a
+        #: `(id(registry), operator)` tuple that has to be built on every
+        #: dispatch; a plain string key allocates nothing.
+        self._modes: dict[str, Any] = {}
 
     async def run(self, table: NodeTable, node_id: NodeId) -> Any:
         """Materialize one primitive node off the event loop."""
@@ -259,7 +266,10 @@ class Executor:
             kernel = self.registry.load_kernel("default.subsequence")
             return self._invoke(kernel, [sequence, start, stop], {})
         kernel = self.registry.load_kernel(node.operator)
-        modes = modes_of(self.registry, node.operator)
+        operator = node.operator
+        modes = self._modes.get(operator)
+        if modes is None:
+            modes = self._modes[operator] = modes_of(self.registry, operator)
         if modes.lazy:
             # A lazy operator is handed the references themselves. Nothing is
             # materialized here, which is the whole point: `default.sequence`
@@ -274,25 +284,30 @@ class Executor:
             def _shallow(arg_id):
                 return resolve_shallow(_unwrap(lookup(arg_id)),
                                        lambda node_id: _unwrap(resolver(node_id)))
-            args = [_shallow(a) if modes.shallow_at(i) else self._eager(lookup(a), lookup)
+            args = [_shallow(a) if modes.shallow_at(i) else self._eager(a, lookup)
                     for i, a in enumerate(node.args)]
-            kwargs = {key: self._eager(lookup(a), lookup) for key, a in node.kwargs}
+            kwargs = {key: self._eager(a, lookup) for key, a in node.kwargs}
             return self._invoke(kernel, args, kwargs, node.attrs)
-        args = [self._eager(lookup(arg_id), lookup) for arg_id in node.args]
-        kwargs = {key: self._eager(lookup(arg_id), lookup) for key, arg_id in node.kwargs}
+        args = [self._eager(arg_id, lookup) for arg_id in node.args]
+        kwargs = {key: self._eager(arg_id, lookup) for key, arg_id in node.kwargs}
         return self._invoke(kernel, args, kwargs, node.attrs)
 
-    def _eager(self, value: Any, lookup: Callable[[NodeId], Any]) -> Any:
+    def _eager(self, arg_id: NodeId, lookup: Callable[[NodeId], Any]) -> Any:
         """Materialize one argument for an operator that declared nothing.
 
-        `_unwrap` is what this did before handles existed and is what it still
-        does for every value that contains none -- `resolve_deep` returns such a
-        value AS IS, having short-circuited on the first container level with no
-        handle in it. The extra work exists only where a lazy producer upstream
-        actually put a reference in a value.
+        ASKS, RATHER THAN LOOKS. Only a lazy or shallow operator can put a handle
+        in a value, and the graph already records which values did -- so this is
+        a dict membership test, not a walk of the value. Walking cost O(size) per
+        argument per dispatch, and this engine dispatches thousands of nodes a
+        second; for the overwhelming majority of arguments the answer is no and
+        the path is exactly what it was before handles existed.
         """
+        value = _unwrap(lookup(arg_id))
+        names_handles = self._names_handles
+        if names_handles is not None and not names_handles(arg_id):
+            return value
         resolver = self._handle_resolver or lookup
-        return resolve_deep(_unwrap(value), lambda node_id: _unwrap(resolver(node_id)))
+        return resolve_deep(value, lambda node_id: _unwrap(resolver(node_id)))
 
     def _invoke(self, kernel, args: list[Any], kwargs: dict[str, Any], attrs: dict[str, Any] | None = None) -> Any:
         """Adapt engine arguments to the kernel's declared Python signature."""

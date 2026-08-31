@@ -251,6 +251,7 @@ class ComputationEngine:
         self._priority: dict[NodeId, int] = {}
         self._alias: dict[NodeId, NodeId] = {}      # a loop node -> its spliced sequence node
         self.executor._handle_resolver = self._resolve_reference
+        self.executor._names_handles = self.graph.names_handles
         self._reload_deferred: set[NodeId] = set()  # deferred once to prefer resident-ready work
 
         # ── Cache-admission policy + metrics ──
@@ -1325,6 +1326,8 @@ class ComputationEngine:
             return False           # it is handed the handles; it needs no values
         waiting = False
         for dep in self.graph.deps(nid):
+            if not self.graph.names_handles(dep):
+                continue           # O(1); the walk below is for the few that do
             for handle in iter_handles(self.table.values.get(dep)):
                 ref = handle.node
                 if ref in self.table.values or ref in self.table.completed:
