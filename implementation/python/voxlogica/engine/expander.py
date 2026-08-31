@@ -68,9 +68,13 @@ class Expander:
 
     def can_expand(self, node: NodeSpec) -> bool:
         """True for a closure-over-sequence node (args = (iterable, closure))."""
-        return (node.kind == "primitive"
-                and modes_of(self.registry, node.operator).rewrite
-                and len(node.args) == 2)
+        modes = modes_of(self.registry, node.operator)
+        # An operator that supplies its own rewriter is NOT a loop, whatever its
+        # shape. `filter` declares rewrite and takes two arguments, so without
+        # this it was unrolled as a map and its rewriter never ran -- the program
+        # printed the predicate's flags where the kept elements belonged.
+        return (node.kind == "primitive" and modes.rewrite
+                and modes.rewriter is None and len(node.args) == 2)
 
     # ── Incremental expansion ─────────────────────────────────────────────────
 
