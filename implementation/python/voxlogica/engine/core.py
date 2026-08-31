@@ -1017,6 +1017,9 @@ class ComputationEngine:
             # it safely.
             will_be_durable = self.table.complete(nid, value, compute_ms,
                                                   critical=critical, persist=worth_it)
+            # A lazy operator's value can name nodes no edge reaches from here.
+            # Count those as references before anything else can release them.
+            self.graph.hold_handles(nid, value)
             if node.operator in _SEQUENCE_OPERATORS:
                 for index, item in enumerate(value):
                     self.table.complete_item(nid, index, item)

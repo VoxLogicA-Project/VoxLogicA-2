@@ -32,9 +32,11 @@ single dict/set lookups are atomic under the GIL and staleness is harmless
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Any
 
 from voxlogica.engine.expander import Expander
 from voxlogica.engine.node_table import NodeTable
+from voxlogica.handles import iter_handles
 from voxlogica.lazy.ir import NodeId
 
 
@@ -46,6 +48,8 @@ class DependencyGraph:
         self.incomplete: set[NodeId] = set()          # the frontier
         self.pending: dict[NodeId, int] = {}          # unmet deps before ready
         self.consumers: dict[NodeId, int] = {}        # unrun consumers holding a value
+        # holder -> nodes its VALUE names by handle (see hold_handles)
+        self._handle_refs: dict[NodeId, tuple[NodeId, ...]] = {}
         self.protected: set[NodeId] = set()           # goal values: never auto-evicted
         self._dependents: dict[NodeId, list[NodeId]] = defaultdict(list)
         self._deps_memo: dict[NodeId, frozenset[NodeId]] = {}
@@ -230,6 +234,27 @@ class DependencyGraph:
         """Add one consumer reference (a hold) to a value."""
         self.consumers[nid] = self.consumers.get(nid, 0) + 1
 
+    def hold_handles(self, holder: NodeId, value: Any) -> None:
+        """Count the handles INSIDE a value as references to what they name.
+
+        Every other reference in this engine is an edge, so ``consumers`` sees
+        it. A handle is not: a lazy operator's result can name a node that no
+        edge reaches from here. `index(s, i)` depends on `s` and on `i`, never on
+        element *i* -- so once the sequence node completed and released the
+        elements, the element `index` was about to read had already been evicted.
+        Measured as a KeyError inside `default.index`, not predicted.
+
+        This is the failure class of the buffer-pool incident: a reference
+        outliving what it refers to, silently. The holds are released together
+        with the holder's own value.
+        """
+        refs = tuple(dict.fromkeys(h.node for h in iter_handles(value)))
+        if not refs:
+            return
+        self._handle_refs[holder] = refs
+        for ref in refs:
+            self.pin(ref)
+
     def release(self, nid: NodeId) -> None:
         """Drop one consumer reference; evict the value on the last release.
 
@@ -247,3 +272,9 @@ class DependencyGraph:
             del self.consumers[nid]  # drop the entry: state is frontier-only
             if nid not in self.protected:
                 self.table.evict(nid)
+            # The holder is gone, so what its value named is no longer held by
+            # it. Popped before releasing: a ref cycle cannot exist (handles
+            # name nodes, nodes form a DAG), but re-entering through the same
+            # entry would double-release.
+            for ref in self._handle_refs.pop(nid, ()):
+                self.release(ref)
