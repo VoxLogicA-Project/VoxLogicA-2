@@ -50,7 +50,8 @@ from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.memlog import MemoryLogger
 from voxlogica.engine.node_table import NodeTable
-from voxlogica.engine.evaluation import NeedsExpansion, modes_of
+from voxlogica.engine.evaluation import (NeedsExpansion, grows_the_graph_by_name,
+                                          modes_of)
 from voxlogica.handles import contains_handle
 from voxlogica.engine.numba_fusion import NumbaFusionBackend
 from voxlogica.engine.topology import default_concurrency
@@ -1232,9 +1233,20 @@ class ComputationEngine:
         return self._rematerialize(nid)
 
     def _grows_the_graph(self, nid: NodeId) -> bool:
-        """Whether evaluating this node expands the graph instead of computing."""
+        """Whether evaluating this node expands the graph instead of computing.
+
+        Prefers the spec, falls back to the registry-free answer. The fallback is
+        not defensive padding: `_rematerialize` is reachable from callers that
+        hold no registry, and a question about what an operator IS should not
+        depend on who is asking.
+        """
         node = self.table.nodes.get(nid)
-        return node is not None and modes_of(self.registry, node.operator).rewrite
+        if node is None:
+            return False
+        registry = getattr(self, "registry", None)
+        if registry is None:
+            return grows_the_graph_by_name(node.operator)
+        return modes_of(registry, node.operator).rewrite
 
     def _rematerialize(self, nid: NodeId) -> Any:
         """Recompute (or reload) a completed node whose value was evicted."""
