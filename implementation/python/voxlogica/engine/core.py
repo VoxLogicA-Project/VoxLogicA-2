@@ -1244,8 +1244,42 @@ class ComputationEngine:
             return None
         return rewriter(node, RewriteContext(self._resolve_reference, self.table.intern))
 
+    def _register_new_subtree(self, root: NodeId, priority: int) -> None:
+        """Wire nodes a rewriter just made into the graph, deps first.
+
+        `register` counts a dependency as met when it is not in `incomplete` --
+        which is right for a node that already completed, and wrong for one that
+        was never registered at all. A rewriter MAKES nodes, so its result can
+        depend on nodes nobody has wired yet, and the engine would dispatch it
+        against a dependency that is never going to be computed.
+
+        `fold` hid this: its chain depends on element nodes that already
+        completed and on a constant, and a constant rematerializes from its own
+        attributes without being scheduled. `filter` did not: its `gather`
+        depends on a `map` that had to run, and the run span until the timeout.
+
+        Depth-first so a node is registered after everything it needs.
+        """
+        seen: set[NodeId] = set()
+        order: list[NodeId] = []
+
+        def visit(nid: NodeId) -> None:
+            if nid in seen or nid in self.table.completed or nid in self.graph.incomplete:
+                return
+            seen.add(nid)
+            for dep in self.graph.deps(nid):
+                visit(dep)
+            order.append(nid)
+
+        visit(root)
+        for nid in order:
+            self._priority[nid] = max(self._priority.get(nid, 0), priority)
+            if self.graph.register(nid):
+                self.ready.push(nid, priority)
+
     def _on_rewritten(self, nid: NodeId, target: NodeId, priority: int) -> None:
         """This node's value is that node's value. Same forwarding a loop uses."""
+        self._register_new_subtree(target, priority)
         self._alias[nid] = target
         self.graph.pin(target)
         self._priority[target] = max(self._priority.get(target, 0), priority)
@@ -1310,7 +1344,11 @@ class ComputationEngine:
         if to_expand not in self.graph.incomplete:
             self.graph.register(to_expand)
         self.ready.push(to_expand, priority)
-        self.ready.push(waiting, priority)
+        # WAIT for it, do not requeue behind it. Pushing the waiter straight back
+        # meant it was dispatched again before the expansion had happened, raised
+        # NeedsExpansion again, and was pushed again: a queue spinning on itself,
+        # which is what a hang looks like from outside.
+        self.graph.await_one(waiting, to_expand)
 
     def _grows_the_graph(self, nid: NodeId) -> bool:
         """Whether evaluating this node expands the graph instead of computing.
