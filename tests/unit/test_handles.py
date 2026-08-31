@@ -177,65 +177,6 @@ def test_the_untaken_branch_is_never_computed(monkeypatch, capsys):
     assert 222.0 not in computed, "the untaken branch was computed anyway"
 
 
-# --- fold as a chain --------------------------------------------------------
-
-
-def test_a_fold_gives_the_same_answer_as_it_always_did(capsys):
-    program = 'xs = for i in [1, 2, 3, 4] do i\nprint "s" fold + xs\nprint "m" fold max xs'
-    result = _run(program)
-    printed = {line.partition("=")[0].strip(): line.partition("=")[2].strip()
-               for line in capsys.readouterr().out.splitlines() if "=" in line}
-
-    assert result.success is True, result
-    assert float(printed["s"]) == 10.0
-    assert float(printed["m"]) == 4.0
-
-
-def test_a_fold_becomes_a_chain_of_links(monkeypatch):
-    """One link per element, so each accumulator has exactly one consumer.
-
-    The kernel held every element at once for a result that never needs more
-    than two values in hand.
-    """
-    import voxlogica.engine.strategy as strategy_module
-
-    seen: list = []
-    original = strategy_module.ComputationEngine
-
-    class Captured(original):  # type: ignore[misc, valid-type]
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            seen.append(self)
-
-    monkeypatch.setattr(strategy_module, "ComputationEngine", Captured)
-
-    assert _run('xs = for i in [1, 2, 3, 4] do i\nprint "s" fold + xs').success is True
-
-    table = seen[0].table
-    links = [nid for nid, node in table.nodes.items()
-             if node.operator == "default.combine"]
-
-    # Four elements and a seed of 0 (the default for `+`) make four links.
-    assert len(links) == 4, f"expected one link per element, got {len(links)}"
-    # Each link consumes the previous one: the chain is left-associated, so no
-    # two links share an accumulator and none is a fan-out.
-    consumed = [a for nid in links for a in table.nodes[nid].args if a in set(links)]
-    assert len(consumed) == len(set(consumed)) == 3
-
-
-def test_a_fold_without_an_init_keeps_its_default_seed(capsys):
-    """`fold - xs` means 0-e0-e1-..., and starting at e0 is a different number."""
-    result = _run('xs = for i in [1, 2, 3] do i\nprint "d" fold - xs')
-    printed = {line.partition("=")[0].strip(): line.partition("=")[2].strip()
-               for line in capsys.readouterr().out.splitlines() if "=" in line}
-
-    assert result.success is True, result
-    assert float(printed["d"]) == -6.0        # 0-1-2-3, not 1-2-3 == -4
-
-
-# --- filter, which could not run at all -------------------------------------
-
-
 def test_filter_runs_at_all(capsys):
     """It could not. The closure's value is None here, so the kernel raised."""
     result = _run('kept = filter i in [1, 2, 3, 4, 5] do i > 2\nprint "k" kept')

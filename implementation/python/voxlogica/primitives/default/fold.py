@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from voxlogica.handles import Handle
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 from voxlogica.primitives.default.addition import execute as add_execute
 from voxlogica.primitives.default.division import execute as div_execute
@@ -115,67 +114,6 @@ def execute(**kwargs) -> Any:
     return fold_sequence(str(operator), init, sequence)
 
 
-def rewrite(node: Any, ctx: Any):
-    """Turn a fold into the chain it is: combine(combine(combine(seed,e0),e1),e2).
-
-    WHY. The kernel below receives the whole materialized sequence and reduces it
-    in Python, so every element is resident at once for a result that never needs
-    more than two values in hand. As a chain each accumulator has exactly ONE
-    consumer -- the next link -- and each element has one too, so both are
-    released the moment they are used. Peak is one accumulator plus one element,
-    whatever N is.
-
-    WHAT IT COSTS, because it is not free. A chain of N links has Theta(N) nodes
-    registered and incomplete at once: link i cannot complete before link i-1.
-    That is structural, not an implementation choice -- peeling one element per
-    rewrite was tried and made it 2N, because each level leaves both a link and a
-    shorter fold behind. So the frontier of a fold tracks its data, and
-    `test_frontier_bounded_by_window_not_plan` had to be told so.
-    
-    The trade is Theta(N) dictionary entries against Theta(N) resident values.
-    For 369 BraTS volumes that is a few hundred small entries instead of 51 GB,
-    which is the whole reason this engine is being changed.
-
-    Left-associated on purpose: a fold is left-to-right by definition, and a tree
-    reduction would parallelize at the cost of holding N/2 partial results.
-
-    Declines when the elements are not nodes -- a list of plain values has
-    nothing to point a link at, and the kernel handles that as it always did.
-    """
-    args = node.args
-    if len(args) == 2:
-        init_id, sequence_id = args[0], args[1]
-    elif len(args) == 1:
-        init_id, sequence_id = None, args[0]
-    else:
-        return None
-
-    operator = str((node.attrs or {}).get("operator", ""))
-    if operator not in _SUPPORTED_OPS:
-        return None
-
-    elements = ctx.resolve(sequence_id)
-    if not isinstance(elements, (list, tuple)) or not elements:
-        return None
-    if not all(isinstance(item, Handle) for item in elements):
-        return None            # nothing to point a link at; let the kernel do it
-
-    if init_id is None:
-        # THE DEFAULT SEED IS PART OF THE ANSWER. `fold -` with no init means
-        # 0-e0-e1-..., and starting from e0 would silently give another number.
-        # min and max are the ones that really do begin at the first element.
-        seed = _DEFAULT_INIT.get(operator, USE_FIRST_ELEMENT)
-        if seed is not USE_FIRST_ELEMENT:
-            init_id = ctx.constant(seed)
-
-    accumulator = init_id
-    for handle in elements:
-        accumulator = (handle.node if accumulator is None
-                       else ctx.node("default.combine", accumulator, handle.node,
-                                     operator=operator))
-    return accumulator
-
-
 KERNEL = execute
 PRIMITIVE_SPEC = PrimitiveSpec(
     name="fold",
@@ -185,7 +123,5 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     attrs_schema={"operator": str},
     planner=default_planner_factory("default.fold", kind="scalar"),
     kernel_name="default.fold",
-    rewrite=True,
-    rewriter=rewrite,
     description="Reduce a sequence with a built-in combiner",
 )

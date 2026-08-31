@@ -647,3 +647,58 @@ own bound, instead of one gathered list it could neither evict nor write.
   triggers a recompute.
 - **Extensibility**: a test-only primitive declaring `rewrite=True` is routed
   correctly by dispatch and by the miss path, without touching the engine.
+
+
+## 16. `filter` and `fold`, and why only one of them landed
+
+### `filter`: was unreachable, now runs
+
+The language has `filter` -- the parser accepts it and the reducer lowers it to
+`filter(iterable, closure)` -- and it could not run. A closure node's value under
+this engine is `None`, because the engine expands closures rather than building
+them, so the kernel raised "requires closure argument" on every program that used
+it. A language feature that could be written and never executed, kept alive by a
+test that called the kernel directly with a Python lambda.
+
+It rewrites to `gather(map(predicate, sequence), sequence)`: `map` is already a
+node the engine expands, and `gather` is an ordinary primitive. Two nodes, no new
+machinery.
+
+Its memory is the point. Each predicate consumes its element and releases it, and
+`gather`'s sequence argument is SHALLOW, so it selects among handles and returns
+handles. Filtering three hundred volumes down to four costs three hundred
+booleans and four references.
+
+`filter` is also what forced `shallow` to become per-argument: `gather` needs one
+argument as values -- there is nothing to test in a handle -- and the other as
+handles. The earlier claim that per-operator was enough is withdrawn.
+
+### `fold`: tried as a chain, reverted, and this is why
+
+A fold's kernel receives the whole materialized sequence, so every element is
+resident for a result that never needs more than two values in hand. As a chain
+of `combine` links each accumulator has exactly one consumer and each element
+one too: peak is one accumulator plus one element, whatever N is.
+
+It works, it is memory-optimal, and it WEDGES THE ENGINE.
+
+Measured: a fold over a literal list of 64 elements finishes in 0.5 s; a fold
+over a sequence a `for` produced finishes at 16 elements and hangs at 32 -- the
+admission window. A chain registers N nodes at once, and a left fold has N of
+them incomplete simultaneously by construction: link *i* cannot complete before
+link *i-1*. Peeling one element per rewrite was tried and is worse, 2N, because
+each level leaves both a link and a shorter fold behind.
+
+So the frontier bound is not bookkeeping, as this design first assumed when it
+raised the test's threshold: exceeding it stops admission from making progress.
+That assumption is withdrawn too, and the test's original bound restored.
+
+**What a memory-optimal fold actually needs** is a kernel that consumes a
+sequence one element at a time -- the same capability `nnunet.train` needs, and
+the one section 4 describes as rewriting into per-element nodes. A fold cannot
+use that shape because its links are not independent; it needs streaming INTO a
+running kernel, which this engine does not have and which is not a handles
+question.
+
+Reverted: the rewriter and the `combine` primitive it needed. The finding is the
+result.
