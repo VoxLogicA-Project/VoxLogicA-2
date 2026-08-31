@@ -215,8 +215,19 @@ def test_a_fold_becomes_a_chain_of_links(monkeypatch):
     links = [nid for nid, node in table.nodes.items()
              if node.operator == "default.combine"]
 
+    # Four elements and a seed of 0 (the default for `+`) make four links.
     assert len(links) == 4, f"expected one link per element, got {len(links)}"
     # Each link consumes the previous one: the chain is left-associated, so no
     # two links share an accumulator and none is a fan-out.
     consumed = [a for nid in links for a in table.nodes[nid].args if a in set(links)]
     assert len(consumed) == len(set(consumed)) == 3
+
+
+def test_a_fold_without_an_init_keeps_its_default_seed(capsys):
+    """`fold - xs` means 0-e0-e1-..., and starting at e0 is a different number."""
+    result = _run('xs = for i in [1, 2, 3] do i\nprint "d" fold - xs')
+    printed = {line.partition("=")[0].strip(): line.partition("=")[2].strip()
+               for line in capsys.readouterr().out.splitlines() if "=" in line}
+
+    assert result.success is True, result
+    assert float(printed["d"]) == -6.0        # 0-1-2-3, not 1-2-3 == -4

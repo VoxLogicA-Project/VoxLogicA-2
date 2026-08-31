@@ -127,6 +127,13 @@ class RewriteContext:
         return self._intern(NodeSpec(kind="primitive", operator=primitive,
                                      args=tuple(args), attrs=dict(attrs)))
 
+    def constant(self, value: Any) -> str:
+        """Intern a literal, so a rewriter can point a link at a seed value."""
+        from voxlogica.lazy.ir import NodeSpec
+
+        return self._intern(NodeSpec(kind="constant", operator="constant",
+                                     attrs={"value": value}))
+
 
 class NeedsExpansion(Exception):
     """A node that grows the graph cannot be rebuilt by calling a kernel.

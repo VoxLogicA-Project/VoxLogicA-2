@@ -145,6 +145,15 @@ def rewrite(node: Any, ctx: Any):
     if operator not in _SUPPORTED_OPS:
         return None
 
+    if init_id is None:
+        # THE DEFAULT SEED IS PART OF THE ANSWER, not a detail. `fold -` with no
+        # init means 0-e0-e1-..., and starting from e0 instead would silently
+        # give a different number. min and max are the ones that really do begin
+        # at the first element.
+        seed = _DEFAULT_INIT.get(operator, USE_FIRST_ELEMENT)
+        if seed is not USE_FIRST_ELEMENT:
+            init_id = ctx.constant(seed)
+
     elements = ctx.resolve(sequence_id)
     if not isinstance(elements, (list, tuple)) or not elements:
         return None
