@@ -143,6 +143,6 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     # to avoid materializing what it discards; declaring the mode says the same thing
     # once, for every operator that needs it.
     kernel_name="default.subsequence",
-    shallow=True,
+    # shallow=True,  # BISECT
     description="Extract a sequence slice by index range",
 )
