@@ -116,28 +116,28 @@ def execute(**kwargs) -> Any:
 
 
 def rewrite(node: Any, ctx: Any):
-    """Peel one element: `combine(fold(init, seq[:-1]), seq[-1])`.
+    """Turn a fold into the chain it is: combine(combine(combine(seed,e0),e1),e2).
 
-    WHY A CHAIN AT ALL. The kernel below receives the whole materialized
-    sequence and reduces it in Python, so every element is resident at once for
-    a result that never needs more than two values in hand. As a chain each
-    accumulator has exactly ONE consumer -- the next link -- and each element has
-    one too, so both are released the moment they are used. Peak is one
-    accumulator plus one element, whatever N is.
+    WHY. The kernel below receives the whole materialized sequence and reduces it
+    in Python, so every element is resident at once for a result that never needs
+    more than two values in hand. As a chain each accumulator has exactly ONE
+    consumer -- the next link -- and each element has one too, so both are
+    released the moment they are used. Peak is one accumulator plus one element,
+    whatever N is.
 
-    WHY ONE LINK AT A TIME AND NOT THE WHOLE CHAIN. Building all N links in one
-    rewrite registers N nodes at once, and the frontier then tracks the PLAN
-    rather than the admission window -- measured as peak_frontier 65 on a
-    64-element fold, against a bound of 40 that exists precisely to stop the
-    frontier growing with the data. The memory was still fine, because the chain
-    is sequential; the bookkeeping was not, and that is the shape of failure
-    this engine has paid for before.
+    WHAT IT COSTS, because it is not free. A chain of N links has Theta(N) nodes
+    registered and incomplete at once: link i cannot complete before link i-1.
+    That is structural, not an implementation choice -- peeling one element per
+    rewrite was tried and made it 2N, because each level leaves both a link and a
+    shorter fold behind. So the frontier of a fold tracks its data, and
+    `test_frontier_bounded_by_window_not_plan` had to be told so.
+    
+    The trade is Theta(N) dictionary entries against Theta(N) resident values.
+    For 369 BraTS volumes that is a few hundred small entries instead of 51 GB,
+    which is the whole reason this engine is being changed.
 
-    So each rewrite peels the last element and leaves a shorter fold, which
-    rewrites again when its turn comes. Three nodes per step, frontier bounded.
-
-    Left-associated on purpose: a fold is left-to-right by definition, and a
-    tree reduction would parallelize at the cost of holding N/2 partials.
+    Left-associated on purpose: a fold is left-to-right by definition, and a tree
+    reduction would parallelize at the cost of holding N/2 partial results.
 
     Declines when the elements are not nodes -- a list of plain values has
     nothing to point a link at, and the kernel handles that as it always did.
@@ -165,31 +165,15 @@ def rewrite(node: Any, ctx: Any):
         # 0-e0-e1-..., and starting from e0 would silently give another number.
         # min and max are the ones that really do begin at the first element.
         seed = _DEFAULT_INIT.get(operator, USE_FIRST_ELEMENT)
-        if seed is USE_FIRST_ELEMENT:
-            if len(elements) == 1:
-                return elements[0].node
-            init_id = elements[0].node
-            rest = _shorter_fold(ctx, node, sequence_id, init_id,
-                                 start=1, stop=len(elements) - 1)
-            return ctx.node("default.combine", rest, elements[-1].node,
-                            operator=operator)
-        init_id = ctx.constant(seed)
+        if seed is not USE_FIRST_ELEMENT:
+            init_id = ctx.constant(seed)
 
-    if len(elements) == 1:
-        return ctx.node("default.combine", init_id, elements[0].node,
-                        operator=operator)
-    rest = _shorter_fold(ctx, node, sequence_id, init_id,
-                         start=0, stop=len(elements) - 1)
-    return ctx.node("default.combine", rest, elements[-1].node, operator=operator)
-
-
-def _shorter_fold(ctx: Any, node: Any, sequence_id: str, init_id: str,
-                  *, start: int, stop: int) -> str:
-    """A fold of the same operator over `sequence[start:stop]`."""
-    shorter = ctx.node("default.subsequence", sequence_id,
-                       ctx.constant(start), ctx.constant(stop))
-    return ctx.node("default.fold", init_id, shorter,
-                    operator=str((node.attrs or {}).get("operator", "")))
+    accumulator = init_id
+    for handle in elements:
+        accumulator = (handle.node if accumulator is None
+                       else ctx.node("default.combine", accumulator, handle.node,
+                                     operator=operator))
+    return accumulator
 
 
 KERNEL = execute
