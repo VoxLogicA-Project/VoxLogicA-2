@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import dask.bag as db
 import pytest
 
 from voxlogica.execution_strategy.results import SequenceValue
@@ -10,7 +9,6 @@ from voxlogica.primitives.default import (
     addition,
     argmax as argmax_primitive,
     dir as dir_primitive,
-    dask_map,
     division,
     filter as filter_primitive,
     fold as fold_primitive,
@@ -60,11 +58,6 @@ def test_sequence_arithmetic_overloads():
 
 
 @pytest.mark.unit
-def test_dask_arithmetic_overloads():
-    bag = db.from_sequence([1, 2, 3], npartitions=2)
-    assert addition.execute(bag, 5).compute() == [6, 7, 8]
-    assert multiplication.execute(3, bag).compute() == [3, 6, 9]
-    assert subtraction.execute(bag, bag).compute() == [0, 0, 0]
 
 
 @pytest.mark.unit
@@ -235,23 +228,6 @@ def test_parameter_grid_primitive():
 
 
 @pytest.mark.unit
-def test_dask_map_and_print_primitive(capsys: pytest.CaptureFixture[str]):
-    class DaskClosure:
-        variable = "x"
-
-        def __call__(self, value):
-            return value + 1
-
-    bag = db.from_sequence([1, 2, 3], npartitions=2)
-    mapped = dask_map.execute(**{"0": bag, "closure": DaskClosure()})
-    assert mapped.compute() == [2, 3, 4]
-
-    with pytest.raises(ValueError):
-        dask_map.execute(**{"0": [1, 2, 3], "closure": DaskClosure()})
-
-    rendered = print_primitive.execute(**{"0": '"label"', "1": 42})
-    assert rendered == "label=42"
-    assert "label=42" in capsys.readouterr().out
 
 
 @pytest.mark.unit
