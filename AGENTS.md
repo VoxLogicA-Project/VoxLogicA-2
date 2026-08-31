@@ -100,6 +100,22 @@ cmd > /tmp/x.out 2>&1; echo EXIT=$?; wc -l /tmp/x.out
 - Efficiency target is 100%. A shortfall is justified with measured memory
   bandwidth against the machine's measured ceiling, never asserted.
 
+## No recursion
+
+Not in engine code, not in primitives, not in tests that walk a plan. Python has
+no tail calls, and this engine builds millions of nodes -- tens of millions -- in
+a single process. A walk whose depth is the depth of the DATA will overflow, and
+a `RecursionError` raised inside a completion is not a failure anyone can read.
+
+Use an explicit stack. It is a list and a `while`, and it cannot overflow.
+
+Depth is rarely what it looks like: a fold's chain is as deep as its sequence is
+long, and a value's nesting is whatever a program made. "Usually shallow" is not
+a bound.
+
+Reference implementations kept for comparison (`execution_strategy/lazy.py`) are
+exempt: they are there to be read against, not run.
+
 ## Reporting
 
 - Answer only what was asked. A status is 3 lines; a result is a table plus 2

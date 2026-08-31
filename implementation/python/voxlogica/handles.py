@@ -53,19 +53,22 @@ def contains_handle(value: object) -> bool:
 
 
 def iter_handles(value: object):
-    """Yield every handle reachable from ``value``, depth first.
+    """Yield every handle reachable from ``value``.
 
-    Containers only. Depth is the nesting depth of the value and cannot cycle:
-    handles name nodes, and nodes form a DAG.
+    Containers only, and ITERATIVE: nothing in this codebase may recurse, because
+    Python has no tail calls and this engine builds millions of nodes in one
+    process. A value's nesting is usually shallow, but "usually" is not a bound,
+    and a stack overflow inside a completion is not a failure anyone can read.
     """
-    if isinstance(value, Handle):
-        yield value
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            yield from iter_handles(item)
-    elif isinstance(value, dict):
-        for item in value.values():
-            yield from iter_handles(item)
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, Handle):
+            yield item
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+        elif isinstance(item, dict):
+            stack.extend(item.values())
 
 
 def _first_handle(value: object) -> Handle | None:
@@ -110,26 +113,73 @@ def resolve_shallow(value: object, resolve):
 
 
 def _rebuild(value: object, resolve):
-    if isinstance(value, Handle):
-        return _rebuild(resolve(value.node), resolve)
-    if isinstance(value, list):
-        return [_rebuild(item, resolve) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_rebuild(item, resolve) for item in value)
-    if isinstance(value, dict):
-        return {key: _rebuild(item, resolve) for key, item in value.items()}
-    return value
+    """Replace handles throughout a value, without recursing.
+
+    Containers are created empty, their slots filled from an explicit stack, and
+    tuples frozen at the end -- innermost first, which is the reverse of the
+    order they were discovered in. A handle naming a handle is followed by the
+    inner `while`, so a chain of them costs no depth either.
+
+    Nothing here may recurse: Python has no tail calls, and this engine builds
+    millions of nodes in one process.
+    """
+    holder: list = [None]
+    stack: list[tuple] = [(holder, 0, value)]
+    freeze: list[tuple] = []
+    while stack:
+        target, key, item = stack.pop()
+        while isinstance(item, Handle):
+            item = resolve(item.node)
+        if isinstance(item, (list, tuple)):
+            made: list = [None] * len(item)
+            target[key] = made
+            if isinstance(item, tuple):
+                freeze.append((target, key))
+            for index, element in enumerate(item):
+                stack.append((made, index, element))
+        elif isinstance(item, dict):
+            made_map: dict = {}
+            target[key] = made_map
+            for map_key, element in item.items():
+                stack.append((made_map, map_key, element))
+        else:
+            target[key] = item
+    for target, key in reversed(freeze):
+        target[key] = tuple(target[key])
+    return holder[0]
+
 
 
 def revive_handles(value: object) -> object:
-    """Turn the stored form of a handle back into one, anywhere in a value."""
-    if isinstance(value, dict):
-        node = value.get(HANDLE_TAG)
-        if isinstance(node, str) and len(value) == 1:
-            return Handle(node)
-        return {key: revive_handles(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [revive_handles(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(revive_handles(item) for item in value)
-    return value
+    """Turn the stored form of a handle back into one, anywhere in a value.
+
+    Iterative, like everything else that walks a value here: a stored container
+    is whatever a program produced, and its nesting is not something this code
+    gets to assume a bound on.
+    """
+    holder: list = [None]
+    stack: list[tuple] = [(holder, 0, value)]
+    freeze: list[tuple] = []
+    while stack:
+        target, key, item = stack.pop()
+        if isinstance(item, dict):
+            node = item.get(HANDLE_TAG)
+            if isinstance(node, str) and len(item) == 1:
+                target[key] = Handle(node)
+                continue
+            made_map: dict = {}
+            target[key] = made_map
+            for map_key, element in item.items():
+                stack.append((made_map, map_key, element))
+        elif isinstance(item, (list, tuple)):
+            made: list = [None] * len(item)
+            target[key] = made
+            if isinstance(item, tuple):
+                freeze.append((target, key))
+            for index, element in enumerate(item):
+                stack.append((made, index, element))
+        else:
+            target[key] = item
+    for target, key in reversed(freeze):
+        target[key] = tuple(target[key])
+    return holder[0]
