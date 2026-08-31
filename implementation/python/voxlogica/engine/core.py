@@ -50,6 +50,7 @@ from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.memlog import MemoryLogger
 from voxlogica.engine.node_table import NodeTable
+from voxlogica.handles import contains_handle
 from voxlogica.engine.numba_fusion import NumbaFusionBackend
 from voxlogica.engine.topology import default_concurrency
 from voxlogica.engine.priority import Priority
@@ -1016,6 +1017,22 @@ class ComputationEngine:
             # less -- the persist backlog is byte-budgeted, so the queue rarely
             # holds a value long enough to outlive its consumers -- but it buys
             # it safely.
+            if worth_it and contains_handle(value):
+                # NOT YET. A stored container names its elements by hash, and
+                # nothing here guarantees the elements were written BEFORE it.
+                # A later run that hits the container then holds references it
+                # cannot answer: the node is not in its graph, because hitting
+                # the container is exactly what let it skip the expansion that
+                # would have interned it. Measured as a KeyError inside a goal.
+                #
+                # Writing containers is what finally makes a sequence of images
+                # storable (see doc/dev/handles-design.md section 7), and it
+                # needs the write ORDER -- elements durable first, Git's rule
+                # that a tree is written after its blobs. That belongs with the
+                # blob store, not here. Until then the container is recomputed,
+                # which costs rebuilding a list of hashes while every element
+                # still comes off disk.
+                worth_it = False
             will_be_durable = self.table.complete(nid, value, compute_ms,
                                                   critical=critical, persist=worth_it)
             # A lazy operator's value can name nodes no edge reaches from here.
