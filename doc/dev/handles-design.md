@@ -373,7 +373,48 @@ here so it is not discovered later.
 
 ## 11. Operator census
 
-*(filled during implementation)*
+Every operator was read, not guessed at from its name. Forty-four across eight
+namespaces; the ones that are not `eager` and the ones that were close calls:
+
+| operator | mode | why |
+|---|---|---|
+| `default.sequence` | `lazy` | puts its arguments in a list and never looks inside |
+| `default.index` | `shallow` | reaches element *i*; deep-resolving would cost all N |
+| `default.subsequence` | `shallow` | a slice costs the slice; had this hand-written in the executor |
+| `default.slice` | `shallow` | same reason as `index` |
+| `default.for_loop` | `rewrite` | expanded, never computed |
+| `default.map` | `rewrite` | same |
+
+### Close calls, and why they stayed eager
+
+**`parameter_grid`** looked like the best remaining candidate: it takes a
+sequence of axes and returns their cartesian product, and it does not care what
+an axis value IS. A grid of handles would be exactly right. It stays eager
+because it needs **two** levels -- the sequence of axes, and then each axis as a
+sequence -- and `shallow` gives one. Making the kernel resolve the second level
+would be resolution inside kernel code, which is the thing this design forbids.
+The cost of leaving it is nil: axes here are short lists of numbers.
+
+**`fold`, `mean`, `median`, `stdev`, `argmax`, `argsort`, `tally`** all consume
+the values to produce their answer -- a comparison or an arithmetic reduction --
+so eager is not a concession, it is what they are.
+
+**`print`** formats the value. Eager.
+
+**`range`, `dir`, `load`** have no sequence input to keep as references.
+
+### One thing the census found that is not about handles
+
+`default.filter` and `default.dask_map` take a **closure** argument, exactly as
+`for_loop` does, and are NOT marked `rewrite` -- so under the engine strategy
+they would be dispatched to a kernel that expects a runtime closure the engine
+never builds, and fail with the same `requires closure argument` message this
+design spent a day chasing.
+
+Either they are unreachable under this strategy or they are broken. The census
+cannot tell which, and neither can be settled by reading the code alone. Left as
+found, recorded here, and not fixed in this pass: it is not a handle problem, and
+fixing it blind would be guessing.
 
 ## 12. What the eviction re-reading concluded
 
