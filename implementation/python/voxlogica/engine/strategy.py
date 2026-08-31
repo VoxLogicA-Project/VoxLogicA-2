@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from voxlogica.arrays import PolyArray
+from voxlogica.handles import resolve_deep
 from voxlogica.diagnostics.classify import build_report
 from voxlogica.diagnostics.store import store_report
 from voxlogica.engine.core import ComputationEngine
@@ -297,9 +298,10 @@ class EngineExecutionStrategy:
         engine.shutdown()
 
         if goals is None:
+            resolve = engine.table.values.__getitem__
             for goal in target:
                 if goal.id in values:
-                    self._side_effect(goal.operation, goal.name, values[goal.id])
+                    self._side_effect(goal.operation, goal.name, values[goal.id], resolve)
 
         if run_error is not None:
             record_failure(run_error)
@@ -316,18 +318,18 @@ class EngineExecutionStrategy:
 
     # ── Goal side effects ─────────────────────────────────────────────────────────────────────
 
-    def _side_effect(self, operation: str, name: str, value: Any) -> None:
+    def _side_effect(self, operation: str, name: str, value: Any, resolve=None) -> None:
         """Apply a goal's print/save effect to its materialized value."""
         if operation == "print":
-            print(f"{name}={self._materialize(value)}")
+            print(f"{name}={self._materialize(value, resolve)}")
         elif operation == "save":
-            self._save(name, self._materialize(value))
+            self._save(name, self._materialize(value, resolve))
         elif operation == "value":
             pass
         else:
             raise ValueError(f"Unknown goal operation: {operation}")
 
-    def _materialize(self, value: Any) -> Any:
+    def _materialize(self, value: Any, resolve=None) -> Any:
         """Turn an engine value into its user-facing form for print/save/return.
 
         This is the sole boundary where values leave the engine to a non-kernel
@@ -336,12 +338,22 @@ class EngineExecutionStrategy:
         here — print formatting, goal save, the returned result dict — expects
         the native ``sitk.Image`` the pre-fusion engine produced, so unwrap it.
         Sequence artifacts are expanded to a concrete list as before.
+
+        Values have exactly TWO consumers: kernels, which the executor's eager
+        adapter serves, and the outside world, which arrives here. Both must
+        resolve handles, and adapting only the first printed `@b8893698` where a
+        number belonged. A goal is `protected`, and the handles its value names
+        are held (see graph.hold_handles), so what they name is still resident.
         """
+        if resolve is not None:
+            value = resolve_deep(value, resolve)
         if isinstance(value, PolyArray):
             return value.sitk(retain_numpy=False)
         if isinstance(value, SequenceValue):
             return [item.sitk(retain_numpy=False) if isinstance(item, PolyArray) else item
                     for item in value.iter_values()]
+        if isinstance(value, list):
+            return [self._materialize(item) for item in value]
         return value
 
     def _serializers(self) -> dict[str, dict]:
