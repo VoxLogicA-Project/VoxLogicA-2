@@ -182,8 +182,11 @@ class PrimitiveSpec:
     #: Reaching it from the engine is the defect this flag exists to prevent.
     rewrite: bool = False
     #: HOW it rewrites, for operators whose rewrite is not a loop unroll.
-    #: `(node, resolve) -> NodeId`: given the node and a way to materialize one
-    #: of its arguments, return the node whose value this one takes. Called on
+    #: `(node, ctx) -> NodeId | None`: given the node and a context offering
+    #: `resolve` (materialize one argument) and `node` (intern a new node),
+    #: return the node whose value this one takes -- or None to decline, and be
+    #: computed by the kernel after all. Declining is how an operator that can
+    #: usually rewrite handles the shape it cannot. Called on
     #: the event loop, like the loop expander's own `_materialize` -- so the
     #: resolution is the engine's, not a kernel's.
     #:

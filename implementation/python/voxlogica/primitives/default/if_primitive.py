@@ -42,15 +42,16 @@ def _is_true(value: Any) -> bool:
         f"a condition must be a number or a boolean, got {type(value).__name__}")
 
 
-def rewrite(node: Any, resolve: Any) -> str:
+def rewrite(node: Any, ctx: Any) -> str:
     """Return the argument this node becomes: the taken branch.
 
-    `resolve` is the engine's, called on the event loop -- the same standing the
-    loop expander has when it materializes its iterable. The kernel never
-    resolves anything, because there is no kernel.
+    `ctx.resolve` is the engine's, called on the event loop -- the same standing
+    the loop expander has when it materializes its iterable. The kernel never
+    resolves anything, because there is no kernel. This rewriter makes no nodes;
+    it only chooses one that already exists.
     """
     condition, then_id, else_id = node.args[0], node.args[1], node.args[2]
-    return then_id if _is_true(resolve(condition)) else else_id
+    return then_id if _is_true(ctx.resolve(condition)) else else_id
 
 
 def execute(**kwargs):

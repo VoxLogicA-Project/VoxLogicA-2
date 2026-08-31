@@ -98,6 +98,31 @@ def reset_cache() -> None:
     _CACHE.clear()
 
 
+@dataclass(frozen=True, slots=True)
+class RewriteContext:
+    """What a rewriter is allowed to do: look at one value, and make nodes.
+
+    Deliberately small. A rewriter runs on the event loop and must not compute
+    anything itself; `resolve` is there for the one value a rewrite genuinely
+    turns on -- a condition, a sequence's list of handles -- and is the same
+    materialization the loop expander performs for its iterable.
+
+    `node` interns by structural identity, so a rewriter that builds the same
+    shape twice builds it once, and two programs that fold the same sequence the
+    same way share every node of the chain.
+    """
+
+    resolve: Any                                  # (NodeId) -> value
+    _intern: Any                                  # (NodeSpec) -> NodeId
+
+    def node(self, operator: str, *args: str, **attrs: Any) -> str:
+        """Intern one primitive node and return its id."""
+        from voxlogica.lazy.ir import NodeSpec
+
+        return self._intern(NodeSpec(kind="primitive", operator=operator,
+                                     args=tuple(args), attrs=dict(attrs)))
+
+
 class NeedsExpansion(Exception):
     """A node that grows the graph cannot be rebuilt by calling a kernel.
 

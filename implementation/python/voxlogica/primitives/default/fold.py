@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from voxlogica.handles import Handle
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 from voxlogica.primitives.default.addition import execute as add_execute
 from voxlogica.primitives.default.division import execute as div_execute
@@ -114,6 +115,50 @@ def execute(**kwargs) -> Any:
     return fold_sequence(str(operator), init, sequence)
 
 
+def rewrite(node: Any, ctx: Any):
+    """Turn a fold into the chain it is: combine(combine(combine(init,e0),e1),e2).
+
+    WHY A CHAIN AND NOT A LOOP IN THE KERNEL. The kernel below receives the whole
+    materialized sequence and reduces it in Python, so every element is resident
+    at once for a result that never needs more than two values in hand. As a
+    chain each accumulator has exactly ONE consumer -- the next link -- and each
+    element has one too, so both are released the moment they are used. Peak is
+    one accumulator plus one element, whatever N is.
+
+    Left-associated on purpose. A tree reduction would parallelize but hold N/2
+    partial results, and a fold is left-to-right by definition, so the chain is
+    both the correct shape and the cheap one.
+
+    Declines when the sequence's elements are not nodes -- a list of plain values
+    has no node to point a link at, and inventing constants for them would trade
+    the memory back for graph. The kernel handles that case, as it always did.
+    """
+    args = node.args
+    if len(args) == 2:
+        init_id, sequence_id = args[0], args[1]
+    elif len(args) == 1:
+        init_id, sequence_id = None, args[0]
+    else:
+        return None
+
+    operator = str((node.attrs or {}).get("operator", ""))
+    if operator not in _SUPPORTED_OPS:
+        return None
+
+    elements = ctx.resolve(sequence_id)
+    if not isinstance(elements, (list, tuple)) or not elements:
+        return None
+    if not all(isinstance(item, Handle) for item in elements):
+        return None            # nothing to point a link at; let the kernel do it
+
+    accumulator = init_id
+    for handle in elements:
+        accumulator = (handle.node if accumulator is None
+                       else ctx.node("default.combine", accumulator, handle.node,
+                                     operator=operator))
+    return accumulator
+
+
 KERNEL = execute
 PRIMITIVE_SPEC = PrimitiveSpec(
     name="fold",
@@ -123,5 +168,7 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     attrs_schema={"operator": str},
     planner=default_planner_factory("default.fold", kind="scalar"),
     kernel_name="default.fold",
+    rewrite=True,
+    rewriter=rewrite,
     description="Reduce a sequence with a built-in combiner",
 )

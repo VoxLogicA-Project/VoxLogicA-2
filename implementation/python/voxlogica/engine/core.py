@@ -50,8 +50,8 @@ from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.memlog import MemoryLogger
 from voxlogica.engine.node_table import NodeTable
-from voxlogica.engine.evaluation import (NeedsExpansion, grows_the_graph_by_name,
-                                          modes_of)
+from voxlogica.engine.evaluation import (NeedsExpansion, RewriteContext,
+                                          grows_the_graph_by_name, modes_of)
 from voxlogica.handles import contains_handle, iter_handles
 from voxlogica.engine.numba_fusion import NumbaFusionBackend
 from voxlogica.engine.topology import default_concurrency
@@ -1232,6 +1232,18 @@ class ComputationEngine:
             nid = self._alias[nid]
         return self._rematerialize(nid)
 
+    def _rewrite_of(self, node) -> NodeId | None:
+        """The node this one rewrites to, or None if it does not rewrite.
+
+        None covers both "this operator has no rewriter" and "its rewriter
+        declined this shape" -- the caller treats them the same, because they
+        mean the same thing: compute it like anything else.
+        """
+        rewriter = modes_of(self.registry, node.operator).rewriter
+        if rewriter is None:
+            return None
+        return rewriter(node, RewriteContext(self._resolve_reference, self.table.intern))
+
     def _on_rewritten(self, nid: NodeId, target: NodeId, priority: int) -> None:
         """This node's value is that node's value. Same forwarding a loop uses."""
         self._alias[nid] = target
@@ -1441,12 +1453,13 @@ class ComputationEngine:
                     # ends now; the loop node re-fires via its alias once the
                     # spliced sequence completes.
                     self.admission.start(nid, node, self._priority.get(nid, int(Priority.NORMAL)))
-                elif (rewriter := modes_of(self.registry, node.operator).rewriter) is not None:
-                    # A rewrite that is not a loop unroll: the operator says
-                    # which of its arguments it becomes, and this node takes
-                    # that node's value. The untaken arguments are never
-                    # scheduled, which for a conditional is the entire point.
-                    target = rewriter(node, self._resolve_reference)
+                elif (target := self._rewrite_of(node)) is not None:
+                    # A rewrite that is not a loop unroll: the operator names the
+                    # node it becomes -- an argument it chose, or a shape it
+                    # built -- and this node takes that node's value. What it did
+                    # not name is never scheduled, which for a conditional is the
+                    # entire point and for a fold is why the chain has a peak of
+                    # two values instead of N.
                     self._on_rewritten(nid, target,
                                        self._priority.get(nid, int(Priority.NORMAL)))
                 elif modes_of(self.registry, node.operator).rewrite:
