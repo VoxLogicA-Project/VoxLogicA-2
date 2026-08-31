@@ -115,11 +115,16 @@ class RewriteContext:
     resolve: Any                                  # (NodeId) -> value
     _intern: Any                                  # (NodeSpec) -> NodeId
 
-    def node(self, operator: str, *args: str, **attrs: Any) -> str:
-        """Intern one primitive node and return its id."""
+    def node(self, primitive: str, *args: str, **attrs: Any) -> str:
+        """Intern one primitive node and return its id.
+
+        The first parameter is `primitive` and not `operator` because `operator`
+        is a common ATTRIBUTE name -- `fold` passes one -- and the two collided:
+        "got multiple values for argument 'operator'".
+        """
         from voxlogica.lazy.ir import NodeSpec
 
-        return self._intern(NodeSpec(kind="primitive", operator=operator,
+        return self._intern(NodeSpec(kind="primitive", operator=primitive,
                                      args=tuple(args), attrs=dict(attrs)))
 
 
