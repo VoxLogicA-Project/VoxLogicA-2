@@ -1426,6 +1426,22 @@ class ComputationEngine:
                     # ends now; the loop node re-fires via its alias once the
                     # spliced sequence completes.
                     self.admission.start(nid, node, self._priority.get(nid, int(Priority.NORMAL)))
+                elif modes_of(self.registry, node.operator).rewrite:
+                    # It declares that evaluating it GROWS THE GRAPH, and
+                    # `can_expand` just declined -- it also checks the shape,
+                    # `len(node.args) == 2`. Falling through from here would hand
+                    # the node to the executor, which is the one thing a rewrite
+                    # node must never reach: `for_loop` has a kernel, it belongs
+                    # to the strict runtime, and it dies on a closure the engine
+                    # never builds.
+                    #
+                    # So the fallthrough is closed rather than the symptom
+                    # guarded. Not being expandable while declaring `rewrite` is
+                    # a malformed node, and saying so beats computing something
+                    # nobody meant.
+                    raise ValueError(
+                        f"{node.operator} grows the graph but cannot be expanded: "
+                        f"expected 2 arguments, got {len(node.args)}")
                 elif node.kind == "constant":
                     self._finish(nid, node.attrs.get("value"), persist=False)
                 elif node.kind == "closure":
