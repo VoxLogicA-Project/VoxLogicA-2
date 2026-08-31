@@ -464,3 +464,119 @@ them in the same pass would make a regression impossible to attribute.
   which is impossible today.
 - Dangling: deleting a store entry that a persisted sequence names produces a
   recompute, never a wrong value.
+
+## 15. Specification: one decision point, and dependencies that are real
+
+Written before the code, because the defect this fixes is precisely a decision
+taken in one place and consulted in another.
+
+### 15.1 The decision point
+
+`engine/evaluation.py`, and nothing else, answers how a node is evaluated:
+
+```python
+@dataclass(frozen=True, slots=True)
+class Modes:
+    lazy: bool = False      # arguments arrive as handles
+    shallow: bool = False   # arguments arrive as values, contents untouched
+    rewrite: bool = False   # evaluating this GROWS THE GRAPH
+
+def modes_of(registry, operator: str) -> Modes:   # memoized per operator
+```
+
+`lazy` and `shallow` are exclusive; `rewrite` is orthogonal to both.
+
+**Every road that evaluates or classifies a node asks `modes_of`.** The roads,
+exhaustively -- this list is the point of the section:
+
+| caller | today | after |
+|---|---|---|
+| `executor._compute_node` | its own `lazy` lookup | `modes_of` |
+| `core._rematerialize` | nothing: calls the kernel | `modes_of(...).rewrite` -> §15.2 |
+| `core._recomputable` | `operator not in _SEQUENCE_OPERATORS and not can_expand` | `not modes_of(...).rewrite` |
+| `core._is_critical` | `operator in _SEQUENCE_OPERATORS` | `modes_of(...).rewrite` or the fan-out rule |
+| `core.complete` (`complete_item`) | `operator in _SEQUENCE_OPERATORS` | `spec.kind == "sequence"`, which already exists |
+| `expander.can_expand` | `operator in _EXPANDABLE` | `modes_of(...).rewrite` |
+
+`_EXPANDABLE` and `_SEQUENCE_OPERATORS` are deleted. The second answered three
+unrelated questions at once, which is how one of them got lost.
+
+**Invariant.** No module outside `evaluation.py` and the primitive specs names an
+operator in a literal. A test enforces it by reading the sources: this is the
+kind of rule that decays silently, so it is checked mechanically rather than
+remembered.
+
+**Extending it.** A new graph-growing operator writes `rewrite=True` in its spec
+and is routed correctly everywhere, because there is nowhere else to tell.
+
+### 15.2 The miss path for a rewrite node
+
+`_rematerialize(nid)` on a node with `rewrite`:
+
+1. if `nid` has an `_alias`, follow it -- the spliced sequence carries the value;
+2. otherwise the node must be **re-expanded, never computed**. `_rematerialize`
+   is synchronous and its callers expect a value, so it raises a typed
+   `NeedsExpansion(nid)` and the scheduler re-registers the node.
+
+Calling the kernel is removed as an option, not guarded against. `for_loop` has a
+kernel and it belongs to the strict runtime, which reconstructs a closure the
+engine never builds; reaching it produces `requires closure argument at key
+'closure' or '1'`, which is the regression this closes.
+
+### 15.3 Dependencies discovered from handles
+
+Today an eager operator whose argument contains handles resolves them by calling
+`_rematerialize` from a worker thread. When the value is resident that is a dict
+lookup. When it is not, it is a reload -- or a **recompute**, which can drag in
+subtrees -- that the scheduler never planned. That is an evaluation happening
+outside the graph, and the graph is supposed to be the only witness.
+
+**Rule.** When node `D` completes with a value naming `{e...}` by handle, every
+eager dependent `A` of `D` gains `A -> e` as real edges before `A` can fire.
+
+Four properties, each load-bearing:
+
+- **Same mechanism as expansion.** The edges are registered through `admission`,
+  the path loop expansion already uses. No second dynamic-edge machinery, and --
+  the point -- the window that stops a 369-case unroll from exploding is the same
+  window that bounds this.
+- **Same walk.** Discovery reuses the value walk `graph.hold_handles` already
+  performs at completion. No new traversal, no new cost.
+- **Before the fire.** `on_complete(D)` releases inputs and fires dependents.
+  Discovery must run BEFORE the fire, or `A` dispatches with edges that were
+  about to exist.
+- **One level per dispatch, and this is the anti-explosion property.** A
+  handle's own value may name further handles. Those are discovered when THAT
+  node's value is needed, not now. Discovery is never transitive in one step, so
+  the work added at any completion is bounded by what that one value names.
+
+An edge added this way cannot make a cycle: a handle names a node that already
+completed, so it points backwards in time.
+
+**What this does not do.** An eager operator that genuinely wants N values still
+gets N values -- for `nnunet.train` that is the 51.4 GB, honestly. The cure is to
+make it a rewriter (§4), not to hide the cost. What changes is that the N are
+individual values the governor can spill, materialized by the scheduler under its
+own bound, instead of one gathered list it could neither evict nor write.
+
+### 15.4 What stops being possible
+
+- A kernel, or the code adapting arguments for one, triggering a recompute the
+  scheduler did not plan.
+- Two evaluation roads disagreeing about a node, because there is one answer.
+- A new graph-growing operator working in dispatch and failing on a miss.
+
+### 15.5 Tests
+
+- **No literals**: no module outside `evaluation.py` names `for_loop`, `map`,
+  `sequence` or `filter` in a string.
+- **The regression**: a rewrite node whose value is gone is re-expanded; its
+  kernel is never called. Fails on this branch today.
+- **Real edges**: an eager consumer of a handle container has the referenced
+  nodes among its dependencies before it dispatches.
+- **One level**: a container of containers adds only the first level's nodes at
+  the outer completion.
+- **No out-of-band work**: with the resolver instrumented, no eager dispatch
+  triggers a recompute.
+- **Extensibility**: a test-only primitive declaring `rewrite=True` is routed
+  correctly by dispatch and by the miss path, without touching the engine.
