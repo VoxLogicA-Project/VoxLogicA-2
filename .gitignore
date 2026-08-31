@@ -60,3 +60,6 @@ tests/data/datasets
 node_modules
 
 .DS_Store
+
+# Local operating notes: contains machine-specific paths and usernames
+doc/user/brats-tests-howto.md
