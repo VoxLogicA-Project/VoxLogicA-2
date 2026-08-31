@@ -77,6 +77,10 @@ _DISK_RESERVE_FRACTION = 0.05
 #: Seconds between statvfs probes. The ceiling only moves as fast as the disk
 #: fills, so probing on every persist batch would burn syscalls for nothing.
 _DISK_PROBE_INTERVAL_S = 5.0
+
+#: Returned by `_effective_max_bytes` when nothing bounds the payload tier --
+#: distinct from a budget of zero, which means the opposite.
+_UNBOUNDED = -1
 # Maximum number of value-bearing entries kept in the in-memory cache tier.
 # Overridable via VOXLOGICA_MEMORY_CACHE_CAPACITY for memory-heavy runs.
 DEFAULT_MEMORY_CACHE_CAPACITY = 1024
@@ -780,7 +784,16 @@ class SQLiteResultsDatabase:
         if self._disk_ceiling is None or (now - self._disk_ceiling_at) >= _DISK_PROBE_INTERVAL_S:
             try:
                 usage = shutil.disk_usage(self.payload_dir)
-                reserve = max(_DISK_RESERVE_MIN_BYTES, int(usage.total * _DISK_RESERVE_FRACTION))
+                # THE RESERVE MUST FIT THE VOLUME. A flat 50 GB minimum is
+                # larger than /tmp on this very machine (30.6 GB), so the
+                # ceiling below went to zero, `_enforce_budget` read zero as
+                # "no limit", and the cache grew unbounded -- on every volume
+                # SMALLER than the reserve, which is to say exactly where the
+                # disk needs protecting most. Measured: 24 MB held against a
+                # 5 MB budget, zero evictions.
+                reserve = min(max(_DISK_RESERVE_MIN_BYTES,
+                                  int(usage.total * _DISK_RESERVE_FRACTION)),
+                              usage.total // 2)
                 # Headroom the payload tier may occupy while leaving `reserve`
                 # free: what it holds now, plus what is free, less the reserve.
                 self._disk_ceiling = max(0, self._payload_bytes + usage.free - reserve)
@@ -788,7 +801,9 @@ class SQLiteResultsDatabase:
                 self._disk_ceiling = self._max_bytes  # no probe: fall back to the budget
             self._disk_ceiling_at = now
         if self._max_bytes <= 0:
-            return self._disk_ceiling      # "unbounded" still may not fill the disk
+            # No configured budget: the disk is the only limit, and -1 says there
+            # is not even that.
+            return self._disk_ceiling if self._disk_ceiling is not None else _UNBOUNDED
         return min(self._max_bytes, self._disk_ceiling)
 
     def _enforce_budget(self) -> None:
@@ -801,7 +816,10 @@ class SQLiteResultsDatabase:
         value remains — a last resort. Evicted values stay regenerable from lineage.
         """
         budget = self._effective_max_bytes()
-        if budget <= 0 or self._payload_bytes <= budget:
+        # A budget of ZERO means there is no room, not that there is no limit.
+        # Conflating the two is what let the cache run unbounded whenever the
+        # disk-derived ceiling collapsed; only _UNBOUNDED means unbounded.
+        if budget == _UNBOUNDED or self._payload_bytes <= budget:
             return
         low_water = int(budget * 0.9)
         with self._lock:
