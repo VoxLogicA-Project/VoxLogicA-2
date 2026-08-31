@@ -29,6 +29,7 @@ import os
 from typing import Any
 
 from voxlogica.arrays import PolyArray
+from voxlogica.handles import iter_handles
 from voxlogica.buffer_pool import (buffer_states, pooled_bytes_approx, release_states,
                                    retain_states)
 from voxlogica.engine.persist import AsyncPersister, approx_bytes
@@ -334,11 +335,34 @@ class NodeTable:
         if record is None or record.value is None:
             return None
         value = record.value
+        if not self._references_are_answerable(value):
+            # A stored container names its elements by handle. If this run can
+            # answer none of those questions -- the node is not in its graph
+            # (a warm hit skipped the expansion that would have interned it) and
+            # not in the store either -- then the container is not a usable cache
+            # hit, however intact its own bytes are. Reporting a miss costs a
+            # recompute of a list of hashes; returning it costs a KeyError deep
+            # inside a goal, which is what this was measured as.
+            return None
         sitk = _simpleitk()
         if sitk is not None and isinstance(value, sitk.Image):
             value = PolyArray.from_sitk(value)
         self.set_value(node_id, value)
         return value
+
+    def _references_are_answerable(self, value: Any) -> bool:
+        """Whether every handle inside a loaded value names something reachable.
+
+        Reachable means: already resident, or in this run's graph (so lineage can
+        rebuild it), or in the store. Anything else is a reference to a node that
+        does not exist here, and no amount of recomputation will invent it.
+        """
+        for handle in iter_handles(value):
+            ref = handle.node
+            if ref in self.values or ref in self.nodes or self.persisted(ref):
+                continue
+            return False
+        return True
 
     def is_claimable(self, node_id: NodeId) -> bool:
         """True iff ``begin(node_id)`` would succeed right now.
