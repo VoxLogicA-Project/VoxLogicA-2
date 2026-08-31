@@ -36,7 +36,13 @@ from typing import Any
 
 from voxlogica.engine.expander import Expander
 from voxlogica.engine.node_table import NodeTable
-from voxlogica.handles import iter_handles
+from voxlogica.handles import Handle, iter_handles
+
+#: Only these can hold a handle. Checked by exact type, not isinstance: an
+#: exact-type set lookup is one hash, and every value that reaches
+#: `hold_handles` which is NOT one of these -- floats, images, strings -- is
+#: rejected without touching the walk.
+_MAY_HOLD = frozenset({list, tuple, dict, Handle})
 from voxlogica.lazy.ir import NodeId
 
 
@@ -258,12 +264,19 @@ class DependencyGraph:
         outliving what it refers to, silently. The holds are released together
         with the holder's own value.
         """
+        # FAST PATH FIRST. This runs on every completion -- thousands a second --
+        # and almost no value names anything. Building a generator, a dict and a
+        # tuple to discover that costs three allocations per node; a scalar is
+        # rejected by one isinstance test.
+        if type(value) not in _MAY_HOLD:
+            return
         refs = tuple(dict.fromkeys(h.node for h in iter_handles(value)))
         if not refs:
             return
         self._handle_refs[holder] = refs
+        consumers = self.consumers
         for ref in refs:
-            self.pin(ref)
+            consumers[ref] = consumers.get(ref, 0) + 1
 
     def release(self, nid: NodeId) -> None:
         """Drop one consumer reference; evict the value on the last release.
