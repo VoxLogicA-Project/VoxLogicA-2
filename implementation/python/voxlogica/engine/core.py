@@ -1258,20 +1258,29 @@ class ComputationEngine:
         attributes without being scheduled. `filter` did not: its `gather`
         depends on a `map` that had to run, and the run span until the timeout.
 
-        Depth-first so a node is registered after everything it needs.
+        ITERATIVE, NOT RECURSIVE. The depth here is the depth of what the
+        rewriter built, and a fold's chain is as deep as the sequence is long:
+        a recursive walk would hit Python's stack limit on a fold of a few
+        thousand elements, in an engine that routinely builds millions of nodes
+        in one process. An explicit stack costs one list and cannot overflow.
         """
         seen: set[NodeId] = set()
         order: list[NodeId] = []
-
-        def visit(nid: NodeId) -> None:
-            if nid in seen or nid in self.table.completed or nid in self.graph.incomplete:
-                return
+        # (node, whether its dependencies have already been pushed)
+        stack: list[tuple[NodeId, bool]] = [(root, False)]
+        while stack:
+            nid, expanded = stack.pop()
+            if expanded:
+                order.append(nid)
+                continue
+            if (nid in seen or nid in self.table.completed
+                    or nid in self.graph.incomplete):
+                continue
             seen.add(nid)
+            stack.append((nid, True))          # visited again after its deps
             for dep in self.graph.deps(nid):
-                visit(dep)
-            order.append(nid)
+                stack.append((dep, False))
 
-        visit(root)
         for nid in order:
             self._priority[nid] = max(self._priority.get(nid, 0), priority)
             if self.graph.register(nid):
