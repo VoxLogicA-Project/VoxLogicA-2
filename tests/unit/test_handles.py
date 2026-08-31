@@ -231,3 +231,45 @@ def test_a_fold_without_an_init_keeps_its_default_seed(capsys):
 
     assert result.success is True, result
     assert float(printed["d"]) == -6.0        # 0-1-2-3, not 1-2-3 == -4
+
+
+# --- filter, which could not run at all -------------------------------------
+
+
+def test_filter_runs_at_all(capsys):
+    """It could not. The closure's value is None here, so the kernel raised."""
+    result = _run('kept = filter i in [1, 2, 3, 4, 5] do i > 2\nprint "k" kept')
+    printed = {line.partition("=")[0].strip(): line.partition("=")[2].strip()
+               for line in capsys.readouterr().out.splitlines() if "=" in line}
+
+    assert result.success is True, result
+    assert [float(v) for v in printed["k"].strip("[]").split(",")] == [3.0, 4.0, 5.0]
+
+
+def test_filter_keeps_nothing_and_everything(capsys):
+    result = _run('a = filter i in [1, 2] do i > 9\n'
+                  'b = filter i in [1, 2] do i > 0\n'
+                  'print "a" a\nprint "b" b')
+    printed = {line.partition("=")[0].strip(): line.partition("=")[2].strip()
+               for line in capsys.readouterr().out.splitlines() if "=" in line}
+
+    assert result.success is True, result
+    assert printed["a"] == "[]"
+    assert [float(v) for v in printed["b"].strip("[]").split(",")] == [1.0, 2.0]
+
+
+def test_gather_selects_among_handles_not_values():
+    """Filtering N things must not cost N things."""
+    from voxlogica.primitives.default import gather
+
+    kept = gather.execute(**{"0": [True, False, True],
+                             "1": [Handle("a" * 64), Handle("b" * 64), Handle("c" * 64)]})
+
+    assert kept == [Handle("a" * 64), Handle("c" * 64)]
+
+
+def test_gather_refuses_a_length_it_cannot_pair():
+    from voxlogica.primitives.default import gather
+
+    with pytest.raises(ValueError):
+        gather.execute(**{"0": [True], "1": [1, 2, 3]})

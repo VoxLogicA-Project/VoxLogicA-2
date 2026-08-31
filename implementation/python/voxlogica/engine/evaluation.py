@@ -40,9 +40,17 @@ class Modes:
     """
 
     lazy: bool = False
-    shallow: bool = False
+    shallow: Any = False           # True, or the argument positions
     rewrite: bool = False
     rewriter: Any = None
+
+    def shallow_at(self, position: int) -> bool:
+        """Whether argument `position` arrives with its handles left alone."""
+        if self.shallow is True:
+            return True
+        if self.shallow is False:
+            return False
+        return position in self.shallow
 
 
 #: The registry-free answer to "does this operator grow the graph".
@@ -81,11 +89,11 @@ def modes_of(registry: PrimitiveRegistry, operator: str) -> Modes:
         else:
             cached = Modes(
                 lazy=bool(getattr(spec, "lazy", False)),
-                shallow=bool(getattr(spec, "shallow", False)),
+                shallow=getattr(spec, "shallow", False) or False,
                 rewrite=bool(getattr(spec, "rewrite", False)),
                 rewriter=getattr(spec, "rewriter", None),
             )
-            if cached.lazy and cached.shallow:
+            if cached.lazy and cached.shallow is not False:
                 raise ValueError(
                     f"{operator}: lazy and shallow are exclusive -- arguments "
                     f"arrive either as handles or as values")

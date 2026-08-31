@@ -268,14 +268,15 @@ class Executor:
             args = [Handle(arg_id) for arg_id in node.args]
             kwargs = {key: Handle(arg_id) for key, arg_id in node.kwargs}
             return self._invoke(kernel, args, kwargs, node.attrs)
-        if modes.shallow:
-            # The container itself, with whatever handles it holds left in place.
+        if modes.shallow is not False:
+            # Per ARGUMENT: `gather` wants one as values and one as handles.
             resolver = self._handle_resolver or lookup
             def _shallow(arg_id):
                 return resolve_shallow(_unwrap(lookup(arg_id)),
                                        lambda node_id: _unwrap(resolver(node_id)))
-            args = [_shallow(arg_id) for arg_id in node.args]
-            kwargs = {key: _shallow(arg_id) for key, arg_id in node.kwargs}
+            args = [_shallow(a) if modes.shallow_at(i) else self._eager(lookup(a), lookup)
+                    for i, a in enumerate(node.args)]
+            kwargs = {key: self._eager(lookup(a), lookup) for key, a in node.kwargs}
             return self._invoke(kernel, args, kwargs, node.attrs)
         args = [self._eager(lookup(arg_id), lookup) for arg_id in node.args]
         kwargs = {key: self._eager(lookup(arg_id), lookup) for key, arg_id in node.kwargs}
