@@ -1232,6 +1232,21 @@ class ComputationEngine:
             nid = self._alias[nid]
         return self._rematerialize(nid)
 
+    def _on_rewritten(self, nid: NodeId, target: NodeId, priority: int) -> None:
+        """This node's value is that node's value. Same forwarding a loop uses."""
+        self._alias[nid] = target
+        self.graph.pin(target)
+        self._priority[target] = max(self._priority.get(target, 0), priority)
+        if target in self.graph.incomplete:
+            self.graph.await_one(nid, target)
+        else:
+            if target not in self.table.completed:
+                self.graph.register(target)
+                self.ready.push(target, priority)
+                self.graph.await_one(nid, target)
+            else:
+                self.ready.push(nid, priority)
+
     def _await_named_deps(self, nid: NodeId, node) -> bool:
         """Make the nodes an EAGER node's arguments name by handle real deps.
 
@@ -1426,6 +1441,14 @@ class ComputationEngine:
                     # ends now; the loop node re-fires via its alias once the
                     # spliced sequence completes.
                     self.admission.start(nid, node, self._priority.get(nid, int(Priority.NORMAL)))
+                elif (rewriter := modes_of(self.registry, node.operator).rewriter) is not None:
+                    # A rewrite that is not a loop unroll: the operator says
+                    # which of its arguments it becomes, and this node takes
+                    # that node's value. The untaken arguments are never
+                    # scheduled, which for a conditional is the entire point.
+                    target = rewriter(node, self._resolve_reference)
+                    self._on_rewritten(nid, target,
+                                       self._priority.get(nid, int(Priority.NORMAL)))
                 elif modes_of(self.registry, node.operator).rewrite:
                     # It declares that evaluating it GROWS THE GRAPH, and
                     # `can_expand` just declined -- it also checks the shape,

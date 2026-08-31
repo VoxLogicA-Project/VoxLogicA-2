@@ -181,6 +181,17 @@ class PrimitiveSpec:
     #: strict runtime, which reconstructs a closure the engine never builds.
     #: Reaching it from the engine is the defect this flag exists to prevent.
     rewrite: bool = False
+    #: HOW it rewrites, for operators whose rewrite is not a loop unroll.
+    #: `(node, resolve) -> NodeId`: given the node and a way to materialize one
+    #: of its arguments, return the node whose value this one takes. Called on
+    #: the event loop, like the loop expander's own `_materialize` -- so the
+    #: resolution is the engine's, not a kernel's.
+    #:
+    #: `rewrite=True` with no rewriter means the engine's loop machinery, which
+    #: is too entangled with admission and chunking to be a plain callable.
+    #: Anything simpler -- a conditional, a projection, a dispatch on a tag --
+    #: writes one function here and needs no engine change at all.
+    rewriter: Any = None
 
     @property
     def qualified_name(self) -> str:

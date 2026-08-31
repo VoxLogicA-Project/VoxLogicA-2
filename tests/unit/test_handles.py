@@ -130,3 +130,47 @@ def test_the_gathering_node_holds_hashes_not_elements(monkeypatch):
         value = table.values[nid]
         assert isinstance(value, list), value
         assert value and all(isinstance(item, Handle) for item in value), value
+
+
+# --- the conditional, as proof that rewrite is general ----------------------
+
+
+_IF_PROGRAM = '''
+taken = if(1, 10, 20)
+skipped = if(0, 10, 20)
+print "taken" taken
+print "skipped" skipped
+'''
+
+
+def test_a_conditional_takes_a_branch(capsys):
+    result = _run(_IF_PROGRAM)
+    printed = {line.partition("=")[0].strip(): line.partition("=")[2].strip()
+               for line in capsys.readouterr().out.splitlines() if "=" in line}
+
+    assert result.success is True, result
+    assert float(printed["taken"]) == 10.0
+    assert float(printed["skipped"]) == 20.0
+
+
+def test_the_untaken_branch_is_never_computed(monkeypatch, capsys):
+    """The whole point. `vox1/compat.imgql` had to compute both and mask them."""
+    import voxlogica.engine.strategy as strategy_module
+
+    seen: list = []
+    original = strategy_module.ComputationEngine
+
+    class Captured(original):  # type: ignore[misc, valid-type]
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            seen.append(self)
+
+    monkeypatch.setattr(strategy_module, "ComputationEngine", Captured)
+
+    # The branches are distinguishable by their VALUE, and only one is taken.
+    assert _run('print "x" if(1, 111, 222)').success is True
+    table = seen[0].table
+    computed = {v for nid, v in table.values.items() if isinstance(v, float)}
+
+    assert 111.0 in computed, "the taken branch was not computed"
+    assert 222.0 not in computed, "the untaken branch was computed anyway"

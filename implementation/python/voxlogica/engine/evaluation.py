@@ -24,6 +24,7 @@ See doc/dev/handles-design.md section 15.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from voxlogica.primitives.registry import PrimitiveRegistry
 
@@ -41,6 +42,7 @@ class Modes:
     lazy: bool = False
     shallow: bool = False
     rewrite: bool = False
+    rewriter: Any = None
 
 
 #: The registry-free answer to "does this operator grow the graph".
@@ -81,6 +83,7 @@ def modes_of(registry: PrimitiveRegistry, operator: str) -> Modes:
                 lazy=bool(getattr(spec, "lazy", False)),
                 shallow=bool(getattr(spec, "shallow", False)),
                 rewrite=bool(getattr(spec, "rewrite", False)),
+                rewriter=getattr(spec, "rewriter", None),
             )
             if cached.lazy and cached.shallow:
                 raise ValueError(
