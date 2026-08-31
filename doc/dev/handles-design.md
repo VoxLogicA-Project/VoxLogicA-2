@@ -54,7 +54,7 @@ table reference, no cached value. It is therefore:
 Resolution is not a method on `Handle`. Resolution is what the cache hierarchy
 already does for `table.values` misses: live tier, then store, then recompute.
 
-## 4. Two calling conventions
+## 4. Three argument modes, and one orthogonal axis
 
 ### Eager — the default, and unchanged
 
@@ -69,28 +69,76 @@ args = [_resolve_deep(lookup(arg_id)) for arg_id in node.args]
 For every operator that exists today, `_resolve_deep` on a value containing no
 handles is an identity walk. No operator changes. No behaviour changes.
 
-### Lazy — receives handles, and never waits
+### Lazy — receives handles
 
 A lazy operator receives `Handle` objects. It may inspect them, count them,
 reorder them, put them in its output, or drop them. **It may not resolve them.**
-
-Two shapes, and most lazy operators are the first:
-
-- **Pass handles through.** `default.sequence` returns `[h0 … hN]` and touches
-  nothing. `index(s, i)` resolves `i` -- an eager argument -- and returns the
-  handle of element *i*, not its value. An eager consumer downstream resolves it
-  through the adapter; another lazy one keeps passing it on. Neither operator
-  ever needs a rewrite.
-- **Rewrite into nodes**, below, for the case where a value really is needed.
-
-`default.subsequence` is worth naming because it is already special-cased inside
-`executor._compute_node` (:246-251) to avoid materializing what it will discard.
-That special case is this design's first shape, hand-written for one operator; it
-becomes an ordinary `lazy=True` and the special case goes.
+`default.sequence` returns `[h0 … hN]` and touches nothing.
 
 There is no `resolve(handle)` call available to a kernel, by design. A kernel
 that blocks to materialize a value would put a wait inside kernel code and make
 the DAG stop being the only witness of what depends on what.
+
+### Shallow — receives the container, not its contents
+
+CORRECTION, found by building it. The first draft of this section said `index(s,
+i)` would be `lazy` and "resolves `i` -- an eager argument". That is incoherent:
+under the rule above a lazy kernel resolves nothing, so it could not read `i`,
+and it could not read the list either.
+
+What `index` actually needs is a third mode: **the value, with the handles inside
+it left alone.** It then subscripts a list of hashes and returns one hash. Deep
+resolution would materialize all N elements to hand back one, which is issue #51
+in miniature.
+
+The mode resolves the argument ITSELF, repeatedly, and stops there: with nested
+indexing the inner `index` returns a handle, so the outer one is handed a handle
+where a container belongs. Measured as `'Handle' object is not subscriptable`.
+
+`index`, `subsequence` and `slice` are shallow. `subsequence` already had this
+hand-written inside `executor._compute_node` (:246-251); declaring the mode says
+it once, for every operator that needs it.
+
+### Rewrite — an axis, not a third kind of laziness
+
+CORRECTION, found by building it. The first draft made "rewrite into nodes" the
+second shape of *lazy*. It is not: the two are independent.
+
+- `default.sequence` is **lazy and never rewrites**.
+- `for_loop` and `map` **rewrite and are not lazy** -- they never see a handle.
+
+So `rewrite` is its own declaration, alongside the argument mode:
+
+```python
+lazy    = True   # arguments arrive as handles
+shallow = True   # arguments arrive as values, contents untouched
+rewrite = True   # evaluating this GROWS THE GRAPH; it has no value of its own
+```
+
+And it is not "these operators have no kernel". `for_loop` HAS one
+(`primitives/default/for_loop.py`), whose docstring says whose it is: *"The
+strict runtime reconstructs that closure and passes it into this kernel."* The
+engine never builds that closure, because the engine expands instead. What these
+operators need is **special treatment**, and the defect this design ran into is
+that the treatment was decided in one place while evaluation has two paths:
+dispatch knows to expand, and `_rematerialize` -- the miss path -- calls the
+kernel and dies on a closure argument that is `None`.
+
+Two roads to evaluate a node, one of which forgot a case. The same shape as the
+`_materialize` boundary in section 6: a second consumer nobody adapted.
+
+The fix is therefore not a guard inside `_rematerialize` but **one place that
+decides how a node is evaluated**, asked by both roads. `_EXPANDABLE` and
+`_SEQUENCE_OPERATORS` stop being private name lists and become queries over the
+spec, which is also what makes a NEW graph-growing operator work everywhere by
+writing one word.
+
+That in turn makes `_recomputable` principled instead of enumerated: **a node is
+kernel-recomputable exactly when evaluating it does not change the graph.**
+`_SEQUENCE_OPERATORS` currently answers three unrelated questions at once -- is
+it recomputable, does it produce a sequence, is it structural -- and the second
+already has its own field (`PrimitiveSpec.kind == "sequence"`). Collapsing them
+into one list is how the case got lost.
 
 If a lazy operator needs a value, it **rewrites itself into nodes**:
 
@@ -128,7 +176,7 @@ The generalization is that **a lazy operator may return a rewrite instead of a
 value**, and loop expansion becomes one instance of that rule rather than a
 special case in the scheduler.
 
-## 5. Declaring laziness
+## 5. Declaring it
 
 One field, where everything else about a primitive is already declared:
 
