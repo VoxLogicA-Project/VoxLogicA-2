@@ -353,13 +353,21 @@ class NodeTable:
     def _references_are_answerable(self, value: Any) -> bool:
         """Whether every handle inside a loaded value names something reachable.
 
-        Reachable means: already resident, or in this run's graph (so lineage can
-        rebuild it), or in the store. Anything else is a reference to a node that
-        does not exist here, and no amount of recomputation will invent it.
+        Reachable means resident, or present in this run's graph. `persisted()`
+        is NOT enough and was tried: it answers from an id index, and a row can
+        exist carrying only lineage, so the load then returns None and the
+        rebuild dies on a node the graph never interned.
+
+        The cost of reporting a miss here is small and worth being explicit
+        about. A warm run that hits the stored container would SKIP the loop
+        expansion that defines its elements; refusing the hit makes it expand,
+        which interns them, and each element then hits the store on its own. So
+        what is recomputed is the list of hashes, and the expensive part -- the
+        elements -- is still served from disk.
         """
         for handle in iter_handles(value):
             ref = handle.node
-            if ref in self.values or ref in self.nodes or self.persisted(ref):
+            if ref in self.values or ref in self.nodes:
                 continue
             return False
         return True
