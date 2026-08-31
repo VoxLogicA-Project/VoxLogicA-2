@@ -143,13 +143,12 @@ class ExecutionEngine:
         self,
         workplan,
         execution_id: str | None = None,
-        dask_dashboard: bool = False,
         strategy: str | None = None,
         goals: list[NodeId] | None = None,
         profile: str | None = None,
     ) -> ExecutionResult:
         """Compile and immediately execute a work plan in one step."""
-        del execution_id, dask_dashboard, strategy
+        del execution_id, strategy
         prepared = self.compile_plan(workplan)
         return self.run_prepared(prepared, goals=goals, profile=profile)
 
@@ -232,7 +231,6 @@ def set_execution_engine(engine: ExecutionEngine):
 def execute_workplan(
     workplan,
     execution_id: str | None = None,
-    dask_dashboard: bool = False,
     strategy: str | None = None,
     goals: list[NodeId] | None = None,
 ) -> ExecutionResult:
@@ -240,7 +238,6 @@ def execute_workplan(
     return get_execution_engine().execute_workplan(
         workplan=workplan,
         execution_id=execution_id,
-        dask_dashboard=dask_dashboard,
         strategy=strategy,
         goals=goals,
     )

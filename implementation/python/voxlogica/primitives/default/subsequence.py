@@ -31,15 +31,6 @@ def _as_int(value: Any, *, name: str) -> int:
     raise ValueError(f"{name} must be an integer, got: {type(value).__name__}")
 
 
-def _is_dask_bag(value: Any) -> bool:
-    try:
-        import dask.bag as db  # type: ignore
-
-        return isinstance(value, db.Bag)
-    except Exception:
-        return False
-
-
 def _slice_sequence_value(
     sequence: SequenceValue,
     *,
@@ -66,28 +57,6 @@ def _slice_sequence_value(
             index += 1
 
     return SequenceValue(iterator_factory, total_size=sliced_total_size)
-
-
-def _slice_dask_bag(
-    bag: Any,
-    *,
-    start: int,
-    stop: int,
-) -> SequenceValue:
-    def iterator_factory():
-        index = 0
-        for delayed_partition in bag.to_delayed():
-            partition_items = delayed_partition.compute()
-            for item in partition_items:
-                if index < start:
-                    index += 1
-                    continue
-                if index >= stop:
-                    return
-                yield item
-                index += 1
-
-    return SequenceValue(iterator_factory, total_size=None)
 
 
 def execute(**kwargs):
@@ -117,9 +86,6 @@ def execute(**kwargs):
 
     if isinstance(sequence, SequenceValue):
         return _slice_sequence_value(sequence, start=start, stop=stop)
-
-    if _is_dask_bag(sequence):
-        return _slice_dask_bag(sequence, start=start, stop=stop)
 
     if isinstance(sequence, (list, tuple, range)):
         return list(sequence[start:stop])

@@ -13,7 +13,6 @@ watchdog==6.0.0
 # is what keeps that true. Optional at runtime: with no GUI backend the UI
 # falls back to a browser window (voxlogica/ui/window.py).
 pywebview>=6.2
-dask[complete]==2025.5.1
 numpy==2.3.2
 # numba/SimpleITK: first versions shipping free-threaded (cp314t) wheels.
 # The engine runs on a free-threaded interpreter only -- see
