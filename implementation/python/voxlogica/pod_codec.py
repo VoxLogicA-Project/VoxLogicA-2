@@ -26,7 +26,9 @@ def _decompress(payload_bin: bytes | None) -> bytes:
     data = payload_bin or b""
     return gzip.decompress(data) if data[:2] == _GZIP_MAGIC else data
 
+from voxlogica.handles import Handle, revive_handles
 from voxlogica.value_model import (
+    VoxHandleValue,
     OverlayLayer,
     OverlayValue,
     UnsupportedVoxValueError,
@@ -215,6 +217,14 @@ def encode_for_storage(value: Any, *, page_size: int = 128,
             {"encoding": "mapping-json-v1", "value": adapted.to_json_native()},
         )
 
+    if isinstance(adapted, VoxHandleValue):
+        return EncodedRecord(
+            VOX_FORMAT_VERSION,
+            "handle",
+            descriptor,
+            {"encoding": "handle-json-v1", "node": adapted.raw.node},
+        )
+
     if isinstance(adapted, VoxSequenceValue):
         items = adapted.to_json_native()
         return EncodedRecord(
@@ -256,7 +266,9 @@ def decode_runtime_value(vox_type: str, payload_json: dict[str, Any], payload_bi
     if vox_type == "mapping":
         return dict(payload_json.get("value") or {})
     if vox_type == "sequence":
-        return list(payload_json.get("value") or [])
+        return revive_handles(list(payload_json.get("value") or []))
+    if vox_type == "handle":
+        return Handle(str(payload_json.get("node") or ""))
     if vox_type == "ndarray":
         if np is None:
             raise RuntimeError("NumPy is required to decode ndarray values.")

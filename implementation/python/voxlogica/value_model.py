@@ -7,6 +7,7 @@ from typing import Any, Iterable, NamedTuple
 import math
 
 from voxlogica.arrays import PolyArray
+from voxlogica.handles import HANDLE_TAG, Handle
 
 
 class PayloadSnapshot(NamedTuple):
@@ -336,9 +337,34 @@ def restore_runtime_image(payload_json: dict[str, Any], array: Any) -> Any:
     return image
 
 
+class VoxHandleValue(VoxValue):
+    """A reference to another node, by merkle hash.
+
+    A sequence of these is what makes a sequence of IMAGES storable at last. The
+    old encoding inlined each element into one JSON blob, and an image has no
+    JSON-native form, so `to_json_native` raised and the whole container was
+    reported unserializable -- which is why a 309-case training sequence could
+    not be written and 51.4 GB had no route out of RAM (issue #51). A list of
+    hashes is JSON-native, tiny, and each element is already a record of its own:
+    the payload-per-element the old comment asked for, obtained by not inlining.
+    """
+
+    vox_type = "handle"
+
+    def describe(self, *, path: str = "") -> dict[str, Any]:
+        payload = self.descriptor_base(path=path)
+        payload["summary"] = {"node": self.raw.node}
+        return payload
+
+    def to_json_native(self) -> Any:
+        return {HANDLE_TAG: self.raw.node}
+
+
 def adapt_runtime_value(value: Any) -> VoxValue:
     np = _import_numpy()
     sitk = _import_simpleitk()
+    if isinstance(value, Handle):
+        return VoxHandleValue(value)
     if isinstance(value, PolyArray):
         return VoxImageValue(value)
     if value is None:

@@ -28,6 +28,11 @@ from dataclasses import dataclass
 from voxlogica.lazy.ir import NodeId
 
 
+#: JSON key that marks a handle in a stored value. A reserved dict key rather
+#: than a string prefix, so it cannot collide with a string a program produced.
+HANDLE_TAG = "__vox_handle__"
+
+
 @dataclass(frozen=True, slots=True)
 class Handle:
     """A reference to a node, by its merkle hash."""
@@ -96,4 +101,18 @@ def _rebuild(value: object, resolve):
         return tuple(_rebuild(item, resolve) for item in value)
     if isinstance(value, dict):
         return {key: _rebuild(item, resolve) for key, item in value.items()}
+    return value
+
+
+def revive_handles(value: object) -> object:
+    """Turn the stored form of a handle back into one, anywhere in a value."""
+    if isinstance(value, dict):
+        node = value.get(HANDLE_TAG)
+        if isinstance(node, str) and len(value) == 1:
+            return Handle(node)
+        return {key: revive_handles(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [revive_handles(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(revive_handles(item) for item in value)
     return value
