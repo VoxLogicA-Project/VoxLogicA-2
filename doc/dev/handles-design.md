@@ -363,9 +363,20 @@ let ifB(cond,th,el) = or(and(th,bconstant(cond)),and(el,not(bconstant(cond))))
 
 It computes **both branches** and masks them, because there is no way not to.
 
-A lazy `if` receives three handles, resolves nothing, and rewrites to the taken
-branch. It is the smallest honest proof that laziness is general rather than a
-sequence special case, which is why it is in this pass.
+BUILT, and it turned out to prove something narrower and more useful than the
+draft claimed. `if` is not lazy at all: it is a **rewrite**, and it shares
+nothing with the loop machinery. It declares `rewrite=True`, supplies a
+`rewriter` -- one function, `(node, resolve) -> NodeId`, returning the argument
+it becomes -- and the engine forwards its value from that node. The other branch
+is never scheduled, so it is never computed, persisted or counted.
+
+That is what made `rewrite` extensible rather than a second name for loop
+unrolling. Before `if` there was exactly one rewriter and it was the engine's
+own expansion machinery, too entangled with admission and chunking to be a plain
+callable. A conditional needed none of that, so the field that says HOW an
+operator rewrites was added, and now anything simpler than a loop -- a
+projection, a dispatch on a tag -- is one function in a primitive module and no
+engine change at all.
 
 It is also an observable behaviour change: fewer nodes are computed, so less
 enters the store, so a warm re-run prunes differently. Intended, and recorded
