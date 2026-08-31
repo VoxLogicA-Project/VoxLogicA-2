@@ -261,9 +261,24 @@ is `page_size × max_page_count` — about 4.4 TB at 4 KB pages, ~70 TB at 64 KB
 and a single BLOB is capped near 2.1 GB, 1 GB by default compile options. Large
 blobs in the db also tax vacuum, backup and concurrent writers.
 
-So: **records and metadata in SQLite, payloads as files named by their hash**, in
-a sharded directory. Git objects, the Nix store, the IPFS blockstore and Docker
-layers are all this.
+So: records and metadata in SQLite, **payloads as files** -- which this store
+already does, atomically, into a `.files` directory beside the db.
+
+TRIED AND REVERTED: naming those files by the digest of their CONTENT, the way
+Git names a blob. It is wrong here, and the reason is worth keeping.
+
+A node id is already a merkle hash -- of the EXPRESSION rather than of the bytes
+-- and for this store that distinction does not matter, because its job is "give
+me the value of this node", a 1:1 lookup. Being 1:1 is what makes deletion safe:
+`delete(node_id)` reconstructs the payload path from the id and unlinks it.
+Content-addressing breaks that in both directions. Named by digest, `delete`
+looks in the old place, finds nothing, and leaks every payload forever. Taught
+to read the path from the row, it deletes bytes another row may share.
+
+So introducing sharing brings back exactly the referential-integrity problem on
+deletion that section 8 argues we do not have to solve. What it would buy is
+deduplication between distinct expressions with byte-identical values -- which
+was asserted here, not measured, and is not a reason to pay for a GC.
 
 Integrity follows from the naming: the filename *is* the hash, so an entry is
 immutable, self-verifying and idempotent, and merging two stores is the union of
