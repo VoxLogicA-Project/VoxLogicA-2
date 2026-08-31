@@ -248,7 +248,7 @@ class ComputationEngine:
         # ── Per-node scheduling extras (pruned at completion) ──
         self._priority: dict[NodeId, int] = {}
         self._alias: dict[NodeId, NodeId] = {}      # a loop node -> its spliced sequence node
-        self.executor._handle_resolver = self._rematerialize
+        self.executor._handle_resolver = self._resolve_reference
         self._reload_deferred: set[NodeId] = set()  # deferred once to prefer resident-ready work
 
         # ── Cache-admission policy + metrics ──
@@ -1229,6 +1229,22 @@ class ComputationEngine:
         return (nid in self._critical_nodes
                 or node.operator in _SEQUENCE_OPERATORS
                 or self.graph.consumers.get(nid, 0) >= self.config.persist_fanout)
+
+    def _resolve_reference(self, nid: NodeId) -> Any:
+        """What a handle names, following the forwarding a loop node needs.
+
+        A loop node has no kernel: it is expanded, and its value is FORWARDED
+        from the spliced sequence (`_alias`, `_on_spliced`). Rematerializing one
+        directly runs `default.for_loop` as though it were a kernel, and it
+        fails on the closure argument it cannot rebuild -- measured as exactly
+        that message. Follow the alias first; for every other node this is
+        `_rematerialize` unchanged.
+        """
+        seen: set[NodeId] = set()
+        while nid in self._alias and nid not in self.table.values and nid not in seen:
+            seen.add(nid)
+            nid = self._alias[nid]
+        return self._rematerialize(nid)
 
     def _rematerialize(self, nid: NodeId) -> Any:
         """Recompute (or reload) a completed node whose value was evicted."""

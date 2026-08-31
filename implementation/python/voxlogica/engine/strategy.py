@@ -303,7 +303,7 @@ class EngineExecutionStrategy:
             # computed in this process, so `table.values` does not have them and
             # `_rematerialize` is the only answer that is right in both cases:
             # resident, else reload, else rebuild from lineage.
-            resolve = engine._rematerialize
+            resolve = engine._resolve_reference
             for goal in target:
                 if goal.id in values:
                     self._side_effect(goal.operation, goal.name, values[goal.id], resolve)
