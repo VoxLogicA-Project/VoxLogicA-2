@@ -138,6 +138,11 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     arity=AritySpec(min_args=2, max_args=3),
     attrs_schema={},
     planner=default_planner_factory("default.subsequence", kind="sequence"),
+    # SHALLOW: a slice of handles is a slice, and it costs the slice.
+    # This operator already had a hand-written special case in executor._compute_node
+    # to avoid materializing what it discards; declaring the mode says the same thing
+    # once, for every operator that needs it.
     kernel_name="default.subsequence",
+    shallow=True,
     description="Extract a sequence slice by index range",
 )

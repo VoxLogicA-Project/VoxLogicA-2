@@ -65,6 +65,13 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     arity=AritySpec.fixed(2),
     attrs_schema={},
     planner=default_planner_factory("default.index", kind="scalar"),
+    # SHALLOW: the sequence arrives with its handles in place, so reaching
+    # element *i* costs element *i*. Deep-resolving to get one element out of a
+    # three-hundred-element sequence would materialize all three hundred, which is
+    # issue #51 wearing a different hat. The returned element may itself be a handle;
+    # whoever wants its value resolves it, and graph.hold_handles keeps it alive in
+    # the meantime.
     kernel_name="default.index",
+    shallow=True,
     description="Tuple/list index access",
 )

@@ -164,6 +164,14 @@ class PrimitiveSpec:
     #: default, and being wrong about that costs performance and never
     #: correctness.
     lazy: bool = False
+    #: Receive VALUES, but with the handles inside them left alone. For an
+    #: operator that reaches into a container without caring what is in it:
+    #: `index` wants element *i* of a sequence, and deep-resolving to get it
+    #: would materialize all N elements to hand back one. It is per-operator
+    #: rather than per-argument because it is harmless on an argument with no
+    #: handle in it -- `index`'s integer is unaffected -- which keeps the
+    #: declaration to one word.
+    shallow: bool = False
 
     @property
     def qualified_name(self) -> str:

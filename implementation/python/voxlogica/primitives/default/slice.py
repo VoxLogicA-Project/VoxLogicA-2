@@ -131,6 +131,9 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     arity=AritySpec.fixed(3),
     attrs_schema={},
     planner=default_planner_factory("default.slice", kind="sequence"),
+    # SHALLOW: same reason as `index` -- reach into the container without
+    # materializing what is not reached.
     kernel_name="default.slice",
+    shallow=True,
     description="Extract a sequence slice with optional bounds",
 )
