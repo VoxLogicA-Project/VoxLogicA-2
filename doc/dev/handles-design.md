@@ -693,12 +693,33 @@ So the frontier bound is not bookkeeping, as this design first assumed when it
 raised the test's threshold: exceeding it stops admission from making progress.
 That assumption is withdrawn too, and the test's original bound restored.
 
-**What a memory-optimal fold actually needs** is a kernel that consumes a
-sequence one element at a time -- the same capability `nnunet.train` needs, and
-the one section 4 describes as rewriting into per-element nodes. A fold cannot
-use that shape because its links are not independent; it needs streaming INTO a
-running kernel, which this engine does not have and which is not a handles
-question.
+### The explanation that was wrong, and the one that replaced it
 
-Reverted: the rewriter and the `combine` primitive it needed. The finding is the
-result.
+First claim: "a chain has Theta(N) nodes open by construction, so it cannot be
+windowed." Vincenzo's reply was the right question -- **then how does `for`
+work?** It opens N bodies too.
+
+The answer is that `for`'s bodies are INDEPENDENT, so admission opens a window of
+them, lets them complete, and opens more. The claim about chains was wrong for
+the same reason: links complete IN ORDER, so they can be made in order. The shape
+that does it carries the cursor in an attribute and ALIASES to the next fold
+rather than depending on it:
+
+    fold(init, seq, offset=k)  ->  fold(combine(init, seq[k]), seq, offset=k+1)
+
+Built and measured. The frontier still grew with N -- 64 for 64 elements --
+because forwarding keeps the aliasing node open until its target completes, so a
+chain of N aliases is N open nodes just as a chain of N links was. Getting O(1)
+would need the consumer's edge re-pointed at each step, which is graph surgery
+the engine does not do and which would change the consumer's identity.
+
+**And it still wedges.** A fold over a literal list of 64 finishes; a fold over a
+sequence a `for` produced finishes at 16 and hangs at 32, in both shapes. The
+frontier test's own program folds 64 elements and completes, so the wedge is not
+"frontier over window" on its own -- it involves chained loops, and what exactly
+is not diagnosed.
+
+So the honest position: the memory argument for a graph-shaped fold stands, the
+structural objection to it does not, and there is an undiagnosed scheduler
+interaction in the way. Reverted, twice, with the reasoning kept so the next
+attempt starts from what is known rather than from the wrong explanation.
