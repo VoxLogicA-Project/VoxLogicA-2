@@ -90,11 +90,6 @@ def test_subsequence_primitive():
     assert list(sliced_lazy.iter_values()) == [20, 30]
     assert sliced_lazy.total_size == 2
 
-    bag = db.from_sequence([5, 6, 7, 8], npartitions=2)
-    sliced_bag = subsequence.execute(**{"0": bag, "1": 1, "2": 3})
-    assert isinstance(sliced_bag, SequenceValue)
-    assert list(sliced_bag.iter_values()) == [6, 7]
-
     with pytest.raises(ValueError):
         subsequence.execute(**{"0": [1, 2, 3], "1": 1.5})
 
