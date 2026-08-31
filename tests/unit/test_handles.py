@@ -181,7 +181,7 @@ def test_the_untaken_branch_is_never_computed(monkeypatch, capsys):
 
 
 def test_a_fold_gives_the_same_answer_as_it_always_did(capsys):
-    program = 'xs = for i in [1, 2, 3, 4] do i\nprint "s" fold(+, xs)\nprint "m" fold(max, xs)'
+    program = 'xs = for i in [1, 2, 3, 4] do i\nprint "s" fold + xs\nprint "m" fold max xs'
     result = _run(program)
     printed = {line.partition("=")[0].strip(): line.partition("=")[2].strip()
                for line in capsys.readouterr().out.splitlines() if "=" in line}
@@ -209,7 +209,7 @@ def test_a_fold_becomes_a_chain_of_links(monkeypatch):
 
     monkeypatch.setattr(strategy_module, "ComputationEngine", Captured)
 
-    assert _run('xs = for i in [1, 2, 3, 4] do i\nprint "s" fold(+, xs)').success is True
+    assert _run('xs = for i in [1, 2, 3, 4] do i\nprint "s" fold + xs').success is True
 
     table = seen[0].table
     links = [nid for nid, node in table.nodes.items()
