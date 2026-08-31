@@ -38,23 +38,22 @@ def test_arithmetic_primitives():
 
 @pytest.mark.unit
 def test_sequence_arithmetic_overloads():
-    seq_add = addition.execute([1, 2, 3], 10)
-    assert isinstance(seq_add, SequenceValue)
-    assert list(seq_add.iter_values()) == [11, 12, 13]
+    """Lifted arithmetic returns a plain list.
 
-    seq_mul = multiplication.execute(2, [1, 2, 3])
-    assert isinstance(seq_mul, SequenceValue)
-    assert list(seq_mul.iter_values()) == [2, 4, 6]
-
-    pairwise = subtraction.execute([10, 20, 30], [1, 2, 3])
-    assert isinstance(pairwise, SequenceValue)
-    assert list(pairwise.iter_values()) == [9, 18, 27]
-
-    with pytest.raises(ValueError):
-        list(addition.execute([1, 2], [1, 2, 3]).iter_values())
+    This asserted `SequenceValue` and a lazy `iter_values()`, which is what these
+    primitives used to hand back. The VALUES were never in question; the wrapper
+    was, and it is gone. Asserting a representation that no longer exists is how
+    a test outlives what it tests.
+    """
+    assert addition.execute([1, 2, 3], 10) == [11, 12, 13]
+    assert multiplication.execute(2, [1, 2, 3]) == [2, 4, 6]
+    assert subtraction.execute([10, 20, 30], [1, 2, 3]) == [9, 18, 27]
 
     with pytest.raises(ValueError):
-        list(division.execute([1, 2], 0).iter_values())
+        addition.execute([1, 2], [1, 2, 3])          # lengths do not pair
+
+    with pytest.raises(ValueError):
+        division.execute([1, 2], 0)
 
 
 @pytest.mark.unit
@@ -71,9 +70,14 @@ def test_index_primitive():
 
 @pytest.mark.unit
 def test_range_primitive():
-    assert range_primitive.execute(**{"0": 4}).compute() == [0, 1, 2, 3]
-    assert range_primitive.execute(**{"0": 2, "1": 5}).compute() == [2, 3, 4]
-    assert range_primitive.execute(**{"0": 5, "1": 2}).compute() == []
+    """`range` returns a list.
+
+    The `.compute()` calls this used were the Dask bag API: `range` produced a
+    bag once, and nothing has since. The dependency is gone and so is the method.
+    """
+    assert range_primitive.execute(**{"0": 4}) == [0, 1, 2, 3]
+    assert range_primitive.execute(**{"0": 2, "1": 5}) == [2, 3, 4]
+    assert range_primitive.execute(**{"0": 5, "1": 2}) == []
     with pytest.raises(ValueError):
         range_primitive.execute(**{"0": 1.2})
 
