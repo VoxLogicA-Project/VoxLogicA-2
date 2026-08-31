@@ -991,6 +991,14 @@ class ComputationEngine:
         caller finishes every member itself, in order, so nothing is lost.
         """
         node = self.table.nodes[nid]
+        # A lazy operator's value can name nodes no edge reaches from here, and
+        # those references have to be counted before anything can release them.
+        # HERE, not in the persist branch: a forwarded value -- a loop taking its
+        # spliced sequence's, a rewrite taking its target's -- never passes
+        # through that branch, so its handles went unrecorded and the O(1) check
+        # in `_eager` then said a value named nothing when it named everything.
+        # `_finish` is the one funnel every value goes through.
+        self.graph.hold_handles(nid, value)
         will_be_durable = False
         if persist:
             critical = self._is_critical(nid, node)
@@ -1022,9 +1030,6 @@ class ComputationEngine:
             # it safely.
             will_be_durable = self.table.complete(nid, value, compute_ms,
                                                   critical=critical, persist=worth_it)
-            # A lazy operator's value can name nodes no edge reaches from here.
-            # Count those as references before anything else can release them.
-            self.graph.hold_handles(nid, value)
             if node.operator in _SEQUENCE_OPERATORS:
                 for index, item in enumerate(value):
                     self.table.complete_item(nid, index, item)
