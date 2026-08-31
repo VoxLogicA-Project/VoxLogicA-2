@@ -172,6 +172,15 @@ class PrimitiveSpec:
     #: handle in it -- `index`'s integer is unaffected -- which keeps the
     #: declaration to one word.
     shallow: bool = False
+    #: Evaluating this GROWS THE GRAPH: the engine expands it into new nodes and
+    #: forwards their result, rather than calling the kernel. Orthogonal to the
+    #: argument mode above -- `for_loop` rewrites and never sees a handle, while
+    #: `default.sequence` is lazy and never rewrites.
+    #:
+    #: Note this is not "has no kernel". `for_loop` has one; it belongs to the
+    #: strict runtime, which reconstructs a closure the engine never builds.
+    #: Reaching it from the engine is the defect this flag exists to prevent.
+    rewrite: bool = False
 
     @property
     def qualified_name(self) -> str:

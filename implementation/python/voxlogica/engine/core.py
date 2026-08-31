@@ -50,6 +50,7 @@ from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.memlog import MemoryLogger
 from voxlogica.engine.node_table import NodeTable
+from voxlogica.engine.evaluation import NeedsExpansion, modes_of
 from voxlogica.handles import contains_handle
 from voxlogica.engine.numba_fusion import NumbaFusionBackend
 from voxlogica.engine.topology import default_concurrency
@@ -1230,6 +1231,11 @@ class ComputationEngine:
             nid = self._alias[nid]
         return self._rematerialize(nid)
 
+    def _grows_the_graph(self, nid: NodeId) -> bool:
+        """Whether evaluating this node expands the graph instead of computing."""
+        node = self.table.nodes.get(nid)
+        return node is not None and modes_of(self.registry, node.operator).rewrite
+
     def _rematerialize(self, nid: NodeId) -> Any:
         """Recompute (or reload) a completed node whose value was evicted."""
         if nid in self.table.values:
@@ -1238,6 +1244,16 @@ class ComputationEngine:
         if loaded is not None:
             self._retrack_resident(nid)
             return loaded
+        if self._grows_the_graph(nid):
+            # Its value comes from the nodes it expands into, forwarded through
+            # `_alias`; there is nothing here to compute. Calling the kernel is
+            # not guarded against, it is simply not an option: `for_loop` has a
+            # kernel, it belongs to the strict runtime, and it fails on a closure
+            # the engine never builds.
+            alias = self._alias.get(nid)
+            if alias is not None and alias != nid:
+                return self._resolve_reference(alias)
+            raise NeedsExpansion(nid)
         node = self.table.nodes[nid]
         if node.kind == "constant":
             value = node.attrs.get("value")

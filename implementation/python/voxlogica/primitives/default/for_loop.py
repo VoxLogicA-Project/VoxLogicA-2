@@ -52,5 +52,6 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     attrs_schema={},
     planner=default_planner_factory("default.for_loop", kind="sequence"),
     kernel_name="default.for_loop",
+    rewrite=True,
     description="Apply a closure to each element of an iterable",
 )

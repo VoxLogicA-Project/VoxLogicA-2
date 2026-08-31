@@ -59,6 +59,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from voxlogica.engine.evaluation import modes_of
 from voxlogica.engine.expander import Expander, Expansion
 from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.plan_size import PlanSizeEstimator
@@ -148,6 +149,7 @@ class LoopAdmission:
         # the projection loses every level of nesting.
         self._loop_parent: dict[NodeId, NodeId] = {}
         self._reducing: NodeId | None = None
+        self.graph.table.nodes.is_loop = self._grows_the_graph
         self.graph.table.nodes.on_loop = self._note_loop_interned
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -233,6 +235,10 @@ class LoopAdmission:
             self.liveness.staged.discard(body)
             self.graph.release(body)
         self._on_spliced(nid, seq_id, priority)
+
+    def _grows_the_graph(self, operator: str | None) -> bool:
+        """Whether an operator is one the expander unrolls. Single-sourced."""
+        return bool(operator) and modes_of(self.expander.registry, operator).rewrite
 
     def _note_loop_interned(self, node_id: NodeId) -> None:
         """Record the loop a newly interned loop node was produced inside."""

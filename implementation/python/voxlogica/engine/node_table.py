@@ -63,9 +63,12 @@ class DoubleComputationError(RuntimeError):
     """Raised when a node would be computed twice — content addressing forbids it."""
 
 
-#: Operators the expander unrolls. Duplicated from expander._EXPANDABLE rather
-#: than imported, because the table must not depend on the scheduler.
-_LOOP_OPERATORS = frozenset({"for_loop", "default.for_loop", "map", "default.map"})
+# The list of graph-growing operators used to be duplicated here, with a comment
+# saying so: the table must not depend on the scheduler, so it kept its own copy.
+# A third copy of the same fact, in a design whose defect was one fact recorded
+# in two places. The table now takes the QUESTION as a predicate from whoever
+# owns the registry (see `is_loop` below), which keeps the dependency out and
+# the answer single-sourced.
 
 
 class _LoopWatchingNodes(dict):
@@ -80,11 +83,16 @@ class _LoopWatchingNodes(dict):
     """
 
     on_loop: Any = None
+    #: `operator -> bool`, installed with `on_loop` by whoever can answer it.
+    #: Without it the table reports nothing, which is right: a table with no
+    #: listener has no loops to report.
+    is_loop: Any = None
 
     def __setitem__(self, key: Any, value: Any) -> None:
         if key not in self:
             super().__setitem__(key, value)
-            if self.on_loop is not None and getattr(value, "operator", None) in _LOOP_OPERATORS:
+            if (self.on_loop is not None and self.is_loop is not None
+                    and self.is_loop(getattr(value, "operator", None))):
                 self.on_loop(key)
         else:
             super().__setitem__(key, value)

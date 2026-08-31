@@ -34,9 +34,13 @@ from typing import Any
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.lazy.ir import NodeId, NodeSpec
 from voxlogica.parser import parse_expression_content
+from voxlogica.engine.evaluation import modes_of
 from voxlogica.primitives.registry import PrimitiveRegistry
 
-_EXPANDABLE = {"for_loop", "default.for_loop", "map", "default.map"}
+# _EXPANDABLE used to live here as a name list. It is now a property an
+# operator declares (`rewrite=True`), asked through engine/evaluation.py, so a
+# new graph-growing operator needs no edit here -- and, more to the point, so
+# that the dispatch path and the miss path cannot disagree about it.
 
 
 @dataclass
@@ -64,7 +68,9 @@ class Expander:
 
     def can_expand(self, node: NodeSpec) -> bool:
         """True for a closure-over-sequence node (args = (iterable, closure))."""
-        return node.kind == "primitive" and node.operator in _EXPANDABLE and len(node.args) == 2
+        return (node.kind == "primitive"
+                and modes_of(self.registry, node.operator).rewrite
+                and len(node.args) == 2)
 
     # ── Incremental expansion ─────────────────────────────────────────────────
 

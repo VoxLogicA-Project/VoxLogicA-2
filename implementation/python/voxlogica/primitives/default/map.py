@@ -52,5 +52,6 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     attrs_schema={},
     planner=default_planner_factory("default.map", kind="sequence"),
     kernel_name="default.map",
+    rewrite=True,
     description="Map a closure over a sequence",
 )

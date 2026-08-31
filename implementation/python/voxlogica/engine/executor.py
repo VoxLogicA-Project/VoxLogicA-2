@@ -29,6 +29,7 @@ import numpy as np
 
 from voxlogica.arrays import PolyArray
 from voxlogica.buffer_pool import acquire_numpy, buffer_states, recycle_unleased_states
+from voxlogica.engine.evaluation import modes_of
 from voxlogica.engine.inflight import executing
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.handles import Handle, resolve_deep, resolve_shallow
@@ -75,7 +76,6 @@ class Executor:
         self._signatures: dict[Any, tuple[list, bool, bool]] = {}
         # Whether an operator takes handles. Read once per operator, not once
         # per dispatch: this sits on the hot path of every kernel call.
-        self._lazy_ops: dict[str, tuple[bool, bool]] = {}
         # How a handle is turned into what it names. `lookup` alone sees only the
         # live tier, which is right for a node's own dependencies (the scheduler
         # guarantees those are resident) and wrong for a handle, which can name a
@@ -259,8 +259,8 @@ class Executor:
             kernel = self.registry.load_kernel("default.subsequence")
             return self._invoke(kernel, [sequence, start, stop], {})
         kernel = self.registry.load_kernel(node.operator)
-        lazy, shallow = self._modes(node.operator)
-        if lazy:
+        modes = modes_of(self.registry, node.operator)
+        if modes.lazy:
             # A lazy operator is handed the references themselves. Nothing is
             # materialized here, which is the whole point: `default.sequence`
             # was once given 51.4 GB (issue #51) to build a list it never looks
@@ -268,7 +268,7 @@ class Executor:
             args = [Handle(arg_id) for arg_id in node.args]
             kwargs = {key: Handle(arg_id) for key, arg_id in node.kwargs}
             return self._invoke(kernel, args, kwargs, node.attrs)
-        if shallow:
+        if modes.shallow:
             # The container itself, with whatever handles it holds left in place.
             resolver = self._handle_resolver or lookup
             def _shallow(arg_id):
@@ -280,19 +280,6 @@ class Executor:
         args = [self._eager(lookup(arg_id), lookup) for arg_id in node.args]
         kwargs = {key: self._eager(lookup(arg_id), lookup) for key, arg_id in node.kwargs}
         return self._invoke(kernel, args, kwargs, node.attrs)
-
-    def _modes(self, operator: str) -> tuple[bool, bool]:
-        """(lazy, shallow) for an operator. Cached: this is per-dispatch."""
-        cached = self._lazy_ops.get(operator)
-        if cached is None:
-            try:
-                spec = self.registry.get_spec(operator)
-                cached = (bool(getattr(spec, "lazy", False)),
-                          bool(getattr(spec, "shallow", False)))
-            except Exception:  # noqa: BLE001 -- an unknown operator is neither
-                cached = (False, False)
-            self._lazy_ops[operator] = cached
-        return cached
 
     def _eager(self, value: Any, lookup: Callable[[NodeId], Any]) -> Any:
         """Materialize one argument for an operator that declared nothing.
