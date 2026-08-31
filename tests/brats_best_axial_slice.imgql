@@ -2,10 +2,10 @@ import "simpleitk"
 import "vox1"
 import "strings"
 
-// BraTS 2019 HGG: TACAS fixed-threshold segmentation, then export the axial
+// BraTS2020: TACAS fixed-threshold segmentation, then export the axial
 // slice where the tumour mask has maximum volume (16-bit PNG per case).
 
-dataset_root = "tests/data/datasets/BraTS_2019_HGG"
+dataset_root = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData"
 output_dir = "tests/output/brats-tmp-slices"
 dataset_slice_start = 0
 dataset_slice_stop = 3
@@ -13,7 +13,7 @@ case_count = dataset_slice_stop - dataset_slice_start
 
 hi_thr = 0.93
 vi_thr = 0.88
-z_planes = 192
+z_planes = 155
 
 flair_paths =
   subsequence(

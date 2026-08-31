@@ -1,6 +1,7 @@
 import "simpleitk"
+import "vox1"
 
-dataset_root = "tests/data/datasets/BraTS_2019_HGG"
+dataset_root = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData"
 
 // Controls.
 k = 10
