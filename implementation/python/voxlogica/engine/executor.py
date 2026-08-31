@@ -31,6 +31,7 @@ from voxlogica.arrays import PolyArray
 from voxlogica.buffer_pool import acquire_numpy, buffer_states, recycle_unleased_states
 from voxlogica.engine.inflight import executing
 from voxlogica.engine.node_table import NodeTable
+from voxlogica.handles import Handle, resolve_deep
 from voxlogica.engine.numba_fusion import resolve_out_dtype, shape_of
 from voxlogica.lazy.ir import NodeId
 from voxlogica.primitives.registry import PrimitiveRegistry
@@ -72,6 +73,9 @@ class Executor:
         # Signature introspection is stable per kernel; cache it so the hot path
         # doesn't re-parse it on every one of a sweep's thousands of calls.
         self._signatures: dict[Any, tuple[list, bool, bool]] = {}
+        # Whether an operator takes handles. Read once per operator, not once
+        # per dispatch: this sits on the hot path of every kernel call.
+        self._lazy_ops: dict[str, bool] = {}
 
     async def run(self, table: NodeTable, node_id: NodeId) -> Any:
         """Materialize one primitive node off the event loop."""
@@ -249,9 +253,39 @@ class Executor:
             kernel = self.registry.load_kernel("default.subsequence")
             return self._invoke(kernel, [sequence, start, stop], {})
         kernel = self.registry.load_kernel(node.operator)
-        args = [_unwrap(lookup(arg_id)) for arg_id in node.args]
-        kwargs = {key: _unwrap(lookup(arg_id)) for key, arg_id in node.kwargs}
+        if self._is_lazy(node.operator):
+            # A lazy operator is handed the references themselves. Nothing is
+            # materialized here, which is the whole point: `default.sequence`
+            # was once given 51.4 GB (issue #51) to build a list it never looks
+            # inside.
+            args = [Handle(arg_id) for arg_id in node.args]
+            kwargs = {key: Handle(arg_id) for key, arg_id in node.kwargs}
+            return self._invoke(kernel, args, kwargs, node.attrs)
+        args = [self._eager(lookup(arg_id), lookup) for arg_id in node.args]
+        kwargs = {key: self._eager(lookup(arg_id), lookup) for key, arg_id in node.kwargs}
         return self._invoke(kernel, args, kwargs, node.attrs)
+
+    def _is_lazy(self, operator: str) -> bool:
+        """Whether this operator receives handles. Cached: it is per-dispatch."""
+        cached = self._lazy_ops.get(operator)
+        if cached is None:
+            try:
+                cached = bool(getattr(self.registry.get_spec(operator), "lazy", False))
+            except Exception:  # noqa: BLE001 -- an unknown operator is not lazy
+                cached = False
+            self._lazy_ops[operator] = cached
+        return cached
+
+    def _eager(self, value: Any, lookup: Callable[[NodeId], Any]) -> Any:
+        """Materialize one argument for an operator that declared nothing.
+
+        `_unwrap` is what this did before handles existed and is what it still
+        does for every value that contains none -- `resolve_deep` returns such a
+        value AS IS, having short-circuited on the first container level with no
+        handle in it. The extra work exists only where a lazy producer upstream
+        actually put a reference in a value.
+        """
+        return resolve_deep(_unwrap(value), lambda node_id: _unwrap(lookup(node_id)))
 
     def _invoke(self, kernel, args: list[Any], kwargs: dict[str, Any], attrs: dict[str, Any] | None = None) -> Any:
         """Adapt engine arguments to the kernel's declared Python signature."""

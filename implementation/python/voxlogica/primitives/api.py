@@ -154,6 +154,16 @@ class PrimitiveSpec:
     is_legacy_adapter: bool = False
     elementwise: ElementwiseSpec | None = None
     stencil: StencilSpec | None = None
+    #: Receive HANDLES instead of values -- one field, because laziness that is
+    #: awkward to opt into will not be opted into. A lazy kernel is handed a
+    #: `Handle` per argument (a merkle hash, see voxlogica/handles.py) and may
+    #: pass them on, reorder them, put them in its result or drop them. It may
+    #: NOT resolve them: a kernel that waits for a value puts a wait inside
+    #: kernel code, and the DAG stops being the only witness of what depends on
+    #: what. An operator that genuinely needs a value stays eager, which is the
+    #: default, and being wrong about that costs performance and never
+    #: correctness.
+    lazy: bool = False
 
     @property
     def qualified_name(self) -> str:
