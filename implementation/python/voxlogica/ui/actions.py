@@ -15,6 +15,7 @@ See doc/dev/ui-workspace.md sections 3 and 5.
 
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -185,6 +186,100 @@ def _bind_node(workspace, params):
 
 def _set_kind(workspace, params):
     return workspace.document.set_attr(params["id"], "kind", params["kind"])
+
+
+def _set_layer_style(workspace, params):
+    """How one layer of a stack looks. Never what it is.
+
+    A slider moves at sixty frames a second and this must stay free, which is
+    exactly why the style is a directive and not part of the expression: the
+    expression is the cache key, and a hash that changes recomputes a volume.
+    """
+    return workspace.document.set_layer_style(
+        params["id"],
+        int(params["at"]),
+        colormap=params.get("colormap"),
+        opacity=params.get("opacity"),
+        on=params.get("on"),
+    )
+
+
+#: What to call a layer that has just become a card. Its own leading name is
+#: what the author would have called it.
+_LEADING_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _move_layer(workspace, params):
+    """Which layer is in front. The order of the array is the order it draws in."""
+    return workspace.document.move_layer(
+        params["id"], int(params["at"]), int(params["to"])
+    )
+
+
+def _merge_card(workspace, params):
+    """Drop one card onto another: what it drew is now a layer of what it landed on.
+
+    The card that was dropped stops existing, which is what the gesture looks
+    like -- it became a row. Its style travels with it, so a mask that was red
+    is still red one line further down.
+    """
+    document = workspace.document
+    taken = document.layers_of(params["from"])
+    if not taken or params["from"] == params["id"]:
+        return False
+    if not document.add_layers(params["id"], taken):
+        return False
+    document.remove_card(params["from"])
+    return True
+
+
+def _split_layer(workspace, params):
+    """Take a layer out of a stack and give it a card of its own.
+
+    The other half of the merge, and it has to be the other half exactly:
+    dropping a card in and dragging its row back out must leave the program
+    where it started, or the gesture is not reversible and nobody trusts it.
+    """
+    document = workspace.document
+    lifted = document.take_layer(params["id"], int(params["at"]))
+    if lifted is None:
+        return False
+    expression, style = lifted
+    new_id = params.get("newId") or document.next_id()
+    label = _LEADING_NAME.search(expression)
+    made = document.add_card(
+        new_id,
+        "print",
+        x=params.get("x"),
+        y=params.get("y"),
+        page=params.get("page"),
+        w=params.get("w"),
+        h=params.get("h"),
+    )
+    if not made:
+        return False
+    document.set_source(new_id, f'print "{label.group(0) if label else new_id}" {expression}\n')
+    # Position zero of a card of its own, wearing the colour it had in the stack.
+    document.set_layer_style(new_id, 0, **style)
+    return new_id
+
+
+def _set_index(workspace, params):
+    """Walk a card's index to another element.
+
+    Reached from a card, applied to the program: the card carries the *name* of
+    the variable and the variable is one line of .imgql. So this is not "select
+    an item in a widget" -- it is an edit, undoable like any other, and every
+    card that mentions the name moves with it.
+    """
+    card = next(
+        (found for found in workspace.document.cards if found["id"] == params["id"]),
+        None,
+    )
+    name = (card or {}).get("index")
+    if not name:
+        return False
+    return workspace.document.set_index(name, int(params["value"]))
 
 
 def _set_view_mode(workspace, params):
@@ -689,6 +784,26 @@ ACTIONS: dict[str, Action] = {
                 "Switch what a card is: code, result or note.", _set_kind),
         _action("card.setViewMode", {"id": "string", "view": "string"}, ("id", "view"),
                 "Switch how a result card renders: its state or its content.", _set_view_mode),
+        _action("card.setLayerStyle",
+                {"id": "string", "at": "int", "colormap": "string", "opacity": "number",
+                 "on": "bool"},
+                ("id", "at"),
+                "How one layer of a stack looks: colormap, opacity, on or off. "
+                "Appearance only -- nothing recomputes.", _set_layer_style),
+        _action("card.setIndex", {"id": "string", "value": "int"}, ("id", "value"),
+                "Walk this card's index to another element of the sequence. "
+                "Every card that mentions the same index follows.", _set_index),
+        _action("card.moveLayer", {"id": "string", "at": "int", "to": "int"},
+                ("id", "at", "to"),
+                "Reorder a stack: which layer draws in front of which.", _move_layer),
+        _action("card.mergeCard", {"id": "string", "from": "string"}, ("id", "from"),
+                "Lay what one card draws on top of another. The first stops "
+                "existing: it became a layer.", _merge_card),
+        _action("card.splitLayer",
+                {"id": "string", "at": "int", "newId": "string", "x": "int", "y": "int",
+                 "w": "int", "h": "int", "page": "int"},
+                ("id", "at"),
+                "Take a layer out of a stack into a card of its own.", _split_layer),
         _action("card.saveThis", {"id": "string", "label": "string"}, ("id",),
                 "Write a `save` for what this card is about into the program, "
                 "as its own card.", _save_this),

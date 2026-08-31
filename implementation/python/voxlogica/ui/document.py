@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 # A directive is a comment first and metadata second: `//` is a comment in
 # .imgql, and the `@` makes the marker specific enough to grep for and unlikely
@@ -53,7 +53,9 @@ _KEY_ORDER = (
     "page",
     "node",
     "focus",
+    "index",
     "view",
+    "style",
     "from",
     "cols",
     "rows",
@@ -96,7 +98,134 @@ def _comment(text: str) -> str:
 #: Always written quoted, whatever they contain. A title is prose -- somebody
 #: will type a space into it within the hour -- and a field that is only
 #: sometimes quoted teaches every reader of the file the wrong rule.
-_ALWAYS_QUOTED = ("title", "labels")
+_ALWAYS_QUOTED = ("title", "labels", "style")
+
+
+#: How one layer looks: a colour or a colormap, optionally an opacity,
+#: optionally switched off -- `gray`, `blue@0.35`, `#e5484d@0.45!off`.
+#:
+#: A colour is written as hex and a colormap by name, which is the whole
+#: difference the file needs to record: the viewer turns a colour into a
+#: single-hue colormap because that is the only thing the GPU draws with, and
+#: that is the viewer's business rather than the document's.
+_STYLE = re.compile(r"^(#[0-9A-Fa-f]{6}|[A-Za-z_][\w-]*)(?:@([0-9]*\.?[0-9]+))?(!off)?$")
+
+#: A layer whose style this build could not read. Not dropped: a style list is
+#: positional, so dropping entry two would silently repaint entry three.
+_PLAIN: dict[str, Any] = {"colormap": None, "opacity": 1.0, "on": True}
+
+
+def styles(value: str) -> list[dict[str, Any]]:
+    """`"gray@1.00, blue@0.35!off"` as one entry per layer, in drawing order.
+
+    Appearance, and only appearance. It lives in the directive rather than in the
+    expression because *the expression is the cache key*: put opacity in the
+    program and moving a slider changes a hash, and changing a hash recomputes
+    three hundred megabytes of volume because somebody dragged a cursor.
+
+    The nth entry styles the nth element of the card's array, so the count of
+    entries is load-bearing and a value that does not parse still occupies its
+    place. The raw attribute is what gets written back regardless, so nothing a
+    later build understands is lost here.
+    """
+    out: list[dict[str, Any]] = []
+    for piece in value.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        match = _STYLE.match(piece)
+        if match is None:
+            out.append(dict(_PLAIN))
+            continue
+        colormap, opacity, off = match.groups()
+        out.append({
+            "colormap": colormap,
+            "opacity": 1.0 if opacity is None else float(opacity),
+            "on": off is None,
+        })
+    return out
+
+
+#: `print "label" [` -- the shape whose array can be rearranged in place.
+_ARRAY_HEAD = re.compile(r'((?:print|save)\s+"(?:[^"\\]|\\.)*"\s*)\[')
+
+#: The first name in an expression, for labelling a layer taken out on its own.
+_LEADING_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+#: A name in the language: what an index variable is allowed to be called.
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def array_of(source: str) -> tuple[str, list[str], str] | None:
+    """`(before, elements, after)` for the array a print draws, or `None`.
+
+    Cut from the text exactly as typed, rather than rebuilt from the parser.
+    Rebuilding would respell the author's program -- `xs[i]` is sugar for
+    `index(xs, i)`, so reordering two layers would rewrite every line it touched
+    into a form nobody wrote. Reordering is a *rearrangement*, and it has to
+    read like one in the diff.
+
+    The scanner tracks nesting and strings, because a comma inside `add(a, b)`
+    or a nested array is not a boundary. Anything but the plain shape --
+    `print "label" [ ... ]` -- returns `None`, and the caller refuses the edit
+    instead of guessing at it.
+    """
+    head = _ARRAY_HEAD.search(source)
+    if head is None:
+        return None
+    open_at = head.end() - 1
+    depth = 0
+    quoted = False
+    escaped = False
+    cuts = [open_at + 1]
+    for at in range(open_at, len(source)):
+        char = source[at]
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+            continue
+        if char == '"':
+            quoted = True
+        elif char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+            if depth == 0:
+                pieces = [source[a:b] for a, b in zip(cuts, cuts[1:] + [at])]
+                elements = [piece.strip().lstrip(",").strip() for piece in pieces]
+                if not all(elements):
+                    return None
+                return source[:open_at + 1], elements, source[at:]
+        elif char == "," and depth == 1:
+            cuts.append(at)
+    return None
+
+
+def default_style(at: int) -> dict[str, Any]:
+    """How a layer nobody has styled looks, by position.
+
+    Position zero is the one underneath and a scan is grey; anything laid over
+    it wants to be told apart from it. The browser falls back to the same rule
+    for a position the file says nothing about, and a test holds the two
+    together -- two answers to "what colour is layer two" is a card that repaints
+    itself when somebody touches a different layer.
+    """
+    return {"colormap": "gray" if at == 0 else "warm", "opacity": 1.0, "on": True}
+
+
+def style_text(layers: list[dict[str, Any]]) -> str:
+    """The other direction, for whoever moves a slider."""
+    written = []
+    for layer in layers:
+        text = f"{layer.get('colormap') or 'gray'}@{float(layer.get('opacity', 1.0)):.2f}"
+        if layer.get("on") is False:
+            text += "!off"
+        written.append(text)
+    return ", ".join(written)
 
 
 def _escape(value: str) -> str:
@@ -280,9 +409,13 @@ class Document:
                 value = directive.int_or(key, None)
                 if value is not None:
                     card[key] = value
-            for key in ("node", "view", "from", "focus"):
+            for key in ("node", "view", "from", "focus", "index"):
                 if key in attrs:
                     card[key] = attrs[key]
+            # A card that names an index is a card somebody can walk: that
+            # attribute is the whole of what used to be `kind=selector`.
+            if "style" in attrs:
+                card["style"] = styles(attrs["style"])
             if "aspect" in attrs:
                 try:
                     card["aspect"] = float(attrs["aspect"])
@@ -311,6 +444,13 @@ class Document:
 
                 declared = analysis.outputs(card["source"])
                 if declared:
+                    # A stack: one output, several pictures. Each element is a
+                    # node of its own, so the card carries them all and the
+                    # workspace asks the reducer for a hash per element. The
+                    # single `node` below stays what it was -- the whole array --
+                    # which is what Run computes and what the state is about.
+                    if declared[0].parts:
+                        card["parts"] = list(declared[0].parts)
                     card["node"] = declared[0].binding or declared[0].expression
                     if not declared[0].binding:
                         card["expression"] = declared[0].expression
@@ -318,6 +458,41 @@ class Document:
                         card.setdefault("title", declared[0].label)
                         if card["title"] == identity:
                             card["title"] = declared[0].label
+            # What the author wrote, for showing to the author.
+            #
+            # `card["node"]` is the reducer's spelling -- `index(brains,g)` for a
+            # line that says `brains[g]` -- which is right for addressing and
+            # wrong for reading. A board of uncomputed cards showed nothing but
+            # desugared text, which reads as debug output rather than as the
+            # program somebody wrote.
+            if card["kind"] in ("print", "save"):
+                written = array_of(card["source"]) or self._sole_expression(
+                    Segment(directive, card["source"])
+                )
+                if written is not None:
+                    _before, pieces, _after = written
+                    card["written"] = (
+                        f"[{', '.join(pieces)}]" if len(pieces) > 1 else pieces[0]
+                    )
+            # What a selector walks along, so it can know where the walk ends.
+            # Read from the first picture: `flairs[i]` is a step along `flairs`.
+            if card.get("index"):
+                from . import analysis
+
+                walked = analysis.sequence_of(
+                    (card.get("parts") or [card.get("node") or ""])[0]
+                )
+                if walked:
+                    card["over"] = walked
+                # Where the walk is *now*, read from the program text.
+                #
+                # Not from the index's computed value: `let g = 3` is a node like
+                # any other, so on a board nobody has run yet it has no value,
+                # and a selector that reads 0 while the file plainly says 3 is a
+                # selector nobody can use to start the run.
+                where = self.index_value(card["index"])
+                if where is not None:
+                    card["at"] = where
             card["focus"] = _focus_of(card)
             cards.append(card)
         return cards
@@ -863,6 +1038,198 @@ class Document:
         segment.directive.set(key, value)
         self.dirty = True
         return True
+
+    def set_layer_style(self, card_id: str, at: int, **changes: Any) -> bool:
+        """One layer's appearance, by position.
+
+        Appearance only: this writes a comment, so nothing recomputes and moving
+        a slider costs nothing. The list is padded up to the card's own depth
+        before the change lands -- writing entry two into an empty list would
+        make it entry *zero* and repaint the scan underneath.
+        """
+        if at < 0:
+            return False
+        segment = self._writable(card_id)
+        if segment is None:
+            return False
+        card = next((found for found in self.cards if found["id"] == card_id), None)
+        depth = max(len(card.get("parts") or ()) if card else 0, at + 1)
+        current = styles(segment.directive.attrs.get("style", ""))
+        while len(current) < depth:
+            current.append(default_style(len(current)))
+        for key in ("colormap", "opacity", "on"):
+            if changes.get(key) is not None:
+                current[at][key] = changes[key]
+        segment.directive.set("style", style_text(current))
+        self.dirty = True
+        return True
+
+    def _rewrite_stack(
+        self, card_id: str, move: Callable[[list[str], list[dict[str, Any]]], Any]
+    ) -> Any:
+        """Rearrange a card's layers, and its styles with them.
+
+        One place, because the two lists are one thing seen twice: a style finds
+        its layer by *position*, so moving an element without moving its style
+        repaints every layer at once. Anything that touches one list here
+        touches the other in the same breath.
+        """
+        segment = self._writable(card_id)
+        if segment is None:
+            return None
+        cut = array_of(segment.body)
+        if cut is None:
+            return None
+        before, elements, after = cut
+        look = styles(segment.directive.attrs.get("style", ""))
+        while len(look) < len(elements):
+            look.append(default_style(len(look)))
+        outcome = move(elements, look)
+        if outcome is None or not elements:
+            return None
+        segment.body = f"{before}{', '.join(elements)}{after}"
+        segment.directive.set("style", style_text(look[: len(elements)]))
+        self.dirty = True
+        return outcome
+
+    def move_layer(self, card_id: str, at: int, to: int) -> bool:
+        """Which layer is in front. Order is the whole reason a stack is a list."""
+
+        def move(elements: list[str], look: list[dict[str, Any]]) -> bool | None:
+            if not (0 <= at < len(elements)) or not (0 <= to < len(elements)) or at == to:
+                return None
+            elements.insert(to, elements.pop(at))
+            look.insert(to, look.pop(at))
+            return True
+
+        return bool(self._rewrite_stack(card_id, move))
+
+    def take_layer(self, card_id: str, at: int) -> tuple[str, dict[str, Any]] | None:
+        """Lift one layer out, and its style with it. The caller gives it a card."""
+
+        def move(
+            elements: list[str], look: list[dict[str, Any]]
+        ) -> tuple[str, dict[str, Any]] | None:
+            if not (0 <= at < len(elements)) or len(elements) == 1:
+                return None
+            return elements.pop(at), look.pop(at)
+
+        return self._rewrite_stack(card_id, move)
+
+    def add_layers(self, card_id: str, wanted: list[tuple[str, dict[str, Any]]]) -> bool:
+        """Lay expressions on top of what this card already draws.
+
+        A card of one picture is not an array yet, so it becomes one -- which is
+        exactly what dropping a card onto another means, and it reads that way in
+        the program: `print "scan" flair` becomes `print "scan" [flair, mask]`.
+        """
+        if not wanted:
+            return False
+        segment = self._writable(card_id)
+        if segment is None:
+            return False
+        cut = array_of(segment.body)
+        if cut is None:
+            alone = self._sole_expression(segment)
+            if alone is None:
+                return False
+            before, elements, after = alone
+        else:
+            before, elements, after = cut
+        look = styles(segment.directive.attrs.get("style", ""))
+        while len(look) < len(elements):
+            look.append(default_style(len(look)))
+        for expression, style in wanted:
+            elements.append(expression)
+            look.append({**default_style(len(look)), **style})
+        segment.body = f"{before}{', '.join(elements)}{after}"
+        segment.directive.set("style", style_text(look[: len(elements)]))
+        self.dirty = True
+        return True
+
+    def _sole_expression(self, segment: Segment) -> tuple[str, list[str], str] | None:
+        """A one-picture print, read as an array of one so it can become several."""
+        head = re.search(r'((?:print|save)\s+"(?:[^"\\]|\\.)*"\s*)', segment.body)
+        if head is None:
+            return None
+        rest = segment.body[head.end():]
+        expression = rest.strip()
+        if not expression or "\n" in expression.strip("\n"):
+            return None
+        trailing = rest[len(rest.rstrip()):]
+        return f"{segment.body[:head.end()]}[", [expression], f"]{trailing}"
+
+    def layers_of(self, card_id: str) -> list[tuple[str, dict[str, Any]]]:
+        """What a card draws, each with its look: what a merge takes away."""
+        segment = self._writable(card_id)
+        if segment is None:
+            return []
+        cut = array_of(segment.body) or self._sole_expression(segment)
+        if cut is None:
+            return []
+        _before, elements, _after = cut
+        look = styles(segment.directive.attrs.get("style", ""))
+        # Padded with *nothing*, not with this card's defaults. A layer nobody
+        # styled has no opinion about its colour, and carrying one into another
+        # card would carry the wrong one: position zero is grey, so a card
+        # absorbed as the second layer arrived grey over grey and could not be
+        # seen. What it never said, it does not say.
+        while len(look) < len(elements):
+            look.append({})
+        return list(zip(elements, look))
+
+    def index_value(self, name: str) -> int | None:
+        """The number an index is bound to, straight out of the text.
+
+        Cheap and exact, and available before anything has been computed --
+        which is when a selector is needed most.
+        """
+        if not _NAME.fullmatch(name or ""):
+            return None
+        pattern = re.compile(
+            rf"^[ \t]*let[ \t]+{re.escape(name)}[ \t]*=[ \t]*([0-9]+)(?:\.0+)?[ \t]*$",
+            re.MULTILINE,
+        )
+        for segment in self.segments:
+            match = pattern.search(segment.body)
+            if match is not None:
+                return int(match.group(1))
+        return None
+
+    def set_index(self, name: str, value: int) -> bool:
+        """Move an index: `let i = 2` becomes `let i = 3`.
+
+        The whole of master and slave. There is no link and no owner -- every
+        card whose expression mentions `i` follows, because that is what a free
+        variable does, and it is visible in the text rather than kept in
+        somebody's model of the session.
+
+        Only a `let` bound to a plain number is moved. One bound to an
+        expression is somebody's arithmetic, and overwriting it would be
+        deleting their work to record a click.
+        """
+        if not _NAME.fullmatch(name or "") or value < 0:
+            return False
+        pattern = re.compile(
+            rf"^([ \t]*let[ \t]+{re.escape(name)}[ \t]*=[ \t]*)([0-9]+(?:\.[0-9]+)?)([ \t]*)$",
+            re.MULTILINE,
+        )
+        for segment in self.segments:
+            match = pattern.search(segment.body)
+            if match is None:
+                continue
+            # Written the way it was written: an index that was `2.0` stays a
+            # float, because `index` is given a number and the file is somebody's.
+            was = match.group(2)
+            now = f"{value}.0" if "." in was else str(value)
+            if now == was:
+                return True
+            segment.body = (
+                segment.body[: match.start(2)] + now + segment.body[match.end(2) :]
+            )
+            self.dirty = True
+            return True
+        return False
 
     def set_source(self, card_id: str, text: str) -> bool:
         """Replace a card's body. Only that card's text moves."""

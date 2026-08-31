@@ -120,6 +120,15 @@ class Output:
     #: without anyone hashing a sub-expression. `None` for anything else --
     #: honest until a selection can be resolved to a hash on its own.
     binding: str | None
+    #: When the expression is an array literal, its elements as written --
+    #: `print "scan" [flairs[i], masks[i]]` is one output *drawn as a stack*,
+    #: and a stack is a list of things each of which is a node of its own.
+    #: Empty for everything else, which is most outputs.
+    #:
+    #: Read from the array node rather than by splitting on commas: a comma
+    #: inside a call (`add(a, b)`) or inside a nested array belongs to that,
+    #: and the parser is the only thing that knows the difference.
+    parts: tuple[str, ...] = ()
 
 
 def outputs(source: str) -> list[Output]:
@@ -165,9 +174,43 @@ def outputs(source: str) -> list[Output]:
                 label=command.identifier,
                 expression=expression.to_syntax(),
                 binding=binding,
+                parts=(
+                    tuple(item.to_syntax() for item in expression.items)
+                    if isinstance(expression, vp.EArray)
+                    else ()
+                ),
             )
         )
     return found
+
+
+def sequence_of(expression: str) -> str | None:
+    """The sequence an expression indexes into, or `None`.
+
+    `flairs[i]` is `index(flairs, i)` once the parser has it, and the first
+    argument is the thing being walked along. A selector needs it for one
+    reason: to know where the walk ends. Asked of the parser, because `[` also
+    means an array literal and telling the two apart is exactly its job.
+    """
+    from voxlogica import parser as vp
+
+    text = (expression or "").strip()
+    if not text:
+        return None
+    try:
+        program = vp.parse_program_content(f'print "p" {text}')
+    except Exception as exc:  # noqa: BLE001 - a half-typed expression indexes nothing
+        logger.debug("could not read a sequence out of %r (%s)", text, exc)
+        return None
+    for command in program.commands:
+        found = getattr(command, "expression", None)
+        if (
+            isinstance(found, vp.ECall)
+            and found.identifier == "index"
+            and len(found.arguments) == 2
+        ):
+            return found.arguments[0].to_syntax()
+    return None
 
 
 def compile_error(source: str) -> dict[str, Any] | None:

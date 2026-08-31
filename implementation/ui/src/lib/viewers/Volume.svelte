@@ -59,6 +59,34 @@
 
   const SLICE = { axial: 0, coronal: 1, sagittal: 2, multi: 3 };
 
+  /** Colours already registered with this instance, by hex.
+   *
+   * NiiVue paints with colormaps and nothing else, so a chosen colour has to
+   * become one: a single hue ramping up from transparent, which is the shape
+   * the package's own single-hue maps use (`red`, `violet`) -- so a colour and a
+   * built-in behave the same way over a scan. Registered once per instance and
+   * remembered, because `addColormap` on every frame would be a table rebuilt
+   * sixty times a second while a slider moves.
+   */
+  let painted = new Set();
+
+  function colormapFor(name) {
+    if (typeof name !== "string" || !name.startsWith("#")) return name;
+    const key = `colour${name.slice(1).toLowerCase()}`;
+    if (!painted.has(key)) {
+      const value = (at) => parseInt(name.slice(at, at + 2), 16);
+      nv.addColormap(key, {
+        R: [0, value(1)],
+        G: [0, value(3)],
+        B: [0, value(5)],
+        A: [0, 255],
+        I: [0, 255],
+      });
+      painted.add(key);
+    }
+    return key;
+  }
+
   /** The identity of a layer, for diffing. The hash *is* the identity -- two
    * layers with one hash are one volume, however they are styled. */
   const keyOf = (layer) => layer.hash ?? layer.url;
@@ -95,6 +123,8 @@
     nv = null;
     loaded = [];
     family = null;
+    // The colormap table belongs to the instance that is going away.
+    painted = new Set();
   }
 
   async function build() {
@@ -160,9 +190,8 @@
       }
       const volume = nv.volumes?.[index];
       if (!volume) return;
-      if (layer.colormap && volume.colormap !== layer.colormap) {
-        nv.setColormap(volume.id, layer.colormap);
-      }
+      const wanted = colormapFor(layer.colormap);
+      if (wanted && volume.colormap !== wanted) nv.setColormap(volume.id, wanted);
       const opacity = layer.visible === false ? 0 : (layer.opacity ?? 1);
       if (volume.opacity !== opacity) nv.setOpacity(index, opacity);
     });
@@ -189,13 +218,73 @@
     }
   }
 
-  // Layers and family are props; a change to either is a reconcile, and a
-  // change to the family is a rebuild inside it.
+  /** What this viewer would draw, as a string.
+   *
+   * `layers` is rebuilt by the caller on every render -- it is a lookup per
+   * element, not a stored array -- so identity says nothing about whether the
+   * *picture* changed. Waking on identity meant a NiiVue reconcile and a
+   * `drawScene` for every volume card on every re-render, several times a
+   * second while dragging, which is exactly as heavy as it sounds.
+   *
+   * Everything that can change what is on screen is in here and nothing else
+   * is, so equal signatures really do mean an identical picture.
+   */
+  const signature = $derived(
+    [
+      view,
+      ...layers.map(
+        (layer) =>
+          `${keyOf(layer)}|${layer.url ?? ""}|${layer.colormap ?? ""}|` +
+          `${layer.opacity ?? 1}|${layer.visible === false ? 0 : 1}`,
+      ),
+    ].join("\n"),
+  );
+
+  // A change to the picture is a reconcile, and a change to the viewer family is
+  // a rebuild inside it. A change to neither is nothing.
   $effect(() => {
-    // Read them so this re-runs when they move.
-    void layers;
-    void view;
+    // Read it so this re-runs when the picture moves -- and only then.
+    void signature;
     if (canvas) wake();
+  });
+
+  /** A card can change size without the window moving, and NiiVue only hears
+   * about the window.
+   *
+   * Its drawing buffer is sized from the canvas's client box when it attaches
+   * and on `window.resize`, so resizing a *card* left the buffer at the old
+   * size: the slice went on being drawn for a canvas that no longer existed,
+   * which is a volume in one corner with its orientation labels off the edge.
+   * The element could not overflow -- the card clips -- but the picture inside
+   * it was wrong, which looks the same and is worse.
+   *
+   * Observed on the host rather than the canvas: the canvas is what NiiVue
+   * resizes, and observing the thing you are about to resize is how a
+   * ResizeObserver loop starts. */
+  $effect(() => {
+    if (!host) return;
+    const observer = new ResizeObserver(() => {
+      if (!nv || !live || !canvas) return;
+      // NiiVue's own `resizeListener` does this arithmetic and then draws, but
+      // it reaches it through `requestAnimationFrame`, which a background tab
+      // never delivers -- so a card resized while the window was not in front
+      // came back with a buffer for the size it used to be. The canvas box is
+      // ours (the CSS above makes it fill the card), so its buffer is ours to
+      // keep in step: the same computation, synchronously, no frame required.
+      const ratio = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.round(canvas.offsetWidth * ratio));
+      const height = Math.max(1, Math.round(canvas.offsetHeight * ratio));
+      if (canvas.width === width && canvas.height === height) return;
+      canvas.width = width;
+      canvas.height = height;
+      try {
+        nv.drawScene();
+      } catch {
+        /* mid-teardown, or no context to draw into: the next wake redraws */
+      }
+    });
+    observer.observe(host);
+    return () => observer.disconnect();
   });
 
   $effect(() => () => {
@@ -216,7 +305,15 @@
        component makes. It is the only way anything outside the GPU can tell
        them apart -- a WebGL drawing buffer reads back empty once the frame has
        been composited, so counting lit pixels answers the wrong question. -->
-  <canvas bind:this={canvas} class:hidden={!live} data-drawn={loaded.length}
+  <!-- `draggable=false`: the picture is a view, not a thing to pick up. Left
+       draggable, a press on it starts the browser's own image drag, and the
+       card's drag has to snapshot a WebGL canvas to make a ghost out of it --
+       paying for a picture of the picture on every drag. -->
+  <canvas
+    bind:this={canvas}
+    draggable="false"
+    class:hidden={!live}
+    data-drawn={loaded.length}
   ></canvas>
 
   {#if !live && frozen}

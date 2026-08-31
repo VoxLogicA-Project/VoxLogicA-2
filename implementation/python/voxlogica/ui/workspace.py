@@ -23,6 +23,14 @@ from .document import Document, parse
 
 logger = logging.getLogger(__name__)
 
+#: What a snapshot says about a document nobody has analysed yet: not "this
+#: program is fine", which would be a claim, but "nothing is known", which is
+#: true. `pending` tells the UI which of the two it is looking at.
+_NOTHING_KNOWN_YET: dict[str, Any] = {
+    "issues": {"compile": None, "cycle": [], "duplicates": {}, "overlaps": []},
+    "nodes": {},
+}
+
 
 class Workspace:
     def __init__(self, *, hub=None, path: str | Path | None = None, results=None,
@@ -63,6 +71,12 @@ class Workspace:
         #: change is only a change nobody has written down yet. Debounced
         #: because a drag is dozens of changes and the file is one.
         self._save_timer: threading.Timer | None = None
+        #: (text, facts) for the last text asked about. See `_derived_from`.
+        self._derived: tuple[str, dict[str, Any]] | None = None
+        #: The text a background analysis should look at next, and whether one
+        #: is already running.
+        self._wanted: str | None = None
+        self._deriving = False
         # Nothing is created here. A file exists because somebody asked for one,
         # and an application that wrote a document on every launch left a week
         # of empty files behind for a week of launches.
@@ -109,9 +123,15 @@ class Workspace:
         self.publish()
         return True
 
-    def snapshot(self) -> dict[str, Any]:
-        """Everything the user sees, which is exactly what MCP reads."""
+    def snapshot(self, *, wait: bool = True) -> dict[str, Any]:
+        """Everything the user sees, which is exactly what MCP reads.
+
+        `wait=False` is the interaction path: it never blocks on analysis. See
+        `_derived_from`.
+        """
         with self._lock:
+            source = self.document.to_imgql()
+            derived = self._derived_from(source, wait=wait)
             return {
                 "path": str(self.path) if self.path else None,
                 #: What to call this workspace: the folder it lives in. The path
@@ -123,7 +143,7 @@ class Workspace:
                 "dirty": self.document.dirty,
                 #: The file exactly as it would be written, so a client can show
                 #: the document itself without a second round trip.
-                "source": (source := self.document.to_imgql()),
+                "source": source,
                 #: The library is the tab bar: every file there is, and which
                 #: one is open. Read from the filesystem each time, because the
                 #: filesystem is the only description of it.
@@ -132,13 +152,18 @@ class Workspace:
                 #: Facts rather than errors: somebody halfway through an edit
                 #: has a duplicate name for a few seconds and does not need a
                 #: dialogue about it, but does want to be told which two cards.
-                "issues": self._issues(),
+                "issues": derived["issues"],
                 #: Which node each `let` in this document compiled to. A result
                 #: card names a binding -- prose the user typed -- and only the
                 #: reducer can say which hash that is. It travels with the
                 #: snapshot because it is a property of the text, and the text
                 #: is what just changed.
-                "nodes": self._nodes(source),
+                "nodes": derived["nodes"],
+                #: True while the two entries above are last answer rather than
+                #: this one. The UI has to know which it is looking at: "no
+                #: compile error" and "nobody has asked yet" are different
+                #: things to draw, and only one of them is a claim.
+                "analysing": bool(derived.get("pending")),
                 #: Ours rather than theirs: the examples are read, run and
                 #: copied out of, never written to. The board still moves --
                 #: what it will not do is put that back on disk.
@@ -146,6 +171,76 @@ class Workspace:
                 "canUndo": bool(self._past),
                 "canRedo": bool(self._future),
             }
+
+    def _derived_from(self, source: str, *, wait: bool = True) -> dict[str, Any]:
+        """Everything in a snapshot that is a function of the text, kept per text.
+
+        Two problems, one shape. A snapshot is published after *every* action,
+        and most actions do not touch the document -- turning a page, clicking a
+        card, changing the zoom -- yet each of them was asking "does this
+        program compile" again and getting the answer it had just got: 81ms of
+        work per click with a real program open. And the *first* answer for a
+        document costs far more than that, because saying which node a name
+        compiled to warms the whole engine: 1.3 seconds, which is what made
+        opening the BraTS example feel like opening a file over a network.
+
+        So the text is the key -- the text *is* the document, the same principle
+        the results store runs on: if the bytes did not change, nothing derived
+        from them can have. And when the answer is not known yet, the
+        interaction does not wait for it (`wait=False`): the board is published
+        at once with the last answer, marked `pending`, and a worker computes
+        the new one and publishes again. A caller that *asked* -- an agent, a
+        test, the HTTP endpoint -- gets the real thing and pays for it.
+        """
+        with self._lock:
+            cached = self._derived
+            if cached is not None and cached[0] == source:
+                return cached[1]
+            if wait:
+                facts = self._derive(source)
+                self._derived = (source, facts)
+                return facts
+            # Stale rather than empty: an edit should not blank the node states
+            # of every card for a beat and then bring them back, which reads as
+            # a flicker and looks like a bug. Empty only before the first
+            # answer exists, when there is nothing else to show.
+            previous = cached[1] if cached is not None else _NOTHING_KNOWN_YET
+            self._want_derived(source)
+            return {**previous, "pending": True}
+
+    def _derive(self, source: str) -> dict[str, Any]:
+        return {"issues": self._issues(), "nodes": self._nodes(source), "pending": False}
+
+    def _want_derived(self, source: str) -> None:
+        """Ask for the analysis of `source` in the background, once.
+
+        Coalescing on purpose: while a worker is busy, a newer text replaces
+        whatever it was going to do next rather than queueing behind it. Somebody
+        typing produces a text per keystroke and only the last one is worth
+        analysing.
+        """
+        with self._lock:
+            self._wanted = source
+            if self._deriving:
+                return
+            self._deriving = True
+
+        def work() -> None:
+            while True:
+                with self._lock:
+                    text = self._wanted
+                    if text is None or (self._derived is not None and self._derived[0] == text):
+                        self._deriving = False
+                        return
+                    self._wanted = None
+                facts = self._derive(text)
+                with self._lock:
+                    self._derived = (text, facts)
+                # Outside the lock: publishing takes the hub, and the hub is
+                # somebody else's lock to be holding two of.
+                self.publish()
+
+        threading.Thread(target=work, name="voxlogica-analysis", daemon=True).start()
 
     def _nodes(self, source: str) -> dict[str, str]:
         from .results import bindings_for, hash_of
@@ -163,12 +258,20 @@ class Workspace:
         # file. Each is cached on the text it compiled.
         if bindings:
             for card in self.document.cards:
-                wanted = card.get("node")
-                if not wanted or wanted in bindings:
-                    continue
-                found = hash_of(source, wanted)
-                if found:
-                    bindings[wanted] = found
+                # The card's own node, and -- when it draws a stack -- one per
+                # layer. A layer is addressed by the expression it is, so the
+                # map the UI already reads is the map it arrives in: no second
+                # channel, and a layer shared by two cards is one entry.
+                for wanted in (
+                    card.get("node"),
+                    card.get("over"),
+                    *(card.get("parts") or ()),
+                ):
+                    if not wanted or wanted in bindings:
+                        continue
+                    found = hash_of(source, wanted)
+                    if found:
+                        bindings[wanted] = found
         if self.results is not None:
             self.results.set_bindings(bindings)
         return bindings
@@ -479,5 +582,8 @@ class Workspace:
         if self._hub is None:
             return
         self._hub.publish(
-            {"type": "workspace", "workspace": self.snapshot()}, sticky_key="workspace"
+            # `wait=False`: a click must not queue behind the analysis of the
+            # program it is a click on.
+            {"type": "workspace", "workspace": self.snapshot(wait=False)},
+            sticky_key="workspace",
         )

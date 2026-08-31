@@ -216,3 +216,90 @@ def test_two_cards_defining_one_name_are_reported_in_the_snapshot(tmp_path):
     )
     space = Workspace(path=path)
     assert space.snapshot()["issues"]["duplicates"] == {"mask": ["one", "two"]}
+
+
+# ------------------------------------------------ analysis off the click path
+
+
+BIG = "//@board cols=12 rows=8\n" + "".join(
+    f'//@card id=c{i} kind=code x={i % 6} y={i // 6}\nlet v{i} = 1\n' for i in range(12)
+)
+
+
+def test_a_view_change_does_not_re_analyse_the_program(tmp_path):
+    """Most actions do not touch the document, and used to pay for it anyway.
+
+    Turning a page asked "does this program compile" again and got the answer it
+    had just got. With a real program open that was most of the cost of a click.
+    """
+    from voxlogica.ui import analysis
+    from voxlogica.ui.workspace import Workspace
+
+    path = tmp_path / "doc.imgql"
+    path.write_text(BIG)
+    space = Workspace(path=path)
+    space.snapshot()  # the first answer, computed and kept
+
+    calls = 0
+    real = analysis.compile_error
+
+    def counted(text):
+        nonlocal calls
+        calls += 1
+        return real(text)
+
+    analysis.compile_error = counted
+    try:
+        space.apply("view.goToPage", {"page": 1})
+        space.apply("view.select", {"ids": ["c1"]})
+        space.snapshot()
+        assert calls == 0
+        # An actual edit does ask again.
+        space.apply("board.moveCard", {"id": "c1", "x": 7, "y": 1})
+        space.snapshot()
+        assert calls == 1
+    finally:
+        analysis.compile_error = real
+
+
+def test_the_interaction_path_never_waits_for_the_analysis(tmp_path):
+    """Opening a real program warms the engine: over a second, once. The board
+    must not wait for it, so what goes out at once is the last answer, marked."""
+    import time
+
+    from voxlogica.ui.workspace import Workspace
+
+    published: list[dict] = []
+
+    class Hub:
+        def publish(self, payload, sticky_key=None):
+            published.append(payload["workspace"])
+
+    path = tmp_path / "doc.imgql"
+    path.write_text(BIG)
+    space = Workspace(hub=Hub(), path=path)
+    space.publish()
+
+    assert published, "the board is published immediately"
+    assert published[0]["analysing"] is True
+    assert published[0]["nodes"] == {}
+
+    # The worker lands, and publishes again with the real answer.
+    for _ in range(100):
+        if len(published) > 1 and not published[-1]["analysing"]:
+            break
+        time.sleep(0.05)
+    assert published[-1]["analysing"] is False
+    assert space.snapshot()["issues"]["compile"] is None
+
+
+def test_asking_directly_still_gets_the_real_answer(tmp_path):
+    """An agent, a test, or the HTTP endpoint asked: they get it and pay for it."""
+    from voxlogica.ui.workspace import Workspace
+
+    path = tmp_path / "doc.imgql"
+    path.write_text("//@card id=a kind=code x=0 y=0\nprint \"x\" x+x\n")
+    space = Workspace(path=path)
+    snapshot = space.snapshot()
+    assert snapshot["analysing"] is False
+    assert snapshot["issues"]["compile"] is not None

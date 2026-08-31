@@ -58,7 +58,7 @@ def test_a_handle_from_another_process_reloads_instead_of_failing(monkeypatch):
     rebuilt = FakeEngine()
     seen = {}
 
-    def fake_load(model, device, folds):
+    def fake_load(model, device, folds, **knobs):
         seen["model"], seen["device"], seen["folds"] = model, device, folds
         return rebuilt
 
@@ -94,7 +94,7 @@ def test_concurrent_first_use_reloads_the_weights_exactly_once(monkeypatch):
     builds = []
     engine = FakeEngine()
 
-    def fake_load(model, device, folds):
+    def fake_load(model, device, folds, **knobs):
         builds.append(device)
         return engine
 

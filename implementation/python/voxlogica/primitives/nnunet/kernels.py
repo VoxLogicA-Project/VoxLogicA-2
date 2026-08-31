@@ -11,6 +11,7 @@ from voxlogica.primitives.nnunet import materialize as mat
 from voxlogica.primitives.nnunet import runtime
 from voxlogica.primitives.nnunet.cases import (
     DEFAULT_LABELS,
+    normalize_configurations,
     DEFAULT_TRAINER,
     as_list,
     infer_modalities,
@@ -41,6 +42,21 @@ def _require_int(kwargs: dict[str, Any], key: str, name: str, default: int) -> i
         raise ValueError(f"{name} must be int-like: {_arg(kwargs, key, default)!r}") from exc
 
 
+def _optional_bool(kwargs: dict[str, Any], key: str, default: bool) -> bool:
+    """A program's yes/no, written as a number or as a word."""
+    if key not in kwargs or _arg(kwargs, key) is None:
+        return default
+    value = _arg(kwargs, key)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "yes", "on", "1", "1.0"}:
+        return True
+    if text in {"false", "no", "off", "0", "0.0"}:
+        return False
+    raise ValueError(f"expected true or false, got {value!r}")
+
+
 def _optional_str(kwargs: dict[str, Any], key: str, default: str = "") -> str:
     if key not in kwargs or _arg(kwargs, key) is None:
         return default
@@ -65,11 +81,33 @@ def train(**kwargs: Any) -> dict[str, Any]:
             if modalities_value is None
             else normalize_modalities(modalities_value)
         )
-        configuration = _require_str(kwargs, "3", "configuration") if "3" in kwargs else "2d"
+        # Argument 3 may name ONE configuration or several. Several is the
+        # documented workflow: nnU-Net plans 2d, 3d_fullres and 3d_lowres,
+        # trains each, and picks -- so a program that wants that answer has to
+        # be able to ask for it.
+        configurations = (
+            normalize_configurations(_arg(kwargs, "3")) if "3" in kwargs else ["2d"]
+        )
         nfolds = _require_int(kwargs, "4", "nfolds", 5)
         dataset_name = _require_str(kwargs, "5", "dataset_name") if "5" in kwargs else "VoxLogicA"
         device = str(_arg(kwargs, "6", "cpu")).lower()
         trainer = _optional_str(kwargs, "7", DEFAULT_TRAINER) or DEFAULT_TRAINER
+        # Argument 8: the plans identifier, which is how nnU-Net selects an
+        # architecture preset -- "nnUNetResEncUNetLPlans" for the residual
+        # encoder presets, the default otherwise. It belongs in the program
+        # rather than in the environment: which network was trained is part of
+        # what an experiment says it did, and the cache key must change with it.
+        plans = _optional_str(kwargs, "8", runtime.DEFAULT_PLANS) or runtime.DEFAULT_PLANS
+        # Argument 9: whether to run nnU-Net's own postprocessing step, which
+        # the documented workflow runs between training and inference and which
+        # is therefore on by default. It is a parameter because it is a claim
+        # about the result -- a program that wants the raw network output must
+        # be able to say so, and to say so where the reader can see it.
+        postprocess = _optional_bool(kwargs, "9", True)
+        # Argument 10: a checkpoint to start from instead of random init. This
+        # is how a program says "pretrained on the oracle" -- the weights are an
+        # input to the experiment, so they belong in the expression that keys it.
+        pretrained = _optional_str(kwargs, "10", "")
         labels = DEFAULT_LABELS
 
         if nfolds <= 0:
@@ -89,12 +127,15 @@ def train(**kwargs: Any) -> dict[str, Any]:
             layout=materialized["layout"],
             dataset_id=dataset_id,
             dataset_name=dataset_name,
-            configuration=configuration,
+            configurations=configurations,
             modalities=modalities,
             nfolds=nfolds,
             device=device,
             labels=labels,
             trainer=trainer,
+            plans=plans,
+            postprocess=postprocess,
+            pretrained=pretrained,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("nnUNet training failed: %s", exc)
@@ -114,10 +155,20 @@ def make_predictor(**kwargs: Any) -> dict[str, Any]:
         if folds_value is not None:
             fold_list = [int(fold) for fold in as_list(folds_value, name="folds")]
 
+        # Arguments 3-5: nnU-Net's own inference knobs, which the documented
+        # nnUNetv2_predict exposes and this namespace did not. Defaults are
+        # nnU-Net's, so saying nothing keeps the documented behaviour.
+        step_size = float(_arg(kwargs, "3", runtime.DEFAULT_STEP_SIZE))
+        tta = _optional_bool(kwargs, "4", True)
+        checkpoint = _optional_str(kwargs, "5", runtime.DEFAULT_CHECKPOINT)
+
         return runtime.create_predictor(
             model,
             device=str(device).lower() if device is not None else None,
             folds=fold_list,
+            step_size=step_size,
+            tta=tta,
+            checkpoint=checkpoint or runtime.DEFAULT_CHECKPOINT,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("nnUNet make_predictor failed: %s", exc)
@@ -157,8 +208,8 @@ def list_primitives() -> dict[str, str]:
 
 def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
     arities = {
-        "train": AritySpec(min_args=2, max_args=8),
-        "make_predictor": AritySpec(min_args=1, max_args=3),
+        "train": AritySpec(min_args=2, max_args=11),
+        "make_predictor": AritySpec(min_args=1, max_args=6),
         "predict": AritySpec.fixed(2),
         "env_check": AritySpec.variadic(0),
     }

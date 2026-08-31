@@ -57,6 +57,9 @@
     onduplicate = undefined,
     /** `(id, {x, y, w, h})` — a card showing what this one produces. */
     onderive = undefined,
+    /** `(card, ids)` — cards were dropped onto another card. What that means
+     * is the caller's business; the board only reports the gesture. */
+    onmerge = undefined,
     /** `(ids)` — the cards the user is working with. */
     onselect = undefined,
     selection = [],
@@ -93,6 +96,15 @@
     onmeasured = undefined,
     /** `(id, name)` — a card was pointed at a different one of its bindings. */
     onfocusbinding = undefined,
+    /** `(card) -> {w, h} | undefined` — the smallest size a card's content is
+     * usable at, asked per card rather than carried on it.
+     *
+     * A function for the same reason `bindingsOf` is one, and for a second that
+     * cost real frames: computing it into the cards array rebuilt every card
+     * object on every result event, and a card whose object identity changed
+     * handed its viewer a fresh `layers` array, which made NiiVue reconcile and
+     * redraw. Six volume cards, several times a second, while dragging. */
+    floorOf = undefined,
     /** `(card) -> string[]` — the names a card's fragment declares.
      *
      * A function rather than a field on the card, because what a fragment
@@ -443,26 +455,107 @@
    * the drop has to know what to take away if it was a move.
    */
   function dragOut(card, event) {
+    if (!event.dataTransfer) {
+      event.preventDefault();
+      return;
+    }
     const ids = partyFor(card.id);
+    // The ids always, because they are known here and now. This used to refuse
+    // the whole drag until the *text* was ready, and the text takes a round
+    // trip: so a card had to be selected in one gesture and dragged in another,
+    // and pressing and dragging in one motion -- which is what a person does --
+    // silently did nothing. Dropping a card on another card needs only the ids.
+    event.dataTransfer.setData("text/voxlogica-card-ids", ids.join("\n"));
+    event.dataTransfer.effectAllowed = "copyMove";
+    setGhost(event, ids);
+    // The program text only when it is genuinely this selection's text. A drag
+    // into an editor or a file carries .imgql, and inventing a second way to
+    // produce it is how the two spellings start to differ.
     const ready =
       cardsText &&
       ids.length === cardsText.ids.length &&
       ids.every((id) => cardsText.ids.includes(id));
-    if (!ready || !event.dataTransfer) {
-      event.preventDefault();
-      return;
-    }
+    if (!ready) return;
     event.dataTransfer.setData("text/plain", cardsText.text);
     event.dataTransfer.setData("text/voxlogica-cards", cardsText.text);
-    event.dataTransfer.setData("text/voxlogica-card-ids", ids.join("\n"));
-    event.dataTransfer.effectAllowed = "copyMove";
   }
 
-  function preview(card, rect) {
+  /** The card a drop would be laid *over*, or null for an ordinary arrangement.
+   *
+   * Two ways to say it, and one rule underneath: the pointer has to be inside a
+   * card that is not this one. Alt anywhere in it, or -- without a modifier --
+   * the middle of it, because the middle is where you aim when you mean "on
+   * this" and the edges are where you aim when you mean "next to this". A
+   * modifier nobody told you about is a feature nobody has, and the middle can
+   * be *shown* while the drag is in the air, which a modifier cannot.
+   */
+  function layTarget(point, draggedId) {
+    if (!onmerge || !point || !pitch || !board) return null;
+    const box = board.getBoundingClientRect();
+    const px = point.clientX - box.left;
+    const py = point.clientY - box.top;
+    for (const other of occupants) {
+      if (other.id === draggedId) continue;
+      const r = rectOf(other);
+      const left = r.x * pitch;
+      const top = r.y * pitch;
+      const w = r.w * pitch;
+      const h = r.h * pitch;
+      if (px < left || px >= left + w || py < top || py >= top + h) continue;
+      if (point.alt) return other;
+      // The middle third of each axis. Small enough that arranging next to a
+      // card is still the easy thing, big enough to hit without aiming hard.
+      const inX = px >= left + w / 3 && px <= left + (2 * w) / 3;
+      const inY = py >= top + h / 3 && py <= top + (2 * h) / 3;
+      return inX && inY ? other : null;
+    }
+    return null;
+  }
+
+  /** The card the drop in flight would be laid over, for drawing. */
+  let laying = $state(null);
+
+  /** What the cursor carries during a drag: a label, not a photograph.
+   *
+   * Left to itself the browser makes the ghost out of the dragged element, which
+   * for a card means snapshotting a WebGL canvas -- an expensive picture of a
+   * picture, and one that says less than the card's own name does. It also
+   * *privileges the image*: the thing you see moving is the volume rather than
+   * the card, which is not what is being moved.
+   */
+  function setGhost(event, ids) {
+    if (!event.dataTransfer?.setDragImage) return;
+    const ghost = document.createElement("div");
+    ghost.textContent = ids.length > 1 ? `${ids.length} cards` : byId(ids[0])?.title ?? ids[0];
+    Object.assign(ghost.style, {
+      position: "fixed",
+      top: "-1000px",
+      left: "-1000px",
+      padding: "6px 10px",
+      borderRadius: "8px",
+      font: "12px ui-monospace, monospace",
+      background: "#161b22",
+      color: "#c9d1d9",
+      border: "1px solid #30363d",
+      pointerEvents: "none",
+    });
+    document.body.append(ghost);
+    event.dataTransfer.setDragImage(ghost, 12, 12);
+    // Cleared when the drag ends, which is the moment it stops being needed.
+    // Not on a timer: a short timer in this file is how a *verdict* used to be
+    // spelled, and not on a frame either, since a background tab paints none.
+    // A ghost left in the DOM is a leak per drag.
+    window.addEventListener("dragend", () => ghost.remove(), { once: true });
+  }
+
+  function preview(card, rect, point = null) {
     if (rect === null) {
       drag = null;
+      laying = null;
       return;
     }
+    const target = layTarget(point, card.id);
+    laying = target ? target.id : null;
     const party = partyFor(card.id);
     const lead = rectOf(card);
     const delta = { x: rect.x - lead.x, y: rect.y - lead.y, w: rect.w - lead.w, h: rect.h - lead.h };
@@ -855,7 +948,31 @@
     stepZoom(event.deltaY < 0 ? 1 : -1);
   }
 
-  function commit(card, rect) {
+  function commit(card, rect, drop = null) {
+    // Alt held on release: not "put it here" but "put it *on* that one". The
+    // same gesture the hand is already making, with a modifier, because
+    // dragging a card is arranging it and without a modifier neither meaning
+    // would be knowable.
+    //
+    // The target is the card under the *pointer*. "The only card overlapped"
+    // was the first rule and it was measured wrong: a four-cell card dropped
+    // among four-cell cards covers two of them, so alt-drop sent an ordinary
+    // arrangement and the gesture looked like it did nothing.
+    // The same rule that was being drawn a moment ago, asked once more. Not a
+    // second opinion: `layTarget` is the only place it lives, so what the board
+    // highlighted is what the release does.
+    const under = layTarget(drop, card.id);
+    if (under) {
+      // `drag = null` is how the board drops a preview -- `onpreview` is the
+      // *card's* prop, and reaching for it here threw, which aborted `commit`
+      // before either the merge or the arrangement. That is why alt-drop did
+      // nothing *and* why the card came to rest overlapping: the card clears
+      // its own preview after `oncommit` returns, and it never returned.
+      drag = null;
+      laying = null;
+      onmerge(under, [card.id]);
+      return;
+    }
     // The whole arrangement is committed, not just the card under the finger:
     // everyone dragged with it, and everyone that stepped aside to make room.
     // A card that avoided the drag and then snapped back the moment the drag
@@ -1118,13 +1235,27 @@
             onduplicate={onduplicate ? () => onduplicate(card.id, copySpot(card)) : undefined}
             oncopy={oncopycards}
             oncut={oncutcards}
-            ondragout={cardsText ? (event) => dragOut(card, event) : undefined}
+            ondragout={(event) => dragOut(card, event)}
+            ondropcards={onmerge ? (ids) => onmerge(card, ids) : undefined}
+            laying={laying === card.id}
+            layTargets={onmerge
+              ? occupants
+                  .filter((other) => other.id !== card.id)
+                  .map((other) => ({ id: other.id, title: other.title ?? other.id }))
+              : []}
+            onlayover={onmerge
+              ? (id) => {
+                  const target = byId(id);
+                  if (target) onmerge(target, [card.id]);
+                }
+              : undefined}
             onrun={onrun ? () => onrun(card.id) : undefined}
             onlens={onlens ? (lens) => onlens(card.id, lens) : undefined}
             onsaveThis={onsavethis ? () => onsavethis(card.id) : undefined}
             onprintThis={onprintthis ? () => onprintthis(card.id) : undefined}
             onfocusbinding={onfocusbinding ? (name) => onfocusbinding(card.id, name) : undefined}
             bindings={bindingsOf?.(card) ?? []}
+            {floorOf}
             running={running.includes(card.id)}
             onderive={onderive ? () => onderive(card.id, copySpot(card)) : undefined}
             onmaximize={() => maximize(card)}
@@ -1133,8 +1264,8 @@
             onsendtopage={onsendtopage && !focus
               ? (next) => onsendtopage(card.id, Math.max(0, next))
               : undefined}
-            onpreview={(rect) => preview(card, rect)}
-            oncommit={(rect) => commit(card, rect)}
+            onpreview={(rect, point) => preview(card, rect, point)}
+            oncommit={(rect, drop) => commit(card, rect, drop)}
             onmeasure={(w, h) => {
               // Kept locally so the board can lay out this frame, and reported
               // so the document can keep it. A card whose footprint exists only

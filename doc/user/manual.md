@@ -87,6 +87,39 @@ diff shows it, a colleague reads it, and a headless run performs it.
 A card is a **code** card, a **note**, or a view of an output — a **print**, a
 **save**, or a **result** bound to any node.
 
+**A card can show several pictures at once.** A `print` of an array is a stack:
+`print "scan" [flair, gt, mask]` draws all three, back to front, and the card
+grows a row per layer. The row's dot cycles its **colormap**, the slider sets its
+**opacity**, and the ◉ switches the layer off — none of which recomputes
+anything, because a layer's **style** is kept in the card's comment and never in
+the expression. A layer that this case does not have, or that has not been computed
+yet, says so and has nothing to switch.
+
+**Drop a card on the middle of another** and the two **merge**: what it drew
+becomes a layer of what it landed on, keeping its colour, and it stops being a
+card because it became a row. The target says so while the drag is in the air —
+it lights up and reads **lay over**. Aim at an *edge* instead and it is an
+ordinary arrangement, which is what dragging a card has always meant. ⌥ anywhere
+inside the card does the same thing, and **right-click → “Lay over …”** does it
+without a drag at all.
+
+In the rows underneath: **drag the grip** to reorder, the **swatch** opens a picker —
+a grid of plain colours first, because most overlays are a region rather than a
+quantity, then the colormaps NiiVue ships, each drawn as the ramp it actually is, the **slider** is opacity, the **eye**
+hides a layer, and **⤴** takes it back out as its own card. A layer this case
+does not have says so and has nothing to switch. **Drag a row** up or down to **move** that
+layer in front of or behind the others; **⤴ on a row** takes it back out as a
+card of its own. Merging and splitting are exactly each other, so a drop you did
+not mean is one click away from undone.
+
+**A card can walk a sequence.** Give it an **index** — `index=i` in its
+directive — and `print "scan" flairs[i]` grows chevrons, or numbered tabs when
+the sequence is short. Clicking one **sets** that index, which is one line of
+your program (`let i = 3`), so **every card that mentions `i` moves with it**.
+That is all master and slave is here: there is no link to make or break, just a
+name two cards happen to share. An index bound to arithmetic rather than to a
+plain number is left alone — it is your work, not a place to record a click.
+
 ---
 
 ## Running, and what a card is about
@@ -189,3 +222,16 @@ loopback only.
 `tests/unit/test_ui_manual_discipline.py` fails when an action or a shortcut
 exists and is not mentioned here. Adding a feature therefore means adding a line
 to this file — not because somebody remembers to, but because the build says so.
+
+---
+
+## Stopping
+
+The server **stops when its last window closes**, the way an application does —
+a server nobody has a window on is a process nobody knows to stop, and it is
+holding a GPU context for every volume card on a page nobody is looking at.
+Reloading the page is safe: a refresh empties the connection for a moment, and
+that moment is not the window going away.
+
+`voxlogica serve --stay` keeps it running with nothing connected — for a shared
+instance, or a session you mean to come back to.

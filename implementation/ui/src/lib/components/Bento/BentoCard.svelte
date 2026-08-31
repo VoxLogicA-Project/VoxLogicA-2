@@ -57,6 +57,24 @@
      * selection's text and only the board knows what is selected. Refusing the
      * drag is `event.preventDefault()` inside it, as it is anywhere else. */
     ondragout,
+    /** `(ids)` when cards are dropped onto this one. The board's own arrange
+     * gesture is pointer-driven and starts on the header, so an HTML5 drop
+     * here is unambiguous: it came from another card's body. */
+    ondropcards,
+    /** `(card) -> {w, h} | undefined` — the floor, asked rather than carried. */
+    floorOf,
+    /** `[{id, title}]` — the other cards this one could be laid over, and
+     * `(id)` to do it.
+     *
+     * A menu as well as a gesture, and not as a fallback. Alt-drag is fast once
+     * you know it and undiscoverable until then, and a modifier is also the part
+     * of a gesture most likely to be eaten by a window manager. A named item you
+     * can read is the one route that cannot quietly not happen. */
+    layTargets = [],
+    onlayover,
+    /** True while a drop in flight would be laid over this card. Drawn, because
+     * a rule you can see beats a modifier you were told about once. */
+    laying = false,
     onselect,
     /** The card was asked to compute what it is about. Absent = no button. */
     onrun,
@@ -97,6 +115,16 @@
           hint: "mod+R",
           onselect: onderive,
         },
+      ...(onlayover && layTargets.length
+        ? [
+            { separator: true },
+            ...layTargets.map((target) => ({
+              label: `Lay over “${target.title}”`,
+              hint: "or alt-drag",
+              onselect: () => onlayover(target.id),
+            })),
+          ]
+        : []),
       onlens && { separator: true },
       ...(onlens
         ? [
@@ -153,6 +181,12 @@
     ].filter(Boolean),
   );
 
+  /** The type a dragged card carries its ids in, set by `Bento`'s `dragOut`. */
+  const IDS = "text/voxlogica-card-ids";
+
+  /** True while a card is held over this one. */
+  let landing = $state(false);
+
   let headerEl = $state(null);
   /** The title while it is being edited, or null. Double-clicking the title
    * renames; double-clicking the rest of the header maximizes. The two never
@@ -205,6 +239,19 @@
     if (keep && text) onrename?.(text);
   }
   let content = $state(null);
+  /** What the pointer went down on, last time it did.
+   *
+   * `dragstart` does not fire on what you pressed -- it fires on the nearest
+   * *draggable ancestor*, which for anything inside a card is the body. So
+   * `event.target` in a dragstart handler is the body, always, and asking it
+   * "were you a slider?" answers no however the press began. The press is the
+   * only place that knows, so the press is where it gets recorded.
+   *
+   * Captured, because the layer panel stops pointerdown from bubbling -- and
+   * presses inside the layer panel are exactly the ones this has to see.
+   */
+  let pressedOn = null;
+
   /** True while a pointer owns this card. The card does not follow the pointer
    * in pixels: it snaps, cell by cell, as the pointer crosses each half-way
    * mark. A card that glides freely and then jumps on release shows you a
@@ -231,11 +278,16 @@
   const AUTO_FLOOR = { w: 4, h: 2 };
 
   function clamp(w, h) {
-    let cw = Math.min(Math.max(w, card.minW ?? 1), card.maxW ?? cols, cols);
-    let ch = Math.min(Math.max(h, card.minH ?? 1), card.maxH ?? rows, rows);
+    // The file's own minimum wins over the content's: an author who wrote one
+    // meant it. Otherwise the smallest size this card's content is usable at.
+    const floor = floorOf?.(card);
+    const minW = card.minW ?? floor?.w ?? 1;
+    const minH = card.minH ?? floor?.h ?? 1;
+    let cw = Math.min(Math.max(w, minW), card.maxW ?? cols, cols);
+    let ch = Math.min(Math.max(h, minH), card.maxH ?? rows, rows);
     if (card.aspect) {
       // Width leads: it is the axis the eye compares across a row of cards.
-      ch = Math.min(Math.max(Math.round(cw / card.aspect), card.minH ?? 1), rows);
+      ch = Math.min(Math.max(Math.round(cw / card.aspect), minH), rows);
     }
     return [cw, ch];
   }
@@ -311,7 +363,7 @@
       edges: EDGES[mode] ?? {},
     };
     dragging = true;
-    onpreview?.(gesture.rect);
+    onpreview?.(gesture.rect, at_(event));
   }
 
   function move(event) {
@@ -357,8 +409,18 @@
         h: Math.min(ch, rows - Math.max(y, 0)),
       };
     }
-    onpreview?.(gesture.rect);
+    onpreview?.(gesture.rect, at_(event));
   }
+
+  /** Where the pointer is, and what is held. The board needs the point to say
+   * which card a drop would land *on*, which cells cannot answer: a card being
+   * dragged covers several, and the one being aimed at is the one under the
+   * cursor. */
+  const at_ = (event) => ({
+    clientX: event.clientX,
+    clientY: event.clientY,
+    alt: event.altKey,
+  });
 
   function end(event) {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
@@ -371,7 +433,17 @@
     // top of cards that had politely stepped out of its way.
     if (rect.x !== from.x || rect.y !== from.y || rect.w !== from.w || rect.h !== from.h) {
       movedAt = Date.now();
-      oncommit?.(rect);
+      // Where the pointer was, and what was held, travel *with* the release:
+      // the key is up and the pointer is gone by the time anything downstream
+      // could ask. The board needs the point because the card under the cursor
+      // is the target -- "the only card overlapped" was measured wrong, since a
+      // four-cell card dropped on a grid of four-cell cards covers two of them
+      // and the intent is plainly the one being pointed at.
+      oncommit?.(rect, {
+        alt: event.altKey,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
     } else if (!event.shiftKey && !event.metaKey && !event.ctrlKey) {
       // A press that never became a drag was a click, and clicking one of
       // several selected cards means "just this one" -- otherwise a selection
@@ -458,6 +530,7 @@
     class="card"
     class:running
     class:dragging
+    class:laying
     class:invalid
     class:focused
     class:selected
@@ -590,8 +663,43 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="body"
+      class:landing={landing}
+      onpointerdowncapture={(event) => (pressedOn = event.target)}
+      ondragover={(event) => {
+        if (!ondropcards || !event.dataTransfer) return;
+        if (!event.dataTransfer.types.includes(IDS)) return;
+        event.preventDefault();
+        landing = true;
+      }}
+      ondragleave={() => (landing = false)}
+      ondrop={(event) => {
+        landing = false;
+        const carried = event.dataTransfer?.getData(IDS);
+        if (!carried) return;
+        event.preventDefault();
+        event.stopPropagation();
+        ondropcards?.(carried.split("\n").filter(Boolean));
+      }}
       draggable={ondragout ? "true" : undefined}
       ondragstart={(event) => {
+        // A press on something you can *operate* is never "take this card out
+        // of the board". `draggable` is inherited from the nearest draggable
+        // ancestor, so the body was starting a card drag from inside a slider:
+        // the thumb never moved, and a ghost with the card's name on it flew off
+        // instead. Marking the row undraggable did nothing, because the body was
+        // always the source.
+        // Where the press began, not where the browser says the drag did.
+        const from = pressedOn ?? event.target;
+        if (from?.closest?.(".layers")) {
+          // The rows own one drag of their own -- reordering, from the grip.
+          // Anything else in there is a control, and controls are not handles.
+          if (!from.closest("[data-grip]")) event.preventDefault();
+          return;
+        }
+        if (from?.closest?.("input, button, select, textarea, a, label")) {
+          event.preventDefault();
+          return;
+        }
         if (gesture !== null) {
           event.preventDefault();
           return;
@@ -813,6 +921,36 @@
     text-overflow: ellipsis;
   }
 
+  /* A drop in flight would become a layer of this card. Deliberately unlike the
+   * displacement outline: one means "I am getting out of the way", the other
+   * means "I am taking it in", and they must not look alike. */
+  .laying {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  .laying::after {
+    content: "lay over";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent);
+    color: var(--color-surface);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    pointer-events: none;
+  }
+
+  /* Something is about to land here. The card says so; the rows appear after. */
+  .landing {
+    box-shadow: inset 0 0 0 2px var(--color-accent);
+    border-radius: var(--radius-sm);
+  }
+
   .body {
     flex: 1;
     min-height: 0;
@@ -820,6 +958,14 @@
   }
 
   .content {
+    /* The card's height, handed on. Every viewer asks for `height: 100%` -- a
+     * volume fills its card, a result centres in it -- and a percentage height
+     * against an auto-height parent is not a height at all: it computes to
+     * `auto`, so a canvas fell back to its own drawing-buffer size and a card
+     * pulled taller grew a band of empty board under a picture that never
+     * followed. The one that grows instead of filling (the program, which
+     * scrolls) says `min-height` rather than `height`, and still does. */
+    height: 100%;
     padding: var(--space-1) var(--space-3) var(--space-3);
   }
 

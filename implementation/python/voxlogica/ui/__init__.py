@@ -132,18 +132,31 @@ class UISession:
             if self.hub.client_count() > 0:
                 logger.info("UI still has %d client(s); serving at %s until they disconnect",
                             self.hub.client_count(), self.url)
-                self.hub.wait_until_empty()
+                # Same grace as `serve_until_closed`: a reload empties the hub
+                # for a moment, and stopping there would mean refreshing the
+                # page kills the run's window.
+                while True:
+                    self.hub.wait_until_empty()
+                    if not self._returns_within(3.0):
+                        break
         except KeyboardInterrupt:
             pass
         finally:
             self.stop()
 
-    def serve_until_closed(self, *, patience: float = 30.0) -> None:
+    def serve_until_closed(self, *, patience: float = 30.0, grace: float = 3.0) -> None:
         """Wait for the window, then serve until it goes away.
 
-        An application ends when its window does. The wait is bounded so a
-        browser that never arrives -- blocked, misconfigured, opened on the wrong
-        machine -- leaves a process that exits rather than one that lingers.
+        An application ends when its window does. The wait for the first one is
+        bounded so a browser that never arrives -- blocked, misconfigured, opened
+        on the wrong machine -- leaves a process that exits rather than lingers.
+
+        `grace` is the part that is not obvious. A page *reload* is a disconnect
+        followed by a connect, so the hub is genuinely empty for a moment in the
+        middle of it; a process that stopped at the first empty instant would
+        make refreshing the page kill the server, which is the most ordinary
+        thing anybody does to a web page. So an empty hub has to *stay* empty
+        before it means the window is gone.
         """
         import time
 
@@ -154,11 +167,26 @@ class UISession:
             if self.hub.client_count() == 0:
                 logger.info("no window connected within %.0fs; stopping", patience)
                 return
-            self.hub.wait_until_empty()
+            while True:
+                self.hub.wait_until_empty()
+                if not self._returns_within(grace):
+                    logger.info("no client for %.1fs; stopping", grace)
+                    return
         except KeyboardInterrupt:
             pass
         finally:
             self.stop()
+
+    def _returns_within(self, grace: float) -> bool:
+        """Did somebody reconnect before the grace ran out? Reloads do."""
+        import time
+
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
+            if self.hub.client_count() > 0:
+                return True
+        return False
 
     def serve_forever(self) -> None:
         """Block until interrupted. Used by ``voxlogica serve``."""

@@ -82,6 +82,27 @@ _DISABLE = "VOXLOGICA_NO_NATIVE_WINDOW"
 _DEVTOOLS = "VOXLOGICA_DEVTOOLS"
 
 
+def _display_available() -> bool:
+    """Whether this session has anywhere to put a window.
+
+    A `Popen` that succeeds is not a window that opened. On a machine with no
+    display -- an ssh session without X forwarding, a compute node, a container
+    -- the browser starts, finds no display, and exits within the second, while
+    this process goes on waiting for a client that cannot ever connect. The
+    workspace then appears to have failed to start, having in fact started and
+    said so.
+
+    So the question is asked before anything is launched, the same way Python's
+    own `webbrowser` asks it: on Unix a GUI browser is only a candidate when
+    `DISPLAY` or `WAYLAND_DISPLAY` says somebody is there to see it. macOS and
+    Windows have a window server whenever they have a session, and neither uses
+    these variables.
+    """
+    if sys.platform == "darwin" or os.name == "nt":
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def _candidates() -> list[str]:
     found: list[str] = []
     if sys.platform == "darwin":
@@ -110,6 +131,12 @@ def native_available() -> bool:
     """
     if os.environ.get(_DISABLE):
         return False
+    if not _display_available():
+        # No display, so no web view either -- and asking pywebview would only
+        # be a slower way to hear it, after it has printed a traceback per
+        # backend on the way.
+        logger.debug("no display; not looking for a native web view")
+        return False
     try:
         import importlib
 
@@ -119,7 +146,18 @@ def native_available() -> bool:
         # is the difference between resolving the backend and appearing to.
         importlib.import_module("webview")
         guilib = importlib.import_module("webview.guilib")
-        backend = guilib.initialize()
+        # pywebview logs every backend it cannot load with `logger.exception`,
+        # so a machine that simply has no GUI toolkit gets two full tracebacks
+        # at ERROR for a condition this function exists to detect and that has
+        # a fallback for every answer. It is a question being asked, not a
+        # failure, and it must not read like a crash.
+        pywebview_logger = logging.getLogger("pywebview")
+        was = pywebview_logger.level
+        pywebview_logger.setLevel(logging.CRITICAL)
+        try:
+            backend = guilib.initialize()
+        finally:
+            pywebview_logger.setLevel(was)
     except Exception as exc:  # ImportError, or a runtime with no backend
         logger.debug("no native web view available (%s)", exc)
         return False
@@ -182,12 +220,15 @@ def run_native(
 
 
 def open_window(url: str, *, size: tuple[int, int] = (1280, 860)) -> str:
-    """Open `url` as a detached application window. Returns how it was opened.
+    """Open `url` as a detached application window.
 
-    The fallback path, and unlike :func:`run_native` it does not block: the
-    window belongs to another process, so its lifetime is observed through the
-    hub rather than awaited here.
+    Returns how it was opened: ``"window"``, ``"browser"``, or ``"none"`` when
+    this machine has no way to show one. Unlike :func:`run_native` it does not
+    block: the window belongs to another process, so its lifetime is observed
+    through the hub rather than awaited here.
     """
+    if not _display_available():
+        return "none"
     width, height = size
     for executable in _candidates():
         try:
@@ -202,5 +243,4 @@ def open_window(url: str, *, size: tuple[int, int] = (1280, 860)) -> str:
             return "window"
         except OSError as exc:  # noqa: PERF203 - one failure should not stop the search
             logger.debug("could not launch %s (%s)", executable, exc)
-    webbrowser.open(url)
-    return "browser"
+    return "browser" if webbrowser.open(url) else "none"

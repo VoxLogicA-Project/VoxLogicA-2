@@ -174,3 +174,157 @@ def test_both_ways_into_a_drawing_viewer_go_through_one_function():
     assert text.count("drawable(") == 3, "one definition, two call sites"
     assert "layers={drawing}" in text
     assert "layers={[{" not in text, "a layer list is being built somewhere else again"
+
+
+# --------------------------------------------------- the canvas follows the card
+
+
+def test_the_viewer_keeps_its_drawing_buffer_in_step_with_the_card() -> None:
+    """A card resizes without the window moving, and NiiVue only hears the window.
+
+    Measured before the fix, with the card shrunk from 224 to 96 CSS pixels: the
+    drawing buffer stayed at 448, so the ratio of buffer to box went from 2 --
+    the device pixel ratio, which is correct -- to 4.67, and the slice went on
+    being drawn for a canvas that no longer existed. The card clips, so nothing
+    spilled outside it; the picture inside was simply wrong, which looks the same
+    and is harder to explain.
+
+    NiiVue's own `resizeListener` does this arithmetic, but reaches it through
+    `requestAnimationFrame`, which a background tab never delivers -- so the
+    computation is done here, synchronously, and the assertion is that it stayed
+    that way.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "implementation/ui/src/lib/viewers/Volume.svelte"
+    ).read_text(encoding="utf-8")
+
+    assert "new ResizeObserver" in source, (
+        "the viewer must watch its own box: a card changes size without the "
+        "window moving, and that is the only event there is"
+    )
+    assert "canvas.offsetWidth" in source and "devicePixelRatio" in source, (
+        "the buffer is sized from the box it is drawn into, times the device "
+        "pixel ratio -- the same arithmetic NiiVue does when it is asked"
+    )
+    assert "nv.resizeListener()" not in source, (
+        "resizeListener reaches the resize through requestAnimationFrame, which "
+        "a background tab never delivers; it was tried and measured not to work"
+    )
+    # And it observes the host rather than the canvas it is about to resize.
+    assert "observer.observe(host)" in source, (
+        "observing the element you are about to resize is how a ResizeObserver "
+        "loop starts"
+    )
+
+
+def test_a_card_hands_its_height_to_whatever_is_inside_it() -> None:
+    """The other half of the same bug, and the half that was actually visible.
+
+    Keeping the drawing buffer in step with the canvas's box is no help when the
+    box itself never grew. Every viewer asks for `height: 100%` -- a volume fills
+    its card, a result centres in it -- and a percentage height resolved against
+    an auto-height parent is not a height: it computes to `auto`. The canvas then
+    fell back to its own drawing-buffer height, so a card pulled taller kept a
+    picture of one fixed shape with a band of empty board underneath it, which is
+    exactly "it always keeps the same aspect ratio".
+
+    Measured after: a card of 2x4 cells is 120x248, its volume 96x200 -- the body
+    in full, both axes -- and the buffer 192x400, twice each, which is the device
+    pixel ratio and nothing else. The program card, which grows rather than fills
+    and says `min-height` for that reason, still scrolls: 5730 pixels of source
+    in 472 of body.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "implementation/ui/src/lib/components/Bento/BentoCard.svelte"
+    ).read_text(encoding="utf-8")
+
+    body = source[source.index("<style>") :]
+    content = body[body.index(".content {") :]
+    content = content[: content.index("}")]
+    assert "height: 100%" in content, (
+        "a card whose content box has no height of its own cannot be filled by "
+        "anything inside it, however loudly the child asks"
+    )
+
+
+# ------------------------------------------------------- and several at once
+
+
+def test_a_stack_draws_one_layer_per_element_of_its_array() -> None:
+    """A print of an array is one output and several pictures.
+
+    Asserted on the source, like the two above and for the same reason: this is
+    a shape. The hash still comes from the *result* -- one per element now -- and
+    the style comes from the directive, never from the expression, because the
+    expression is the cache key.
+    """
+    from pathlib import Path
+
+    app = Path(__file__).resolve().parents[2] / "implementation" / "ui" / "src" / "App.svelte"
+    text = app.read_text()
+
+    assert "function stackFor(card)" in text
+    # The viewer is still chosen by the table, from the first layer's result.
+    assert "lead:" in text, "a stack must pick its viewer the same way one picture does"
+    # Style is read positionally off the card, not computed from the data.
+    assert "card.style?.[at]" in text
+    # And a layer with no bytes yet is simply not drawn.
+    assert "filter((layer) => layer.url)" in text
+    # One subscription per layer: that is what the card is watching.
+    assert "{#each card.parts as part (part)}" in text
+
+
+def test_switched_off_and_not_there_yet_are_different_things() -> None:
+    """`visible` is somebody's choice; `url` is whether the bytes exist.
+
+    Collapsing them is the bug where you switch a layer off, walk to a case that
+    never had it, switch it back on and nothing happens -- so you go looking for
+    a fault in the program.
+    """
+    from pathlib import Path
+
+    app = Path(__file__).resolve().parents[2] / "implementation" / "ui" / "src" / "App.svelte"
+    text = app.read_text()
+    assert "visible: style.on !== false" in text
+    assert "visible: !!" not in text, "visibility is being derived from the data again"
+
+
+def test_the_viewer_wakes_for_a_changed_picture_and_not_a_changed_array() -> None:
+    """The measurement, and it is not a close call.
+
+    `layers` is rebuilt by the caller on every render -- it is a lookup per
+    element, not a stored array -- so its identity says nothing about whether the
+    picture changed. Waking on identity meant a NiiVue reconcile and a
+    `drawScene` per volume card per re-render.
+
+    Counted in the page, by hooking every WebGL draw entry point, over one drag
+    across a board of six drawn volumes:
+
+        without the guard   97,632 draw calls
+        with it                    0
+
+    That is what "dragging feels much slower" was, and the same work is what
+    burns a GPU on a board nobody is touching.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "implementation/ui/src/lib/viewers/Volume.svelte"
+    ).read_text(encoding="utf-8")
+
+    assert "const signature = $derived(" in source
+    effect = source[source.index("  // A change to the picture is a reconcile") :]
+    effect = effect[: effect.index("\n  });")]
+    assert "void signature;" in effect
+    assert "void layers;" not in effect, "identity is not a change to the picture"
+    # Everything that can change what is on screen has to be in the signature,
+    # or a real change would be swallowed instead of a spurious one.
+    for part in ("keyOf(layer)", "layer.url", "layer.colormap", "layer.opacity", "layer.visible"):
+        assert part in source[source.index("const signature = $derived(") :][:700], part

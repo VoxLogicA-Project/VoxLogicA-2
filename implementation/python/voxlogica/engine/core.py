@@ -105,7 +105,8 @@ class ComputationEngine:
                  backend: StorageBackend | None = None, max_concurrency: int = 0,
                  progress: bool = False, debug: bool = False, max_live_bytes: int = 0,
                  threads_auto: str = "balanced",
-                 observe: Callable[..., None] | None = None):
+                 observe: Callable[..., None] | None = None,
+                 sparse_cache: bool = False):
         self.registry = registry or PrimitiveRegistry()
         # Somebody watching what happens to individual nodes -- the UI, so a
         # result card can say `computing` while it is. Optional and checked
@@ -196,6 +197,17 @@ class ComputationEngine:
         self.graph.pinned = lambda nid: self._dispatch_pins.get(nid, 0) > 0
         self.graph.defer = self._track_ownerless
         self.liveness = LivenessProbe(self.graph)
+        # --sparse-cache: hand the same predicate the disk cache uses for
+        # EVICTION to the writer, so a value that is already dead is never
+        # written in the first place. Evicting later costs the write plus the
+        # delete; not writing costs nothing. On a parameter sweep the
+        # intermediate masks are read exactly once, by the scalar that scores
+        # them, so almost every one of them is dead before its turn to be
+        # written comes up.
+        self.sparse_cache = sparse_cache
+        persister = getattr(self.table, "_persister", None)
+        if persister is not None and hasattr(persister, "set_live_probe"):
+            persister.set_live_probe(self.liveness.is_live, skip_dead=sparse_cache)
         self.liveness.install(self.table._backend)
         self.admission = LoopAdmission(
             self.expander, self.graph, self.ready, self.liveness,
@@ -396,6 +408,16 @@ class ComputationEngine:
                 self._progress.close()
                 self._progress = None
         self.table.flush()
+        # Say what sparse caching actually bought. A flag whose effect is
+        # invisible is a flag nobody can tell is working, and the number is the
+        # whole justification for having it: on a sweep it should account for
+        # nearly every intermediate.
+        persister = getattr(self.table, "_persister", None)
+        skipped = getattr(persister, "skipped_dead", 0) if persister else 0
+        if skipped:
+            gb = getattr(persister, "skipped_bytes", 0) / 1e9
+            print(f"sparse cache: {skipped} dead values not written ({gb:.2f} GB)",
+                  file=sys.stderr, flush=True)
         if self._first_error is not None:
             raise self._first_error
 
@@ -972,6 +994,27 @@ class ComputationEngine:
             # recompute than to store would tax dispatch for nothing (and the
             # cache's cost-aware eviction would drop it first anyway).
             worth_it = critical or compute_ms >= self.config.persist_min_compute_ms
+            # --sparse-cache DELIBERATELY DOES NOTHING HERE, and the reason is
+            # worth keeping: skipping the write for a value with one PENDING
+            # consumer was tried twice and wedged a 369-patient sweep both times.
+            #
+            # Such a value is not dead, it is live and about to be read, and a
+            # value with no disk copy cannot be dropped from RAM -- the store IS
+            # the spill space. The second attempt gated the skip on having half
+            # the soft budget free, on the argument that the other half would
+            # stay spillable. It does not: measured at the wedge, 4.1 GB was
+            # undurable against 0.3 GB durable, the rest being pinned or goal
+            # values. There is no fraction of the budget that makes this safe,
+            # because the spillable share is not something this decision
+            # controls.
+            #
+            # What survives is the write-time filter in AsyncPersister, which
+            # drops values whose consumers have ALL already run by the time their
+            # batch comes up. That one cannot strand anything, because a dead
+            # value leaves the live tier outright rather than spilling. It buys
+            # less -- the persist backlog is byte-budgeted, so the queue rarely
+            # holds a value long enough to outlive its consumers -- but it buys
+            # it safely.
             will_be_durable = self.table.complete(nid, value, compute_ms,
                                                   critical=critical, persist=worth_it)
             if node.operator in _SEQUENCE_OPERATORS:

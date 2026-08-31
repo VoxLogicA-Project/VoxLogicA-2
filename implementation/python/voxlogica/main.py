@@ -87,6 +87,7 @@ import time
 from pathlib import Path
 import json
 import logging
+import socket
 from typing import Any
 from dataclasses import replace
 
@@ -307,6 +308,7 @@ def _run_command_inner(args: argparse.Namespace, ui) -> int:
             threads_auto=args.threads_auto,
             engine_debug=args.engine_debug,
             dynamic_expansion=args.dynamic_expansion,
+            sparse_cache=args.sparse_cache,
             # What makes a result card say `computing` while it computes. None
             # when nobody is serving a UI, which is the case that must stay
             # free: an observer that is `None` is not called at all.
@@ -364,8 +366,15 @@ def mcp_command(args: argparse.Namespace) -> int:
 def serve_command(args: argparse.Namespace) -> int:
     """Implement the ``serve`` subcommand: the UI with no computation attached.
 
-    Unlike ``run``, this never auto-exits -- there is no computation whose end
-    would be the cue -- so it stops on Ctrl-C.
+    Stops when the last window closes, the way an application does. A server
+    outliving every window it was opened for is a process nobody knows to stop
+    -- and each one holds a WebGL context per volume card, which is a cost that
+    keeps being paid for a page nobody is looking at.
+
+    ``--stay`` is for the case where that is wrong on purpose: a shared instance,
+    a machine somebody connects to more than once, a session left open between
+    two visits. It has to be asked for, because the harm of guessing runs the
+    other way -- a server that lingers is invisible.
     """
     _configure_logging(args.debug)
     from voxlogica.ui import start_ui
@@ -377,11 +386,15 @@ def serve_command(args: argparse.Namespace) -> int:
         store_db=args.store_db,
         instance_info={"version": __version__, "program": None, "storeDb": args.store_db},
     )
-    print(f"[voxlogica] UI at {session.url} (Ctrl-C to stop)", file=sys.stderr)
+    how = "Ctrl-C to stop" if args.stay else "stops when the last window closes"
+    print(f"[voxlogica] UI at {session.url} ({how})", file=sys.stderr)
     if session.dev_url is not None:
         print(f"[voxlogica] dev page at {session.dev_url} (or press Cmd/Ctrl+.)",
               file=sys.stderr)
-    session.serve_forever()
+    if args.stay:
+        session.serve_forever()
+    else:
+        session.serve_until_closed()
     return 0
 
 
@@ -445,6 +458,23 @@ def open_command(args: argparse.Namespace) -> int:
     if how == "browser":
         print("[voxlogica] no application window available; opened in your browser",
               file=sys.stderr)
+    elif how == "none":
+        # Nothing on this machine can hold a window -- no display, typically an
+        # ssh session on a compute server. The workspace is running regardless,
+        # and the only thing missing is a way to reach it, so say what that is.
+        # Waiting the usual half-minute for a window that was never opened would
+        # shut the server down just as the person finished reading how to
+        # connect to it, which is why the patience is dropped here: this one
+        # ends on Ctrl-C, the way any other server does.
+        port = session.server.port
+        print("[voxlogica] no display here, so no window to open.", file=sys.stderr)
+        print(f"[voxlogica] open {session.url} yourself. Over ssh, forward the port first:",
+              file=sys.stderr)
+        print(f"[voxlogica]     ssh -L {port}:127.0.0.1:{port} {socket.gethostname()}",
+              file=sys.stderr)
+        print("[voxlogica] serving until interrupted (Ctrl-C).", file=sys.stderr)
+        session.serve_until_closed(patience=float("inf"))
+        return 0
     session.serve_until_closed()
     return 0
 
@@ -543,6 +573,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete the persistent results database and payload files before running (prompts for confirmation)",
     )
     run_parser.add_argument("--store-db", help="Path to the persistent results SQLite database")
+    run_parser.add_argument(
+        "--sparse-cache", action="store_true",
+        help="Do not persist values that are already dead — every consumer has "
+             "run, so nothing in this run can ask for them again and only a "
+             "later run could reuse them. Use for a large parameter sweep whose "
+             "intermediates are read once and where writing them is the "
+             "bottleneck; leave off for iterative work, where cross-run reuse "
+             "is the point.")
     run_parser.add_argument("--cache-max-gb", type=float, default=0.0, metavar="GB",
                             help="Persistent cache byte budget in GB; LRU-evict past it. "
                                  "Default 0 = size it automatically from free disk (the cache is the "
@@ -604,6 +642,9 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--open", dest="open_browser", action="store_true",
                               help="Open the UI in a browser once it is up")
     serve_parser.add_argument("--store-db", help="Path to the persistent results SQLite database")
+    serve_parser.add_argument("--stay", action="store_true",
+                              help="Keep serving after the last window closes "
+                                   "(default: stop, the way an application does)")
     serve_parser.add_argument("--debug", action="store_true")
     serve_parser.set_defaults(handler=serve_command)
 

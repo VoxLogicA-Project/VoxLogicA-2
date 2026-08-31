@@ -29,7 +29,19 @@ const BY_RESULT_TYPE = {
   boolean: { component: ResultState, mono: true, editable: false, result: true },
   // The first viewer that draws the thing instead of describing it. A row,
   // exactly as the table promised -- no branch anywhere else changed.
-  image: { component: Volume, mono: false, editable: false, result: true, bytes: true },
+  //
+  // `needs` is the smallest this viewer is usable at, in cells. A volume in two
+  // cells is a thumbnail of a crosshair; below that it is a black rectangle with
+  // three letters on it. The board honours it as a floor and moves other cards
+  // out of the way to grant it.
+  image: {
+    component: Volume,
+    mono: false,
+    editable: false,
+    result: true,
+    bytes: true,
+    needs: { w: 3, h: 3 },
+  },
 };
 
 const BY_KIND = {
@@ -48,6 +60,23 @@ const BY_KIND = {
 };
 
 const FALLBACK = { component: TextEditor, mono: true, editable: true };
+
+/** The smallest a card is usable at, in cells, or `undefined`.
+ *
+ * A property of what the card *shows*, which is why it lives in this table and
+ * not in the document: the file records the size somebody chose, and a floor is
+ * not a choice. A stack adds a row per layer -- three overlays under a picture
+ * is three lines of chrome, and a card that fits the picture but not the rows is
+ * a card whose controls are off the bottom edge.
+ */
+export function needsFor(card, result = undefined) {
+  const floor = viewerFor(card, result).needs;
+  if (!floor) return undefined;
+  const rows = (card?.parts?.length ?? 1) > 1 ? card.parts.length : 0;
+  // A row is about a third of a cell; the navigation strip is another.
+  const extra = Math.ceil((rows + (card?.index ? 1 : 0)) / 3);
+  return { w: floor.w, h: floor.h + extra };
+}
 
 /**
  * The viewer for a card, and how it should be run.

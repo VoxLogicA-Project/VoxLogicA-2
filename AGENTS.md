@@ -1,82 +1,142 @@
-# Agent Guidelines for VoxLogicA-2
+# AGENTS.md — VoxLogicA-2
 
-## Multi-Machine Work: Local First, Always
+Source of truth for how to work in this repository. `CLAUDE.md` only points here.
 
-**CRITICAL:** When work spans more than one machine (e.g. a laptop and a compute
-host), ALL editing happens on the LOCAL machine. Never edit files directly on the
-remote.
+## Modes
 
-The loop is always:
+### QUIET MODE
 
-1. Edit locally.
-2. Commit locally.
-3. Push.
-4. `git pull` on the remote, then run there.
+Use your intelligence to hyperoptimize saving AI tokens while you work.
+Operate in quiet mode. Do not narrate your work or explain routine steps. Minimize token usage aggressively.
 
-**Never** `ssh remote` and edit a file, patch it with a script, or `scp` a
-modified file onto it as a substitute for committing. A dropped connection, a
-reboot, or simply forgetting leaves that work stranded on a host nobody looks at
-— and it is invisible to `git status` locally, so it is lost silently rather than
-loudly. Two failures of this kind have already happened here: a `utils.imgql`
-that existed only on fmt-5000 and was lost when the host went down (its header
-still records the reconstruction), and a `run_iter.sh` edited on both sides that
-produced a rebase conflict the moment the two were reconciled.
+Only respond during the task if:
+1. You are about to make a high-risk decision involving files, code, data loss, artifacts, or irreversible changes — ask for permission.
+2. You make a moderately risky assumption — state it briefly.
 
-Corollary: if the remote already has commits the local does not, `git pull
---rebase` BEFORE doing anything else. Diverging histories on a machine you only
-reach over ssh are far more expensive to untangle than to prevent.
+Otherwise, stay silent until completion. At the end, provide only a 1–2 line summary, unless I ask for details.
 
-## Long-Running Commands (>30 seconds)
+Never paste raw shell command output directly into chat or source them into your context. Redirect all output to files, check file sizes first, and read only the relevant excerpts.
 
-**CRITICAL:** Any command expected to run longer than 30 seconds MUST:
+Say "Quiet mode on" to ack.
 
-1. **Report a real-time watch command** to the user immediately after launching.
-   - Format: a `tail -f` or `ssh ... tail -f` command that streams progress live.
-   - Must be a self-contained command the user can copy-paste and run.
+### ADHD MODE
 
-2. **Be designed for live observation:**
-   - Output to a log file (e.g., `.out.raw` with PTY rendering for tqdm progress bars).
-   - Use `ptyrun.py` wrappers if progress bars are involved.
-   - Ensure tqdm/progress output renders line-by-line in the watch command's stream (convert `\r` to `\n`).
+Communicate succintly as if for low executive-function load:
+- Start with the answer/conclusion.
+- Keep messages short, structured, and skimmable.
+- Use bullets, headings, and concrete next actions.
+- Ask at most one question at a time.
+- Avoid long explanations unless I ask.
+- Track context explicitly: goal, current state, blockers, next step.
+- Prefer “do this now / next / later” over vague advice.
+- Point out hidden assumptions and unfinished loops.
+- Be direct, calm, and practical.
 
-3. **Report interim status periodically** (while monitoring waits):
-   - Node count, case count, elapsed time, cache size (if relevant).
-   - Use `--progress` subcommand pattern (see `run_iter.sh`) for human-readable snapshots.
+Say "ADHD mode on" to ack. Do not ignore QUIET MODE. That's of paramount importance.
 
-4. **Never block silently** — the user has no visibility into a backgrounded process unless told how to watch it.
+### FAST MODE
 
-Example pattern (from `run_iter.sh`):
+Do not spend wall-clock on waiting or on repeating yourself:
+- Run the test suite or static checks when a phase is finished, not after every edit.
+- Never wait with `sleep`. Background work announces itself; a long run has a progress file.
+- Send independent commands in one round, not one at a time.
+- Do not re-read a file you just wrote to check that it was written.
+
+Say "Fast mode on" to ack. Do not ignore QUIET MODE. That's of paramount importance.
+
+## Git across machines
+
+| | |
+|---|---|
+| Always | edit local → commit → push → `git pull` on the remote |
+| Never | `ssh`+edit, `scp`, `rsync`, `cat`-over-ssh a **tracked** file |
+| Remote ahead | `git pull --rebase` before anything else |
+| Remote dirty | stop and resolve — never route around it with a copy |
+
+Untracked artifacts (caches, datasets, `.db`) are exempt.
+*Cost so far: a `utils.imgql` lost with its host; a `run_iter.sh` rebase conflict.*
+
+## Long runs (>30 s)
+
+- Launch detached to a log: `./run_iter.sh <f>.imgql <out> <db>`.
+- Hand the user a **bare** `tail -f <file>` — no `awk`, `grep`, or loops.
+- Progress bars need `ptyrun.py`; watch raw tqdm via `tr '\r' '\n'`.
+- Report interim status: nodes, cases, elapsed. Never block silently.
+
+## Command output
+
 ```bash
-# Launch with progress file
-./run_iter.sh brats017_full.imgql _scratch/brats017.out _scratch/cache.db
-
-# User watches with:
-tail -f _scratch/brats017.out.progress   # human-readable snapshots every 20s
-# or for raw tqdm:
-tr '\r' '\n' < _scratch/brats017.out.raw | grep -a 'nodes:' | tail -1
+cmd > /tmp/x.out 2>&1; echo EXIT=$?; wc -l /tmp/x.out
 ```
 
-## Syncing code between machines (Mac ↔ fmt-5000, or any two clones)
+## Engine autonomy — no env-var tuning
 
-**CRITICAL: manual sync of code in a git repo is FORBIDDEN.** Never `scp`,
-`rsync`, `cat`-over-ssh, or otherwise hand-copy a tracked file to update a
-remote checkout — that's a silent, unreviewable, un-diffable edit that
-bypasses history and will drift the two checkouts out of sync in ways
-`git status` on either side won't reveal.
+- **The engine MUST work automatically.** Correct behaviour, above all staying
+  within memory, is never conditional on an env var, a flag, or any outside knob.
+- Never ship an env var as the *fix* for a defect. An env var is acceptable only
+  as a diagnostic whose default is already right for every supported workload.
+- A workload that OOMs, thrashes or deadlocks unless a var is set is an engine
+  bug. Fix the engine's own policy. Launchers must not bound memory or
+  concurrency on its behalf.
 
-Always: commit locally → `git push` → on the remote, `git pull` (or `git
-fetch` + `git checkout`/`git merge` if the branch diverged). If the remote
-checkout has uncommitted local changes blocking the pull, stop and resolve
-that (stash, commit, or ask the user) rather than routing around it with a
-file copy.
+## Whole-workload runs — no sharding, no supervisors
 
-This applies to source files, `.imgql` files, and any other tracked content
-— not just Python. Untracked/generated artifacts (caches, datasets, `.db`
-files) are not code and are not covered by this rule.
+- Every experiment, however large, runs as one plain `voxlogica run <f>.imgql`.
+- Shards, chunks, batches across processes, crash-retry supervisors: FORBIDDEN.
+  They hide engine defects instead of exposing them.
+- A full run that OOMs, crashes, stalls or thrashes is an ENGINE BUG — and never
+  the `.imgql`'s fault. Diagnose the engine; never route around it.
+- `looping_experiment/run_sharded.py` and `_scratch/chunk_*.imgql` are
+  DEPRECATED, kept as history.
 
-## Profiling Commands
+## Performance
 
-Profiling (`--profile wall`) adds ~2-3x overhead. When profiling is needed:
-- Run on small cases (5–10 cases, not 369).
-- Set explicit timeout and fail fast if it exceeds budget.
-- Capture profile output separately (not just stdout tail).
+- `--profile` is deprecated and can be arbitrarily wrong
+  (*1389 s of cumulative time reported inside a 52 s run*).
+- Use `/usr/bin/time -v` `%CPU` plus the run's own saturation / cpu-per-wall.
+- Reducer debugging only, if at all: flag **after** the filename (it eats it
+  otherwise), 5–10 cases, with a timeout. No effect under `--no-engine`.
+- A real find: `percentiles`' sort, not the scheduler — `HANDOVER.md` §0b/0c.
+- Efficiency target is 100%. A shortfall is justified with measured memory
+  bandwidth against the machine's measured ceiling, never asserted.
+
+## Reporting
+
+- Answer only what was asked. A status is 3 lines; a result is a table plus 2
+  sentences. More than that: ask first.
+- Standard English terms, or defined in the same sentence — every time.
+- "measured" vs "I think". Never let a guess arrive in the register of a fact.
+- Validate claims against repository state before reporting them.
+
+## Result tables
+
+Every row states **target · inputs · method**. No number appears without the
+number it is compared to.
+*Two rows differing in whether they used the ground truth must not look comparable.*
+
+## Irreversible here
+
+Ask first: deleting data, discarding a checkpoint, killing a long run,
+force-push, clearing a warmed store.
+When corrected, fix the thing — not the framing.
+
+## Repository conventions
+
+- **Canonical:** GitHub Issues for lifecycle (backlog, priority, status,
+  closure); `doc/` for technical requirements and design contracts; `META/` for
+  policy notes only.
+- **Where things go:** code in `implementation/`, tests in `tests/`, design in
+  `doc/`, process in `META/`. No new root-level files unless asked.
+- **Issues:** start substantial work from one, reference `#<n>` in commits and
+  PRs, close with `Fixes #<n>`. Behaviour changes update `doc/`, or state no
+  requirements impact.
+- **Running and testing:** no new virtualenvs; `./voxlogica` for runs,
+  `./tests/run-tests.sh` for suites. New behaviour ships with a test or a stated
+  reason for none.
+- **Code:** Python 3.11+ syntax and typing; docstrings on public and non-obvious
+  internals; deterministic coordination over timeouts; event- and future-driven
+  over polling; locks only where correctness needs them.
+- **Branches:** short-lived, small mergeable slices, rebased from `main` often.
+- **Docs:** concise, updated next to the code they describe, no status narratives
+  and no chat logs in policy files.
+- **At session start:** `README.md`, `META/SWE_POLICY.md`, `META/GUIDE.md`.

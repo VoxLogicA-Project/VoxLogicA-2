@@ -13,6 +13,31 @@ Open it in the UI instead, and each step becomes a card:
 ./voxlogica serve doc/gallery/programs/brats2020/brats-five-cases.imgql
 ```
 
+## The same method, as a board you can read a case on
+
+`brats-layers.imgql` is the same recipe with every step written as a *sequence
+over the cases* instead of a function of one. That one change is what makes the
+board work:
+
+```bash
+./voxlogica serve doc/gallery/programs/brats2020/brats-layers.imgql
+```
+
+Ten cards, nine of them carrying `index=g`. The chevrons on any of them rewrite
+a single line of the program — `let g = 3`, visible in its own card at the
+bottom left — and every card that mentions `g` follows. There is no link between
+them to make or break: they share a name, which is all master and slave needs to
+be.
+
+The **Review** card shows three pictures at once (`[flairs[g], truths[g],
+found[g]]`) with the ground truth in blue over the scan and the method's answer
+in red over that. Where the two disagree is where the method is wrong, visible
+without arithmetic. Take it apart with **⤴** on a row and each layer goes back
+to being a card; drag a card onto another by its body to put them together
+again. Colour, opacity and on/off live in the card's comment, never in the
+expression — the expression is the cache key, so a slider must not be able to
+recompute a volume.
+
 ## What it prints
 
 Measured on this machine, 5 cases × 6 pool thresholds:

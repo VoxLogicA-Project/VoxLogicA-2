@@ -11,7 +11,9 @@
    * why it stopped updating, and it has to appear wherever you are.
    */
   import { Bento, Button, SHORTCUTS } from "./lib/components/index.js";
-  import { viewerFor } from "./lib/viewers/index.js";
+  import { needsFor, viewerFor } from "./lib/viewers/index.js";
+  import Layers from "./lib/viewers/Layers.svelte";
+  import Walk from "./lib/viewers/Walk.svelte";
   import BuildError from "./lib/BuildError.svelte";
   import Help from "./lib/Help.svelte";
   import Library from "./lib/Library.svelte";
@@ -113,6 +115,97 @@
   function drawable(shown) {
     if (shown?.state !== "done" || !shown.hash) return null;
     return [{ hash: shown.hash, url: `/api/node/${shown.hash}` }];
+  }
+
+  /** The pictures a stack card draws, or `null` when it is not a stack.
+   *
+   * `print "scan" [flairs[i], masks[i]]` is one output and two pictures. The
+   * server reads the elements off the array node and binds each to a hash of
+   * its own, so this is a lookup per element, in drawing order, with the style
+   * the directive gave that *position*.
+   *
+   * A stack is normally only partly ready -- one volume is done and the next is
+   * still running -- so a layer with no bytes yet is a layer not drawn, not a
+   * card that fails. `lead` is the first element's result, which is what
+   * chooses the viewer: a stack of images is drawn by whatever draws an image,
+   * so the table in `viewers/index.js` stays the only place that decides.
+   */
+  /** Opacities under a finger right now, by `cardId:position`.
+   *
+   * A slider has to move the *picture*, not just the thumb, and the picture is
+   * drawn from the card's directive -- which is a round trip away. Held here
+   * because this is where the layers a viewer draws are assembled, so a live
+   * value reaches the volume by the same path the committed one does and no
+   * second route exists to disagree with the first.
+   *
+   * Kept until the document catches up rather than dropped on release: dropping
+   * it there put the old opacity back for the length of one round trip, which is
+   * the thumb jumping home and then jumping again.
+   */
+  let live = $state({});
+
+  $effect(() => {
+    for (const key of Object.keys(live)) {
+      const [id, at] = key.split(":");
+      const settled = workspace.cards.find((card) => card.id === id)?.style?.[+at]?.opacity;
+      if (settled != null && Math.abs(settled - live[key]) < 0.005) delete live[key];
+    }
+  });
+
+  function stackFor(card) {
+    if (!card.parts?.length) return null;
+    const layers = card.parts.map((expression, at) => {
+      const shown = results.get(results.hashFor(expression));
+      const style = card.style?.[at] ?? {};
+      return {
+        expression,
+        hash: shown.hash,
+        state: shown.state,
+        url: shown.state === "done" && shown.hash ? `/api/node/${shown.hash}` : null,
+        // Position zero is the one underneath, and grey is what a scan is.
+        colormap: style.colormap ?? (at === 0 ? "gray" : "warm"),
+        opacity: live[`${card.id}:${at}`] ?? style.opacity ?? 1,
+        // Switched off is not absent: `on` is somebody's choice, `url` is
+        // whether the bytes exist, and the layer row has to tell them apart.
+        visible: style.on !== false,
+      };
+    });
+    return { layers, lead: results.get(results.hashFor(card.parts[0])) };
+  }
+
+  /** How far a selector can walk, and where it is.
+   *
+   * Both are questions about the program, not about a widget: the length is the
+   * sequence's own result and the position is the value of a `let`. Null length
+   * means nobody has computed the sequence yet -- and walking has to stay
+   * possible, or a card cannot be used to evaluate the thing it walks along.
+   */
+  function walkOf(card) {
+    if (!card.index) return null;
+    // How far: the sequence's own result, when somebody has computed it. Null
+    // until then, and walking forward stays possible -- a card that refuses to
+    // move until its sequence is evaluated cannot be used to evaluate it.
+    const over = results.get(results.hashFor(card.over));
+    const counted = /\bof (\d+)\b/.exec(over.summary ?? "");
+    // Where: from the program text, which the server read off `let g = 3`.
+    // Reading the *value* of that node instead showed 0 on a board nobody had
+    // run yet, while the file plainly said 3.
+    return { length: counted ? Number(counted[1]) : null, at: card.at ?? 0 };
+  }
+
+  /** The smallest size a card's content is usable at, asked per card.
+   *
+   * A function rather than a field folded into the cards array, and the reason
+   * is measured: computing it into the array rebuilt every card object on every
+   * result event, every rebuilt card handed its viewer a fresh `layers` array,
+   * and a fresh array made NiiVue reconcile and redraw -- six volume cards,
+   * several times a second, which is what "dragging feels heavy" was.
+   *
+   * The document's own `minW`/`minH` still win inside the card: an author who
+   * wrote one meant it.
+   */
+  function floorOf(card) {
+    return needsFor(card, results.forCard(card));
   }
 
   const named = (id) => workspace.cards.find((card) => card.id === id)?.title ?? id;
@@ -217,6 +310,14 @@
    */
   async function dropCardsInLibrary(target, payload) {
     let text = payload.text;
+    // A drag can now begin before the selection's text has come back, so a copy
+    // may arrive without one. Asking for it here costs one message and is the
+    // same text a paste would have produced.
+    if (payload.copy && !text && payload.ids.length) {
+      const copied = await board.copyCards(payload.ids);
+      if (!copied.ok || !copied.result) return;
+      text = copied.result;
+    }
     if (!payload.copy && payload.ids.length) {
       const cut = await board.cutCards(payload.ids);
       if (!cut.ok || !cut.result) return;
@@ -550,6 +651,7 @@
       onprintthis={(id) => cardActions.printThis(id)}
       onfocusbinding={(id, name) => cardActions.setFocus(id, name)}
       bindingsOf={(card) => (card.kind === "code" ? bindingsIn(card.source) : [])}
+      {floorOf}
       {running}
       onactivate={(id) => (editing = id)}
       onsendtopage={(id, page) => board.setPage(id, page)}
@@ -566,13 +668,20 @@
       onremove={(id) => board.removeCard(id)}
       onduplicate={duplicate}
       onderive={derive}
+      onmerge={(card, ids) => {
+        // Dropped onto a card: what each one drew becomes a layer of this one,
+        // and it stops existing -- it became a row. Itself excluded, because a
+        // card cannot be laid on top of itself.
+        for (const id of ids) if (id !== card.id) cardActions.mergeCard(card.id, id);
+      }}
       onselect={(ids) => view.select(ids)}
       selection={workspace.view.selection}
       {cardsText}
       onrename={(id, title) => cardActions.setTitle(id, title)}
     >
       {#snippet children(card)}
-        {@const result = results.forCard(card)}
+        {@const stack = stackFor(card)}
+        {@const result = stack ? stack.lead : results.forCard(card)}
         {@const viewer = viewerFor(card, result)}
         {#if viewer.result && !card.node}
           <!-- A print or save whose expression is not a bare name has nothing to
@@ -580,14 +689,60 @@
           <p class="pending">{card.expression ?? "Not bound to a node yet."}</p>
         {:else if viewer.result}
           <!-- Subscribed for as long as it is on screen, and only that long:
-               the server pushes updates for hashes somebody is looking at. -->
-          {@const drawing = viewer.bytes ? drawable(result) : null}
-          <ResultSubscription node={card.node} />
-          {#if drawing}
-            <viewer.component layers={drawing} />
+               the server pushes updates for hashes somebody is looking at. A
+               stack subscribes per layer, because that is what it watches. -->
+          {@const drawing =
+            viewer.bytes
+              ? stack
+                ? stack.layers.filter((layer) => layer.url)
+                : drawable(result)
+              : null}
+          {#if stack}
+            {#each card.parts as part (part)}
+              <ResultSubscription node={part} />
+            {/each}
           {:else}
-            <viewer.component {result} node={card.node ?? ""} />
+            <ResultSubscription node={card.node} />
           {/if}
+          <!-- One shape for every result card, because the navigation belongs to
+               the *card* and not to the picture. Gated on there being something
+               drawn, chevrons appeared only on a stack that had already been
+               computed -- so the board opened with no way to walk to the case
+               you wanted to compute, which is the one thing a selector is for. -->
+          {@const walk = card.index ? walkOf(card) : null}
+          <div class="stacked">
+            <div class="over">
+              {#if drawing}
+                <viewer.component layers={drawing} />
+              {:else}
+                <!-- What the author wrote, not the reducer's spelling of it. -->
+                <viewer.component {result} node={card.written ?? card.node ?? ""} />
+              {/if}
+              {#if walk && drawing}
+                <!-- Over a picture: floating, taking no room from it. -->
+                <Walk {card} length={walk.length} at={walk.at} />
+              {/if}
+            </div>
+            {#if walk}
+              <ResultSubscription node={card.over} />
+            {/if}
+            {#if walk && !drawing}
+              <!-- Over anything else: a line of its own, *in the flow*. Absolute
+                   and out of the way was the first attempt and it still landed on
+                   the value on a card three cells tall -- measured. In the flow it
+                   cannot collide, because the content box is that much shorter. -->
+              <Walk {card} length={walk.length} at={walk.at} floating={false} />
+            {/if}
+            <!-- The rows are the cards that were dropped in, so they belong to
+                 the card rather than to the viewer, which knows only layers. -->
+            {#if stack && stack.layers.length > 1}
+              <Layers
+                {card}
+                layers={stack.layers}
+                onlive={(at, opacity) => (live[`${card.id}:${at}`] = opacity)}
+              />
+            {/if}
+          </div>
         {:else if viewer.source}
           {@const lens = lensFor(card)}
           <!-- One movement, three distances. The program and its values are the
@@ -798,6 +953,34 @@
   /* The two surfaces stacked, with the program taking whatever the value does
      not. At `source` there is one child and at `value` there is one child, so
      the same rule draws all three distances without a branch per lens. */
+  /* Picture above, rows below. The viewer takes what is left rather than what
+   * it wants: a stack of three rows must not push the volume out of the card. */
+  .stacked {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .stacked :global(.volume) {
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* The picture, and the means of walking it, in the same box: the navigation
+   * floats on the value rather than taking room from it. */
+  .over {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+
+  .over :global(.volume) {
+    flex: 1;
+    min-height: 0;
+  }
+
   .lensed {
     display: flex;
     flex-direction: column;

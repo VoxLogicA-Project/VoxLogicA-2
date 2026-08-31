@@ -49,6 +49,28 @@ export const card = {
     invoke("card.setFocus", focus ? { id, focus } : { id }),
   setKind: (id: string, kind: string) => invoke("card.setKind", { id, kind }),
   setViewMode: (id: string, view: string) => invoke("card.setViewMode", { id, view }),
+  /** How one layer of a stack looks, by position. A comment, not the program:
+   * the expression is the cache key, so appearance has to stay outside it or a
+   * slider would recompute a volume. */
+  setLayerStyle: (
+    id: string,
+    at: number,
+    look: { colormap?: string; opacity?: number; on?: boolean },
+  ) => invoke("card.setLayerStyle", { id, at, ...look }),
+  /** Walk this card's index to another element. An edit of one line of the
+   * program, so every card that mentions the same index follows -- which is all
+   * master and slave is: a shared name, not a link. */
+  setIndex: (id: string, value: number) => invoke("card.setIndex", { id, value }),
+  /** Which layer draws in front of which. A rearrangement of the array the
+   * card prints, written as one -- the elements keep the author's spelling. */
+  moveLayer: (id: string, at: number, to: number) =>
+    invoke("card.moveLayer", { id, at, to }),
+  /** Lay what one card draws on top of another. The first stops existing: it
+   * became a row. */
+  mergeCard: (id: string, from: string) => invoke("card.mergeCard", { id, from }),
+  /** And the other half: a layer out of the stack, into a card of its own. */
+  splitLayer: (id: string, at: number, where: Record<string, unknown> = {}) =>
+    invoke<string>("card.splitLayer", { id, at, ...where }),
   /** Declare what this card is about as an output of the program: the
    * directive is written into the text, where a diff and a headless run can
    * both see it. A button that wrote a file would be an effect with no record. */
