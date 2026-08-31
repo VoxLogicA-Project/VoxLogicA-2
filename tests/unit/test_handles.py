@@ -188,10 +188,10 @@ def test_identical_payloads_are_stored_once(tmp_path):
     """
     import hashlib
 
-    from voxlogica.storage import ResultsStore, results_store_paths
+    from voxlogica.storage import SQLiteResultsDatabase, results_store_paths
 
     db, payload_dir = results_store_paths(tmp_path / "s.db")
-    store = ResultsStore(str(db))
+    store = SQLiteResultsDatabase(str(db))
     try:
         payload = b"the same bytes" * 100
         first = store._store_payload(payload)
@@ -207,10 +207,10 @@ def test_identical_payloads_are_stored_once(tmp_path):
 
 
 def test_a_payload_is_named_by_what_it_is_not_by_who_asked(tmp_path):
-    from voxlogica.storage import ResultsStore, results_store_paths
+    from voxlogica.storage import SQLiteResultsDatabase, results_store_paths
 
     db, _ = results_store_paths(tmp_path / "s.db")
-    store = ResultsStore(str(db))
+    store = SQLiteResultsDatabase(str(db))
     try:
         one = store._store_payload(b"alpha")
         other = store._store_payload(b"beta")
@@ -223,10 +223,10 @@ def test_a_payload_is_named_by_what_it_is_not_by_who_asked(tmp_path):
 
 def test_no_partial_file_survives_a_failed_write(tmp_path, monkeypatch):
     """A cache must never poison the run that inherits it."""
-    from voxlogica.storage import ResultsStore, results_store_paths
+    from voxlogica.storage import SQLiteResultsDatabase, results_store_paths
 
     db, payload_dir = results_store_paths(tmp_path / "s.db")
-    store = ResultsStore(str(db))
+    store = SQLiteResultsDatabase(str(db))
     try:
         def die(self, data):
             raise OSError("disk full")
