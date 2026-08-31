@@ -1232,6 +1232,21 @@ class ComputationEngine:
             nid = self._alias[nid]
         return self._rematerialize(nid)
 
+    def _await_expansion(self, waiting: NodeId, to_expand: NodeId) -> None:
+        """Put a graph-growing node back on the frontier and requeue its waiter.
+
+        `_rematerialize` cannot rebuild such a node: its value comes from what it
+        expands into. Registering it is what makes admission unroll it, exactly
+        as the first time; the waiter goes behind it and finds the value present
+        on its next turn.
+        """
+        priority = self._priority.get(waiting, 0)
+        self._priority[to_expand] = max(self._priority.get(to_expand, 0), priority)
+        if to_expand not in self.graph.incomplete:
+            self.graph.register(to_expand)
+        self.ready.push(to_expand, priority)
+        self.ready.push(waiting, priority)
+
     def _grows_the_graph(self, nid: NodeId) -> bool:
         """Whether evaluating this node expands the graph instead of computing.
 
@@ -1393,9 +1408,17 @@ class ComputationEngine:
                         self.ready.push(nid, self._priority.get(nid, 0))
                         continue
                     self._reload_deferred.discard(nid)
-                    for dep in self.graph.deps(nid):
-                        if dep not in self.table.values:
-                            self._rematerialize(dep)  # recompute deps evicted under pressure
+                    try:
+                        for dep in self.graph.deps(nid):
+                            if dep not in self.table.values:
+                                self._rematerialize(dep)  # deps evicted under pressure
+                    except NeedsExpansion as needed:
+                        # A dependency that GROWS THE GRAPH cannot be rebuilt by
+                        # this road. Put it back on the frontier so admission
+                        # expands it, and requeue this node behind it -- the same
+                        # defer-and-retry the reload gate above already uses.
+                        self._await_expansion(nid, needed.node_id)
+                        continue
 
                     # Schedule-time fusion (engine/fusion.py): try to grow a cone
                     # of elementwise consumers seeded at this ready node, so one
@@ -1411,9 +1434,13 @@ class ComputationEngine:
                         # at them — the same reload-before-dispatch guarantee the
                         # single-node path gives its own deps, just over the
                         # cone's aggregate external inputs.
-                        for dep in cone.inputs:
-                            if dep not in self.table.values:
-                                self._rematerialize(dep)
+                        try:
+                            for dep in cone.inputs:
+                                if dep not in self.table.values:
+                                    self._rematerialize(dep)
+                        except NeedsExpansion as needed:
+                            self._await_expansion(nid, needed.node_id)
+                            continue
                         self._kernels_executed += len(cone)
                         # A fused cone is one kernel and several nodes, and all
                         # of them are being computed right now. Reporting only
