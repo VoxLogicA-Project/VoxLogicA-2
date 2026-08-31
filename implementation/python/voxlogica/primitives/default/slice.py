@@ -134,6 +134,6 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     # SHALLOW: same reason as `index` -- reach into the container without
     # materializing what is not reached.
     kernel_name="default.slice",
-    # shallow=True,  # BISECT
+    shallow=True,
     description="Extract a sequence slice with optional bounds",
 )

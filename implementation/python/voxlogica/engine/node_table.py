@@ -335,6 +335,11 @@ class NodeTable:
         if record is None or record.value is None:
             return None
         value = record.value
+        if not self._references_are_answerable(value):
+            # A stored container names its elements by hash. If this run can
+            # answer none of those questions the container is not a usable cache
+            # hit, however intact its own bytes are.
+            return None
         sitk = _simpleitk()
         if sitk is not None and isinstance(value, sitk.Image):
             value = PolyArray.from_sitk(value)

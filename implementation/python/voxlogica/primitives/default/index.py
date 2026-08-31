@@ -72,6 +72,6 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     # whoever wants its value resolves it, and graph.hold_handles keeps it alive in
     # the meantime.
     kernel_name="default.index",
-    # shallow=True,  # BISECT
+    shallow=True,
     description="Tuple/list index access",
 )
