@@ -59,7 +59,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from voxlogica.engine.evaluation import modes_of
+from voxlogica.engine.evaluation import NeedsExpansion, modes_of
 from voxlogica.engine.expander import Expander, Expansion
 from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.plan_size import PlanSizeEstimator
@@ -168,7 +168,16 @@ class LoopAdmission:
         job = _Job(loop_id=nid, priority=priority)
         self._jobs[nid] = job
         try:
-            iterable = self._materialize(node.args[0])
+            try:
+                iterable = self._materialize(node.args[0])
+            except NeedsExpansion as needed:
+                # A loop over a loop. Expanding this one needs its iterable's
+                # value, and the iterable is itself a node that grows the graph,
+                # so it has to be expanded first. End this job, put the inner one
+                # on the frontier and this one behind it; the outer loop starts
+                # again when the inner value exists.
+                self._defer_for(nid, needed.node_id, priority)
+                return
             expansion = self.expander.prepare(nid, node, iterable)
             if expansion is None:
                 raise RuntimeError(f"cannot expand loop node {nid[:12]} ({node.operator})")
@@ -235,6 +244,14 @@ class LoopAdmission:
             self.liveness.staged.discard(body)
             self.graph.release(body)
         self._on_spliced(nid, seq_id, priority)
+
+    def _defer_for(self, waiting: NodeId, to_expand: NodeId, priority: int) -> None:
+        """Give up this expansion turn until another node has been expanded."""
+        self._jobs.pop(waiting, None)
+        if to_expand not in self.graph.incomplete:
+            self.graph.register(to_expand)
+        self.ready.push(to_expand, priority)
+        self.ready.push(waiting, priority)
 
     def _grows_the_graph(self, operator: str | None) -> bool:
         """Whether an operator is one the expander unrolls. Single-sourced."""
