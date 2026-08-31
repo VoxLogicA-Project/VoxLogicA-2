@@ -29,6 +29,7 @@ import os
 from typing import Any
 
 from voxlogica.arrays import PolyArray
+from voxlogica.engine.evaluation import grows_the_graph_by_name
 from voxlogica.handles import iter_handles
 from voxlogica.buffer_pool import (buffer_states, pooled_bytes_approx, release_states,
                                    retain_states)
@@ -83,16 +84,15 @@ class _LoopWatchingNodes(dict):
     """
 
     on_loop: Any = None
-    #: `operator -> bool`, installed with `on_loop` by whoever can answer it.
-    #: Without it the table reports nothing, which is right: a table with no
-    #: listener has no loops to report.
-    is_loop: Any = None
+    #: `operator -> bool`. Defaults to the registry-free answer in
+    #: engine/evaluation.py, so the table keeps working with no scheduler
+    #: attached; whoever owns the registry may install the spec-reading one.
+    is_loop: Any = staticmethod(grows_the_graph_by_name)
 
     def __setitem__(self, key: Any, value: Any) -> None:
         if key not in self:
             super().__setitem__(key, value)
-            if (self.on_loop is not None and self.is_loop is not None
-                    and self.is_loop(getattr(value, "operator", None))):
+            if self.on_loop is not None and self.is_loop(getattr(value, "operator", None)):
                 self.on_loop(key)
         else:
             super().__setitem__(key, value)

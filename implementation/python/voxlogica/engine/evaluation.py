@@ -43,6 +43,26 @@ class Modes:
     rewrite: bool = False
 
 
+#: The registry-free answer to "does this operator grow the graph".
+#:
+#: `modes_of` is the real answer and reads the spec, but it needs a registry, and
+#: one caller legitimately has none: NodeTable reports loop nodes as they are
+#: interned and must not depend on the scheduler. That caller used to keep its
+#: own copy of this list -- a third copy, in a design whose whole defect was one
+#: fact recorded twice. So the fact lives here, once, and the table imports a
+#: pure function.
+#:
+#: An operator that declares `rewrite=True` without appearing here is still
+#: routed correctly everywhere it matters; what it loses is being counted in the
+#: table's loop-nesting report, which is telemetry.
+_REWRITE_BY_NAME = frozenset({"for_loop", "default.for_loop", "map", "default.map"})
+
+
+def grows_the_graph_by_name(operator: str | None) -> bool:
+    """Whether an operator expands, answered without a registry."""
+    return bool(operator) and operator in _REWRITE_BY_NAME
+
+
 _DEFAULT = Modes()
 _CACHE: dict[tuple[int, str], Modes] = {}
 
