@@ -60,6 +60,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from voxlogica.engine.evaluation import NeedsExpansion, modes_of
+from voxlogica.handles import resolve_deep
 from voxlogica.engine.expander import Expander, Expansion
 from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.plan_size import PlanSizeEstimator
@@ -169,7 +170,13 @@ class LoopAdmission:
         self._jobs[nid] = job
         try:
             try:
-                iterable = self._materialize(node.args[0])
+                # The expander binds each ELEMENT into the reduced body, so it is
+                # an eager consumer of its iterable: a lazy sequence hands back
+                # handles, and the body would be reduced with a handle where a
+                # number belongs -- measured as "float() argument must be a
+                # string or a real number, not 'Handle'" inside a predicate.
+                iterable = resolve_deep(self._materialize(node.args[0]),
+                                        self._materialize)
             except NeedsExpansion as needed:
                 # A loop over a loop. Expanding this one needs its iterable's
                 # value, and the iterable is itself a node that grows the graph,
