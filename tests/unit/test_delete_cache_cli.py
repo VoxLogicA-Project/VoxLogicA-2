@@ -45,6 +45,23 @@ def test_delete_cache_prompt_declined(tmp_path: Path, monkeypatch: pytest.Monkey
         save_task_graph_as_json=None,
         execute=False,
         no_cache=False,
+        # Everything else `run_command` reads. Hand-built namespaces go stale
+        # every time a flag is added -- this one was missing for_expansion_cap
+        # and the test failed AFTER doing its job, on a parser detail rather
+        # than on what it is about.
+        engine=True,
+        engine_debug=False,
+        dynamic_expansion=True,
+        for_expansion_cap=4096,
+        sparse_cache=False,
+        cache_max_gb=None,
+        threads=None,
+        threads_auto=False,
+        profile=None,
+        error_details=None,
+        open_browser=False,
+        stay=False,
+        ui_port=None,
     )
 
     assert main_mod.run_command(args) == 0
