@@ -52,7 +52,7 @@ from voxlogica.engine.memlog import MemoryLogger
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.engine.evaluation import (NeedsExpansion, grows_the_graph_by_name,
                                           modes_of)
-from voxlogica.handles import contains_handle
+from voxlogica.handles import contains_handle, iter_handles
 from voxlogica.engine.numba_fusion import NumbaFusionBackend
 from voxlogica.engine.topology import default_concurrency
 from voxlogica.engine.priority import Priority
@@ -1232,6 +1232,44 @@ class ComputationEngine:
             nid = self._alias[nid]
         return self._rematerialize(nid)
 
+    def _await_named_deps(self, nid: NodeId, node) -> bool:
+        """Make the nodes an EAGER node's arguments name by handle real deps.
+
+        An eager operator is about to be handed values, so every handle inside
+        its arguments has to become one. Resolving them at dispatch -- which is
+        what the adapter did -- is an evaluation the scheduler never planned: a
+        reload at best, a recompute dragging in subtrees at worst, on a worker
+        thread. The graph is supposed to be the only witness of what depends on
+        what, so the reference becomes an edge and the scheduler does the work.
+
+        Returns True if this node must wait, in which case the caller requeues.
+
+        THE ANTI-EXPLOSION PROPERTY IS THAT THIS IS ONE LEVEL DEEP. A named
+        node's own value may name more; those are discovered when THAT node is
+        about to be used, never here. So the work added at any turn is bounded by
+        what one value names -- and an edge cannot cycle, because a handle names
+        a node that already completed.
+        """
+        modes = modes_of(self.registry, node.operator)
+        if modes.lazy or modes.shallow:
+            return False           # it is handed the handles; it needs no values
+        waiting = False
+        for dep in self.graph.deps(nid):
+            for handle in iter_handles(self.table.values.get(dep)):
+                ref = handle.node
+                if ref in self.table.values or ref in self.table.completed:
+                    continue
+                if ref not in self.table.nodes:
+                    continue       # nothing here can build it; the adapter will report
+                priority = self._priority.get(nid, 0)
+                self._priority[ref] = max(self._priority.get(ref, 0), priority)
+                if ref not in self.graph.incomplete:
+                    self.graph.register(ref)
+                self.ready.push(ref, priority)
+                self.graph.await_one(nid, ref)
+                waiting = True
+        return waiting
+
     def _await_expansion(self, waiting: NodeId, to_expand: NodeId) -> None:
         """Put a graph-growing node back on the frontier and requeue its waiter.
 
@@ -1418,6 +1456,8 @@ class ComputationEngine:
                         # expands it, and requeue this node behind it -- the same
                         # defer-and-retry the reload gate above already uses.
                         self._await_expansion(nid, needed.node_id)
+                        continue
+                    if self._await_named_deps(nid, node):
                         continue
 
                     # Schedule-time fusion (engine/fusion.py): try to grow a cone
