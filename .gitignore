@@ -28,7 +28,7 @@ __pycache__
 voxlogica.egg-info/
 
 # Python virtual environments
-.venv/
+.venv
 implementation/python/venv/
 
 # Test artifacts
