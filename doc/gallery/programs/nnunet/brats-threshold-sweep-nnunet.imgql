@@ -1,0 +1,248 @@
+// BraTS whole-tumour: the AIIM threshold sweep, scored against a LEARNED
+// reference instead of the radiologist's ground truth.
+//
+// The companion program (doc/gallery/programs/simpleitk/brats-threshold-sweep-aiim.imgql)
+// sweeps viThr and scores each candidate segmentation against `*_seg.nii.gz`.
+// Here nnU-Net is trained on the four BraTS modalities (FLAIR, T1, T1CE, T2)
+// with that same ground truth, and its PREDICTION takes the place of the truth
+// in the sweep. Everything downstream -- Dice, argmax, the statistics over the
+// chosen thresholds, the outliers, the exports -- is unchanged, so the two
+// programs can be read side by side and their numbers compared directly.
+//
+// WHAT THIS MEASURES. Not accuracy: agreement. A high Dice here says the two
+// thresholds reproduce what the network learned, not that either is right. The
+// question the study asks is whether the case-dependence of viThr survives when
+// the reference stops being a human annotation -- if the same thresholds keep
+// winning, the spread is a property of the images; if it collapses, it was a
+// property of the annotator.
+//
+// That reading only holds if the prediction is not a memorized copy of the
+// truth, which is what `train_range` and `eval_range` below are for.
+
+import "simpleitk"
+import "vox1"
+import "strings"
+import "nnunet"
+
+// ---------------------------------------------------------------- inputs ---
+dataset_root = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData"
+output_dir   = "output/aiim-sweep-nnunet"
+
+// nnU-Net's raw/preprocessed/results tree. NOT under /tmp: that is a 31 GB
+// tmpfs on this host, and preprocessing BraTS into RAM competes with the
+// training it is feeding. NOT under the repo either -- it is many GB of
+// generated data.
+work_root = "/home/laura/nnunet-brats-work"
+
+// TRAIN AND EVALUATION RANGES. Disjoint by default: the sweep is scored against
+// predictions for cases the network never saw. Set `eval_start` to `train_start`
+// for the in-sample run -- a pipeline check, not a result, because a network
+// predicting its own training cases returns something close to the truth it was
+// given and the sweep then just re-measures the AIIM experiment with noise on
+// top.
+train_start = 0
+train_count = 50
+eval_start  = 50
+eval_count  = 20
+
+outlier_count = 10       // worst cases to export
+
+// ------------------------------------------------------ nnU-Net settings ---
+// One fold, not the documented five: five folds is five trainings, and the
+// question here does not need the ensemble. `3d_fullres` because BraTS is
+// volumetric and the whole point is a reference built from all four modalities
+// in 3D. Both are arguments, so a run that wants nnU-Net's full recommended
+// workflow says so here.
+nnunet_config  = "3d_fullres"
+nnunet_folds   = 1
+nnunet_device  = "cuda"
+nnunet_trainer = "nnUNetTrainer"
+dataset_name   = "BraTS2020WholeTumour"
+
+// `dir` lists matching files in a stable order, so the five lists line up
+// index-for-index: case i is flair_paths[i], t1_paths[i], ... and gt_paths[i].
+// The lists are NOT sliced: `train_range` and `eval_range` index them directly,
+// so a case keeps the same index whichever range it falls in.
+flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
+t1_paths    = dir(dataset_root, "*_t1.nii.gz",    true, true)
+t1ce_paths  = dir(dataset_root, "*_t1ce.nii.gz",  true, true)
+t2_paths    = dir(dataset_root, "*_t2.nii.gz",    true, true)
+gt_paths    = dir(dataset_root, "*_seg.nii.gz",   true, true)
+
+train_range = range(train_start, train_start + train_count)
+eval_range  = range(eval_start,  eval_start  + eval_count)
+
+// ------------------------------------------------------------ parameters ---
+hi_thr           = 0.93        // strict threshold, fixed at its published value
+published_vi_thr = 0.88        // the single permissive value the paper settled on
+
+tick_to_threshold(tick) = tick / 100
+vi_thresholds = map(tick_to_threshold, range(72, 93))
+
+// -------------------------------------------------------- the four inputs ---
+// Raw SimpleITK images, not the percentile-ranked FLAIR the sweep uses: nnU-Net
+// does its own intensity normalization from the training set's statistics, and
+// feeding it a preprocessed volume would hide that.
+modalities_of(i) =
+  [ ReadImage(index(flair_paths, i)),
+    ReadImage(index(t1_paths,    i)),
+    ReadImage(index(t1ce_paths,  i)),
+    ReadImage(index(t2_paths,    i)) ]
+
+modality_names = ["FLAIR", "T1", "T1CE", "T2"]
+
+// BraTS labels the tumour tissue classes 1, 2 and 4. The study is about the
+// WHOLE tumour, so the label is flattened to one foreground class here rather
+// than training a three-class model and merging afterwards: nnU-Net wants
+// 0 = background, 1 = foreground, and this keeps the learned target and the
+// swept target the same shape.
+whole_tumour_label(path) = BinaryThreshold(ReadImage(path), 1, 4, 1, 0)
+
+case_name(i) = concat("case_", format_string("{:03.0f}", i))
+
+// A training case is [id, [modality, ...], label].
+train_case(i) = [ case_name(i), modalities_of(i), whole_tumour_label(index(gt_paths, i)) ]
+
+training_cases = for i in train_range do train_case(i)
+
+// ------------------------------------------------------------- the model ---
+model     = nnunet.train(training_cases, work_root, modality_names,
+                         nnunet_config, nnunet_folds, dataset_name,
+                         nnunet_device, nnunet_trainer)
+predictor = nnunet.make_predictor(model)
+
+// ----------------------------------------------------------- the pipeline ---
+preprocess(flair) =
+  let background = touch(leq_sv(0.1, flair), border(flair)) in
+  percentiles(flair, not(background), 0)
+
+segment(pflair, vi_thr) =
+  let hyper = smoothen(geq_sv(hi_thr, pflair), 5.0) in
+  let very  = smoothen(geq_sv(vi_thr, pflair), 2.0) in
+  grow(hyper, very)
+
+dice(a, b) = 2 * volume(and(a, b)) / (volume(a) + volume(b))
+
+whole_tumour(gt_image) = geq_sv(1.0, gt_image)
+
+// --------------------------------------------------- per-case evaluation ---
+pflair_of(i) = preprocess(intensity(ReadImage(index(flair_paths, i))))
+
+// THE SUBSTITUTION. In the AIIM program this reads `*_seg.nii.gz`; here it is
+// the network's output for the same case. The model predicts one foreground
+// class, so `whole_tumour` is the same "labelled at all" test as before.
+truth_of(i) = whole_tumour(intensity(nnunet.predict(predictor, modalities_of(i))))
+
+// Kept so the surrogate can be judged: how close the learned reference is to
+// the annotation it replaced. Without this number the sweep results below
+// cannot be interpreted -- a threshold agreeing with a bad model means nothing.
+reference_of(i) = whole_tumour(intensity(ReadImage(index(gt_paths, i))))
+
+sweep_of(i) =
+  let pflair = pflair_of(i) in
+  let truth  = truth_of(i) in
+  for vi_thr in vi_thresholds do dice(segment(pflair, vi_thr), truth)
+
+cases = eval_range
+
+best_dice   = for i in cases do let s = sweep_of(i) in index(s, argmax(s))
+best_vi_thr = for i in cases do index(vi_thresholds, argmax(sweep_of(i)))
+
+fixed_dice = for i in cases do dice(segment(pflair_of(i), published_vi_thr), truth_of(i))
+
+// How good the learned reference itself is, against the real annotation.
+model_dice = for i in cases do dice(truth_of(i), reference_of(i))
+
+// ------------------------------------------------------------ statistics ---
+// Printed rather than derived into a yes/no, so the log records exactly which
+// cases trained and which were swept: equal starts mean the in-sample run.
+print "n_train_cases"       train_count
+print "n_cases"             eval_count
+print "train_start"         train_start
+print "eval_start"          eval_start
+
+// Read these FIRST: they bound everything below. A sweep scored against a model
+// that disagrees with the annotation cannot score better than the model does.
+print "model_dice_mean"     mean(model_dice)
+print "model_dice_median"   median(model_dice)
+print "model_dice_stdev"    stdev(model_dice)
+print "model_dice"          model_dice
+
+print "dice_fixed_mean"     mean(fixed_dice)
+print "dice_best_mean"      mean(best_dice)
+print "dice_best_median"    median(best_dice)
+print "dice_best_stdev"     stdev(best_dice)
+
+// The question of the study, asked of the learned reference this time.
+print "vi_thr_mean"         mean(best_vi_thr)
+print "vi_thr_median"       median(best_vi_thr)
+print "vi_thr_stdev"        stdev(best_vi_thr)
+print "vi_thr_distribution" tally(best_vi_thr)
+
+print "best_dice"           best_dice
+print "best_vi_thr"         best_vi_thr
+
+// -------------------------------------------------------------- outliers ---
+ranked   = argsort(best_dice)
+outliers = subsequence(ranked, 0, outlier_count)
+
+print "outlier_cases" outliers
+print "outlier_dice"  for i in outliers do index(best_dice, i)
+print "outlier_paths" for i in outliers do index(flair_paths, index(cases, i))
+
+// ---------------------------------------------------- significant slices ---
+plane(img, zi) = and(img, eq_sv(zi, z(img)))
+
+pole_high(m) = max(mask(z(m), m))
+pole_low(m)  =
+  let above_all = max(z(m)) + 1 in
+  min(mask(z(m), m) + mask(constant(above_all), not(m)))
+
+equator_z(m) =
+  let lo = pole_low(m) in
+  lo + argmax(for zi in range(lo, pole_high(m) + 1) do volume(plane(m, zi)))
+
+tropics_and_equator(m) =
+  let e = equator_z(m) in
+  [ floor((pole_low(m) + e) / 2), e, floor((e + pole_high(m)) / 2) ]
+
+plane_names = ["tropic_low", "equator", "tropic_high"]
+
+overlay_mask(pflair, m, zi) =
+  let p = plane(m, zi) in
+  mask(constant(255.0), p) + mask(pflair, not(p))
+
+extract_axial(img, zi) =
+  Extract(img,
+          vector_uint32([max(x(img)) + 1, max(y(img)) + 1, 1]),
+          vector_uint32([0, 0, zi]))
+
+to_png(img) =
+  Cast(RescaleIntensity(img, 0, 65535), GetPixelIDValueFromString("sitkUInt16"))
+
+png_of(pflair, m, zi) = to_png(extract_axial(overlay_mask(pflair, m, zi), zi))
+
+// Four images per plane, not three: the annotation is exported alongside the
+// prediction that replaced it, because the difference between those two is what
+// this variant of the study is actually about.
+export_plane(pflair, seg, truth, reference, stem, zi, plane_name) =
+  let base = concat(stem, "_", plane_name) in
+  [ WriteImage(to_png(extract_axial(pflair, zi)), concat(base, "_flair.png")),
+    WriteImage(png_of(pflair, seg,       zi),     concat(base, "_predicted.png")),
+    WriteImage(png_of(pflair, truth,     zi),     concat(base, "_nnunet.png")),
+    WriteImage(png_of(pflair, reference, zi),     concat(base, "_truth.png")) ]
+
+export_case(k) =
+  let i         = index(cases, k) in
+  let pflair    = pflair_of(i) in
+  let truth     = truth_of(i) in
+  let reference = reference_of(i) in
+  let seg       = segment(pflair, index(best_vi_thr, k)) in
+  let zs        = tropics_and_equator(seg) in
+  let stem      = concat(output_dir, "/", case_name(i)) in
+  for j in range(0, 3) do
+    export_plane(pflair, seg, truth, reference, stem, index(zs, j), index(plane_names, j))
+
+print "exported_planes" for k in outliers do
+  tropics_and_equator(segment(pflair_of(index(cases, k)), index(best_vi_thr, k)))
+print "exported"        for k in outliers do export_case(k)
