@@ -135,10 +135,11 @@ def test_a_loop_whose_body_is_a_constant_still_drains_its_window() -> None:
     reached the hook that decrements the job's in-flight count. The window filled
     and never drained: every worker asleep, the event loop in select() forever.
 
-    Reproduced exactly at the boundary, sixteen fine and seventeen hung, which is
-    why the size here is one past a window of four.
+    Reproduced exactly at the boundary: sixteen elements finished, seventeen hung
+    forever. The default window is what it is measured against, so the size here
+    is one past it rather than a number chosen to look safe.
     """
-    source = ('print "total" fold + (for i in range(0, 5) do i)\n')
-    value, _engine = _run(source, window=4, chunk=4)
+    source = 'print "total" fold + (for i in range(0, 17) do i)\n'
+    value, _engine = _run(source)
 
-    assert value == float(sum(range(5)))
+    assert value == float(sum(range(17)))
