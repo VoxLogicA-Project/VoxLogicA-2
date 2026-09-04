@@ -108,6 +108,10 @@ class NodeTable:
         self.nodes: dict[NodeId, NodeSpec] = _LoopWatchingNodes()
         self.values: dict[NodeId, Any] = {}
         self._running: set[NodeId] = set()
+        #: Set by ComputationEngine: "can this value be rebuilt from its kernel?"
+        self._recompute_guard: Any = None
+        #: Values held back by that guard, released when the run drains.
+        self._held_unrecoverable: set[NodeId] = set()
         self.completed: set[NodeId] = set()
         self._backend = backend if backend is not None and not isinstance(backend, NoCacheStorageBackend) else None
         # One snapshot query instead of one SELECT per scheduled node. The
@@ -469,12 +473,42 @@ class NodeTable:
                                0.0, size=self._sizeof.get(node_id))
         return True
 
+    def set_recompute_guard(self, predicate: Any) -> None:
+        """Install "can this node be rebuilt without a disk copy?".
+
+        Only the engine can answer it (it needs the expander), and only the
+        table sees every eviction, so the predicate is injected rather than
+        duplicated at each call site.
+        """
+        self._recompute_guard = predicate
+
     def evict(self, node_id: NodeId) -> None:
         """Demote a value out of the live tier.
 
         A pending disk write keeps its own reference, so the value survives until
         written; the persistent tier can reload it later on demand.
+
+        WITH NO DISK TIER (``--no-cache``) that "later on demand" has to come
+        from the kernel, and for a loop/sequence node there is no kernel to come
+        from: `executor._compute` on a `for_loop` raises, its closure argument
+        rematerializing to None. Such a value is therefore unrecoverable once
+        dropped, and every eviction path reaches it -- not just the pressure
+        sweeps that already consult `_recomputable`, but `DependencyGraph.release`,
+        which evicts unconditionally on the last consumer and so fires on every
+        run regardless of memory. Refusing here keeps that invariant in the one
+        place all of them funnel through. The cost is that these values stay
+        resident for the run, which under --no-cache is exactly the "genuine,
+        irreducible requirement" `_reclaim_memory` already documents.
         """
+        if (self._backend is None and self._recompute_guard is not None
+                and node_id in self.values and not self._recompute_guard(node_id)):
+            # HELD, NOT PINNED. The hold lasts only as long as a rebuild can
+            # still ask for this value -- that is, until the run drains, when
+            # `release_held` frees the lot. A finished run's live tier therefore
+            # ends up exactly as it was before this guard existed.
+            self._held_unrecoverable.add(node_id)
+            return
+        self._held_unrecoverable.discard(node_id)
         value = self.values.pop(node_id, _MISSING)
         if value is not _MISSING:
             # Forget the id only once its write has LANDED: from then on
@@ -490,6 +524,20 @@ class NodeTable:
             self._compute_ms.pop(node_id, None)
             self._account_op(node_id, -self._release_object(value))
             release_states(self._buffer_leases.pop(node_id, ()))
+
+    def release_held(self) -> None:
+        """Drop the values ``evict`` held back, once no rebuild can want them.
+
+        Called when the run drains: every goal is materialized, so there is
+        nothing left to rematerialize and the reason for the hold is gone.
+        """
+        held, self._held_unrecoverable = self._held_unrecoverable, set()
+        guard, self._recompute_guard = self._recompute_guard, None
+        try:
+            for node_id in held:
+                self.evict(node_id)
+        finally:
+            self._recompute_guard = guard
 
     def flush(self, timeout_s: float = 600.0) -> None:
         self.flush_lineage()
