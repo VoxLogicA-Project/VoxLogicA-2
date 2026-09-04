@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from voxlogica.primitives.registry import PrimitiveRegistry
 
@@ -74,13 +75,22 @@ def grows_the_graph_by_name(operator: str | None) -> bool:
 
 
 _DEFAULT = Modes()
-_CACHE: dict[tuple[int, str], Modes] = {}
+
+#: registry -> operator -> Modes. Keyed by the registry OBJECT through a weak
+#: map, not by `id(registry)`: CPython reuses an id once the object behind it is
+#: collected, so an id key can silently answer for a registry that no longer
+#: exists -- a wrong answer about how a kernel is called, from a cache. The weak
+#: map also lets a finished engine's entry go, instead of pinning it for the
+#: life of the process.
+_CACHE: "WeakKeyDictionary[PrimitiveRegistry, dict[str, Modes]]" = WeakKeyDictionary()
 
 
 def modes_of(registry: PrimitiveRegistry, operator: str) -> Modes:
     """The modes of one operator. Memoized: this sits on every dispatch."""
-    key = (id(registry), operator)
-    cached = _CACHE.get(key)
+    per_registry = _CACHE.get(registry)
+    if per_registry is None:
+        per_registry = _CACHE[registry] = {}
+    cached = per_registry.get(operator)
     if cached is None:
         try:
             spec = registry.get_spec(operator)
@@ -97,12 +107,12 @@ def modes_of(registry: PrimitiveRegistry, operator: str) -> Modes:
                 raise ValueError(
                     f"{operator}: lazy and shallow are exclusive -- arguments "
                     f"arrive either as handles or as values")
-        _CACHE[key] = cached
+        per_registry[operator] = cached
     return cached
 
 
 def reset_cache() -> None:
-    """Forget memoized modes. For tests that build registries in a loop."""
+    """Forget memoized modes. For tests that rebuild a registry in place."""
     _CACHE.clear()
 
 
