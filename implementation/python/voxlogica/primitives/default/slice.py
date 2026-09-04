@@ -36,15 +36,6 @@ def _normalize_bound(value: Any, *, name: str) -> int | None:
     raise ValueError(f"{name} must be an integer or None, got: {type(value).__name__}")
 
 
-def _is_dask_bag(value: Any) -> bool:
-    try:
-        import dask.bag as db  # type: ignore
-
-        return isinstance(value, db.Bag)
-    except Exception:
-        return False
-
-
 def _slice_sequence_value(sequence: SequenceValue, start: int | None, stop: int | None) -> SequenceValue:
     """Return a lazily sliced ``SequenceValue`` without full materialization."""
     normalized_start = 0 if start is None else max(0, start)
@@ -72,26 +63,6 @@ def _slice_sequence_value(sequence: SequenceValue, start: int | None, stop: int 
     return SequenceValue(iterator_factory, total_size=sliced_total_size)
 
 
-def _slice_dask_bag(bag: Any, start: int | None, stop: int | None) -> SequenceValue:
-    normalized_start = 0 if start is None else max(0, start)
-    normalized_stop = None if stop is None else max(0, stop)
-
-    def iterator_factory():
-        index = 0
-        for delayed_partition in bag.to_delayed():
-            partition_items = delayed_partition.compute()
-            for item in partition_items:
-                if index < normalized_start:
-                    index += 1
-                    continue
-                if normalized_stop is not None and index >= normalized_stop:
-                    return
-                yield item
-                index += 1
-
-    return SequenceValue(iterator_factory, total_size=None)
-
-
 def execute(**kwargs):
     """Return a slice from a sequence-like value.
 
@@ -111,9 +82,6 @@ def execute(**kwargs):
     if isinstance(sequence, SequenceValue):
         return _slice_sequence_value(sequence, start, stop)
 
-    if _is_dask_bag(sequence):
-        return _slice_dask_bag(sequence, start, stop)
-
     if isinstance(sequence, (list, tuple, range)):
         return list(sequence[slice(start, stop)])
 
@@ -131,6 +99,9 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     arity=AritySpec.fixed(3),
     attrs_schema={},
     planner=default_planner_factory("default.slice", kind="sequence"),
+    # SHALLOW: same reason as `index` -- reach into the container without
+    # materializing what is not reached.
     kernel_name="default.slice",
+    shallow=True,
     description="Extract a sequence slice with optional bounds",
 )

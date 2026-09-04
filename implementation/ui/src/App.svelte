@@ -1,365 +1,1106 @@
 <script>
-  import { onDestroy, onMount } from "svelte";
-  import { getCapabilities, getVersion, sendClientLogBatch } from "$lib/api/client.js";
-  import StartTab from "$lib/components/tabs/StartTab.svelte";
-  import ComputeLogTab from "$lib/components/tabs/ComputeLogTab.svelte";
-  import StartTechnicalTab from "$lib/components/tabs/StartTechnicalTab.svelte";
-  import DreamTab from "$lib/components/tabs/DreamTab.svelte";
-  import GraphTab from "$lib/components/tabs/GraphTab.svelte";
-  import PlaygroundTab from "$lib/components/tabs/PlaygroundTab.svelte";
-  import ResultsTab from "$lib/components/tabs/ResultsTab.svelte";
-  import GalleryTab from "$lib/components/tabs/GalleryTab.svelte";
-  import QualityTab from "$lib/components/tabs/QualityTab.svelte";
+  /**
+   * The application shell: the workspace, drawn.
+   *
+   * Composition and nothing else. It reads the replica and calls actions; it
+   * holds no state of its own and assigns to none, which is the rule the whole
+   * store design rests on -- every change to a workspace has a name, and that
+   * name is available to a person in a browser and to an agent over MCP alike.
+   *
+   * The build-error overlay is not workspace content: it is the page telling you
+   * why it stopped updating, and it has to appear wherever you are.
+   */
+  import { Bento, Button, SHORTCUTS } from "./lib/components/index.js";
+  import { needsFor, viewerFor } from "./lib/viewers/index.js";
+  import Layers from "./lib/viewers/Layers.svelte";
+  import Walk from "./lib/viewers/Walk.svelte";
+  import BuildError from "./lib/BuildError.svelte";
+  import Help from "./lib/Help.svelte";
+  import Library from "./lib/Library.svelte";
+  import SourceEditor from "./lib/source/SourceEditor.svelte";
+  import { INTERACTION } from "./lib/source/interaction.js";
+  import ResultSubscription from "./lib/viewers/ResultSubscription.svelte";
+  import ResultState from "./lib/viewers/ResultState.svelte";
+  import { app } from "./lib/state.svelte.js";
+  import { workspace } from "./lib/store/workspace.svelte.ts";
+  import { results } from "./lib/store/results.svelte.ts";
   import {
-    readPersistedAppState,
-    readPersistedStartProgram,
-    updatePersistedAppState,
-  } from "$lib/utils/ui-persistence.js";
+    board,
+    card as cardActions,
+    library as libraryActions,
+    resultsActions,
+    view,
+    workspace as workspaceActions,
+  } from "./lib/actions/index.ts";
 
-  const tabs = [
-    { id: "start", label: "Start" },
-    { id: "compute-log", label: "Compute Log" },
-    { id: "dream", label: "Oneiric Trace" },
-    { id: "graph", label: "Compute Graph" },
-    { id: "start-tech", label: "Start Technical" },
-    { id: "playground", label: "Playground" },
-    { id: "results", label: "Results Explorer" },
-    { id: "gallery", label: "Example Gallery" },
-    { id: "quality", label: "Test Intelligence" },
-  ];
-
-  let activeTab = "start";
-  let tabsMenuOpen = false;
-  let capabilities = {};
-  let buildStamp = "Loading...";
-  let startTabRef;
-  let clientLoggerInstalled = false;
-  let clientLogQueue = [];
-  let clientLogFlushTimer = null;
-  let clientLogInFlight = false;
-  const clientLogMaxQueue = 300;
-  const clientLogBatchSize = 40;
-  const AUTOMATION_BRIDGE_NAME = "__VOXLOGICA_AUTOMATION__";
-  let appPersistenceReady = false;
-
-  const selectTab = (tabId) => {
-    activeTab = String(tabId || "start");
-    tabsMenuOpen = false;
-  };
-
-  const restorePersistedAppState = () => {
-    const persisted = readPersistedAppState();
-    const persistedTab = String(persisted?.activeTab || "").trim();
-    if (tabs.some((tab) => tab.id === persistedTab)) {
-      activeTab = persistedTab;
+  /** A reference nobody has to think about, and a name they can read.
+   *
+   * The id is generated and never shown; the title is what appears on the card
+   * and is free to be changed, or to collide with another card's. Keeping them
+   * apart is what lets a card be renamed without breaking whatever names it. */
+  function nextId() {
+    const taken = new Set(workspace.cards.map((card) => card.id));
+    for (let n = 1; ; n += 1) {
+      if (!taken.has(`c${n}`)) return `c${n}`;
     }
-  };
-
-  const toggleTabsMenu = () => {
-    tabsMenuOpen = !tabsMenuOpen;
-  };
-
-  const closeTabsMenu = () => {
-    tabsMenuOpen = false;
-  };
-
-  const handleWindowKeyDown = (event) => {
-    if (String(event?.key || "") === "Escape") {
-      tabsMenuOpen = false;
-    }
-  };
-
-  const toLogMessage = (args) =>
-    args
-      .map((arg) => {
-        if (arg instanceof Error) {
-          return arg.stack || arg.message || String(arg);
-        }
-        if (typeof arg === "string") return arg;
-        try {
-          return JSON.stringify(arg);
-        } catch {
-          return String(arg);
-        }
-      })
-      .join(" ");
-
-  const flushClientLogQueue = async () => {
-    if (clientLogInFlight || !clientLogQueue.length) return;
-    clientLogInFlight = true;
-    const batch = clientLogQueue.splice(0, clientLogBatchSize);
-    try {
-      await sendClientLogBatch(batch);
-    } catch {
-      clientLogQueue = [...batch, ...clientLogQueue].slice(-clientLogMaxQueue);
-    } finally {
-      clientLogInFlight = false;
-      if (clientLogQueue.length) {
-        if (clientLogFlushTimer) clearTimeout(clientLogFlushTimer);
-        clientLogFlushTimer = setTimeout(flushClientLogQueue, 800);
-      }
-    }
-  };
-
-  const enqueueClientLog = (level, args, payload = null) => {
-    const firstArg = Array.isArray(args) && args.length ? String(args[0] || "") : "";
-    if (firstArg.startsWith("[api.request]")) {
-      return;
-    }
-    if (firstArg.startsWith("[start-tab.resolve]")) {
-      return;
-    }
-    clientLogQueue.push({
-      level,
-      message: toLogMessage(args),
-      source: "browser-console",
-      url: window.location.href,
-      ts: new Date().toISOString(),
-      user_agent: navigator.userAgent,
-      payload,
-    });
-    if (clientLogQueue.length > clientLogMaxQueue) {
-      clientLogQueue = clientLogQueue.slice(-clientLogMaxQueue);
-    }
-    if (clientLogFlushTimer) clearTimeout(clientLogFlushTimer);
-    clientLogFlushTimer = setTimeout(flushClientLogQueue, 250);
-  };
-
-  const installClientLogger = () => {
-    if (clientLoggerInstalled || typeof window === "undefined" || typeof window.WebSocket === "undefined") {
-      return;
-    }
-    clientLoggerInstalled = true;
-
-    const levels = ["log", "info", "warn", "error", "debug"];
-    for (const level of levels) {
-      const original = console[level] ? console[level].bind(console) : console.log.bind(console);
-      console[level] = (...args) => {
-        original(...args);
-        enqueueClientLog(level, args);
-      };
-    }
-
-    window.addEventListener("error", (event) => {
-      enqueueClientLog("error", [event.message || "window error"], {
-        filename: event.filename,
-        lineno: event.lineno,
-        colno: event.colno,
-      });
-    });
-    window.addEventListener("unhandledrejection", (event) => {
-      const reason = event.reason;
-      enqueueClientLog("error", ["unhandledrejection", reason instanceof Error ? reason.stack || reason.message : reason], null);
-    });
-  };
-
-  const connectLiveReload = () => {
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://${window.location.host}/livereload`);
-    socket.onmessage = (event) => {
-      if (event.data === "reload") {
-        window.location.reload();
-      }
-    };
-    socket.onclose = () => {
-      setTimeout(connectLiveReload, 2000);
-    };
-  };
-
-  const onGalleryLoad = async (event) => {
-    const code = String(event.detail?.code || "");
-    const run = Boolean(event.detail?.run);
-    activeTab = "start";
-    tabsMenuOpen = false;
-    if (startTabRef && typeof startTabRef.loadProgram === "function") {
-      await startTabRef.loadProgram(code, run);
-    }
-  };
-
-  const getTabSnapshot = () => tabs.map((tab) => ({ ...tab, active: activeTab === tab.id }));
-
-  const getAppStateSnapshot = () => ({
-    activeTab,
-    tabs: getTabSnapshot(),
-    tabsMenuOpen: Boolean(tabsMenuOpen),
-    buildStamp,
-    capabilities: { ...(capabilities || {}) },
-    start: startTabRef && typeof startTabRef.getAutomationState === "function" ? startTabRef.getAutomationState() : null,
-  });
-
-  const selectTabById = (tabId) => {
-    const normalized = String(tabId || "").trim();
-    if (!tabs.some((tab) => tab.id === normalized)) {
-      return {
-        ok: false,
-        error: `Unknown tab: ${normalized || "<empty>"}`,
-        state: getAppStateSnapshot(),
-      };
-    }
-    selectTab(normalized);
-    return {
-      ok: true,
-      state: getAppStateSnapshot(),
-    };
-  };
-
-  const loadProgramInStartTab = async (code, runAfterLoad = false) => {
-    activeTab = "start";
-    tabsMenuOpen = false;
-    if (startTabRef && typeof startTabRef.loadProgram === "function") {
-      await startTabRef.loadProgram(code, runAfterLoad);
-      return {
-        ok: true,
-        state: getAppStateSnapshot(),
-      };
-    }
-    return {
-      ok: false,
-      error: "Start tab is not ready.",
-      state: getAppStateSnapshot(),
-    };
-  };
-
-  const selectStartSymbol = async (token) => {
-    activeTab = "start";
-    tabsMenuOpen = false;
-    if (startTabRef && typeof startTabRef.selectSymbol === "function") {
-      return await startTabRef.selectSymbol(token);
-    }
-    return {
-      ok: false,
-      error: "Start tab is not ready.",
-      state: getAppStateSnapshot(),
-    };
-  };
-
-  const publishAutomationBridge = () => {
-    if (typeof window === "undefined") return;
-    window[AUTOMATION_BRIDGE_NAME] = {
-      version: 1,
-      actionAreas: {
-        browser: ["open_page", "inspect_page", "focus_app", "close_browser"],
-        ui: ["inspect_app_state", "select_app_tab", "click_element", "focus_element", "read_element_text"],
-        program: ["read_program", "set_program", "click_variable"],
-        runtime: [
-          "inspect_runtime_state",
-          "list_playground_jobs",
-          "get_playground_job",
-          "kill_playground_job",
-          "get_program_symbols",
-          "get_program_graph",
-          "resolve_program_value",
-          "resolve_program_value_page",
-        ],
-      },
-      getAppState: () => getAppStateSnapshot(),
-      selectTab: (tabId) => selectTabById(tabId),
-      getProgram: () => {
-        if (startTabRef && typeof startTabRef.getProgramText === "function") {
-          return startTabRef.getProgramText();
-        }
-        return readPersistedStartProgram("");
-      },
-      loadProgram: async (code, runAfterLoad = false) => await loadProgramInStartTab(code, runAfterLoad),
-      selectStartSymbol: async (token) => await selectStartSymbol(token),
-    };
-  };
-
-  const removeAutomationBridge = () => {
-    if (typeof window === "undefined") return;
-    delete window[AUTOMATION_BRIDGE_NAME];
-  };
-
-  $: if (typeof window !== "undefined") {
-    publishAutomationBridge();
   }
 
-  $: if (appPersistenceReady) {
-    updatePersistedAppState({ activeTab });
+  const TITLES = { code: "Program", result: "Result", note: "Note" };
+
+  function titleFor(kind) {
+    const base = TITLES[kind] ?? kind;
+    const taken = workspace.cards.filter((card) => (card.title ?? "").startsWith(base));
+    return taken.length ? `${base} ${taken.length + 1}` : base;
+  }
+  /** The document, or the cards it is drawn as. Tab swaps them.
+   *
+   * Both are the same thing seen from two distances, which is the point: a
+   * board whose file you cannot read would be a board you have to trust. */
+  const showing = $derived(workspace.view.showing ?? "board");
+  let helping = $state(false);
+  const DEFAULT_SIDEBAR = 240;
+  const MIN_SIDEBAR = 140;
+
+  /** Whether the list is showing, and how wide. Kept here rather than in the
+   * sidebar: a panel cannot be the thing that decides whether it exists. */
+  let sidebar = $state(true);
+  let sidebarWidth = $state(DEFAULT_SIDEBAR);
+  let dragging = null;
+
+  const clampWidth = (value) =>
+    Math.min(Math.max(value, MIN_SIDEBAR), Math.max(MIN_SIDEBAR, innerWidth * 0.5));
+
+  function startResize(event) {
+    dragging = { pointerId: event.pointerId, x: event.clientX, from: sidebarWidth };
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      /* no active pointer with this id; the drag still works, just leakier */
+    }
   }
 
-  onMount(async () => {
-    restorePersistedAppState();
-    appPersistenceReady = true;
-    installClientLogger();
+  function resize(event) {
+    if (!dragging || event.pointerId !== dragging.pointerId) return;
+    sidebarWidth = clampWidth(dragging.from + (event.clientX - dragging.x));
+  }
+
+  function endResize() {
+    dragging = null;
+  }
+
+  /** What is wrong with the program, said in card names rather than ids.
+   *
+   * The ids are what the document uses to point at things; a person reading a
+   * warning wants the name they gave the card. */
+  /** How a viewer that draws bytes is handed the thing to draw.
+   *
+   * One function because there are two places a card can arrive at such a
+   * viewer -- a print or save card *is* the value, and a code card shows it
+   * beside the program through the lens -- and they were not the same code.
+   * The lens passed `layers`; the card branch passed `result` and `node`, which
+   * a drawing viewer has no use for, so a print card bound to a volume mounted
+   * a canvas with nothing on it. Two call sites, one answer, and adding the
+   * next drawable type cannot reintroduce the difference.
+   *
+   * The hash comes from the *result*, never from the card. A card says `v`,
+   * which is a name in a document; the bytes route is addressed by content and
+   * knows nothing about names, so handing it a card's `node` asked for a volume
+   * called "v" and got a 404. The result is the thing that already knows which
+   * node it is about.
+   *
+   * `null` when there is nothing to draw yet: the URL is the content hash, so
+   * it only exists once the node is done, and asking earlier would be asking
+   * for a hash that names nothing.
+   */
+  function drawable(shown) {
+    if (shown?.state !== "done" || !shown.hash) return null;
+    return [{ hash: shown.hash, url: `/api/node/${shown.hash}` }];
+  }
+
+  /** The pictures a stack card draws, or `null` when it is not a stack.
+   *
+   * `print "scan" [flairs[i], masks[i]]` is one output and two pictures. The
+   * server reads the elements off the array node and binds each to a hash of
+   * its own, so this is a lookup per element, in drawing order, with the style
+   * the directive gave that *position*.
+   *
+   * A stack is normally only partly ready -- one volume is done and the next is
+   * still running -- so a layer with no bytes yet is a layer not drawn, not a
+   * card that fails. `lead` is the first element's result, which is what
+   * chooses the viewer: a stack of images is drawn by whatever draws an image,
+   * so the table in `viewers/index.js` stays the only place that decides.
+   */
+  /** Opacities under a finger right now, by `cardId:position`.
+   *
+   * A slider has to move the *picture*, not just the thumb, and the picture is
+   * drawn from the card's directive -- which is a round trip away. Held here
+   * because this is where the layers a viewer draws are assembled, so a live
+   * value reaches the volume by the same path the committed one does and no
+   * second route exists to disagree with the first.
+   *
+   * Kept until the document catches up rather than dropped on release: dropping
+   * it there put the old opacity back for the length of one round trip, which is
+   * the thumb jumping home and then jumping again.
+   */
+  let live = $state({});
+
+  $effect(() => {
+    for (const key of Object.keys(live)) {
+      const [id, at] = key.split(":");
+      const settled = workspace.cards.find((card) => card.id === id)?.style?.[+at]?.opacity;
+      if (settled != null && Math.abs(settled - live[key]) < 0.005) delete live[key];
+    }
+  });
+
+  function stackFor(card) {
+    if (!card.parts?.length) return null;
+    const layers = card.parts.map((expression, at) => {
+      const shown = results.get(results.hashFor(expression));
+      const style = card.style?.[at] ?? {};
+      return {
+        expression,
+        hash: shown.hash,
+        state: shown.state,
+        url: shown.state === "done" && shown.hash ? `/api/node/${shown.hash}` : null,
+        // Position zero is the one underneath, and grey is what a scan is.
+        colormap: style.colormap ?? (at === 0 ? "gray" : "warm"),
+        opacity: live[`${card.id}:${at}`] ?? style.opacity ?? 1,
+        // Switched off is not absent: `on` is somebody's choice, `url` is
+        // whether the bytes exist, and the layer row has to tell them apart.
+        visible: style.on !== false,
+      };
+    });
+    return { layers, lead: results.get(results.hashFor(card.parts[0])) };
+  }
+
+  /** How far a selector can walk, and where it is.
+   *
+   * Both are questions about the program, not about a widget: the length is the
+   * sequence's own result and the position is the value of a `let`. Null length
+   * means nobody has computed the sequence yet -- and walking has to stay
+   * possible, or a card cannot be used to evaluate the thing it walks along.
+   */
+  function walkOf(card) {
+    if (!card.index) return null;
+    // How far: the sequence's own result, when somebody has computed it. Null
+    // until then, and walking forward stays possible -- a card that refuses to
+    // move until its sequence is evaluated cannot be used to evaluate it.
+    const over = results.get(results.hashFor(card.over));
+    const counted = /\bof (\d+)\b/.exec(over.summary ?? "");
+    // Where: from the program text, which the server read off `let g = 3`.
+    // Reading the *value* of that node instead showed 0 on a board nobody had
+    // run yet, while the file plainly said 3.
+    return { length: counted ? Number(counted[1]) : null, at: card.at ?? 0 };
+  }
+
+  /** The smallest size a card's content is usable at, asked per card.
+   *
+   * A function rather than a field folded into the cards array, and the reason
+   * is measured: computing it into the array rebuilt every card object on every
+   * result event, every rebuilt card handed its viewer a fresh `layers` array,
+   * and a fresh array made NiiVue reconcile and redraw -- six volume cards,
+   * several times a second, which is what "dragging feels heavy" was.
+   *
+   * The document's own `minW`/`minH` still win inside the card: an author who
+   * wrote one meant it.
+   */
+  function floorOf(card) {
+    return needsFor(card, results.forCard(card));
+  }
+
+  const named = (id) => workspace.cards.find((card) => card.id === id)?.title ?? id;
+
+  const problems = $derived([
+    // First: until the program parses, nothing else here is worth reading, and
+    // every name is unresolved for the same one reason.
+    ...(workspace.issues.compile
+      ? [
+          workspace.issues.compile.line
+            ? `line ${workspace.issues.compile.line}: ${workspace.issues.compile.message}`
+            : workspace.issues.compile.message,
+        ]
+      : []),
+    ...(workspace.issues.cycle.length
+      ? [`${workspace.issues.cycle.map(named).join(" → ")} need each other`]
+      : []),
+    ...Object.entries(workspace.issues.duplicates).map(
+      ([name, ids]) => `“${name}” is defined by ${ids.map(named).join(" and ")}`,
+    ),
+    // Said in card names, like the rest: "big overlaps one" means nothing to
+    // somebody who never sees an id.
+    ...(workspace.issues.overlaps ?? []).map(
+      ([first, second]) => `${named(first)} and ${named(second)} are on the same cells`,
+    ),
+  ]);
+
+  /** Cut, copy and paste for cards, through the system clipboard.
+   *
+   * What travels is .imgql text -- the file's own format -- so a copied card
+   * can be pasted into a mail, an editor or another workspace and still be the
+   * thing it was. The clipboard is asked first; a browser that refuses (no
+   * permission, no secure context) falls back to a buffer in this tab, which is
+   * worse only in that it does not leave the page.
+   */
+  let fallbackClipboard = $state("");
+
+  async function putOnClipboard(text) {
+    fallbackClipboard = text;
     try {
-      const [caps, version] = await Promise.all([getCapabilities(), getVersion()]);
-      capabilities = caps || {};
-      buildStamp = `v${version.version || "unknown"}`;
+      await navigator.clipboard?.writeText(text);
     } catch {
-      buildStamp = "version unavailable";
+      /* refused; the in-page buffer is what we have */
     }
+  }
 
-    if (import.meta.env.PROD) {
-      connectLiveReload();
+  async function takeFromClipboard() {
+    try {
+      const text = await navigator.clipboard?.readText();
+      if (text) return text;
+    } catch {
+      /* refused, or nothing there */
     }
+    return fallbackClipboard;
+  }
 
-    publishAutomationBridge();
+  async function copyCards({ cut } = {}) {
+    const ids = workspace.view.selection;
+    if (!ids.length) return;
+    const outcome = cut ? await board.cutCards(ids) : await board.copyCards(ids);
+    if (outcome.ok && outcome.result) await putOnClipboard(outcome.result);
+    if (cut) view.select([]);
+  }
+
+  async function pasteCards() {
+    const text = await takeFromClipboard();
+    if (!text.trim()) return;
+    const outcome = await board.pasteCards(text, { page: workspace.view.page });
+    if (outcome.ok && Array.isArray(outcome.result)) view.select(outcome.result);
+  }
+
+  /** The selection as .imgql, kept ready for a drag that has not started yet.
+   *
+   * A DataTransfer can only be filled inside `dragstart`, and by then there is
+   * no time to ask the server anything. So the text is fetched when the
+   * selection changes -- through `board.copyCards`, the same action the
+   * clipboard uses, so a dragged card and a copied card are the same bytes by
+   * construction rather than by two implementations agreeing. Reading is not an
+   * edit: `copyCards` changes nothing and costs one message.
+   */
+  let cardsText = $state(null);
+
+  $effect(() => {
+    const ids = [...workspace.view.selection];
+    if (!ids.length) {
+      cardsText = null;
+      return;
+    }
+    let current = true;
+    board.copyCards(ids).then((outcome) => {
+      // A selection that changed while we were asking is not this one.
+      if (current && outcome.ok && outcome.result) cardsText = { ids, text: outcome.result };
+    });
+    return () => (current = false);
   });
 
-  onDestroy(() => {
-    removeAutomationBridge();
-  });
+  /** Cards dropped on a row of the sidebar: they go into that file.
+   *
+   * Moving is cutting and pasting, in that order, and for the same reason it is
+   * in that order at the clipboard: the text the target receives has to be the
+   * text the board actually gave up. Alt copies instead, so the cards stay.
+   */
+  async function dropCardsInLibrary(target, payload) {
+    let text = payload.text;
+    // A drag can now begin before the selection's text has come back, so a copy
+    // may arrive without one. Asking for it here costs one message and is the
+    // same text a paste would have produced.
+    if (payload.copy && !text && payload.ids.length) {
+      const copied = await board.copyCards(payload.ids);
+      if (!copied.ok || !copied.result) return;
+      text = copied.result;
+    }
+    if (!payload.copy && payload.ids.length) {
+      const cut = await board.cutCards(payload.ids);
+      if (!cut.ok || !cut.result) return;
+      text = cut.result;
+    }
+    let path = target.path;
+    if (!path) {
+      // A project is a folder, so cards dropped on one need a file to be in.
+      // Making it is the only thing that could have been meant, and it is the
+      // same file `+` would have made.
+      const made = await libraryActions.newFile(target.project ?? undefined);
+      if (!made.ok || !made.result) return;
+      path = made.result;
+    }
+    await libraryActions.pasteCards(path, text);
+  }
+
+  /** A new project needs a name before it is a folder. Numbered rather than
+   * asked for: naming a thing before making it is the dialogue this UI does not
+   * have, and the name is one double-click away in the sidebar. */
+  function newProjectName() {
+    const taken = new Set(workspace.library.projects.map((project) => project.name));
+    for (let n = 1; ; n += 1) {
+      const name = n === 1 ? "Project" : `Project ${n}`;
+      if (!taken.has(name)) return name;
+    }
+  }
+
+  /** The card being edited, or "document" for the file itself. Editing is a
+   * property of the shell rather than of a card: only one thing at a time has
+   * the keyboard, and that is easier to be sure of from one place. */
+  let editing = $state(null);
+
+  function commitCard(id, text) {
+    editing = null;
+    const card = workspace.cards.find((entry) => entry.id === id);
+    if (card && text !== (card.source ?? "")) cardActions.setSource(id, text);
+  }
+
+  /** Undo and redo belong to the workspace rather than to the board: the board
+   * should not have to know that a document exists, let alone that it has a
+   * file. Tab and the help sheet are the shell's too. */
+  function onKeydown(event) {
+    const target = event.target;
+    const typing =
+      target instanceof HTMLElement &&
+      (target.isContentEditable || ["INPUT", "TEXTAREA"].includes(target.tagName));
+    if (typing) return;
+
+    if (editing !== null) return; // the viewer has the keyboard
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
+      // The chord every editor uses for this.
+      event.preventDefault();
+      sidebar = !sidebar;
+      return;
+    }
+    if (event.key === "Enter" && showing === "document") {
+      event.preventDefault();
+      editing = "document";
+      return;
+    }
+    if (event.key === "Tab") {
+      event.preventDefault();
+      view.show(showing === "board" ? "document" : "board");
+      return;
+    }
+    if (helping && event.key === "Escape") {
+      helping = false;
+      return;
+    }
+    if (!(event.metaKey || event.ctrlKey)) return;
+    const key = event.key.toLowerCase();
+    if (key === "z") {
+      event.preventDefault();
+      if (event.shiftKey) workspaceActions.redo();
+      else workspaceActions.undo();
+    } else if (key === "c" && workspace.view.selection.length) {
+      event.preventDefault();
+      copyCards();
+    } else if (key === "x" && workspace.view.selection.length) {
+      event.preventDefault();
+      copyCards({ cut: true });
+    } else if (key === "v") {
+      event.preventDefault();
+      pasteCards();
+    } else if (key === "l") {
+      // mod+L, never a bare letter: the letters belong to whoever is typing
+      // into a card, and that rule has no exceptions.
+      event.preventDefault();
+      if (event.shiftKey) cycleCardLens();
+      else cycleLens();
+    }
+  }
+
+  /** What the current selection in an editor is, once the server has said.
+   *
+   * Debounced, because a selection changes as fast as a pointer moves and each
+   * answer costs the reducer a compile. The reply carries the state as well as
+   * the hash, so highlighting three words answers "is this already computed?"
+   * in one round trip rather than two.
+   */
+  let probe = $state(null);
+  let probeTimer = null;
+
+  function probeSelection(selection) {
+    clearTimeout(probeTimer);
+    const text = (selection?.text ?? "").trim();
+    if (!text) {
+      probe = null;
+      return;
+    }
+    probeTimer = setTimeout(async () => {
+      const outcome = await resultsActions.hashOf(text);
+      // A selection that moved on while we were asking is not this one.
+      if (outcome.ok) probe = outcome.result ? { text, ...outcome.result } : null;
+    }, 220);
+  }
+
+  /** What a card shows. Named as the thing it does, in words.
+   *
+   * It was three glyphs and a tooltip about "how close you stand", which is a
+   * metaphor the person using this has no reason to hold: a control whose
+   * meaning arrives only on hover is a control nobody uses on purpose. */
+  const LENSES = ["source", "both", "value"];
+  const LENS_WORD = { source: "code", both: "code + value", value: "value" };
+
+  function cycleLens() {
+    const at = LENSES.indexOf(workspace.view.lens);
+    view.setLens(LENSES[(at + 1) % LENSES.length]);
+  }
+
+  /** The selected card's own answer, cycled -- including back to "follow the
+   * board", because an override with no way back is a decision you cannot undo
+   * by the same means you made it.
+   *
+   * One chord for four choices rather than four chords: they are positions in
+   * one setting, and a keyboard that needed a key per position would be
+   * teaching the wrong shape. */
+  const CARD_LENSES = ["", ...LENSES];
+
+  function cycleCardLens() {
+    for (const id of workspace.view.selection) {
+      const card = workspace.cards.find((entry) => entry.id === id);
+      const at = CARD_LENSES.indexOf(card?.view ?? "");
+      cardActions.setViewMode(id, CARD_LENSES[(at + 1) % CARD_LENSES.length]);
+    }
+  }
+
+  /** How far back to stand from this card.
+   *
+   * The card's own answer if it has one, the board's otherwise. Board-wide by
+   * default because twenty cards each sitting in a mode somebody set once is a
+   * board you cannot read at a glance; overridable because a volume wants
+   * `value` while the code beside it wants `source`, and forcing one answer on
+   * both would make the lens useless. */
+  function lensFor(card) {
+    return card.view || workspace.view.lens || "both";
+  }
+
+  /** The cards with something queued or computing right now.
+   *
+   * Derived, never assigned: a card is running because one of the nodes it is
+   * about is, and that is a fact about the results store rather than a flag
+   * somebody has to remember to clear. Press Run on B and A lights up too --
+   * nothing arranges that, B's dependencies simply *are* A's bindings, and both
+   * resolve to the same hashes.
+   */
+  const running = $derived(
+    workspace.cards
+      .filter((card) =>
+        nodesOf(card).some((node) => {
+          const state = results.get(results.hashFor(node)).state;
+          return state === "pending" || state === "computing";
+        }),
+      )
+      .map((card) => card.id),
+  );
+
+  /** Every name a card is about: what it declares, plus what it is bound to. */
+  function nodesOf(card) {
+    const names = card.kind === "code" ? bindingsIn(card.source) : [];
+    return card.node ? [...names, card.node] : names;
+  }
+
+  /** The bindings a program card declares, in order.
+   *
+   * The provisional way to find what a card produces: `let <name> =`. When the
+   * engine can tell us a card's nodes this reads them from there instead, and
+   * the card menu does not change. */
+  function bindingsIn(source) {
+    return [...(source ?? "").matchAll(/^\s*let\s+([A-Za-z_][A-Za-z0-9_]*)/gm)].map(
+      (match) => match[1],
+    );
+  }
+
+  /** A card that shows something another card computes.
+   *
+   * It records where it came from, so renaming or moving the source changes
+   * nothing: the reference is the id, and the id is not the name. */
+  function derive(id, spot) {
+    const source = workspace.cards.find((entry) => entry.id === id);
+    if (!source || !spot) return;
+    const node = bindingsIn(source.source).at(-1);
+    board.deriveCard(id, nextId(), {
+      kind: "result",
+      node,
+      title: node ? `${node}` : titleFor("result"),
+      ...spot,
+      page: spot.page ?? source.page,
+    });
+  }
+
+  /** A copy of a card, where the board says there is room for one. */
+  function duplicate(id, spot) {
+    const source = workspace.cards.find((entry) => entry.id === id);
+    if (!source || !spot) return;
+    board.duplicateCard(id, nextId(), { ...spot, page: spot.page ?? source.page });
+  }
 </script>
 
-<div class="background-layer"></div>
-<svelte:window on:keydown={handleWindowKeyDown} />
-<div class="shell">
-  <header class="topbar">
-    <div class="topbar-left">
-      <button
-        class={`btn btn-ghost btn-small topbar-hamburger ${tabsMenuOpen ? "is-open" : ""}`.trim()}
-        type="button"
-        aria-controls="main-pages-drawer"
-        aria-expanded={tabsMenuOpen}
-        aria-label="Toggle navigation menu"
-        on:click={toggleTabsMenu}
-      >
-        <span class="topbar-hamburger-icon" aria-hidden="true">
-          <span></span>
-          <span></span>
-          <span></span>
-        </span>
-        <span class="topbar-hamburger-label">Menu</span>
-      </button>
-      <div class="topbar-title">
-        <h1>VoxLogicA</h1>
+<svelte:window onkeydown={onKeydown} />
+
+<main data-interaction={INTERACTION}>
+  {#if app.buildError}
+    <BuildError error={app.buildError} />
+  {/if}
+
+  <div class="workbench">
+    {#if sidebar}
+      <div class="rail" style="width: {sidebarWidth}px">
+        <Library
+      library={workspace.library}
+      onopen={(path) => libraryActions.open(path)}
+      onnewfile={(project) => libraryActions.newFile(project ?? undefined)}
+      onnewproject={() => libraryActions.newProject(newProjectName())}
+      onmove={(path, project) => libraryActions.moveFile(path, project)}
+      onrenamefile={(path, name) => libraryActions.renameFile(path, name)}
+      onrenameproject={(name, to) => libraryActions.renameProject(name, to)}
+      onaddfolder={() => libraryActions.addFolder()}
+      onforgetfolder={(path) => libraryActions.forgetFolder(path)}
+      onreveal={(path) => libraryActions.reveal(path)}
+          ondelete={(path) => libraryActions.deleteFile(path)}
+          ondeleteproject={(name) => libraryActions.deleteProject(name)}
+          oncopy={(path, project) => libraryActions.copyFile(path, project)}
+          onaddlabel={(path, label) => libraryActions.addLabel(path, label)}
+          onremovelabel={(path, label) => libraryActions.removeLabel(path, label)}
+          onpastecards={dropCardsInLibrary}
+        />
+        <!-- The handle is the edge itself, which is where everyone reaches for
+             it. Dragging sets a width; double-clicking puts it back. -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <div
+          class="grip"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the sidebar"
+          tabindex="0"
+          onpointerdown={startResize}
+          onpointermove={resize}
+          onpointerup={endResize}
+          onpointercancel={endResize}
+          ondblclick={() => (sidebarWidth = DEFAULT_SIDEBAR)}
+          onkeydown={(event) => {
+            const step = { ArrowLeft: -16, ArrowRight: 16 }[event.key];
+            if (!step) return;
+            event.preventDefault();
+            sidebarWidth = clampWidth(sidebarWidth + step);
+          }}
+        ></div>
       </div>
-    </div>
-    <div class="topbar-meta">
-      <span id="buildStamp" class="chip">{buildStamp}</span>
-    </div>
-  </header>
+    {/if}
 
-  <button
-    type="button"
-    class={`app-drawer-backdrop ${tabsMenuOpen ? "is-open" : ""}`.trim()}
-    aria-label="Close navigation menu"
-    on:click={closeTabsMenu}
-  ></button>
-  <aside id="main-pages-drawer" class={`app-drawer ${tabsMenuOpen ? "is-open" : ""}`.trim()} aria-hidden={!tabsMenuOpen}>
-    <div class="app-drawer-head">
-      <h2>Pages</h2>
-      <button class="btn btn-ghost btn-small" type="button" aria-label="Close menu" on:click={closeTabsMenu}>Close</button>
+    <div class="pane">
+
+  {#if !workspace.loaded}
+    <p class="pending">Connecting…</p>
+  {:else if !workspace.path}
+    <!-- Nothing open, and nothing invented. The application used to create a
+         file named after the minute at every launch, so a week of opening it
+         left a week of empty documents. An empty state that offers is better
+         than a file nobody asked for. -->
+    <section class="welcome">
+      <h1>VoxLogicA</h1>
+      <p>Nothing is open. Start something, or pick a file from the list.</p>
+      <Button onclick={() => libraryActions.newFile()}>New program</Button>
+    </section>
+  {:else if showing === "document"}
+    <!-- The file itself, read-only for now: seeing what the board is means
+         seeing the program it writes, in the form it writes it. -->
+    <section class="document" aria-label="Document">
+      <!-- The same viewer a code card gets, on the whole file. Editing here and
+           editing a card are the same edit written the same way, because the
+           layout lives in the file's own comments. -->
+      <!-- The same surface a code card gets, on the whole file: one
+           highlighter, two places to look at it from. -->
+      <SourceEditor
+        value={workspace.source}
+        bindings={workspace.nodes}
+        stateOf={(hash) => results.get(hash).state}
+        onselect={probeSelection}
+        editing={editing === "document"}
+        oncommit={(text) => {
+          editing = null;
+          if (text !== workspace.source) workspaceActions.setText(text);
+        }}
+        oncancel={() => (editing = null)}
+      />
+    </section>
+  {:else}
+    <Bento
+      cards={workspace.cards}
+      cols={workspace.board.cols}
+      rows={workspace.board.rows}
+      page={workspace.view.page}
+      zoom={workspace.view.zoom}
+      label="Workspace"
+      focus={workspace.view.focus}
+      onarrange={(placements) => board.arrange(placements)}
+      onpage={(page) => view.goToPage(page)}
+      onfocus={(id) => view.focus(id)}
+      onzoom={(zoom) => view.setZoom(zoom)}
+      onhelp={() => (helping = true)}
+      oncopycards={() => copyCards()}
+      oncutcards={() => copyCards({ cut: true })}
+      onpastecards={() => pasteCards()}
+      onmeasured={(id, w, h) => board.measured(id, w, h)}
+      onrun={(id) => cardActions.run(id)}
+      onlens={(id, lens) => cardActions.setViewMode(id, lens)}
+      onsavethis={(id) => cardActions.saveThis(id)}
+      onprintthis={(id) => cardActions.printThis(id)}
+      onfocusbinding={(id, name) => cardActions.setFocus(id, name)}
+      bindingsOf={(card) => (card.kind === "code" ? bindingsIn(card.source) : [])}
+      {floorOf}
+      {running}
+      onactivate={(id) => (editing = id)}
+      onsendtopage={(id, page) => board.setPage(id, page)}
+      onadd={(kind, x, y, w, h) =>
+        board.addCard(nextId(), {
+          kind,
+          title: titleFor(kind),
+          x,
+          y,
+          w,
+          h,
+          page: workspace.view.page,
+        })}
+      onremove={(id) => board.removeCard(id)}
+      onduplicate={duplicate}
+      onderive={derive}
+      onmerge={(card, ids) => {
+        // Dropped onto a card: what each one drew becomes a layer of this one,
+        // and it stops existing -- it became a row. Itself excluded, because a
+        // card cannot be laid on top of itself.
+        for (const id of ids) if (id !== card.id) cardActions.mergeCard(card.id, id);
+      }}
+      onselect={(ids) => view.select(ids)}
+      selection={workspace.view.selection}
+      {cardsText}
+      onrename={(id, title) => cardActions.setTitle(id, title)}
+    >
+      {#snippet children(card)}
+        {@const stack = stackFor(card)}
+        {@const result = stack ? stack.lead : results.forCard(card)}
+        {@const viewer = viewerFor(card, result)}
+        {#if viewer.result && !card.node}
+          <!-- A print or save whose expression is not a bare name has nothing to
+               resolve to a hash yet; it says what it is a view of instead. -->
+          <p class="pending">{card.expression ?? "Not bound to a node yet."}</p>
+        {:else if viewer.result}
+          <!-- Subscribed for as long as it is on screen, and only that long:
+               the server pushes updates for hashes somebody is looking at. A
+               stack subscribes per layer, because that is what it watches. -->
+          {@const drawing =
+            viewer.bytes
+              ? stack
+                ? stack.layers.filter((layer) => layer.url)
+                : drawable(result)
+              : null}
+          {#if stack}
+            {#each card.parts as part (part)}
+              <ResultSubscription node={part} />
+            {/each}
+          {:else}
+            <ResultSubscription node={card.node} />
+          {/if}
+          <!-- One shape for every result card, because the navigation belongs to
+               the *card* and not to the picture. Gated on there being something
+               drawn, chevrons appeared only on a stack that had already been
+               computed -- so the board opened with no way to walk to the case
+               you wanted to compute, which is the one thing a selector is for. -->
+          {@const walk = card.index ? walkOf(card) : null}
+          <div class="stacked">
+            <div class="over">
+              {#if drawing}
+                <viewer.component layers={drawing} />
+              {:else}
+                <!-- What the author wrote, not the reducer's spelling of it. -->
+                <viewer.component {result} node={card.written ?? card.node ?? ""} />
+              {/if}
+              {#if walk && drawing}
+                <!-- Over a picture: floating, taking no room from it. -->
+                <Walk {card} length={walk.length} at={walk.at} />
+              {/if}
+            </div>
+            {#if walk}
+              <ResultSubscription node={card.over} />
+            {/if}
+            {#if walk && !drawing}
+              <!-- Over anything else: a line of its own, *in the flow*. Absolute
+                   and out of the way was the first attempt and it still landed on
+                   the value on a card three cells tall -- measured. In the flow it
+                   cannot collide, because the content box is that much shorter. -->
+              <Walk {card} length={walk.length} at={walk.at} floating={false} />
+            {/if}
+            <!-- The rows are the cards that were dropped in, so they belong to
+                 the card rather than to the viewer, which knows only layers. -->
+            {#if stack && stack.layers.length > 1}
+              <Layers
+                {card}
+                layers={stack.layers}
+                onlive={(at, opacity) => (live[`${card.id}:${at}`] = opacity)}
+              />
+            {/if}
+          </div>
+        {:else if viewer.source}
+          {@const lens = lensFor(card)}
+          <!-- One movement, three distances. The program and its values are the
+               same object seen from further back or closer in, so `both` is the
+               middle rather than a third mode: at either end nothing is hidden
+               that the other end would have shown for free. -->
+          <div class="lensed" data-lens={lens}>
+            {#if lens !== "value"}
+              <viewer.component
+                value={card.source ?? ""}
+                bindings={workspace.nodes}
+                stateOf={(hash) => results.get(hash).state}
+                editing={editing === card.id}
+                onselect={probeSelection}
+                oncommit={(text) => commitCard(card.id, text)}
+                oncancel={() => (editing = null)}
+              />
+            {/if}
+            {#if lens !== "source" && card.focus}
+              {@const hash = results.hashFor(card.focus)}
+              {@const shown = results.get(hash)}
+              {@const how = viewerFor(card, shown)}
+              {@const drawing = how.bytes ? drawable(shown) : null}
+              <ResultSubscription node={card.focus} />
+              <div class="value" class:only={lens === "value"}>
+                {#if drawing}
+                  <!-- The bytes themselves, and only once the node is done:
+                       the URL is the hash, so it is immutable and cacheable. -->
+                  <how.component layers={drawing} />
+                {:else}
+                  <ResultState result={shown} node={card.focus} />
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {:else}
+          <viewer.component
+            value={card.source ?? ""}
+            mono={viewer.mono}
+            editing={editing === card.id && viewer.editable}
+            oncommit={(text) => commitCard(card.id, text)}
+            oncancel={() => (editing = null)}
+          />
+        {/if}
+      {/snippet}
+    </Bento>
+  {/if}
+
     </div>
-    <nav class="app-drawer-nav" aria-label="Main pages">
-      {#each tabs as tab}
-        <button class={`app-drawer-item ${activeTab === tab.id ? "active" : ""}`.trim()} type="button" on:click={() => selectTab(tab.id)}>
-          {tab.label}
-        </button>
+  </div>
+
+  {#if problems.length}
+    <!-- Facts, not errors, and not a dialogue: somebody halfway through an edit
+         has a duplicate name for a few seconds. What they want is to be told
+         which cards, not to be interrupted. -->
+    <p class="problems" role="status">
+      {#each problems as problem, index (problem)}
+        {index > 0 ? " · " : ""}{problem}
       {/each}
-    </nav>
-  </aside>
+      {#if workspace.issues.overlaps?.length}
+        <!-- The one problem the board can fix by itself, so it offers to. A
+             fact with nothing to do about it is a fact that gets ignored. -->
+        <Button tone="quiet" size="sm" onclick={() => board.untangle()}>
+          Move them apart
+        </Button>
+      {/if}
+    </p>
+  {/if}
 
-  <main class="content">
-    <StartTab bind:this={startTabRef} active={activeTab === "start"} {capabilities} />
-    <ComputeLogTab active={activeTab === "compute-log"} />
-    <StartTechnicalTab active={activeTab === "start-tech"} {capabilities} />
-    <DreamTab active={activeTab === "dream"} />
-    <GraphTab active={activeTab === "graph"} />
-    <PlaygroundTab active={activeTab === "playground"} {capabilities} />
-    <ResultsTab active={activeTab === "results"} {capabilities} />
-    <GalleryTab active={activeTab === "gallery"} on:load={onGalleryLoad} />
-    <QualityTab active={activeTab === "quality"} {capabilities} />
-  </main>
-</div>
+  <footer>
+    <Button
+      tone="quiet"
+      size="sm"
+      title={sidebar ? "Hide the file list (⌘B)" : "Show the file list (⌘B)"}
+      onclick={() => (sidebar = !sidebar)}
+    >
+      {sidebar ? "◧" : "▢"}
+    </Button>
+    <!-- Naming belongs to the sidebar now: a file has its name there and a
+         project has its own. What is left here is the pair of things the list
+         cannot say -- where this file is on disk, and how to take it out of the
+         library and into a repository. -->
+    <Button tone="quiet" size="sm" onclick={() => workspaceActions.reveal()} title="Show in folder">
+      ⤢
+    </Button>
+    <Button
+      tone="quiet"
+      size="sm"
+      onclick={() => workspaceActions.chooseLocation()}
+      title="Move this file out of the library"
+    >
+      Move…
+    </Button>
+    <!-- One control for the whole board, because the lens is a place to stand
+         and not a per-card preference. A card that wants otherwise says so
+         itself, and then stops following this. -->
+    <Button
+      tone="quiet"
+      size="sm"
+      onclick={cycleLens}
+      title="What every card shows — click for the next one (⌘L)"
+    >
+      all cards: {LENS_WORD[workspace.view.lens] ?? "code + value"}
+    </Button>
+    {#if probe}
+      <!-- The editor as a probe into the store: what you highlighted, and
+           whether this system has worked it out before. Said quietly, in the
+           footer, because it answers a question you asked with a gesture. -->
+      <span class="probe" title={probe.hash}>
+        <code>{probe.text.length > 28 ? probe.text.slice(0, 28) + "…" : probe.text}</code>
+        {probe.state === "done" ? "computed" : probe.state}
+      </span>
+    {/if}
+    <!-- What Tab does, said as what it does. "board · tab" was a label only
+         somebody who already knew could read, and it was being covered by the
+         dev button besides. -->
+    <Button
+      tone="quiet"
+      size="sm"
+      onclick={() => view.show(showing === "board" ? "document" : "board")}
+      title="Tab"
+    >
+      {showing === "document" ? "showing the file" : "showing the cards"}
+    </Button>
+    {#if workspace.readOnly}
+      <!-- There is no Save in this application: the file is the document and it
+           is written shortly after you stop typing. So "read-only" is not a
+           mode somebody chose -- it is the one thing that has to be said out
+           loud, or an example would look like it took your edit and then lose
+           it the next time you opened it. -->
+      <span class="readonly" title="Ships with VoxLogicA. Copy it out to edit it.">
+        read-only
+      </span>
+    {/if}
+    <span class="spacer"></span>
+    <Button tone="quiet" size="sm" onclick={() => (helping = true)} title="Shortcuts (?)">
+      ?
+    </Button>
+  </footer>
+</main>
+
+{#if helping}
+  <Help shortcuts={SHORTCUTS} onclose={() => (helping = false)} />
+{/if}
+
+<style>
+  main {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    /* The board is the application: it gets the window, less its own margin and
+     * whatever the pager needs. `dvh` and not `vh` so a mobile browser's
+     * disappearing toolbar does not leave a strip of board underneath it. */
+    height: 100dvh;
+    padding: var(--space-3);
+  }
+
+  .probe {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-1);
+    min-width: 0;
+    color: var(--color-text-muted);
+    font-size: var(--text-2xs);
+    white-space: nowrap;
+  }
+
+  .probe code {
+    overflow: hidden;
+    max-width: 16ch;
+    color: var(--color-text);
+    font-family: var(--font-mono);
+    text-overflow: ellipsis;
+  }
+
+  /* The whole pane, because there is nothing else in it -- and centred, because
+     a first screen with one thing on it should put that thing where the eye
+     already is. */
+  .welcome {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    text-align: center;
+  }
+
+  .welcome h1 {
+    margin: 0;
+    font-size: var(--text-2xl);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--tracking-tight, normal);
+  }
+
+  .welcome p {
+    margin: 0;
+    max-width: 34ch;
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+  }
+
+  .pending {
+    color: var(--color-text-subtle);
+    font-size: var(--text-sm);
+  }
+
+  /* The two surfaces stacked, with the program taking whatever the value does
+     not. At `source` there is one child and at `value` there is one child, so
+     the same rule draws all three distances without a branch per lens. */
+  /* Picture above, rows below. The viewer takes what is left rather than what
+   * it wants: a stack of three rows must not push the volume out of the card. */
+  .stacked {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .stacked :global(.volume) {
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* The picture, and the means of walking it, in the same box: the navigation
+   * floats on the value rather than taking room from it. */
+  .over {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+
+  .over :global(.volume) {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .lensed {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    width: 100%;
+    /* `min-height`, not `height`: the card's content area is a plain block with
+       no definite height of its own, so a percentage *height* here resolves
+       against nothing and collapses -- taking both surfaces with it. Asking to
+       be at least as tall works whether the parent is definite or not. */
+    min-height: 100%;
+  }
+
+  /* The value never takes more than half of a card it is sharing: a program you
+     can no longer read is a program you cannot fix, and the value is the thing
+     you can always get more of by standing further back. */
+  .value {
+    flex: none;
+    max-height: 50%;
+    min-height: 0;
+    overflow: auto;
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--color-border);
+  }
+
+  /* Alone, it is the card. */
+  .value.only {
+    flex: 1;
+    max-height: none;
+    padding-top: 0;
+    border-top: none;
+  }
+
+  .problems {
+    flex: none;
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    background: var(--color-danger-subtle);
+    font-size: var(--text-2xs);
+    color: var(--color-text);
+  }
+
+  /* The sidebar and the one file that is open. There is no third thing here,
+   * which is the point: no tab strip, no breadcrumb, no second list. */
+  .workbench {
+    display: flex;
+    gap: var(--space-3);
+    flex: 1;
+    min-height: 0;
+  }
+
+  .rail {
+    display: flex;
+    flex: none;
+    min-height: 0;
+  }
+
+  .grip {
+    flex: none;
+    width: var(--space-2);
+    margin-left: var(--space-1);
+    cursor: col-resize;
+    touch-action: none;
+    border-radius: var(--radius-full);
+  }
+
+  .grip:hover,
+  .grip:focus-visible {
+    background: var(--color-border);
+    outline: none;
+  }
+
+  .pane {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .document {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: var(--space-4);
+    background: var(--color-surface);
+    border-radius: var(--radius-lg);
+  }
+
+  /* One line at the foot of the window: where you are, and the way to the list
+   * of everything you can do. */
+  footer {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    font-size: var(--text-2xs);
+    color: var(--color-text-subtle);
+  }
+
+  /* Pushes whatever follows to the far end, without being a thing itself.
+     `margin-left: auto` on a label meant the label had to exist to do it, and
+     it was the label that had nothing useful to say. */
+  .readonly {
+    padding: 0 var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    line-height: 1.8;
+  }
+
+  .spacer {
+    flex: 1;
+  }
+
+  /* Nothing in the footer may be squeezed into ellipsis by its neighbours: a
+     control whose name is cut in half is a control nobody can learn. */
+  footer :global(button) {
+    flex: none;
+    white-space: nowrap;
+  }
+
+
+</style>

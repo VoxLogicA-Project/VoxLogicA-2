@@ -22,4 +22,20 @@ else
 fi
 
 export PYTHONPATH="$SCRIPT_DIR/implementation/python"
+
+# The engine requires a free-threaded (no-GIL) interpreter. SimpleITK and numba
+# both re-enable the GIL at import unless PYTHON_GIL=0 overrides them, and that
+# variable is read at interpreter startup -- so it MUST be exported here, before
+# exec; setting it from Python is too late. Detected, not hardcoded, so a venv
+# rebuilt onto a GIL build fails loudly instead of silently running serialized.
+# See doc/dev/gil-free-default-plan.md.
+if "$VENV_PY" -c 'import sysconfig,sys; sys.exit(0 if sysconfig.get_config_var("Py_GIL_DISABLED") else 1)'; then
+  export PYTHON_GIL=0
+else
+  echo "ERROR: $VENV_PY is not a free-threaded build." >&2
+  echo "  VoxLogicA requires free-threaded CPython (cp314t); see doc/dev/gil-free-default-plan.md." >&2
+  echo "  Remove .venv and re-run to let bootstrap.py rebuild it from .python-version." >&2
+  exit 1
+fi
+
 exec "$VENV_PY" -m voxlogica.main "$@"

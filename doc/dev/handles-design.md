@@ -1,0 +1,805 @@
+# Every reference is a handle
+
+Design for VoxLogicA-2 issue #52. Branch `handles`.
+
+## 1. Why
+
+A 309-case nnU-Net training was OOM-killed after six hours (#51). The engine had
+held **51.4 GB unreleasable since second 30**, at pressure above its own hard
+ceiling, with one node in flight and nothing it could evict.
+
+`for g in train do triple(g)` expands into 309 independent nodes; a
+`default.sequence` node then gathers them into one Python list. Building that
+list requires all 309 volumes resident at the same instant, and the list is then
+the argument of a kernel that runs for ten hours.
+
+Two facts make this a design defect rather than a large workload:
+
+- The volumes came from 2.7 GB of `.nii.gz` and were written back as 3.0 GB of
+  `.nii.gz`. The 51.4 GB in the middle is a decompression nothing needed.
+- `default.sequence`'s kernel is `[value for _index, value in ordered]`. It never
+  looks at a volume. It was handed 51 GB in order to build a list.
+
+The cause is one line, `engine/executor.py:252`:
+
+```python
+args = [_unwrap(lookup(arg_id)) for arg_id in node.args]
+```
+
+Every argument of every kernel is resolved to a value before the kernel runs.
+
+## 2. The change, in one sentence
+
+**A node's arguments are its inputs' merkle hashes; operators that want values
+get them through an adapter that does exactly what happens today, and operators
+that do not want values keep the hashes.**
+
+## 3. Representation
+
+```python
+@dataclass(frozen=True, slots=True)
+class Handle:
+    node: NodeId
+```
+
+A handle is a tagged merkle hash and nothing else. It carries no resolver, no
+table reference, no cached value. It is therefore:
+
+- **a value**: serializable, content-addressable, safe to put inside another
+  value and persist;
+- **process-independent**: the same handle means the same thing in a later run;
+- **distinguishable**: the tag is what separates a list of hashes from a list of
+  strings, which a bare `NodeId` could not.
+
+Resolution is not a method on `Handle`. Resolution is what the cache hierarchy
+already does for `table.values` misses: live tier, then store, then recompute.
+
+## 4. Three argument modes, and one orthogonal axis
+
+### Eager — the default, and unchanged
+
+An operator that declares nothing is eager. The adapter is the line that already
+exists, with one addition: it resolves **into containers**, because a lazy
+producer upstream may have put handles inside a value.
+
+```python
+args = [_resolve_deep(lookup(arg_id)) for arg_id in node.args]
+```
+
+For every operator that exists today, `_resolve_deep` on a value containing no
+handles is an identity walk. No operator changes. No behaviour changes.
+
+### Lazy — receives handles
+
+A lazy operator receives `Handle` objects. It may inspect them, count them,
+reorder them, put them in its output, or drop them. **It may not resolve them.**
+`default.sequence` returns `[h0 … hN]` and touches nothing.
+
+There is no `resolve(handle)` call available to a kernel, by design. A kernel
+that blocks to materialize a value would put a wait inside kernel code and make
+the DAG stop being the only witness of what depends on what.
+
+### Shallow — receives the container, not its contents
+
+CORRECTION, found by building it. The first draft of this section said `index(s,
+i)` would be `lazy` and "resolves `i` -- an eager argument". That is incoherent:
+under the rule above a lazy kernel resolves nothing, so it could not read `i`,
+and it could not read the list either.
+
+What `index` actually needs is a third mode: **the value, with the handles inside
+it left alone.** It then subscripts a list of hashes and returns one hash. Deep
+resolution would materialize all N elements to hand back one, which is issue #51
+in miniature.
+
+The mode resolves the argument ITSELF, repeatedly, and stops there: with nested
+indexing the inner `index` returns a handle, so the outer one is handed a handle
+where a container belongs. Measured as `'Handle' object is not subscriptable`.
+
+`index`, `subsequence` and `slice` are shallow. `subsequence` already had this
+hand-written inside `executor._compute_node` (:246-251); declaring the mode says
+it once, for every operator that needs it.
+
+### Rewrite — an axis, not a third kind of laziness
+
+CORRECTION, found by building it. The first draft made "rewrite into nodes" the
+second shape of *lazy*. It is not: the two are independent.
+
+- `default.sequence` is **lazy and never rewrites**.
+- `for_loop` and `map` **rewrite and are not lazy** -- they never see a handle.
+
+So `rewrite` is its own declaration, alongside the argument mode:
+
+```python
+lazy    = True   # arguments arrive as handles
+shallow = True   # arguments arrive as values, contents untouched
+rewrite = True   # evaluating this GROWS THE GRAPH; it has no value of its own
+```
+
+And it is not "these operators have no kernel". `for_loop` HAS one
+(`primitives/default/for_loop.py`), whose docstring says whose it is: *"The
+strict runtime reconstructs that closure and passes it into this kernel."* The
+engine never builds that closure, because the engine expands instead. What these
+operators need is **special treatment**, and the defect this design ran into is
+that the treatment was decided in one place while evaluation has two paths:
+dispatch knows to expand, and `_rematerialize` -- the miss path -- calls the
+kernel and dies on a closure argument that is `None`.
+
+Two roads to evaluate a node, one of which forgot a case. The same shape as the
+`_materialize` boundary in section 6: a second consumer nobody adapted.
+
+The fix is therefore not a guard inside `_rematerialize` but **one place that
+decides how a node is evaluated**, asked by both roads. `_EXPANDABLE` and
+`_SEQUENCE_OPERATORS` stop being private name lists and become queries over the
+spec, which is also what makes a NEW graph-growing operator work everywhere by
+writing one word.
+
+That in turn makes `_recomputable` principled instead of enumerated: **a node is
+kernel-recomputable exactly when evaluating it does not change the graph.**
+`_SEQUENCE_OPERATORS` currently answers three unrelated questions at once -- is
+it recomputable, does it produce a sequence, is it structural -- and the second
+already has its own field (`PrimitiveSpec.kind == "sequence"`). Collapsing them
+into one list is how the case got lost.
+
+If a lazy operator needs a value, it **rewrites itself into nodes**:
+
+```
+nnunet.train([h0 … h308], work_root, …)
+
+    rewrites to
+
+  write(h0)  write(h1)  …  write(h308)      309 independent nodes
+      \         |                /
+             train(w0 … w308, work_root)     fan-in
+```
+
+Each `write` node is eager on exactly **one** handle. They are independent: no
+artificial chain, nothing forced into sequence. `train` fans them in, and its own
+arguments are the writes' results — paths, not volumes.
+
+**What bounds peak residency is the memory governor, not the shape.** Each
+write's input becomes evictable the moment that write completes, so the live set
+is whatever the budget admits at once, instead of the whole sequence for the
+whole run. That is the entire difference: today 51.4 GB is pinned because a
+single ten-hour node holds it, and no budget can touch it. It is not "one case at
+a time", and claiming so would overstate the result.
+
+This is not a new mechanism, and both halves of it already exist:
+
+- **Growing the DAG from inside a running node**: `engine/expander.py` reduces a
+  closure body once per element into new nodes and lets the scheduler pick them
+  up, computing nothing itself.
+- **Forwarding a node's value from the node it rewrote to**: `core.py:249` keeps
+  `_alias: dict[NodeId, NodeId]`, and `_on_spliced` (:952) pins the target, waits
+  for it and forwards its value.
+
+The generalization is that **a lazy operator may return a rewrite instead of a
+value**, and loop expansion becomes one instance of that rule rather than a
+special case in the scheduler.
+
+## 5. Declaring it
+
+One field, where everything else about a primitive is already declared:
+
+```python
+PRIMITIVE_SPEC = PrimitiveSpec(
+    name="sequence",
+    namespace="default",
+    lazy=True,          # receives handles, never values
+    ...
+)
+```
+
+This is a requirement, not a convenience. Laziness that is awkward to opt into
+will not be opted into, and the default must stay eager so that being wrong
+about an operator costs performance and never correctness.
+
+## 6. Liveness: a handle inside a value is a reference
+
+`graph.consumers[nid]` counts unrun consumers holding a value; the last
+`release` evicts (`engine/graph.py:233-248`). Today every reference is an edge,
+so the count is complete.
+
+With handles it is not. A value that *contains* a handle refers to a node the
+graph does not know about. If that node's last edge-consumer completes, its
+value is evicted while a live value still names it.
+
+This is the failure class of the buffer-pool incident: a reference outliving
+what it refers to, silently.
+
+**Rule.** When a node completes, its value is scanned for handles, and each
+referenced node is retained on behalf of the completing node. When that value is
+evicted or dropped, those retains are released.
+
+The scan is the same container walk `_resolve_deep` performs and
+`buffer_states()` already performs. Its depth is the nesting depth of the value,
+and it cannot cycle: handles name nodes, nodes form a DAG. It runs only where a
+handle can actually be:
+the value of a lazy operator. An eager operator cannot invent a handle -- it
+never received one -- so its completion skips the walk entirely and pays nothing.
+
+Consequence worth stating: a handle-list that is `protected` (a goal) retains
+every element for the whole run. That is what happens today too, for the same
+values — no worse, and now visible.
+
+## 7. Persistence
+
+### What happens today
+
+A sequence is encoded as **one JSON blob** (`sequence-json-v1`,
+`pod_codec.py:218-225`), each element inlined via `to_json_native()`. Scalars are
+therefore duplicated inside the blob even though each element is also a node with
+its own hash.
+
+For images `to_json_native()` **raises** (`value_model.py:298-313`), deliberately:
+returning the descriptor instead was silent data loss. So `can_serialize_value`
+reports the whole container unserializable and **a sequence of images never
+enters the store at all**.
+
+That is the missing half of #51. The 51.4 GB was not unspillable by policy; it
+was **unwritable**. The store for that run was 2.1 MB.
+
+The code already names the fix: *"it needs a payload per element, not one JSON
+blob."*
+
+### What handles give
+
+A sequence of handles is a list of hashes: JSON-native, tiny, always
+serializable. Each element is already a node with its own record. Sequences of
+images become persistable for the first time, losslessly, with structural
+sharing — an element referenced by ten sequences is stored once.
+
+This is the Git tree/blob model: a tree lists blob hashes, blobs are stored once.
+The sister project NEARBYTES uses the same shape — RFC 6962 Merkle hashing
+(`nearbytes-crypto/src/crypto/merkleHash.ts`) over `blocks/<hash>.bin`,
+content-addressed and append-only at the path layer, merge by union
+(`meta-storage-v2.md:85,113,118`).
+
+### What the bytes are compressed with
+
+Measured in-process on a real 35.7 MB payload out of a BraTS store:
+
+| | throughput | ratio |
+|---|---|---|
+| gzip level 1 (what this did) | 0.07 GB/s | 0.645 |
+| zstd level 1 | 0.58 GB/s | 0.759 |
+| **zstd level 3** | **0.29 GB/s** | **0.436** |
+
+Four times faster and a third smaller -- it wins on both axes. On a sweep that
+once overran its free space by 1.9 TB, a third is some 600 GB. And compression
+is what the persister thread actually spends its time on: SHA-256 over the same
+bytes runs at 4.50 GB/s, sixty times faster than the gzip it was queued behind.
+
+No dependency. Python 3.14 carries zstd in the standard library, and the PyPI
+`zstandard` does not even build on this free-threaded interpreter. Reads stay
+self-describing -- the codec is chosen from the magic bytes -- so existing gzip
+stores keep decoding, a store written without zstd stays readable, and a missing
+codec degrades to gzip rather than failing a run.
+
+### Where the bytes go
+
+SQLite cannot be the answer at the scale this is heading for. Practical ceiling
+is `page_size × max_page_count` — about 4.4 TB at 4 KB pages, ~70 TB at 64 KB —
+and a single BLOB is capped near 2.1 GB, 1 GB by default compile options. Large
+blobs in the db also tax vacuum, backup and concurrent writers.
+
+So: records and metadata in SQLite, **payloads as files** -- which this store
+already does, atomically, into a `.files` directory beside the db.
+
+TRIED AND REVERTED: naming those files by the digest of their CONTENT, the way
+Git names a blob. It is wrong here, and the reason is worth keeping.
+
+A node id is already a merkle hash -- of the EXPRESSION rather than of the bytes
+-- and for this store that distinction does not matter, because its job is "give
+me the value of this node", a 1:1 lookup. Being 1:1 is what makes deletion safe:
+`delete(node_id)` reconstructs the payload path from the id and unlinks it.
+Content-addressing breaks that in both directions. Named by digest, `delete`
+looks in the old place, finds nothing, and leaks every payload forever. Taught
+to read the path from the row, it deletes bytes another row may share.
+
+So introducing sharing brings back exactly the referential-integrity problem on
+deletion that section 8 argues we do not have to solve. What it would buy is
+deduplication between distinct expressions with byte-identical values -- which
+was asserted here, not measured, and is not a reason to pay for a GC.
+
+Integrity follows from the naming: the filename *is* the hash, so an entry is
+immutable, self-verifying and idempotent, and merging two stores is the union of
+two directories. Writes are temp-file-then-rename.
+
+One rule taken from NEARBYTES (`log-api-v1.md:13`): **the store is the sole
+authority of the hash namespace.** Callers do not compute a hash and hand it in;
+the store hashes the bytes it persists and returns the address.
+
+## 8. Eviction and collection
+
+### Our store is a cache over a DAG, not an archive
+
+Git cannot delete a reachable blob: it is not reproducible, and losing it is data
+loss. Nearly everything here **is** reproducible — the DAG says how. If an
+element is deleted while a stored sequence-of-handles still names it, the
+reference dangles for an instant and resolution falls through to recompute.
+
+**For a recomputable value, a dangling reference costs time and can never
+produce a wrong value.** The exception is the next subsection, and it is the only
+one: where recomputation would return something different, deletion is not a cost
+but a loss, and those entries must never be deletable.
+
+This is not an assumption; the store already guarantees it. `record_lineage`
+(`node_table.py:274`) writes each node's kind, operator and arguments into the
+`node` table, so a hash is resolvable either from its bytes or from **its
+recipe**. `storage.py:48` states the intent in as many words -- *"regenerable
+from lineage, so an evicted entry only ever costs a recompute"* -- and an evicted
+row survives as `status='evicted'` carrying that lineage (`:730`).
+
+It matters more with handles than without. A stored sequence names element
+hashes, and a later run may hold that sequence without ever having built the
+elements. Without a persisted recipe such a reference would be unrecoverable
+rather than merely cold, and the argument of this section would collapse into
+"we need reachability GC after all". With lineage, a hash is always a question
+the store can answer.
+
+This is Nix's arrangement rather than Git's: Nix stores the derivation beside the
+output and can therefore rebuild what it collects, where Git can only refuse to
+collect. We already have the derivation.
+
+So we do not need mark-and-sweep by reachability, which exists to protect the
+irreproducible. We need **size- and cost-bounded eviction**, which is the policy
+the RAM tier already implements (`node_table.py:391`, cost-aware: expensive
+results kept over cheap ones), extended to disk.
+
+Append-only is not an option — the disk fills.
+
+### The exception, and it must be a root
+
+A value that is **not a function of its arguments** cannot be recomputed: it
+would come back different. `nnunet.train` is the case in hand — random init, data
+order, GPU reduction order. Deleting it does not cost time, it destroys an
+experiment.
+
+These are few, and they must be marked as roots that disk eviction never touches.
+This makes explicit something the project already relies on informally.
+
+### What gets superseded
+
+`engine/core.py` special-cases sequence-shaped values in about ten places. They
+are one family — *this value is a list, so treat it differently* — and with a
+sequence value that is a small list of hashes the family has nothing left to say:
+
+| site | today | after |
+|---|---|---|
+| `_SEQUENCE_OPERATORS` (:64) | names the family | needed only by the expander |
+| `_is_critical` (:1209) | sequences always critical, to keep them out of the reuse cut | a list of hashes is tiny; persist it always, trivially |
+| `_recomputable` (:900) | sequences excluded — built by expansion, no kernel to re-run | `default.sequence` has a kernel and becomes ordinarily recomputable; `for_loop`/`map` stay expansion-built |
+| `complete` (:1020-1022) | `complete_item` persists each element under a derived key | redundant: elements are nodes with their own ids and their own records |
+| `hash_sequence_item` | derived per-element addressing | redundant, same reason |
+
+A full re-reading of the reclaim passes (`_reclaim_memory`, `core.py:724-880`)
+against this change is part of the work, not an afterthought: PASS 2's
+"force a write so PASS 1 can free it" exists partly because large sequences could
+not be written at all. Section 12 records what that re-reading concludes.
+
+## 9. Operator inspection
+
+Every operator is inspected for whether it could be lazy. Nothing is assumed from
+a name. The census to cover: `default` (29 modules), `arrays`, `geom`, `nnunet`,
+`simpleitk`, `strings`, `test`, `vox1`, plus the dynamically registered
+namespaces.
+
+Expected candidates, to be confirmed rather than asserted: `sequence`, `index`,
+`subsequence`, `slice`, `filter`, `map`, `for_loop`, `print`, and `nnunet.train`.
+Results go in section 11.
+
+## 10. Lazy `if`
+
+There is no conditional in the language. `vox1/compat.imgql:68` defines one
+arithmetically:
+
+```
+let ifB(cond,th,el) = or(and(th,bconstant(cond)),and(el,not(bconstant(cond))))
+```
+
+It computes **both branches** and masks them, because there is no way not to.
+
+BUILT, and it turned out to prove something narrower and more useful than the
+draft claimed. `if` is not lazy at all: it is a **rewrite**, and it shares
+nothing with the loop machinery. It declares `rewrite=True`, supplies a
+`rewriter` -- one function, `(node, resolve) -> NodeId`, returning the argument
+it becomes -- and the engine forwards its value from that node. The other branch
+is never scheduled, so it is never computed, persisted or counted.
+
+That is what made `rewrite` extensible rather than a second name for loop
+unrolling. Before `if` there was exactly one rewriter and it was the engine's
+own expansion machinery, too entangled with admission and chunking to be a plain
+callable. A conditional needed none of that, so the field that says HOW an
+operator rewrites was added, and now anything simpler than a loop -- a
+projection, a dispatch on a tag -- is one function in a primitive module and no
+engine change at all.
+
+It is also an observable behaviour change: fewer nodes are computed, so less
+enters the store, so a warm re-run prunes differently. Intended, and recorded
+here so it is not discovered later.
+
+## 11. Operator census
+
+Every operator was read, not guessed at from its name. Forty-four across eight
+namespaces; the ones that are not `eager` and the ones that were close calls:
+
+| operator | mode | why |
+|---|---|---|
+| `default.sequence` | `lazy` | puts its arguments in a list and never looks inside |
+| `default.index` | `shallow` | reaches element *i*; deep-resolving would cost all N |
+| `default.subsequence` | `shallow` | a slice costs the slice; had this hand-written in the executor |
+| `default.slice` | `shallow` | same reason as `index` |
+| `default.for_loop` | `rewrite` | expanded, never computed |
+| `default.map` | `rewrite` | same |
+
+### Close calls, and why they stayed eager
+
+**`parameter_grid`** looked like the best remaining candidate: it takes a
+sequence of axes and returns their cartesian product, and it does not care what
+an axis value IS. A grid of handles would be exactly right. It stays eager
+because it needs **two** levels -- the sequence of axes, and then each axis as a
+sequence -- and `shallow` gives one. Making the kernel resolve the second level
+would be resolution inside kernel code, which is the thing this design forbids.
+The cost of leaving it is nil: axes here are short lists of numbers.
+
+**`fold`, `mean`, `median`, `stdev`, `argmax`, `argsort`, `tally`** all consume
+the values to produce their answer -- a comparison or an arithmetic reduction --
+so eager is not a concession, it is what they are.
+
+**`print`** formats the value. Eager.
+
+**`range`, `dir`, `load`** have no sequence input to keep as references.
+
+### One thing the census found that is not about handles
+
+`default.filter` and `default.dask_map` take a **closure** argument, exactly as
+`for_loop` does, and are NOT marked `rewrite` -- so under the engine strategy
+they would be dispatched to a kernel that expects a runtime closure the engine
+never builds, and fail with the same `requires closure argument` message this
+design spent a day chasing.
+
+Either they are unreachable under this strategy or they are broken. The census
+cannot tell which, and neither can be settled by reading the code alone. Left as
+found, recorded here, and not fixed in this pass: it is not a handle problem, and
+fixing it blind would be guessing.
+
+## 12. What the eviction re-reading concluded
+
+`_reclaim_memory` (`core.py:724-885`) exists **because of the problem this design
+removes.** Its own docstring names it:
+
+> THE VALVE FOR THE SEQUENCE-ASSEMBLY FLOOR: refcounting alone holds a loop
+> body's value resident from completion until its *last* consumer runs -- for a
+> wide loop whose sequence node needs every body, that means every completed body
+> stays resident for the whole unroll. Peak RSS then tracks element count x body
+> size, and no admission policy can fix this.
+
+and then states the limit of the valve:
+
+> Without a disk backend there is no reload path, so this is a no-op -- the floor
+> is then a genuine, irreducible requirement of materializing every element
+> before combining them.
+
+That last sentence is the assumption this design retires. **A sequence node that
+gathers hashes never materializes its elements**, so there is no floor to valve.
+The requirement was never irreducible; it followed from the value of a sequence
+being a list of values.
+
+It also explains why the valve did nothing in #51. Every exit in PASS 2 needs the
+value to be durable or cheaply recomputable:
+
+| PASS 2 exit | condition | in #51 |
+|---|---|---|
+| evict, already persisted | `table.persisted(nid)` | never: a sequence of images is unserializable (§7) |
+| drop and recompute | `compute_ms < sacrifice_ms and _recomputable(nid)` | never: sequences are excluded from `_recomputable` (`:900`) |
+| force a write | `table.spill(nid)` | never: the encoder raises on the first image |
+
+Three exits, all closed, on the one value that mattered -- 51.4 GB with every
+route out blocked. The engine was not failing to apply its policy; it had no
+applicable policy. `evicted_early` at 4440 and 1513 governor trims are the record
+of it trying.
+
+### What survives, and what improves
+
+**Superseded.** The sequence-assembly floor, and with it the valve's reason for
+existing. The special-case family in section 8's table goes with it.
+
+**Survives unchanged, and is still needed.** PASS 0 (ownerless garbage) has
+nothing to do with sequences -- it collects speculation that no consumer will
+ever read, and the comment records 23.3 GB once held as "cache". PASS 1
+(durable-and-pending) and the rest of PASS 2 remain the general answer to memory
+pressure over ordinary values.
+
+**Improves without being redesigned.** PASS 2's three exits start working on
+element values where they could not work on the gathered list: an element is an
+ordinary image, so it is persistable, spillable, and -- being an ordinary
+primitive result rather than an expansion product -- recomputable. The policy
+does not change; it acquires values it can act on.
+
+**Left alone deliberately.** `sacrifice_ms`, the pressure ramp, `_EVICT_SWEEP`,
+the dispatch-pin deferral and the two-queue split are each documented against a
+specific measured failure. Nothing in this design bears on them, and touching
+them in the same pass would make a regression impossible to attribute.
+
+## 13. Non-goals
+
+- The `--no-engine` lazy strategy is **not** carried across. It has its own
+  sequence handling and its own demand model, and maintaining two value
+  representations is worse than declaring it unsupported on handle values.
+  Checked rather than assumed: no test in `tests/` references it, so this costs
+  no coverage.
+- Reachability GC is not implemented, and section 8 argues it is not needed.
+- No change to the scheduler's priority, admission or governor policies beyond
+  what section 8 supersedes.
+
+## 14. Testing
+
+- The eager path is unchanged: the existing suite is the test, and it must stay
+  at its current pass/fail line.
+- **Zero cost is a claim, so it is measured**: the adapter on a value containing
+  no handles must not show up against `incoming` on a benchmark that spends its
+  time in kernels. A claim of "literally what happens today" that nobody timed is
+  the kind of assertion this project has been wrong about before.
+- Handle identity: a handle round-trips through the store and means the same
+  node in a fresh process.
+- Liveness: a value containing a handle keeps the referenced node alive; the
+  referenced node is released when that value is dropped.
+- The #51 case, reduced: a sequence of N large values consumed by a lazy
+  operator has peak residency of one element, not N. This is the acceptance
+  test — it fails on `main` and must pass here.
+- Lazy `if`: the untaken branch's node is never computed.
+- Persistence: a sequence of images survives a store round-trip losslessly,
+  which is impossible today.
+- Dangling: deleting a store entry that a persisted sequence names produces a
+  recompute, never a wrong value.
+
+## 15. Specification: one decision point, and dependencies that are real
+
+Written before the code, because the defect this fixes is precisely a decision
+taken in one place and consulted in another.
+
+### 15.1 The decision point
+
+`engine/evaluation.py`, and nothing else, answers how a node is evaluated:
+
+```python
+@dataclass(frozen=True, slots=True)
+class Modes:
+    lazy: bool = False      # arguments arrive as handles
+    shallow: bool = False   # arguments arrive as values, contents untouched
+    rewrite: bool = False   # evaluating this GROWS THE GRAPH
+
+def modes_of(registry, operator: str) -> Modes:   # memoized per operator
+```
+
+`lazy` and `shallow` are exclusive; `rewrite` is orthogonal to both.
+
+**Every road that evaluates or classifies a node asks `modes_of`.** The roads,
+exhaustively -- this list is the point of the section:
+
+| caller | today | after |
+|---|---|---|
+| `executor._compute_node` | its own `lazy` lookup | `modes_of` |
+| `core._rematerialize` | nothing: calls the kernel | `modes_of(...).rewrite` -> §15.2 |
+| `core._recomputable` | `operator not in _SEQUENCE_OPERATORS and not can_expand` | `not modes_of(...).rewrite` |
+| `core._is_critical` | `operator in _SEQUENCE_OPERATORS` | `modes_of(...).rewrite` or the fan-out rule |
+| `core.complete` (`complete_item`) | `operator in _SEQUENCE_OPERATORS` | `spec.kind == "sequence"`, which already exists |
+| `expander.can_expand` | `operator in _EXPANDABLE` | `modes_of(...).rewrite` |
+
+`_EXPANDABLE` and `_SEQUENCE_OPERATORS` are deleted. The second answered three
+unrelated questions at once, which is how one of them got lost.
+
+**Invariant.** No module outside `evaluation.py` and the primitive specs names an
+operator in a literal. A test enforces it by reading the sources: this is the
+kind of rule that decays silently, so it is checked mechanically rather than
+remembered.
+
+**Extending it.** A new graph-growing operator writes `rewrite=True` in its spec
+and is routed correctly everywhere, because there is nowhere else to tell.
+
+### 15.2 The miss path for a rewrite node
+
+`_rematerialize(nid)` on a node with `rewrite`:
+
+1. if `nid` has an `_alias`, follow it -- the spliced sequence carries the value;
+2. otherwise the node must be **re-expanded, never computed**. `_rematerialize`
+   is synchronous and its callers expect a value, so it raises a typed
+   `NeedsExpansion(nid)` and the scheduler re-registers the node.
+
+Calling the kernel is removed as an option, not guarded against. `for_loop` has a
+kernel and it belongs to the strict runtime, which reconstructs a closure the
+engine never builds; reaching it produces `requires closure argument at key
+'closure' or '1'`, which is the regression this closes.
+
+### 15.3 Dependencies discovered from handles
+
+Today an eager operator whose argument contains handles resolves them by calling
+`_rematerialize` from a worker thread. When the value is resident that is a dict
+lookup. When it is not, it is a reload -- or a **recompute**, which can drag in
+subtrees -- that the scheduler never planned. That is an evaluation happening
+outside the graph, and the graph is supposed to be the only witness.
+
+**Rule.** When node `D` completes with a value naming `{e...}` by handle, every
+eager dependent `A` of `D` gains `A -> e` as real edges before `A` can fire.
+
+Four properties, each load-bearing:
+
+- **Same mechanism as expansion.** The edges are registered through `admission`,
+  the path loop expansion already uses. No second dynamic-edge machinery, and --
+  the point -- the window that stops a 369-case unroll from exploding is the same
+  window that bounds this.
+- **Same walk.** Discovery reuses the value walk `graph.hold_handles` already
+  performs at completion. No new traversal, no new cost.
+- **Before the fire.** `on_complete(D)` releases inputs and fires dependents.
+  Discovery must run BEFORE the fire, or `A` dispatches with edges that were
+  about to exist.
+- **One level per dispatch, and this is the anti-explosion property.** A
+  handle's own value may name further handles. Those are discovered when THAT
+  node's value is needed, not now. Discovery is never transitive in one step, so
+  the work added at any completion is bounded by what that one value names.
+
+An edge added this way cannot make a cycle: a handle names a node that already
+completed, so it points backwards in time.
+
+**What this does not do.** An eager operator that genuinely wants N values still
+gets N values -- for `nnunet.train` that is the 51.4 GB, honestly. The cure is to
+make it a rewriter (§4), not to hide the cost. What changes is that the N are
+individual values the governor can spill, materialized by the scheduler under its
+own bound, instead of one gathered list it could neither evict nor write.
+
+### 15.4 What stops being possible
+
+- A kernel, or the code adapting arguments for one, triggering a recompute the
+  scheduler did not plan.
+- Two evaluation roads disagreeing about a node, because there is one answer.
+- A new graph-growing operator working in dispatch and failing on a miss.
+
+### 15.5 Tests
+
+- **No literals**: no module outside `evaluation.py` names `for_loop`, `map`,
+  `sequence` or `filter` in a string.
+- **The regression**: a rewrite node whose value is gone is re-expanded; its
+  kernel is never called. Fails on this branch today.
+- **Real edges**: an eager consumer of a handle container has the referenced
+  nodes among its dependencies before it dispatches.
+- **One level**: a container of containers adds only the first level's nodes at
+  the outer completion.
+- **No out-of-band work**: with the resolver instrumented, no eager dispatch
+  triggers a recompute.
+- **Extensibility**: a test-only primitive declaring `rewrite=True` is routed
+  correctly by dispatch and by the miss path, without touching the engine.
+
+
+## 16. `filter` and `fold`, and why only one of them landed
+
+### `filter`: was unreachable, now runs
+
+The language has `filter` -- the parser accepts it and the reducer lowers it to
+`filter(iterable, closure)` -- and it could not run. A closure node's value under
+this engine is `None`, because the engine expands closures rather than building
+them, so the kernel raised "requires closure argument" on every program that used
+it. A language feature that could be written and never executed, kept alive by a
+test that called the kernel directly with a Python lambda.
+
+It rewrites to `gather(map(predicate, sequence), sequence)`: `map` is already a
+node the engine expands, and `gather` is an ordinary primitive. Two nodes, no new
+machinery.
+
+Its memory is the point. Each predicate consumes its element and releases it, and
+`gather`'s sequence argument is SHALLOW, so it selects among handles and returns
+handles. Filtering three hundred volumes down to four costs three hundred
+booleans and four references.
+
+`filter` is also what forced `shallow` to become per-argument: `gather` needs one
+argument as values -- there is nothing to test in a handle -- and the other as
+handles. The earlier claim that per-operator was enough is withdrawn.
+
+### `fold`: tried as a chain, reverted, and this is why
+
+A fold's kernel receives the whole materialized sequence, so every element is
+resident for a result that never needs more than two values in hand. As a chain
+of `combine` links each accumulator has exactly one consumer and each element
+one too: peak is one accumulator plus one element, whatever N is.
+
+It works, it is memory-optimal, and it WEDGES THE ENGINE.
+
+Measured: a fold over a literal list of 64 elements finishes in 0.5 s; a fold
+over a sequence a `for` produced finishes at 16 elements and hangs at 32 -- the
+admission window. A chain registers N nodes at once, and a left fold has N of
+them incomplete simultaneously by construction: link *i* cannot complete before
+link *i-1*. Peeling one element per rewrite was tried and is worse, 2N, because
+each level leaves both a link and a shorter fold behind.
+
+So the frontier bound is not bookkeeping, as this design first assumed when it
+raised the test's threshold: exceeding it stops admission from making progress.
+That assumption is withdrawn too, and the test's original bound restored.
+
+### The explanation that was wrong, and the one that replaced it
+
+First claim: "a chain has Theta(N) nodes open by construction, so it cannot be
+windowed." Vincenzo's reply was the right question -- **then how does `for`
+work?** It opens N bodies too.
+
+The answer is that `for`'s bodies are INDEPENDENT, so admission opens a window of
+them, lets them complete, and opens more. The claim about chains was wrong for
+the same reason: links complete IN ORDER, so they can be made in order. The shape
+that does it carries the cursor in an attribute and ALIASES to the next fold
+rather than depending on it:
+
+    fold(init, seq, offset=k)  ->  fold(combine(init, seq[k]), seq, offset=k+1)
+
+Built and measured. The frontier still grew with N -- 64 for 64 elements --
+because forwarding keeps the aliasing node open until its target completes, so a
+chain of N aliases is N open nodes just as a chain of N links was. Getting O(1)
+would need the consumer's edge re-pointed at each step, which is graph surgery
+the engine does not do and which would change the consumer's identity.
+
+**And it still wedges.** A fold over a literal list of 64 finishes; a fold over a
+sequence a `for` produced finishes at 16 and hangs at 32, in both shapes. The
+frontier test's own program folds 64 elements and completes, so the wedge is not
+"frontier over window" on its own -- it involves chained loops, and what exactly
+is not diagnosed.
+
+### And then the wedge turned out to be a different bug
+
+The hang was not the fold. On `incoming`, with no handles involved at all:
+
+    for i in range(0, 20) do i          + fold   ->  hangs (>45 s)
+    for i in range(0, 20) do spin(i,0)  + fold   ->  0.5 s
+
+An IDENTITY loop body wedges, and every measurement that condemned the rewriter
+used one.
+
+FOUND AND FIXED, and it is not a handles bug at all. `admission.on_complete`
+decrements a loop job's in-flight count, and constants are completed at
+DISCOVERY rather than through the ready queue -- so they never reached it. A body
+that reduces to the element itself IS a constant, so such a loop filled its
+window and never drained it: sixteen bodies admitted, the seventeenth never,
+every worker asleep and the event loop in `select()` with nothing to wake it.
+Exactly at the boundary, 16 fine and 17 hung. `on_trivial_complete` closes it,
+kept separate and cheap because it is called for every constant in a plan and
+almost none of them is a loop body.
+
+Measured again with a body that does not trip it, the tail-step rewriter is
+healthy and linear: 20 elements 0.5 s, 64 0.6 s, 200 0.8 s, 800 1.8 s. And it
+halves the memory -- 60 bodies of 4 MB each, peak live 480 MB on `incoming`
+against 240 MB with it.
+
+Half, not the "two values" predicted. The chain releases each accumulator, but
+the SEQUENCE still names every element and its handles count as references, so
+the elements stay resident. That is the limitation section 6 already records:
+evicting a container does not release what it names.
+
+### What it costs, and what the bound was actually measuring
+
+`fold` used to be ONE node with N dependencies. The rewriter makes N nodes, each
+open until the next completes, because that is how forwarding works. That read as
+a frontier of 64 against a bound of 40, and the first instinct -- twice -- was to
+raise the bound.
+
+The bound was measuring the wrong thing. What the admission window governs is
+speculative BREADTH: bodies opened ahead of demand, which is how a 369-case
+unroll once opened 369 things at once. A fold expressed as nodes is DEEP, not
+wide: one link per element, each waiting on the one before, and only ever one of
+them runnable. `peak_frontier` counts everything registered and cannot tell the
+two apart.
+
+Measured, on the same 64-element program:
+
+| window | peak_runnable | peak_frontier |
+|---|---|---|
+| 4 | 4 | 64 |
+| 64 | 31 | 64 |
+
+`peak_runnable` -- ready plus in-flight -- tracks the window exactly.
+`peak_frontier` is flat at 64 and does not respond to it at all, because what it
+is seeing there is the fold's depth.
+
+So the engine gained the metric that states the invariant, and the test asserts
+on it. This does not weaken the guard: an unroll that admits N bodies makes N of
+them runnable, which is exactly the failure the bound exists to catch. It stops
+the guard from firing on depth, which was never what it was about.
+
+The rewriter is therefore in: half the memory (480 MB against 240 on sixty 4 MB
+bodies), linear to 800 elements, and N nodes that are each a real task rather
+than bookkeeping.

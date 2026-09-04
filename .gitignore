@@ -49,12 +49,20 @@ output/**
 !output/**/.gitkeep
 doc/gallery/output/**
 /.cache/vox1/
+/.cache/uv/
 
 # Frontend workspace artifacts
 implementation/ui/node_modules/
 implementation/ui/.vite/
+implementation/ui/dist/
 tests/data/datasets
 .playwright-mcp/
 node_modules
 
 .DS_Store
+
+# Local operating notes: contains machine-specific paths and usernames
+doc/user/brats-tests-howto.md
+tmp
+pty.log
+playwright-*

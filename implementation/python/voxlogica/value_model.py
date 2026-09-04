@@ -3,8 +3,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 import math
+
+from voxlogica.arrays import PolyArray
+from voxlogica.handles import HANDLE_TAG, Handle
+
+
+class PayloadSnapshot(NamedTuple):
+    """An image payload copied OFF the ITK buffer, plus the shape facts about it.
+
+    The bytes alone are not enough. Describing an image needs dtype/shape/size,
+    and reading those back off the live value means building a SimpleITK array
+    view — the exact call that races ITK's own frees and segfaults the writer.
+    They are cheap to record at snapshot time, on the event loop, where the copy
+    is already being made and the kernels are ordered against it; so they are
+    recorded there and travel with the bytes.
+    """
+    data: Any                    # memoryview of the copied bytes
+    dtype: str
+    shape: tuple[int, ...]
+    size: int
 
 
 VOX_FORMAT_VERSION = "voxpod/1"
@@ -219,9 +238,16 @@ class VoxImageValue(VoxValue):
     vox_type = "image"
 
     def as_array(self) -> Any:
+        if isinstance(self.raw, PolyArray):
+            # np() may be a read-only zero-copy alias of the sitk buffer; the
+            # encoder only reads it (gzip-compresses the bytes), never writes.
+            return self.raw.np()
         sitk = _import_simpleitk()
         if sitk is not None and isinstance(self.raw, sitk.Image):
-            return sitk.GetArrayFromImage(self.raw)
+            # Zero-copy: as above, the encoder only reads these bytes. Pinned
+            # so the view stays valid even if this value is dropped first.
+            from voxlogica.arrays import pinned_view
+            return pinned_view(self.raw)
         if hasattr(self.raw, "__array__"):
             np = _import_numpy()
             if np is not None:
@@ -229,6 +255,15 @@ class VoxImageValue(VoxValue):
         raise UnsupportedVoxValueError(self.raw)
 
     def storage_metadata(self) -> dict[str, Any]:
+        if isinstance(self.raw, PolyArray):
+            geometry = self.raw.geometry
+            return {
+                "runtime": "simpleitk",
+                "spacing": [float(v) for v in geometry.spacing],
+                "origin": [float(v) for v in geometry.origin],
+                "direction": [float(v) for v in geometry.direction],
+                "components": int(geometry.components),
+            }
         sitk = _import_simpleitk()
         if sitk is not None and isinstance(self.raw, sitk.Image):
             return {
@@ -240,19 +275,44 @@ class VoxImageValue(VoxValue):
             }
         return {"runtime": "array"}
 
-    def describe(self, *, path: str = "") -> dict[str, Any]:
-        array = self.as_array()
+    def describe(self, *, path: str = "", snapshot: PayloadSnapshot | None = None) -> dict[str, Any]:
+        """``snapshot`` supplies dtype/shape/size taken off the event loop.
+
+        Without it this materialises a live array view purely to read three
+        numbers, and on a writer thread that view is a use-after-free waiting
+        for ITK to free the buffer underneath it.
+        """
+        if snapshot is not None:
+            dtype, shape, size = snapshot.dtype, snapshot.shape, snapshot.size
+        else:
+            array = self.as_array()
+            dtype, shape, size = str(array.dtype), array.shape, array.size
         payload = self.descriptor_base(path=path, can_descend=True)
         payload["summary"] = {
-            "dtype": str(array.dtype),
-            "shape": [int(v) for v in array.shape],
-            "size": int(array.size),
+            "dtype": str(dtype),
+            "shape": [int(v) for v in shape],
+            "size": int(size),
             **self.storage_metadata(),
         }
         return payload
 
     def to_json_native(self) -> Any:
-        return self.describe()
+        # An image has no JSON-native form, and returning its DESCRIPTOR here was
+        # silent data loss. The only callers are the sequence and mapping
+        # encoders, so a training case [id, [flair], mask] was persisted with
+        # {"vox_type": "image", "navigation": ...} in place of each volume, and
+        # the next run handed those dicts back AS THE VALUES: nnU-Net received a
+        # descriptor where a volume belonged ("expected 2D or 3D image data, got
+        # shape () from a dict"). Between two floats the same round-trip would
+        # have returned a plausible wrong number instead of failing.
+        #
+        # Raising keeps the whole container OUT of the store
+        # (can_serialize_value reports it as unserializable), so it stays in the
+        # in-memory tier and is recomputed on a later run -- a cost, never a
+        # wrong value. Persisting sequences of images losslessly is a separate,
+        # larger change: it needs a payload per element, not one JSON blob.
+        raise UnsupportedVoxValueError(self.raw)
+
 
 def restore_runtime_image(payload_json: dict[str, Any], array: Any) -> Any:
     metadata = dict(payload_json.get("metadata") or {})
@@ -277,9 +337,36 @@ def restore_runtime_image(payload_json: dict[str, Any], array: Any) -> Any:
     return image
 
 
+class VoxHandleValue(VoxValue):
+    """A reference to another node, by merkle hash.
+
+    A sequence of these is what makes a sequence of IMAGES storable at last. The
+    old encoding inlined each element into one JSON blob, and an image has no
+    JSON-native form, so `to_json_native` raised and the whole container was
+    reported unserializable -- which is why a 309-case training sequence could
+    not be written and 51.4 GB had no route out of RAM (issue #51). A list of
+    hashes is JSON-native, tiny, and each element is already a record of its own:
+    the payload-per-element the old comment asked for, obtained by not inlining.
+    """
+
+    vox_type = "handle"
+
+    def describe(self, *, path: str = "") -> dict[str, Any]:
+        payload = self.descriptor_base(path=path)
+        payload["summary"] = {"node": self.raw.node}
+        return payload
+
+    def to_json_native(self) -> Any:
+        return {HANDLE_TAG: self.raw.node}
+
+
 def adapt_runtime_value(value: Any) -> VoxValue:
     np = _import_numpy()
     sitk = _import_simpleitk()
+    if isinstance(value, Handle):
+        return VoxHandleValue(value)
+    if isinstance(value, PolyArray):
+        return VoxImageValue(value)
     if value is None:
         return VoxScalarValue(value, "null")
     if isinstance(value, bool):

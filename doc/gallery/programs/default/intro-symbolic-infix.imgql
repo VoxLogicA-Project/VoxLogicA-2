@@ -1,4 +1,8 @@
-SUM(a,b) = a + b
-+?(a,b) = a * b + 1
-sum_case = 4 SUM 9
-symbol_case = 5 +? 8
+// User-defined INFIX operators. Any all-caps name, or a name made of symbols,
+// can be used between its two arguments -- useful for domain notation that
+// reads like the formula it implements.
+SUM(a, b) = a + b
++?(a, b) = a * b + 1
+
+print "sum_case"    4 SUM 9
+print "symbol_case" 5 +? 8

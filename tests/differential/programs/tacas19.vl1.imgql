@@ -1,0 +1,67 @@
+import "stdlib.imgql"
+
+let dice(x,y) = (2 .*. volume(x & y)) ./. (volume(x) .+. volume(y))
+let distlt(x,y) = dt(y) <. x
+let grow2(a,b) = (a|touch(b,a))
+let flt(r,a) = distlt(r,distgeq(r,!a))
+
+
+// === case 1: BraTS20_Training_001 ===
+load imgFLAIRc1 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_001/BraTS20_Training_001_flair.nii.gz"
+let flairc1 = intensity(imgFLAIRc1)
+load imgManualSegc1 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_001/BraTS20_Training_001_seg.nii.gz"
+let manualContouringGTVc1 = intensity(imgManualSegc1) >. 0
+let diceMc1(x) = dice(x,manualContouringGTVc1)
+
+let backgroundc1 = touch(flairc1 <. 0.1,border)
+let brainc1 = !backgroundc1
+let pflairc1 = percentiles(flairc1,brainc1,0.5)
+
+let hIc1 = pflairc1 >. 0.95
+let vIc1 = pflairc1 >. 0.86
+let hyperIntensec1 = flt(5.0,hIc1)
+let veryIntensec1 =  flt(2.0,vIc1)
+
+let growTumc1 = grow2(hyperIntensec1,veryIntensec1)
+
+print "dice_c1" diceMc1(growTumc1)
+
+// === case 2: BraTS20_Training_002 ===
+load imgFLAIRc2 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_002/BraTS20_Training_002_flair.nii.gz"
+let flairc2 = intensity(imgFLAIRc2)
+load imgManualSegc2 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_002/BraTS20_Training_002_seg.nii.gz"
+let manualContouringGTVc2 = intensity(imgManualSegc2) >. 0
+let diceMc2(x) = dice(x,manualContouringGTVc2)
+
+let backgroundc2 = touch(flairc2 <. 0.1,border)
+let brainc2 = !backgroundc2
+let pflairc2 = percentiles(flairc2,brainc2,0.5)
+
+let hIc2 = pflairc2 >. 0.95
+let vIc2 = pflairc2 >. 0.86
+let hyperIntensec2 = flt(5.0,hIc2)
+let veryIntensec2 =  flt(2.0,vIc2)
+
+let growTumc2 = grow2(hyperIntensec2,veryIntensec2)
+
+print "dice_c2" diceMc2(growTumc2)
+
+// === case 3: BraTS20_Training_003 ===
+load imgFLAIRc3 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_003/BraTS20_Training_003_flair.nii.gz"
+let flairc3 = intensity(imgFLAIRc3)
+load imgManualSegc3 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_003/BraTS20_Training_003_seg.nii.gz"
+let manualContouringGTVc3 = intensity(imgManualSegc3) >. 0
+let diceMc3(x) = dice(x,manualContouringGTVc3)
+
+let backgroundc3 = touch(flairc3 <. 0.1,border)
+let brainc3 = !backgroundc3
+let pflairc3 = percentiles(flairc3,brainc3,0.5)
+
+let hIc3 = pflairc3 >. 0.95
+let vIc3 = pflairc3 >. 0.86
+let hyperIntensec3 = flt(5.0,hIc3)
+let veryIntensec3 =  flt(2.0,vIc3)
+
+let growTumc3 = grow2(hyperIntensec3,veryIntensec3)
+
+print "dice_c3" diceMc3(growTumc3)

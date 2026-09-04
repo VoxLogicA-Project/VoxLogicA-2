@@ -15,15 +15,6 @@ from voxlogica.value_model import (
 )
 
 
-def _is_dask_bag(value: Any) -> bool:
-    try:
-        import dask.bag as db  # type: ignore
-
-        return isinstance(value, db.Bag)
-    except Exception:
-        return False
-
-
 def _coerce_overlay_layer(value: Any, *, index: int) -> OverlayLayer:
     if isinstance(value, OverlayLayer):
         return value
@@ -65,8 +56,6 @@ def _layers_from_single_arg(source: Any) -> tuple[list[OverlayLayer], dict[str, 
 
     if isinstance(layers_source, SequenceValue):
         return [_coerce_overlay_layer(item, index=index) for index, item in enumerate(layers_source.iter_values())], metadata
-    if _is_dask_bag(layers_source):
-        return [_coerce_overlay_layer(item, index=index) for index, item in enumerate(layers_source.compute())], metadata
     if isinstance(layers_source, (list, tuple)):
         return [_coerce_overlay_layer(item, index=index) for index, item in enumerate(layers_source)], metadata
     if isinstance(layers_source, Iterable) and not isinstance(layers_source, (str, bytes, dict)):

@@ -1,0 +1,3 @@
+_synthetic_data/
+*.sqlite
+*.sqlite.files/

@@ -5,10 +5,101 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 import base64
+import gzip
 import json
 import math
 
+# Binary payloads (voxel buffers, ndarrays) are compressed before storage --
+# label maps and threshold masks are mostly-constant and shrink losslessly by a
+# large factor. Compression runs on the async persister thread, so its speed is
+# the persistence bottleneck: measured on a real 35.7 MB payload out of a BraTS
+# store, gzip level 1 ran at 0.09 GB/s for a ratio of 0.645, while SHA-256 over
+# the same bytes ran at 4.50 GB/s. Compression, not hashing, is what that thread
+# spends its time on.
+#
+# Measured in-process on those same bytes:
+#
+#     gzip-1   0.07 GB/s   ratio 0.645     (what this used to do)
+#     zstd-1   0.58 GB/s   ratio 0.759
+#     zstd-3   0.29 GB/s   ratio 0.436
+#
+# zstd-3 is FOUR TIMES FASTER AND A THIRD SMALLER -- it wins on both axes, which
+# is unusual enough to be worth writing the numbers down. zstd-1 is faster still
+# but larger than gzip-1, so it buys nothing here. On a sweep that once overran
+# its free space by 1.9 TB, a third is some 600 GB.
+#
+# No dependency: Python 3.14 carries zstd in the standard library. The
+# third-party `zstandard` is tried second, for older interpreters, and gzip is
+# the floor -- a missing codec must degrade, never fail a run.
+#
+# READS STAY SELF-DESCRIBING, and this is what makes the change safe: a payload
+# is decompressed according to the MAGIC BYTES it carries. Existing stores are
+# full of gzip and keep decoding; new writes are zstd; a store written by either
+# version is readable by this one. Uncompressed payloads from before any of this
+# still pass through untouched.
+_GZIP_LEVEL = 1
+_GZIP_MAGIC = b"\x1f\x8b"
+_ZSTD_LEVEL = 3
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def _zstd():
+    """Something that can compress and decompress zstd, or None.
+
+    Probed once and cached: this sits on the persister's path for every payload.
+    Returns a pair of callables so the two possible providers -- the 3.14
+    standard library and the third-party module, whose APIs differ -- are hidden
+    from the callers.
+    """
+    global _ZSTD_CODEC
+    if _ZSTD_CODEC is _UNPROBED:
+        _ZSTD_CODEC = _probe_zstd()
+    return _ZSTD_CODEC
+
+
+def _probe_zstd():
+    try:
+        from compression import zstd as _std  # type: ignore  # Python 3.14+
+    except Exception:  # noqa: BLE001
+        pass
+    else:
+        return (lambda raw: _std.compress(raw, level=_ZSTD_LEVEL), _std.decompress)
+    try:
+        import zstandard  # type: ignore
+    except Exception:  # noqa: BLE001
+        return None
+    return (lambda raw: zstandard.ZstdCompressor(level=_ZSTD_LEVEL).compress(raw),
+            lambda data: zstandard.ZstdDecompressor().decompress(data))
+
+
+_UNPROBED = object()
+_ZSTD_CODEC: Any = _UNPROBED
+
+
+def _compress(raw: Any) -> bytes:
+    codec = _zstd()
+    if codec is None:
+        return gzip.compress(raw, compresslevel=_GZIP_LEVEL)
+    return codec[0](raw)
+
+
+def _decompress(payload_bin: bytes | None) -> bytes:
+    data = payload_bin or b""
+    if data[:2] == _GZIP_MAGIC:
+        return gzip.decompress(data)
+    if data[:4] == _ZSTD_MAGIC:
+        codec = _zstd()
+        if codec is None:
+            raise RuntimeError(
+                "this payload is zstd-compressed and no zstd codec is available; "
+                "the store was written by an interpreter that had one")
+        return codec[1](data)
+    return data
+
+
+from voxlogica.handles import Handle, revive_handles
 from voxlogica.value_model import (
+    VoxHandleValue,
     OverlayLayer,
     OverlayValue,
     UnsupportedVoxValueError,
@@ -72,6 +163,17 @@ def _json_native_or_raise(value: Any, *, context: str) -> Any:
     return value
 
 
+def _array_byte_view(array: Any) -> memoryview:
+    """Contiguous byte view without ``ndarray.tobytes()``'s full-size copy."""
+    view = memoryview(array)
+    if not view.c_contiguous:
+        np = _import_numpy()
+        if np is None:
+            raise RuntimeError("NumPy is required to serialize non-contiguous arrays")
+        view = memoryview(np.ascontiguousarray(array))
+    return view.cast("B")
+
+
 def _ndarray_payload(array: Any) -> tuple[dict[str, Any], bytes]:
     return {
         "encoding": "ndarray-binary-v1",
@@ -79,7 +181,7 @@ def _ndarray_payload(array: Any) -> tuple[dict[str, Any], bytes]:
         "shape": [int(v) for v in array.shape],
         "order": "C",
         "byte_order": "little",
-    }, bytes(array.tobytes(order="C"))
+    }, _compress(_array_byte_view(array))
 
 
 def _encode_embedded_record(value: Any, *, page_size: int) -> dict[str, Any]:
@@ -112,9 +214,27 @@ def can_serialize_value(value: Any) -> tuple[bool, str | None, EncodedRecord | N
     return True, None, record
 
 
-def encode_for_storage(value: Any, *, page_size: int = 128) -> EncodedRecord:
+def encode_for_storage(value: Any, *, page_size: int = 128,
+                       payload_snapshot: Any = None) -> EncodedRecord:
+    """``payload_snapshot`` is an ALREADY-COPIED byte view of the image payload.
+
+    Volumetric payloads alias memory owned by SimpleITK/ITK, and ITK frees that
+    memory on its own schedule -- holding the Python image object does not keep
+    the buffer alive. Compressing the live alias on a writer thread therefore
+    races a worker's SimpleITK call. Proven by address match: the SIGSEGV
+    address 0x7ffee6b82000 fell inside the block SimpleITK unmapped at that
+    instant (addr=0x7ffee5df1000 len=35713024, _int_free_chunk <- _SimpleITK.so
+    <- cfunction_call, on a worker thread). The caller takes the snapshot on
+    the event loop, ordered with the kernels, and passes it here.
+    """
     adapted = adapt_runtime_value(value)
-    descriptor = adapted.describe(path="")
+    # The snapshot carries the shape facts precisely so describing an image does
+    # not have to reach back into ITK memory from this thread. Only images have
+    # one; everything else describes itself from memory Python owns.
+    if payload_snapshot is not None and isinstance(adapted, VoxImageValue):
+        descriptor = adapted.describe(path="", snapshot=payload_snapshot)
+    else:
+        descriptor = adapted.describe(path="")
     vox_type = str(descriptor.get("vox_type", adapted.vox_type))
 
     if vox_type in {"null", "boolean", "integer", "number", "string"}:
@@ -127,16 +247,24 @@ def encode_for_storage(value: Any, *, page_size: int = 128) -> EncodedRecord:
         )
 
     if isinstance(adapted, VoxImageValue):
-        array = adapted.as_array()
+        # Same rule as the descriptor above: with a snapshot, dtype/shape come
+        # from it and the live array is never materialised on this thread.
+        if payload_snapshot is not None:
+            dtype, shape = payload_snapshot.dtype, payload_snapshot.shape
+            payload_bytes = payload_snapshot.data
+        else:
+            array = adapted.as_array()
+            dtype, shape = str(array.dtype), array.shape
+            payload_bytes = _array_byte_view(array)
         payload_json = {
             "encoding": "image-array-binary-v1",
-            "dtype": str(array.dtype),
-            "shape": [int(v) for v in array.shape],
+            "dtype": str(dtype),
+            "shape": [int(v) for v in shape],
             "order": "C",
             "byte_order": "little",
             "metadata": adapted.storage_metadata(),
         }
-        payload_bin = bytes(array.tobytes(order="C"))
+        payload_bin = _compress(payload_bytes)
         return EncodedRecord(VOX_FORMAT_VERSION, "image", descriptor, payload_json, payload_bin)
 
     if isinstance(adapted, VoxBytesValue):
@@ -145,7 +273,7 @@ def encode_for_storage(value: Any, *, page_size: int = 128) -> EncodedRecord:
             vox_type="bytes",
             descriptor=descriptor,
             payload_json={"encoding": "bytes-binary-v1", "length": len(value)},
-            payload_bin=bytes(value),
+            payload_bin=_compress(bytes(value)),
         )
 
     if isinstance(adapted, VoxNdArrayValue):
@@ -158,6 +286,14 @@ def encode_for_storage(value: Any, *, page_size: int = 128) -> EncodedRecord:
             "mapping",
             descriptor,
             {"encoding": "mapping-json-v1", "value": adapted.to_json_native()},
+        )
+
+    if isinstance(adapted, VoxHandleValue):
+        return EncodedRecord(
+            VOX_FORMAT_VERSION,
+            "handle",
+            descriptor,
+            {"encoding": "handle-json-v1", "node": adapted.raw.node},
         )
 
     if isinstance(adapted, VoxSequenceValue):
@@ -197,23 +333,25 @@ def decode_runtime_value(vox_type: str, payload_json: dict[str, Any], payload_bi
     if vox_type in {"null", "boolean", "integer", "number", "string"}:
         return payload_json.get("value")
     if vox_type == "bytes":
-        return bytes(payload_bin or b"")
+        return _decompress(payload_bin)
     if vox_type == "mapping":
         return dict(payload_json.get("value") or {})
     if vox_type == "sequence":
-        return list(payload_json.get("value") or [])
+        return revive_handles(list(payload_json.get("value") or []))
+    if vox_type == "handle":
+        return Handle(str(payload_json.get("node") or ""))
     if vox_type == "ndarray":
         if np is None:
             raise RuntimeError("NumPy is required to decode ndarray values.")
         dtype = np.dtype(str(payload_json["dtype"]))
         shape = tuple(int(v) for v in payload_json["shape"])
-        return np.frombuffer(payload_bin or b"", dtype=dtype).reshape(shape, order="C")
+        return np.frombuffer(_decompress(payload_bin), dtype=dtype).reshape(shape, order="C")
     if vox_type == "image":
         if np is None:
             raise RuntimeError("NumPy is required to decode image values.")
         dtype = np.dtype(str(payload_json["dtype"]))
         shape = tuple(int(v) for v in payload_json["shape"])
-        array = np.frombuffer(payload_bin or b"", dtype=dtype).reshape(shape, order="C")
+        array = np.frombuffer(_decompress(payload_bin), dtype=dtype).reshape(shape, order="C")
         return restore_runtime_image(payload_json, array)
     if vox_type == "overlay":
         layers = []

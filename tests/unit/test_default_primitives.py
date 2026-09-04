@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import dask.bag as db
 import pytest
 
 from voxlogica.execution_strategy.results import SequenceValue
@@ -10,7 +9,6 @@ from voxlogica.primitives.default import (
     addition,
     argmax as argmax_primitive,
     dir as dir_primitive,
-    dask_map,
     division,
     filter as filter_primitive,
     fold as fold_primitive,
@@ -19,6 +17,7 @@ from voxlogica.primitives.default import (
     load,
     map as map_primitive,
     multiplication,
+    parameter_grid,
     print_primitive,
     range as range_primitive,
     subsequence,
@@ -39,31 +38,25 @@ def test_arithmetic_primitives():
 
 @pytest.mark.unit
 def test_sequence_arithmetic_overloads():
-    seq_add = addition.execute([1, 2, 3], 10)
-    assert isinstance(seq_add, SequenceValue)
-    assert list(seq_add.iter_values()) == [11, 12, 13]
+    """Lifted arithmetic returns a plain list.
 
-    seq_mul = multiplication.execute(2, [1, 2, 3])
-    assert isinstance(seq_mul, SequenceValue)
-    assert list(seq_mul.iter_values()) == [2, 4, 6]
-
-    pairwise = subtraction.execute([10, 20, 30], [1, 2, 3])
-    assert isinstance(pairwise, SequenceValue)
-    assert list(pairwise.iter_values()) == [9, 18, 27]
-
-    with pytest.raises(ValueError):
-        list(addition.execute([1, 2], [1, 2, 3]).iter_values())
+    This asserted `SequenceValue` and a lazy `iter_values()`, which is what these
+    primitives used to hand back. The VALUES were never in question; the wrapper
+    was, and it is gone. Asserting a representation that no longer exists is how
+    a test outlives what it tests.
+    """
+    assert addition.execute([1, 2, 3], 10) == [11, 12, 13]
+    assert multiplication.execute(2, [1, 2, 3]) == [2, 4, 6]
+    assert subtraction.execute([10, 20, 30], [1, 2, 3]) == [9, 18, 27]
 
     with pytest.raises(ValueError):
-        list(division.execute([1, 2], 0).iter_values())
+        addition.execute([1, 2], [1, 2, 3])          # lengths do not pair
+
+    with pytest.raises(ValueError):
+        division.execute([1, 2], 0)
 
 
 @pytest.mark.unit
-def test_dask_arithmetic_overloads():
-    bag = db.from_sequence([1, 2, 3], npartitions=2)
-    assert addition.execute(bag, 5).compute() == [6, 7, 8]
-    assert multiplication.execute(3, bag).compute() == [3, 6, 9]
-    assert subtraction.execute(bag, bag).compute() == [0, 0, 0]
 
 
 @pytest.mark.unit
@@ -77,9 +70,14 @@ def test_index_primitive():
 
 @pytest.mark.unit
 def test_range_primitive():
-    assert range_primitive.execute(**{"0": 4}).compute() == [0, 1, 2, 3]
-    assert range_primitive.execute(**{"0": 2, "1": 5}).compute() == [2, 3, 4]
-    assert range_primitive.execute(**{"0": 5, "1": 2}).compute() == []
+    """`range` returns a list.
+
+    The `.compute()` calls this used were the Dask bag API: `range` produced a
+    bag once, and nothing has since. The dependency is gone and so is the method.
+    """
+    assert range_primitive.execute(**{"0": 4}) == [0, 1, 2, 3]
+    assert range_primitive.execute(**{"0": 2, "1": 5}) == [2, 3, 4]
+    assert range_primitive.execute(**{"0": 5, "1": 2}) == []
     with pytest.raises(ValueError):
         range_primitive.execute(**{"0": 1.2})
 
@@ -95,11 +93,6 @@ def test_subsequence_primitive():
     assert isinstance(sliced_lazy, SequenceValue)
     assert list(sliced_lazy.iter_values()) == [20, 30]
     assert sliced_lazy.total_size == 2
-
-    bag = db.from_sequence([5, 6, 7, 8], npartitions=2)
-    sliced_bag = subsequence.execute(**{"0": bag, "1": 1, "2": 3})
-    assert isinstance(sliced_bag, SequenceValue)
-    assert list(sliced_bag.iter_values()) == [6, 7]
 
     with pytest.raises(ValueError):
         subsequence.execute(**{"0": [1, 2, 3], "1": 1.5})
@@ -216,23 +209,24 @@ def test_argmax_primitive():
 
 
 @pytest.mark.unit
-def test_dask_map_and_print_primitive(capsys: pytest.CaptureFixture[str]):
-    class DaskClosure:
-        variable = "x"
+def test_parameter_grid_primitive():
+    assert parameter_grid.execute(**{"0": [[0.9, 0.95], [12, 18]]}) == [
+        [0.9, 12],
+        [0.9, 18],
+        [0.95, 12],
+        [0.95, 18],
+    ]
+    assert parameter_grid.execute(**{"0": []}) == [[]]
+    assert parameter_grid.execute(**{"0": [[1], []]}) == []
 
-        def __call__(self, value):
-            return value + 1
+    lazy_axis = SequenceValue(lambda: iter([2, 3]), total_size=2)
+    assert parameter_grid.execute(**{"0": [[1], lazy_axis]}) == [[1, 2], [1, 3]]
 
-    bag = db.from_sequence([1, 2, 3], npartitions=2)
-    mapped = dask_map.execute(**{"0": bag, "closure": DaskClosure()})
-    assert mapped.compute() == [2, 3, 4]
+    with pytest.raises(ValueError, match="axis 1"):
+        parameter_grid.execute(**{"0": [[1], 2]})
 
-    with pytest.raises(ValueError):
-        dask_map.execute(**{"0": [1, 2, 3], "closure": DaskClosure()})
 
-    rendered = print_primitive.execute(**{"0": '"label"', "1": 42})
-    assert rendered == "label=42"
-    assert "label=42" in capsys.readouterr().out
+@pytest.mark.unit
 
 
 @pytest.mark.unit

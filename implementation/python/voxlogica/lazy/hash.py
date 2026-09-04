@@ -43,11 +43,49 @@ def node_payload(node: NodeSpec) -> dict[str, Any]:
     }
 
 
+def _feed(h: "hashlib._Hash", value: Any) -> None:
+    """Feed a normalized value into a hash incrementally — a fast, deterministic,
+    collision-resistant canonical encoding (type tags + length-prefixed strings)
+    that never builds a giant intermediate JSON string. This is what makes hashing
+    a large plan (millions of nodes, some with deep attrs) cheap: the old
+    json.dumps(sort_keys=True) rebuilt and re-serialized the whole payload per node,
+    which dominated startup on full-dataset runs."""
+    if value is None:
+        h.update(b"N")
+    elif value is True:
+        h.update(b"T")
+    elif value is False:
+        h.update(b"F")
+    elif isinstance(value, int):
+        h.update(b"i"); h.update(str(value).encode("ascii"))
+    elif isinstance(value, float):
+        h.update(b"f"); h.update(repr(value).encode("ascii"))
+    elif isinstance(value, str):
+        e = value.encode("utf-8"); h.update(b"s"); h.update(str(len(e)).encode("ascii")); h.update(b":"); h.update(e)
+    elif isinstance(value, (list, tuple)):
+        h.update(b"[")
+        for item in value:
+            _feed(h, item)
+        h.update(b"]")
+    elif isinstance(value, dict):
+        h.update(b"{")
+        for k, v in sorted(value.items(), key=lambda kv: str(kv[0])):
+            _feed(h, str(k)); _feed(h, v)
+        h.update(b"}")
+    else:
+        s = str(value).encode("utf-8"); h.update(b"o"); h.update(str(len(s)).encode("ascii")); h.update(b":"); h.update(s)
+
+
 def hash_node(node: NodeSpec) -> NodeId:
     """Hash one symbolic node into its stable DAG identifier."""
-    payload = node_payload(node)
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    h = hashlib.sha256()
+    h.update(b"kind"); _feed(h, node.kind)
+    h.update(b"op"); _feed(h, node.operator)
+    h.update(b"args"); _feed(h, list(node.args))
+    h.update(b"kw"); _feed(h, [[k, _normalize_value(v)] for k, v in sorted(node.kwargs)])
+    h.update(b"attrs"); _feed(h, _normalize_value(node.attrs))
+    h.update(b"ok"); _feed(h, node.output_kind)
+    return h.hexdigest()
 
 
 def hash_sequence_item(parent_node_id: str, index: int) -> NodeId:

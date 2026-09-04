@@ -50,6 +50,28 @@ def execute(**kwargs) -> list[Any]:
     return kept
 
 
+def rewrite(node: Any, ctx: Any):
+    """Become `gather(map(predicate, sequence), sequence)`.
+
+    `filter` could not run under this engine at all. The reducer lowers it to
+    `filter(iterable, closure)`, and a closure node's value here is None -- the
+    engine expands closures, it does not build them -- so the kernel below raised
+    "requires closure argument" on every program that used it. A language feature
+    that could be written and never executed.
+
+    Rewriting it costs no new engine machinery: `map` is already a node the
+    engine expands, and `gather` is an ordinary primitive whose sequence argument
+    is shallow. What that buys is the memory: each predicate consumes its element
+    and releases it, and `gather` selects among HANDLES. Filtering three hundred
+    volumes never holds three hundred volumes.
+    """
+    if len(node.args) != 2:
+        return None
+    sequence_id, closure_id = node.args[0], node.args[1]
+    flags = ctx.node("default.map", sequence_id, closure_id)
+    return ctx.node("default.gather", flags, sequence_id)
+
+
 KERNEL = execute
 PRIMITIVE_SPEC = PrimitiveSpec(
     name="filter",
@@ -59,5 +81,7 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     attrs_schema={},
     planner=default_planner_factory("default.filter", kind="sequence"),
     kernel_name="default.filter",
+    rewrite=True,
+    rewriter=rewrite,
     description="Keep sequence items that satisfy a predicate closure",
 )

@@ -1,0 +1,33 @@
+// The reduced TACAS'19 recipe, transliterated for this engine -- VL1's own
+// constants and VL1's own `flt`, so the comparison is between ENGINES rather
+// than between two different smoothings. Using `smoothen` here instead cost
+// 0.02 to 0.03 Dice per case and looked, for a while, like an engine divergence.
+import "simpleitk"
+import "vox1"
+
+dataset_root = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData"
+hi_thr = 0.95
+vi_thr = 0.86
+correction = 0.5
+
+flair_paths = subsequence(dir(dataset_root, "*_flair.nii.gz", true, true), 0, 3)
+gt_paths    = subsequence(dir(dataset_root, "*_seg.nii.gz",   true, true), 0, 3)
+
+distlt(x, y) = dt(y) <. x
+flt(r, a) = distlt(r, distgeq(r, not(a)))
+dice(x, y) = (2 * volume(and(x, y))) / (volume(x) + volume(y))
+
+flair_of(g) = intensity(ReadImage(index(flair_paths, g)))
+gt_of(g)    = geq_sv(1, intensity(ReadImage(index(gt_paths, g))))
+
+pflair_of(g) =
+  let flair = flair_of(g) in
+  percentiles(flair, not(touch(leq_sv(0.1, flair), border)), correction)
+
+segment(g) =
+  let pflair = pflair_of(g) in
+  grow(flt(5.0, geq_sv(hi_thr, pflair)), flt(2.0, geq_sv(vi_thr, pflair)))
+
+print "dice_c1" dice(segment(0), gt_of(0))
+print "dice_c2" dice(segment(1), gt_of(1))
+print "dice_c3" dice(segment(2), gt_of(2))

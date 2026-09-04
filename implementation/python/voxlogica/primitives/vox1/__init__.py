@@ -4,9 +4,97 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
+from voxlogica.primitives.api import (
+    AritySpec,
+    ElementwiseSpec,
+    PrimitiveSpec,
+    StencilSpec,
+    default_planner_factory,
+)
 from voxlogica.primitives.vox1 import kernels
 
+
+# Elementwise opt-in for schedule-time fusion (engine/fusion.py). ``expr``
+# placeholders match each kernel's real positional argument order — several
+# of these (leq_sv, geq_sv, between) put the scalar operand(s) BEFORE the
+# image, so {0} is not always "the image". UNVALIDATED until Phase 2's
+# bit-identical property tests run (see ElementwiseSpec docstring).
+_ELEMENTWISE: dict[str, ElementwiseSpec] = {
+    "not": ElementwiseSpec(expr="~({0} != 0)", out_dtype="uint8"),
+    "and": ElementwiseSpec(expr="{0} & {1}", out_dtype="uint8"),
+    "or": ElementwiseSpec(expr="{0} | {1}", out_dtype="uint8"),
+    # leq_sv(value, image) / geq_sv(value, image) / eq_sv(value, image):
+    # scalar is {0}, image is {1}. eq_sv's KERNEL stays sitk-based (unlike the
+    # reverted commit fa9c11e, which changed the kernel body too and measured
+    # a 20% regression -- see manuscripts/engine-scaling-2026-07.md Part IV
+    # sec 19) -- only the fusion registration is added here, so eq_sv can
+    # join a cone but every dispatch still runs the real ITK filter. Sits
+    # directly between two already-elementwise ops in the real oracle sweep
+    # (mask -> eq_sv -> not, 1632 occurrences, measured via a dependency-graph
+    # query over the reduced plan) -- registering it lets a cone bridge past
+    # exactly the point that currently breaks it, per Part IV sec 20's
+    # revised recommendation (widen the fusion boundary, not the kernel set).
+    "leq_sv": ElementwiseSpec(expr="{1} <= {0}", out_dtype="uint8"),
+    "geq_sv": ElementwiseSpec(expr="{1} >= {0}", out_dtype="uint8"),
+    "eq_sv": ElementwiseSpec(expr="{1} == {0}", out_dtype="uint8"),
+    # between(value1, value2, image): image is {2}.
+    "between": ElementwiseSpec(expr="({0} <= {2}) & ({2} <= {1})", out_dtype="uint8"),
+    # Generic image-vs-image (or image-vs-scalar) comparisons: kernels.py's
+    # less/less_equal/etc. flip the underlying sitk op when the SCALAR is on
+    # the left (e.g. "3 < img" dispatches Greater(img, 3)) so that the
+    # *logical* meaning stays "left OP right" regardless of which side is the
+    # array — meaning a plain positional expr is correct unconditionally,
+    # with no need to replicate that flip here. Output is always a 0/1 mask
+    # (ITK's own comparison-filter convention), so out_dtype="uint8" is safe
+    # regardless of the operand dtype(s) — unlike e.g. mask(), whose output
+    # dtype tracks its image argument and is therefore NOT safely declarable
+    # this way (see doc/dev/free-threaded-handover.md's fusion-coverage note).
+    "==": ElementwiseSpec(expr="{0} == {1}", out_dtype="uint8"),
+    "!=": ElementwiseSpec(expr="{0} != {1}", out_dtype="uint8"),
+    "<":  ElementwiseSpec(expr="{0} < {1}", out_dtype="uint8"),
+    "<=": ElementwiseSpec(expr="{0} <= {1}", out_dtype="uint8"),
+    ">":  ElementwiseSpec(expr="{0} > {1}", out_dtype="uint8"),
+    ">=": ElementwiseSpec(expr="{0} >= {1}", out_dtype="uint8"),
+    # mask(image, mask_image): zero out voxels where mask_image is false.
+    # Genuinely pointwise, but its output dtype tracks {0} (the image), not a
+    # fixed type -- called via pdt(x)=mask(dt(x), dt(x) > 0) inside EVERY
+    # smoothen/dilate/erode/imopen/imclose, immediately after dt (never
+    # itself elementwise), so registering it lets a cone bridge past dt's
+    # boundary instead of breaking there -- see manuscripts/engine-scaling-
+    # 2026-07.md Part IV for the measurement this was added to chase.
+    "mask": ElementwiseSpec(expr="({0} if {1} != 0 else 0.0)", out_dtype="arg0"),
+}
+
+# Neighbourhood opt-in for schedule-time fusion. Unlike _ELEMENTWISE these can
+# only ever be a cone's SEED, never grown into (engine/fusion.py) — a stencil
+# reads its input at neighbouring voxels, and a non-seed member's input is a
+# value the fused loop computes on the fly and never materializes, so there is
+# nothing to read a neighbour OF. A seed's dependencies are guaranteed already
+# resident, which makes the read well-defined.
+_STENCIL: dict[str, StencilSpec] = {
+    # near(image) == sitk.BinaryDilate(cast_to_uint8(image), [1,1,1], Box, 1.0).
+    #
+    # Not "max over the 3x3x3 box": BinaryDilate copies its input and then sets
+    # dilated voxels to the foreground value, so foreground is `== 1` (not
+    # `!= 0`) and a voxel holding some other value is neither foreground nor
+    # erased — it survives unless a genuine 1 dilates over it. Both details are
+    # live, because _as_bool_image CASTS (truncating) rather than thresholds,
+    # so any non-0/1 input reaches the kernel with its stray values intact.
+    # See kernels._dilate_box3_separable and tests/unit/test_vox1_near.py,
+    # where this exact semantics is pinned against ITK over 57 configurations.
+    #
+    # uint8 only: for any other input dtype the real kernel casts FIRST, and a
+    # truncating cast is not expressible as a per-voxel read of the original
+    # array (float 256.0 becomes 0). Those calls take the normal path.
+    "near": StencilSpec(
+        radius=1,
+        reduce="max",
+        neighbour_expr="(1 if {0} == 1 else 0)",
+        result_expr="(1 if {0} == 1 else {1})",
+        out_dtype="uint8",
+        input_dtypes=("uint8",),
+    ),
+}
 
 _PRIMITIVES: dict[str, tuple[Callable[..., Any], AritySpec]] = {
     "num_div": (kernels.num_div, AritySpec.fixed(2)),
@@ -62,10 +150,10 @@ _PRIMITIVES: dict[str, tuple[Callable[..., Any], AritySpec]] = {
     "interior": (kernels.interior, AritySpec.fixed(1)),
     "through": (kernels.through, AritySpec.fixed(2)),
     "crossCorrelation": (kernels.crossCorrelation, AritySpec.fixed(7)),
-    "border": (kernels.border, AritySpec.fixed(0)),
-    "x": (kernels.x, AritySpec.fixed(0)),
-    "y": (kernels.y, AritySpec.fixed(0)),
-    "z": (kernels.z, AritySpec.fixed(0)),
+    "border": (kernels.border, AritySpec.fixed(1)),
+    "x": (kernels.x, AritySpec.fixed(1)),
+    "y": (kernels.y, AritySpec.fixed(1)),
+    "z": (kernels.z, AritySpec.fixed(1)),
     "intensity": (kernels.intensity, AritySpec.fixed(1)),
     "red": (kernels.red, AritySpec.fixed(1)),
     "green": (kernels.green, AritySpec.fixed(1)),
@@ -81,6 +169,12 @@ _PRIMITIVES: dict[str, tuple[Callable[..., Any], AritySpec]] = {
     "lcc": (kernels.lcc, AritySpec.fixed(1)),
     "Lcc": (kernels.Lcc, AritySpec.fixed(1)),
     "otsu": (kernels.otsu, AritySpec.fixed(3)),
+    "n4": (kernels.n4, AritySpec.fixed(2)),
+    "contralateral_asymmetry": (kernels.contralateral_asymmetry, AritySpec.fixed(2)),
+    "hd95": (kernels.hd95, AritySpec.fixed(2)),
+    "nsd": (kernels.nsd, AritySpec.fixed(3)),
+    "label_mean": (kernels.label_mean, AritySpec.fixed(2)),
+    "slic": (kernels.slic, AritySpec.fixed(3)),
 }
 
 
@@ -101,7 +195,9 @@ def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
             planner=default_planner_factory(qualified, kind="scalar"),
             kernel_name=qualified,
             description=(kernel.__doc__ or "").strip(),
-            type_rule=getattr(kernel, "primitive_type", None)
+            elementwise=_ELEMENTWISE.get(primitive_name),
+            stencil=_STENCIL.get(primitive_name),
+            type_rule=getattr(kernel, "primitive_type", None),
         )
         specs[primitive_name] = (spec, kernel)
     return specs

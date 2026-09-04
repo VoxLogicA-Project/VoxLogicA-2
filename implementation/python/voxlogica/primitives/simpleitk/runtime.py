@@ -13,6 +13,7 @@ import logging
 
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 from voxlogica.value_model import adapt_runtime_value
+from voxlogica.diagnostics.exceptions import PrimitiveExecutionError
 
 logger = logging.getLogger(__name__)
 VERBOSE_LEVEL = 15
@@ -72,15 +73,10 @@ def _wrap_sitk_function(func: Callable, func_name: str) -> Callable:
             # print(result)
             return result
             
-        except Exception as e:
-            # Enhanced error message for debugging
-            error_msg = f"{func_name} failed: {e}"
-            if func_name == "Multiply":
-                error_msg += f" [Debug: received {len(kwargs)} kwargs: {list(kwargs.keys())}"
-                if hasattr(e, '__class__'):
-                    error_msg += f", error type: {e.__class__.__name__}"
-                error_msg += "]"
-            raise ValueError(error_msg) from e
+        except Exception as exc:
+            # Rendering belongs at the CLI/REPL boundary; retain operation and
+            # original cause for the diagnostic classifier.
+            raise PrimitiveExecutionError(func_name, tuple(args)) from exc
     
     # Copy docstring and other attributes
     execute.__doc__ = func.__doc__ or f"SimpleITK {func_name} function"

@@ -45,15 +45,12 @@ def vector_double(values: List[float]) -> List[float]:
 @primitive_type(simple_type([VoxImage()], VoxSequence(VoxInt())))
 def _image_to_array(image):
     """Convert SimpleITK image to numpy array if needed"""
-    if hasattr(image, 'GetArrayFromImage'):
-        # If it's already a SimpleITK image
-        return sitk.GetArrayFromImage(image)
-    elif hasattr(image, 'GetSize'):
-        # If it's a SimpleITK image
-        return sitk.GetArrayFromImage(image)
-    else:
-        # Assume it's already a numpy array
-        return np.array(image)
+    if hasattr(image, 'GetSize'):
+        # SimpleITK image: zero-copy read-only view. Callers here only read
+        # (metric computations); a writer must take its own copy.
+        return sitk.GetArrayViewFromImage(image)
+    # Already array-like: asarray, not array -- np.array copies by default.
+    return np.asarray(image)
 
 @primitive_type(simple_type([VoxSequence(VoxImage()), VoxSequence(VoxImage())], VoxRecord({'accuracy': VoxFloat(), 'correct_pixels': VoxInt(), 'total_pixels': VoxInt(), 'incorrect_pixels': VoxInt()})))
 def pixel_accuracy(**kwargs):
@@ -311,15 +308,9 @@ def threshold_equal(**kwargs):
         
         # Use SimpleITK Equal function if input is SimpleITK image
         if hasattr(image, 'GetSize'):
-            # Create threshold image
-            threshold_image = sitk.Image(image.GetSize(), image.GetPixelID())
-            threshold_image.CopyInformation(image)
-            threshold_array = np.full(sitk.GetArrayFromImage(image).shape, threshold)
-            threshold_image = sitk.GetImageFromArray(threshold_array)
-            threshold_image.CopyInformation(image)
-            
-            # Use SimpleITK Equal
-            result = sitk.Equal(image, threshold_image, false_value, true_value)
+            # Scalar overload: avoids allocating a full threshold volume and
+            # the second full copy formerly made by GetImageFromArray.
+            result = sitk.Equal(image, threshold, false_value, true_value)
             return result
         else:
             # Work with numpy arrays

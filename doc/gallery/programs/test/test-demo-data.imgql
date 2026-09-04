@@ -1,2 +1,0 @@
-import "test"
-demo_payload = test.demo_data()

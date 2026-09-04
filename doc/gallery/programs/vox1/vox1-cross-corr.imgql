@@ -1,9 +1,14 @@
+// Texture similarity and percentile ranking. `crossCorrelation` compares local
+// histograms in a neighbourhood; `percentiles` re-ranks an image WITHIN a mask,
+// turning absolute values into per-image relative ones -- the operation that
+// makes a fixed threshold meaningful across scans.
 import "simpleitk"
 import "vox1"
-m1 = ReadImage("tests/data/chris_t1.nii.gz")
-m2 = ReadImage("tests/data/chris_t1.nii.gz")
-a = intensity(m1)
-b = intensity(m2)
-c = crossCorrelation(2,a,b,tt,min(b),max(b),16)
-p = percentiles(c,40 .<= a,0.5)
-vox1_corr_avg = avg(p,tt)
+
+a = intensity(ReadImage("tests/data/chris_t1.nii.gz"))
+b = a                                     // self-correlation, for a runnable demo
+
+c = crossCorrelation(2, a, b, tt, min(b), max(b), 16)
+p = percentiles(c, 40 .<= a, 0.5)         // ranked within the brighter tissue only
+
+print "corr_avg" avg(p, tt)

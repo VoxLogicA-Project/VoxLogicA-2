@@ -61,6 +61,9 @@ class SymbolicPlan:
     nodes: dict[NodeId, NodeSpec] = field(default_factory=dict)
     goals: list[GoalSpec] = field(default_factory=list)
     imported_namespaces: tuple[str, ...] = ()
+    # Sidecar only: source locations must never participate in node hashes.
+    provenance: dict[NodeId, tuple[str, ...]] = field(default_factory=dict)
+    source_text: str | None = None
 
     @property
     def node_count(self) -> int:

@@ -1,10 +1,14 @@
+// vox1 lifts arithmetic to whole images. The dot marks which side is the
+// image: `i +. 4` adds a number to every voxel, `4 .+ i` is the same the other
+// way round. `avg(x, tt)` averages over the whole image (tt = "everywhere").
 import "simpleitk"
 import "vox1"
-m = ReadImage("tests/data/chris_t1.nii.gz")
-i = intensity(m)
+
+i = intensity(ReadImage("tests/data/chris_t1.nii.gz"))
 a = i +. 4
 b = 4 .+ i
 c = (a *. 2) /. 3
-vox1_overload_a = avg(a,tt)
-vox1_overload_b = avg(b,tt)
-vox1_overload_c = avg(c,tt)
+
+print "avg_a" avg(a, tt)
+print "avg_b" avg(b, tt)      // identical to avg_a: the operators commute
+print "avg_c" avg(c, tt)

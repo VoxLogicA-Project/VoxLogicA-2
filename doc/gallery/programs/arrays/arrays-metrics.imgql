@@ -1,8 +1,13 @@
+// Agreement metrics between two masks. Here both masks come from the same
+// image at different thresholds, which makes the example self-contained: in
+// real use `truth` would be a manual segmentation.
 import "simpleitk"
 import "arrays"
-img = ReadImage("tests/data/chris_t1.nii.gz")
-pred = BinaryThreshold(img,40,180,1,0)
-truth = BinaryThreshold(img,55,170,1,0)
-pixel_accuracy = arrays.pixel_accuracy(pred,truth)
-dice = arrays.dice_score(pred,truth,1)
-jaccard = arrays.jaccard_index(pred,truth,1)
+
+img   = ReadImage("tests/data/chris_t1.nii.gz")
+pred  = BinaryThreshold(img, 40, 180, 1, 0)
+truth = BinaryThreshold(img, 55, 170, 1, 0)
+
+print "pixel_accuracy" arrays.pixel_accuracy(pred, truth)
+print "dice"           arrays.dice_score(pred, truth, 1)
+print "jaccard"        arrays.jaccard_index(pred, truth, 1)

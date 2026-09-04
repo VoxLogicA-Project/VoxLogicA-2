@@ -1,5 +1,10 @@
+// `index` selects one element of a sequence. Several SimpleITK operations
+// return a tuple of results -- MinimumMaximum gives (min, max) -- and index is
+// how a program picks the part it needs.
 import "simpleitk"
+
 img = ReadImage("tests/data/chris_t1.nii.gz")
-mm = MinimumMaximum(img)
-min_value = index(mm,0)
-max_value = index(mm,1)
+mm  = MinimumMaximum(img)
+
+print "min_value" index(mm, 0)
+print "max_value" index(mm, 1)

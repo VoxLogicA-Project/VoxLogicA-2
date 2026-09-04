@@ -30,7 +30,7 @@ Trains an nnU-Net model from a sequence of training cases.
 **Signature:**
 
 ```voxlogica
-nnunet.train(training_cases, work_root, modalities, configuration, nfolds, dataset_name, device, trainer)
+nnunet.train(training_cases, work_root, modalities, configuration, nfolds, dataset_name, device, trainer, plans, postprocess, pretrained)
 ```
 
 **Arguments:**
@@ -40,13 +40,49 @@ nnunet.train(training_cases, work_root, modalities, configuration, nfolds, datas
 | 0 | `training_cases` | yes | Sequence of training cases (see below) |
 | 1 | `work_root` | yes | Directory for nnU-Net raw/preprocessed/results data |
 | 2 | `modalities` | no | Modality names, e.g. `["T1"]`. Omitted → auto `ch0`, `ch1`, … |
-| 3 | `configuration` | no | nnU-Net config (`"2d"`, `"3d_fullres"`, …). Default: `"2d"` |
+| 3 | `configuration` | no | One config (`"3d_fullres"`) or several (`["2d", "3d_fullres", "3d_lowres"]`). Default: `"2d"` |
 | 4 | `nfolds` | no | Folds to train. Default: `5` |
 | 5 | `dataset_name` | no | Human-readable dataset name. Default: `"VoxLogicA"` |
 | 6 | `device` | no | `"cpu"` or `"cuda"`. Default: `"cpu"` |
 | 7 | `trainer` | no | nnU-Net trainer class. Default: `"nnUNetTrainer"` |
+| 8 | `plans` | no | Plans identifier, i.e. the architecture preset. Default: `"nnUNetPlans"`; the residual-encoder presets are `"nnUNetResEncUNetMPlans"`, `"…LPlans"`, `"…XLPlans"` |
+| 9 | `postprocess` | no | Run nnU-Net's own postprocessing step. Default: `"true"` |
+| 10 | `pretrained` | no | Path to a checkpoint to start from instead of random init. Default: none |
 
 Use `"nnUNetTrainer_10epochs"` for short CPU demos and tests.
+
+**Defaults follow nnU-Net's own recommendations.** `nfolds` is 5 because the
+documented workflow trains five folds and predicts with the ensemble, and
+postprocessing is on because the documented workflow runs
+`nnUNetv2_find_best_configuration` between training and inference. Each is a
+program argument, so a program that wants something else says so where the
+reader can see it -- one fold, or the raw network output.
+
+**Several configurations.** Naming a list is the documented workflow: nnU-Net
+preprocesses each configuration, trains each (with `--npz`, so softmax is kept),
+and then `nnUNetv2_find_best_configuration` scores them on the cross-validation
+and names the single model — or the ensemble of two — that did best. The model
+handle carries that selection, and `predict` runs it: for an ensemble it averages
+the **probabilities**, which is how nnU-Net ensembles, and not the labels.
+
+The cost is roughly one training per configuration. Naming one configuration
+costs exactly what it did before, asks nobody, and writes no softmax.
+
+**Starting weights.** `pretrained` maps to `nnUNetv2_train -pretrained_weights`.
+The checkpoint must come from a model with the same `plans` and `configuration`,
+or nnU-Net refuses to load it. The path is resolved to an absolute one and
+checked before any preprocessing runs. It is an argument, not a setting: two
+models trained on the same data from different starting weights are two
+different models, and the cache key has to say so.
+
+**Postprocessing.** After training, nnU-Net measures its own validation
+predictions with and without keeping only the largest connected component, and
+keeps the variant that scored better. `train` asks that question once, caches
+the answer where nnU-Net caches it (`postprocessing.pkl` beside the validation
+predictions), carries it on the model handle, and `predict` applies it. Often
+the answer is "raw output is best", which is a real answer and costs nothing.
+A model trained before this existed gains the answer the first time it is used
+to predict, without being retrained.
 
 **Training case shape:**
 
@@ -69,7 +105,7 @@ Loads an nnU-Net predictor from a trained model handle. Call once, then reuse wi
 **Signature:**
 
 ```voxlogica
-nnunet.make_predictor(model, [device], [folds])
+nnunet.make_predictor(model, [device], [folds], [step_size], [tta], [checkpoint])
 ```
 
 | # | Name | Required | Description |
@@ -77,6 +113,15 @@ nnunet.make_predictor(model, [device], [folds])
 | 0 | `model` | yes | Handle returned by `nnunet.train` |
 | 1 | `device` | no | `"cpu"` or `"cuda"`. Default: device stored on the model handle |
 | 2 | `folds` | no | Folds to use. Default: folds trained in the model handle |
+| 3 | `step_size` | no | Sliding-window step. Default: `0.5`; must be in `(0, 1]` |
+| 4 | `tta` | no | Test-time augmentation by mirroring. Default: `"true"` |
+| 5 | `checkpoint` | no | Checkpoint file name. Default: `"checkpoint_final.pth"` |
+
+These are nnU-Net's own inference options (`-step_size`, `--disable_tta`, `-chk`)
+with nnU-Net's own defaults, so saying nothing keeps the documented behaviour.
+They are carried on the handle, not just used when it is built: a handle is a
+value the engine persists and rebuilds from in a later process, and a knob kept
+elsewhere would revert to the default exactly then.
 
 **Returns:** predictor handle (`vox_kind = "nnunet_predictor"`).
 

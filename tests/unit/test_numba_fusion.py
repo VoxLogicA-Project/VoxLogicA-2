@@ -1,0 +1,608 @@
+"""Stage B (numba-compiled cones) — bit-identical vs Stage A, through the
+real ComputationEngine.
+
+Background compilation means the first run of any given cone shape always
+executes Stage A (see ``NumbaFusionBackend.try_get``); this module waits for
+compilation to land, then drives a second run and asserts it actually took
+the Stage B path with identical output.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from dataclasses import replace
+
+import numpy as np
+import pytest
+import SimpleITK as sitk
+
+from voxlogica.engine.core import ComputationEngine
+from voxlogica.engine.priority import Priority
+from voxlogica.lazy.ir import SymbolicPlan
+from voxlogica.parser import parse_program_content
+from voxlogica.reducer import reduce_program
+
+# "neg"'s cone is JUST "and" + N chained "not"s = N+1 members, not the full
+# chain it looks like: "lo"/"hi" each complete as their OWN independent
+# dispatch (both depend only on "img", so both are ready/completed before
+# "and" ever becomes ready) — FusionPlanner only grows a cone FORWARD from
+# its seed toward consumers, it never retroactively absorbs an
+# already-completed producer. N=13 clears NumbaFusionBackend's
+# _MIN_MEMBERS_FOR_STAGE_B gate (12) with margin; below that gate Stage B is
+# never even attempted (see numba_fusion.py).
+_NOT_DEPTH = 13
+PROGRAM = """
+import "simpleitk"
+import "vox1"
+img = ReadImage("{path}")
+lo = leq_sv(3.0, img)
+hi = geq_sv(1.0, img)
+combo = and(lo, hi)
+neg = %s
+either = or(leq_sv(4.0, img), geq_sv(0.0, img))
+btw = between(1.0, 3.0, img)
+print "neg" neg
+print "either" either
+print "btw" btw
+""" % ("not(" * _NOT_DEPTH + "combo" + ")" * _NOT_DEPTH)
+
+
+def _write_test_image(path) -> None:
+    arr = np.arange(4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6) % 5
+    sitk.WriteImage(sitk.GetImageFromArray(arr), str(path))
+
+
+def _plan(tmp_path) -> SymbolicPlan:
+    img_path = tmp_path / "in.nii.gz"
+    _write_test_image(img_path)
+    program = PROGRAM.format(path=str(img_path).replace("\\", "/"))
+    return reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+
+def _run(plan: SymbolicPlan, *, numba_backend=None):
+    # max_concurrency=1 is LOAD-BEARING, not incidental: a cone's membership
+    # depends on which of its producers have already completed when the seed
+    # is popped (FusionPlanner only grows FORWARD, never retroactively
+    # absorbing a finished producer -- see the module-level comment on
+    # _NOT_DEPTH). Under parallelism that is a race, so the same plan yields
+    # DIFFERENT ConeShapes run to run -- measured on a 24-core box: member
+    # counts of 14,14,15,14 across four runs, vs a stable 15 every time at
+    # concurrency 1. Since the compile cache is keyed by shape, a warm run
+    # that happens to form a different shape than the cold run compiled asks
+    # for a key that was never compiled, silently falls back to Stage A, and
+    # this test's "cones_numba > 0" assertion fails -- ~50-70% of runs.
+    # Pinning to 1 makes cone formation deterministic so the test measures
+    # what it claims (Stage A vs Stage B equivalence) instead of scheduler
+    # luck. The sibling _run_loop pins concurrency for the same reason.
+    #
+    # NB the underlying nondeterminism is NOT a production problem and is not
+    # worth "fixing" in the planner: shapes recur constantly across a real
+    # workload, so the cache converges -- a 259-case BraTS run measured
+    # cones_numba 773 / cones_dispatched 777 (99.5% Stage B). It only bites a
+    # 2-run test, where there is no second chance for a shape to recur.
+    engine = ComputationEngine(max_concurrency=1)
+    engine.config = replace(engine.config, fusion_enabled=True)
+    if numba_backend is not None:
+        engine.numba_backend = numba_backend
+    engine.adopt_plan(plan)
+
+    async def _drive():
+        queries = [(g, engine.submit(g.id, g.operation, g.name, Priority.NORMAL))
+                   for g in plan.goals]
+        await engine.run()
+        return {g.name: await q.result() for g, q in queries}
+
+    values = asyncio.run(_drive())
+    return engine, values, engine.metrics()
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_once_compiled(tmp_path) -> None:
+    plan = _plan(tmp_path)
+
+    # Cold run: no shape is compiled yet, so this run is pure Stage A but
+    # kicks off background compiles for every cone shape it sees.
+    cold_engine, cold_values, cold_metrics = _run(plan)
+    assert cold_metrics["cones_dispatched"] > 0
+    assert cold_metrics["cones_numba"] == 0, \
+        "first-ever run of a shape must never block on its own compile"
+
+    backend = cold_engine.numba_backend
+    deadline = time.monotonic() + 10.0
+    while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+        if time.monotonic() > deadline:
+            pytest.fail("background numba compile(s) never finished")
+        time.sleep(0.05)
+    assert backend.compiles_failed == 0, "no cone shape in this program should fail to compile"
+    assert backend.compiles_finished > 0
+
+    # Warm run reusing the now-populated compile cache: must take Stage B.
+    warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+    assert warm_metrics["cones_numba"] > 0, \
+        "test must actually exercise Stage B, or it proves nothing"
+
+    for name in ("neg", "either", "btw"):
+        a = cold_values[name].np() if hasattr(cold_values[name], "np") else cold_values[name]
+        b = warm_values[name].np() if hasattr(warm_values[name], "np") else warm_values[name]
+        assert np.array_equal(np.asarray(a), np.asarray(b)), \
+            f"goal {name!r} diverged between Stage A and Stage B"
+
+
+# leq_sv + not*13 = 14 members: clears NumbaFusionBackend's minimum cone
+# size (12) with margin (below the gate, Stage B is never even attempted —
+# see numba_fusion.py). Single-producer chain (leq_sv is the seed itself,
+# no independently-completing sibling to exclude), so all N+1 ops fuse.
+_LOOP_PROGRAM = '''
+import "simpleitk"
+import "vox1"
+img = ReadImage("{path}")
+idxs = range(0, 40)
+let elementwise_chain(i) =
+  let combo = leq_sv(1.0 + i*0.001, img) in
+  %s
+result = for i in idxs do elementwise_chain(i)
+print "result" result
+''' % ("not(" * _NOT_DEPTH + "combo" + ")" * _NOT_DEPTH)
+
+
+def _run_loop(tmp_path, *, numba_backend=None, max_concurrency=2, loop_window=2):
+    img_path = tmp_path / "in.nii.gz"
+    _write_test_image(img_path)
+    program = _LOOP_PROGRAM.format(path=str(img_path).replace("\\", "/"))
+    plan = reduce_program(parse_program_content(program)).to_symbolic_plan()
+    engine = ComputationEngine(max_concurrency=max_concurrency)
+    engine.config = replace(engine.config, fusion_enabled=True, loop_window=loop_window)
+    if numba_backend is not None:
+        engine.numba_backend = numba_backend
+    engine.adopt_plan(plan)
+
+    async def _drive():
+        queries = [(g, engine.submit(g.id, g.operation, g.name, Priority.NORMAL)) for g in plan.goals]
+        await asyncio.wait_for(engine.run(), timeout=20.0)
+        return {g.name: await q.result() for g, q in queries}
+
+    values = asyncio.run(_drive())
+    return engine, values, engine.metrics()
+
+
+@pytest.mark.unit
+def test_stage_b_elided_interior_rematerializes_correctly_under_late_hash_consing(tmp_path) -> None:
+    """The design doc's "residual hole" (semantic-queueing-fusion.md §3.2):
+    a runtime loop's body root is elided as a cone interior, then later
+    demanded by the sequence node once every body is admitted — possibly
+    much later, and possibly by a DIFFERENT run than the one that computed
+    it. ``_rematerialize``'s generic recompute fallback is what closes this
+    gap (see ``test_fused_loop_body_root_never_elided_even_when_sequence_registers_late``
+    in test_fusion_engine_integration.py for the Stage A version); this
+    confirms the same guarantee holds once Stage B is actually taking the
+    dispatch (not just compiling in the background, as in a cold run).
+    """
+    # Cold run: pure Stage A (no shape compiled yet), just to warm the compile
+    # cache for the loop body's cone shape (leq_sv + four chained nots).
+    cold_engine, cold_values, cold_metrics = _run_loop(tmp_path)
+    backend = cold_engine.numba_backend
+    deadline = time.monotonic() + 10.0
+    while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+        if time.monotonic() > deadline:
+            pytest.fail("background numba compile(s) never finished")
+        time.sleep(0.05)
+    assert backend.compiles_failed == 0
+    assert backend.compiles_finished > 0
+
+    # Warm run reusing the compiled shape: same tiny admission window forces
+    # some bodies' cones to finish (and get elided as interiors) while others
+    # are still being admitted — the exact race the residual hole describes.
+    warm_engine, warm_values, warm_metrics = _run_loop(tmp_path, numba_backend=backend)
+    assert warm_metrics["cones_numba"] > 0, \
+        "test must actually exercise Stage B, or it proves nothing"
+    assert warm_metrics["interiors_elided"] > 0, \
+        "test must actually exercise elision, or it proves nothing"
+
+    def _items(seq):
+        return list(seq.iter_values()) if hasattr(seq, "iter_values") else list(seq)
+
+    cold_items = _items(cold_values["result"])
+    warm_items = _items(warm_values["result"])
+    assert len(warm_items) == 40, "every body's value must reach the sequence, none silently missing"
+    assert all(item is not None for item in warm_items)
+    def _as_array(item):
+        if hasattr(item, "np"):
+            return np.asarray(item.np())
+        if isinstance(item, sitk.Image):
+            return sitk.GetArrayFromImage(item)
+        return np.asarray(item)
+
+    for i, (a, b) in enumerate(zip(cold_items, warm_items)):
+        assert np.array_equal(_as_array(a), _as_array(b)), \
+            f"loop element {i} diverged between Stage A and Stage B"
+
+
+def _write_edge_case_image(path) -> None:
+    """NaN plus values sitting exactly on the leq_sv/geq_sv/between thresholds
+    (1.0, 3.0) — the two places a comparison expr fragment could plausibly
+    diverge from its real sitk kernel: NaN-propagation and boundary inclusion.
+
+    Written as .mha, NOT .nii.gz: NIfTI silently sanitizes NaN/inf to 0.0 on
+    write (confirmed empirically), so a .nii.gz round trip would test
+    nothing here. .mha preserves them exactly.
+    """
+    arr = np.array([np.nan, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, np.inf], dtype=np.float32)
+    arr = np.tile(arr, 4 * 5 * 6 // len(arr) + 1)[: 4 * 5 * 6].reshape(4, 5, 6)
+    sitk.WriteImage(sitk.GetImageFromArray(arr), str(path))
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_on_nan_and_boundary_values(tmp_path) -> None:
+    """Stage B's expr fragments (numba_fusion.py's ``_expr_for``) must handle
+    NaN and exact-threshold values identically to the real sitk kernels they
+    were validated against — this is the actual bit-identical CONTRACT, not
+    just the happy-path arithmetic the other tests exercise."""
+    img_path = tmp_path / "in.mha"
+    _write_edge_case_image(img_path)
+    program = PROGRAM.format(path=str(img_path).replace("\\", "/"))
+    plan = reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+    cold_engine, cold_values, _ = _run(plan)
+    backend = cold_engine.numba_backend
+    deadline = time.monotonic() + 10.0
+    while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+        if time.monotonic() > deadline:
+            pytest.fail("background numba compile(s) never finished")
+        time.sleep(0.05)
+    assert backend.compiles_failed == 0
+
+    warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+    assert warm_metrics["cones_numba"] > 0, \
+        "test must actually exercise Stage B, or it proves nothing"
+
+    for name in ("neg", "either", "btw"):
+        a = np.asarray(cold_values[name].np())
+        b = np.asarray(warm_values[name].np())
+        assert np.array_equal(a, b), \
+            f"goal {name!r} diverged on NaN/boundary input between Stage A and Stage B"
+
+    # A known pixel, checked directly (insurance against Stage A and Stage B
+    # being coincidentally, identically wrong): NaN must compare false both
+    # ways (never "leq" nor "geq" 1.0/3.0), and 1.0/3.0 are inclusive bounds.
+    flat_hi = np.asarray(warm_values["either"].np()).reshape(-1)
+    assert flat_hi[0] == 0, "NaN must satisfy neither leq_sv(3.0, .) nor geq_sv(1.0, .)"
+    flat_btw = np.asarray(warm_values["btw"].np()).reshape(-1)
+    assert flat_btw[3] == 1 and flat_btw[5] == 1, "between(1.0, 3.0, .) must include both endpoints"
+
+
+@pytest.mark.unit
+def test_numba_fusion_disabled_never_dispatches_stage_b(tmp_path) -> None:
+    plan = _plan(tmp_path)
+    engine = ComputationEngine()
+    engine.config = replace(engine.config, fusion_enabled=True, numba_fusion_enabled=False)
+    engine.numba_backend = None
+    engine.adopt_plan(plan)
+
+    async def _drive():
+        queries = [(g, engine.submit(g.id, g.operation, g.name, Priority.NORMAL)) for g in plan.goals]
+        await engine.run()
+        return {g.name: await q.result() for g, q in queries}
+
+    asyncio.run(_drive())
+    metrics = engine.metrics()
+    assert metrics["cones_dispatched"] > 0
+    assert metrics["cones_numba"] == 0
+
+
+# Isolated from PROGRAM/_run/_plan above on purpose: entangling these into
+# the shared "neg"/"combo" cones (tried first) made cone-formation timing
+# nondeterministic between the cold and warm engine instances — the warm run
+# would occasionally see a genuinely different ConeShape than the cold run
+# compiled, triggering a fresh compile submit() against the cold engine's
+# already-shut-down backend pool ("cannot schedule new futures after
+# shutdown"). A self-contained program/engine pair per test sidesteps that
+# entirely and is easier to reason about besides.
+#
+# Exercises the generic image-vs-image/image-vs-scalar comparison ops added
+# alongside leq_sv/geq_sv/between: imgVsScalar is "array OP scalar" (the
+# common case, e.g. dt(x) > 0); scalarVsImg is "scalar OP array" (kernels.py
+# flips the underlying sitk call for this direction — e.g. "5.0 > img"
+# dispatches Less(img, 5.0) — so this specifically checks the plain
+# positional expr fragment is still correct despite that internal flip);
+# imgVsImg is a genuine two-array comparison (dt(x) <= img), the actual new
+# case this pass targets (distgeq/distleq's "x <= pdt(y)" in the real
+# TACAS19 procedure).
+_CMP_PROGRAM = """
+import "simpleitk"
+import "vox1"
+img = ReadImage("{path}")
+dtimg = dt(geq_sv(2.0, img))
+imgVsScalar = %s
+scalarVsImg = %s
+imgVsImg = %s
+print "imgVsScalar" imgVsScalar
+print "scalarVsImg" scalarVsImg
+print "imgVsImg" imgVsImg
+""" % (
+    "not(" * _NOT_DEPTH + "(dtimg < 5.0)" + ")" * _NOT_DEPTH,
+    "not(" * _NOT_DEPTH + "(5.0 > dtimg)" + ")" * _NOT_DEPTH,
+    "not(" * _NOT_DEPTH + "(img <= dtimg)" + ")" * _NOT_DEPTH,
+)
+
+
+def _cmp_plan(tmp_path) -> SymbolicPlan:
+    img_path = tmp_path / "in.nii.gz"
+    _write_test_image(img_path)
+    program = _CMP_PROGRAM.format(path=str(img_path).replace("\\", "/"))
+    return reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_for_generic_comparisons(tmp_path) -> None:
+    """Bit-identical Stage A vs Stage B for the newly-added '<','<=','>','>=',
+    '==','!=' ElementwiseSpec entries (see primitives/vox1/__init__.py)."""
+    plan = _cmp_plan(tmp_path)
+
+    cold_engine, cold_values, cold_metrics = _run(plan)
+    assert cold_metrics["cones_dispatched"] > 0
+    assert cold_metrics["cones_numba"] == 0, \
+        "first-ever run of a shape must never block on its own compile"
+
+    backend = cold_engine.numba_backend
+    deadline = time.monotonic() + 10.0
+    while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+        if time.monotonic() > deadline:
+            pytest.fail("background numba compile(s) never finished")
+        time.sleep(0.05)
+    assert backend.compiles_failed == 0, "no cone shape in this program should fail to compile"
+    assert backend.compiles_finished > 0
+
+    warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+    assert warm_metrics["cones_numba"] > 0, \
+        "test must actually exercise Stage B, or it proves nothing"
+
+    for name in ("imgVsScalar", "scalarVsImg", "imgVsImg"):
+        a = np.asarray(cold_values[name].np())
+        b = np.asarray(warm_values[name].np())
+        assert np.array_equal(a, b), \
+            f"goal {name!r} diverged between Stage A and Stage B"
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_for_generic_comparisons_on_nan_and_boundary_values(tmp_path) -> None:
+    """Same as above, on the NaN/boundary-value image (see
+    ``_write_edge_case_image``): the actual bit-identical CONTRACT, not just
+    the happy-path arithmetic the sibling test exercises."""
+    img_path = tmp_path / "in.mha"
+    _write_edge_case_image(img_path)
+    program = _CMP_PROGRAM.format(path=str(img_path).replace("\\", "/"))
+    plan = reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+    cold_engine, cold_values, _ = _run(plan)
+    backend = cold_engine.numba_backend
+    deadline = time.monotonic() + 10.0
+    while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+        if time.monotonic() > deadline:
+            pytest.fail("background numba compile(s) never finished")
+        time.sleep(0.05)
+    assert backend.compiles_failed == 0
+
+    warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+    assert warm_metrics["cones_numba"] > 0, \
+        "test must actually exercise Stage B, or it proves nothing"
+
+    for name in ("imgVsScalar", "scalarVsImg", "imgVsImg"):
+        a = np.asarray(cold_values[name].np())
+        b = np.asarray(warm_values[name].np())
+        assert np.array_equal(a, b), \
+            f"goal {name!r} diverged on NaN/boundary input between Stage A and Stage B"
+
+    # imgVsImg = not^13(img <= dtimg): img contains NaN, dtimg (a distance
+    # transform) never does — the genuine NaN-vs-finite comparison this pass
+    # targets. NaN <= anything is False in IEEE754; wrapped in an ODD number
+    # (13) of nots, False negates to True.
+    flat = np.asarray(warm_values["imgVsImg"].np()).reshape(-1)
+    assert flat[0] == 1, "NaN <= finite must be False, negated odd number of times to True"
+
+
+# pdtStyle mirrors the real usage this registration targets:
+# pdt(x) = mask(dt(x), dt(x) > 0), the shared innards of EVERY
+# smoothen/dilate/erode/imopen/imclose call — mask's arg0 (the image) is
+# dtimg, a float32 array_input EXTERNAL to the cone, exercising
+# resolve_out_dtype's leaf case through the real engine (the recursive
+# "member" case is covered directly and deterministically in
+# test_resolve_out_dtype.py, since cone membership itself is
+# scheduler-dependent — see this file's _NOT_DEPTH comment).
+_MASK_PROGRAM = """
+import "simpleitk"
+import "vox1"
+img = ReadImage("{path}")
+dtimg = dt(geq_sv(2.0, img))
+cond = dtimg > 0.0
+masked = mask(dtimg, cond)
+pdtStyle = %s
+print "pdtStyle" pdtStyle
+""" % ("not(" * _NOT_DEPTH + "(masked > 0.0)" + ")" * _NOT_DEPTH)
+# note: masked (mask's real float32 output) is collapsed to boolean via
+# "> 0.0" BEFORE the not^13 wrapper -- sitk's own NotImageFilter does not
+# support float32 in 3D (confirmed: this failed even Stage A, the reference
+# implementation, on first attempt), so wrapping a float image directly in
+# not() is not a valid VoxLogicA program regardless of fusion.
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_for_mask() -> None:
+    """Bit-identical Stage A vs Stage B for the new 'mask' ElementwiseSpec
+    entry, in its real pdt(x)=mask(dt(x), dt(x) > 0) shape (see
+    primitives/vox1/__init__.py) — the specific gap this closes: mask sits
+    immediately after dt (never itself elementwise) in every
+    smoothen/dilate/erode call, so registering it lets a cone bridge past
+    dt's boundary instead of breaking there."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        from pathlib import Path
+        img_path = Path(tmp) / "in.nii.gz"
+        _write_test_image(img_path)
+        program = _MASK_PROGRAM.format(path=str(img_path).replace("\\", "/"))
+        plan = reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+        cold_engine, cold_values, cold_metrics = _run(plan)
+        assert cold_metrics["cones_numba"] == 0
+
+        backend = cold_engine.numba_backend
+        deadline = time.monotonic() + 10.0
+        while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+            if time.monotonic() > deadline:
+                pytest.fail("background numba compile(s) never finished")
+            time.sleep(0.05)
+        assert backend.compiles_failed == 0, "mask's cone shape must not fail to compile"
+
+        warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+        assert warm_metrics["cones_numba"] > 0, \
+            "test must actually exercise Stage B for a mask-containing cone, or it proves nothing"
+
+        a = np.asarray(cold_values["pdtStyle"].np())
+        b = np.asarray(warm_values["pdtStyle"].np())
+        assert np.array_equal(a, b), "pdtStyle diverged between Stage A and Stage B"
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_for_mask_on_nan_and_boundary_values() -> None:
+    """Same as above, masking a NaN/boundary image directly (arg0 = img
+    itself, not dt(img)) — dt() never produces NaN (see the sibling
+    comparison test), so THIS is what stresses mask's own NaN passthrough and
+    the exact-zero boundary of its condition."""
+    import tempfile
+    from pathlib import Path
+    program_tpl = """
+import "simpleitk"
+import "vox1"
+img = ReadImage("{path}")
+cond = img > 0.0
+masked = mask(img, cond)
+pdtStyle = %s
+print "pdtStyle" pdtStyle
+""" % ("not(" * _NOT_DEPTH + "(masked > -999.0)" + ")" * _NOT_DEPTH)
+    # "> -999.0", not "> 0.0": img contains negative values (-1.0) that must
+    # compare true, and NaN must compare false either way (IEEE754) -- the
+    # point is exercising the collapse-to-boolean step on masked's actual
+    # NaN/zero/negative content, not picking a threshold that accidentally
+    # sidesteps it.
+
+    with tempfile.TemporaryDirectory() as tmp:
+        img_path = Path(tmp) / "in.mha"
+        _write_edge_case_image(img_path)
+        program = program_tpl.format(path=str(img_path).replace("\\", "/"))
+        plan = reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+        cold_engine, cold_values, _ = _run(plan)
+        backend = cold_engine.numba_backend
+        deadline = time.monotonic() + 10.0
+        while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+            if time.monotonic() > deadline:
+                pytest.fail("background numba compile(s) never finished")
+            time.sleep(0.05)
+        assert backend.compiles_failed == 0
+
+        warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+        assert warm_metrics["cones_numba"] > 0, \
+            "test must actually exercise Stage B, or it proves nothing"
+
+        # The outer not^13 collapses the result to uint8 (via `!= 0`, under
+        # which NaN != 0 is True per IEEE754) before it ever reaches the
+        # goal, so no NaN survives to compare here -- what this test actually
+        # stresses is whether Stage A and Stage B's mask() disagreed on any
+        # NaN/boundary voxel BEFORE that collapse, which shows up as a
+        # differing boolean after it.
+        a = np.asarray(cold_values["pdtStyle"].np())
+        b = np.asarray(warm_values["pdtStyle"].np())
+        assert np.array_equal(a, b), "pdtStyle diverged on NaN/boundary input between Stage A and Stage B"
+
+
+# eq_sv mirrors the real adjacency found in the oracle sweep (dependency-graph
+# query over the reduced _bench_scaling.imgql plan, see manuscripts/engine-
+# scaling-2026-07.md Part IV sec 20): mask -> eq_sv -> not, 1632 occurrences,
+# with eq_sv previously the one non-elementwise link in that chain. UNLIKE the
+# reverted fa9c11e, eq_sv's KERNEL stays sitk-based here -- only the fusion
+# registration is new -- so this test's job is narrower than mask's: confirm
+# the expr fragment ("{1} == {0}", value {0} / image {1}) is bit-identical to
+# the real sitk.BinaryThreshold(img, v, v, 1, 0) call, not that a dtype
+# contract holds (eq_sv's out_dtype is a plain "uint8", no arg-tracking).
+_EQ_SV_PROGRAM = """
+import "simpleitk"
+import "vox1"
+img = ReadImage("{path}")
+dtimg = dt(geq_sv(2.0, img))
+cond = dtimg > 0.0
+masked = mask(dtimg, cond)
+thresholded = eq_sv(0.0, masked)
+chained = %s
+print "chained" chained
+""" % ("not(" * _NOT_DEPTH + "thresholded" + ")" * _NOT_DEPTH)
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_for_eq_sv() -> None:
+    """Bit-identical Stage A vs Stage B for the new 'eq_sv' ElementwiseSpec
+    entry, in its real mask(dt(x),...) -> eq_sv -> not shape."""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        img_path = Path(tmp) / "in.nii.gz"
+        _write_test_image(img_path)
+        program = _EQ_SV_PROGRAM.format(path=str(img_path).replace("\\", "/"))
+        plan = reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+        cold_engine, cold_values, cold_metrics = _run(plan)
+        assert cold_metrics["cones_numba"] == 0
+
+        backend = cold_engine.numba_backend
+        deadline = time.monotonic() + 10.0
+        while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+            if time.monotonic() > deadline:
+                pytest.fail("background numba compile(s) never finished")
+            time.sleep(0.05)
+        assert backend.compiles_failed == 0, "eq_sv's cone shape must not fail to compile"
+
+        warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+        assert warm_metrics["cones_numba"] > 0, \
+            "test must actually exercise Stage B for an eq_sv-containing cone, or it proves nothing"
+
+        a = np.asarray(cold_values["chained"].np())
+        b = np.asarray(warm_values["chained"].np())
+        assert np.array_equal(a, b), "chained diverged between Stage A and Stage B"
+
+
+@pytest.mark.unit
+def test_stage_b_matches_stage_a_for_eq_sv_on_nan_and_boundary_values() -> None:
+    """Same, on the NaN/boundary image directly (no dt() in between, so
+    exact-zero and NaN reach eq_sv unmodified)."""
+    import tempfile
+    from pathlib import Path
+    program_tpl = """
+import "simpleitk"
+import "vox1"
+img = ReadImage("{path}")
+thresholded = eq_sv(0.0, img)
+chained = %s
+print "chained" chained
+""" % ("not(" * _NOT_DEPTH + "thresholded" + ")" * _NOT_DEPTH)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        img_path = Path(tmp) / "in.mha"
+        _write_edge_case_image(img_path)
+        program = program_tpl.format(path=str(img_path).replace("\\", "/"))
+        plan = reduce_program(parse_program_content(program)).to_symbolic_plan()
+
+        cold_engine, cold_values, _ = _run(plan)
+        backend = cold_engine.numba_backend
+        deadline = time.monotonic() + 10.0
+        while backend.compiles_finished + backend.compiles_failed < backend.compiles_started:
+            if time.monotonic() > deadline:
+                pytest.fail("background numba compile(s) never finished")
+            time.sleep(0.05)
+        assert backend.compiles_failed == 0
+
+        warm_engine, warm_values, warm_metrics = _run(plan, numba_backend=backend)
+        assert warm_metrics["cones_numba"] > 0, \
+            "test must actually exercise Stage B, or it proves nothing"
+
+        a = np.asarray(cold_values["chained"].np())
+        b = np.asarray(warm_values["chained"].np())
+        assert np.array_equal(a, b), "chained diverged on NaN/boundary input between Stage A and Stage B"

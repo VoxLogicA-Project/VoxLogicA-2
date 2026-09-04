@@ -1,22 +1,19 @@
 {
-  "name": "voxlogica-studio-ui",
+  "name": "voxlogica-ui",
+  "version": "0.0.0",
   "private": true,
-  "version": "0.0.1",
   "type": "module",
+  "description": "Browser UI for VoxLogicA 2. Built by build.mjs, which the Python server invokes; there is no dev server of its own.",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "build": "node build.mjs --outdir dist",
+    "test": "node --test \"test/*.test.js\""
   },
   "devDependencies": {
-    "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/svelte": "^5.2.8",
-    "@sveltejs/vite-plugin-svelte": "^6.2.4",
-    "jsdom": "^27.0.1",
-    "svelte": "^5.53.5",
-    "vite": "^7.3.1",
-    "vitest": "^3.2.4"
+    "esbuild": "^0.25.0",
+    "esbuild-svelte": "^0.9.0",
+    "svelte": "^5.0.0"
+  },
+  "dependencies": {
+    "@niivue/niivue": "^0.69.0"
   }
 }

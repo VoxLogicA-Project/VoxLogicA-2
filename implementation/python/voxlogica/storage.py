@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Union
 from abc import ABC, abstractmethod
 import logging
+import hashlib
+import os
 import queue
 import shutil
 import sqlite3
@@ -27,7 +30,64 @@ from voxlogica.value_model import VOX_FORMAT_VERSION
 
 MATERIALIZED_STATUS = "materialized"
 PLANNED_STATUS = "planned"
-STORE_SCHEMA_VERSION = 2
+# An eviction is not a failure and not an absence: it is a value that WAS here,
+# is reachable again by recomputation, and left on purpose. Recording it as a
+# state rather than a DELETE is what makes the decision auditable -- a deleted
+# row and a never-computed node are indistinguishable, so "was this dropped, or
+# never written?" had no answer at all. Every read path already treats a
+# non-materialized row as a miss (has() and the id index filter on
+# MATERIALIZED_STATUS, _load_from_backend refuses anything else), so a tombstone
+# is invisible to lookups and visible only to whoever asks why.
+EVICTED_STATUS = "evicted"
+STORE_SCHEMA_VERSION = 5
+# The persistent result store is a bounded cache: once its payloads exceed this
+# many bytes, entries are evicted (rows + payload files deleted) until back under
+# budget. Eviction follows GreedyDual-Size: the eviction key is
+# ``clock + compute_ms / bytes``, so a small value that was expensive to compute
+# (a precious, hard-won result) outranks a large cheap one and is kept — size is
+# the denominator, compute effort the numerator, recency the clock. Values are
+# regenerable from lineage, so an evicted entry only ever costs a recompute.
+# 0 disables the bound (unbounded).
+DEFAULT_CACHE_MAX_BYTES = 100 * 1024 ** 3
+
+
+def _auto_cache_max_bytes(payload_dir) -> int:
+    """Size the cache budget from the disk it actually lives on.
+
+    A FIXED default cannot be right: this tier is the engine's spill space, so
+    a budget smaller than the run's live working set turns "spill to free RAM"
+    into "evict the copy RAM is waiting on" and the memory bound fails outright
+    (measured: a 369-case sweep filled a 32 GB cap, then climbed to 56 GB RSS
+    and had to be killed, on a host with 1.2 TB free). Half the free space keeps
+    the machine usable while giving the valve room to work; the floor matters on
+    a nearly-full disk, where a tiny budget is still better than none.
+    """
+    try:
+        free = shutil.disk_usage(payload_dir).free
+    except OSError:
+        return DEFAULT_CACHE_MAX_BYTES
+    return max(32 * 1024 ** 3, int(free * 0.5))
+
+
+#: Free space the cache must never consume, whatever its budget says. A budget
+#: is a promise made once; the disk is shared with everything else on the host
+#: (and with this run's own SQLite file and spill), so the promise goes stale.
+_DISK_RESERVE_MIN_BYTES = 50 * 1024 ** 3
+_DISK_RESERVE_FRACTION = 0.05
+#: Seconds between statvfs probes. The ceiling only moves as fast as the disk
+#: fills, so probing on every persist batch would burn syscalls for nothing.
+_DISK_PROBE_INTERVAL_S = 5.0
+
+#: Returned by `_effective_max_bytes` when nothing bounds the payload tier --
+#: distinct from a budget of zero, which means the opposite.
+_UNBOUNDED = -1
+# Maximum number of value-bearing entries kept in the in-memory cache tier.
+# Overridable via VOXLOGICA_MEMORY_CACHE_CAPACITY for memory-heavy runs.
+DEFAULT_MEMORY_CACHE_CAPACITY = 1024
+# Maximum number of results queued for async persistence before producers block.
+# Bounds peak memory: each queued result pins its (possibly large) value until
+# the persistence thread writes it. Overridable via VOXLOGICA_PERSIST_QUEUE_MAX.
+DEFAULT_PERSIST_QUEUE_MAX = 64
 _RESULTS_TABLE_COLUMNS = frozenset(
     {
         "node_id",
@@ -44,8 +104,29 @@ _RESULTS_TABLE_COLUMNS = frozenset(
         "runtime_version",
         "created_at",
         "updated_at",
+        "accessed_at",
+        "payload_bytes",
+        "compute_ms",
+        "gd_key",
+        # Why a value that WAS here is not here any more (see _evict_row).
+        "eviction_tier",
+        "eviction_reason",
+        "eviction_bytes",
+        "eviction_at",
     }
 )
+
+#: Columns that a store from an older schema can GAIN without losing anything.
+#: Each carries a default, so existing rows are valid the moment it appears --
+#: which is what lets the schema grow by ALTER TABLE (O(1) in SQLite) instead of
+#: by DROP. The distinction matters: rebuilding this cache costs hours, and
+#: before this every added column cost exactly that.
+_ADDABLE_COLUMNS = {
+    "eviction_tier": "TEXT",
+    "eviction_reason": "TEXT",
+    "eviction_bytes": "INTEGER NOT NULL DEFAULT 0",
+    "eviction_at": "REAL",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -53,6 +134,30 @@ def _default_db_path() -> Path:
     base = Path.home() / ".voxlogica"
     base.mkdir(parents=True, exist_ok=True)
     return base / "results.db"
+
+
+def _default_memory_capacity() -> int:
+    raw = os.environ.get("VOXLOGICA_MEMORY_CACHE_CAPACITY")
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return DEFAULT_MEMORY_CACHE_CAPACITY
+
+
+def _default_persist_queue_max() -> int:
+    raw = os.environ.get("VOXLOGICA_PERSIST_QUEUE_MAX")
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return DEFAULT_PERSIST_QUEUE_MAX
 
 
 def results_store_paths(db_path: str | Path | None = None) -> tuple[Path, Path]:
@@ -114,7 +219,8 @@ class StorageBackend(ABC):
         pass
 
     @abstractmethod
-    def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None) -> None:
+    def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None,
+                    compute_ms: float = 0.0) -> None:
         pass
 
     @abstractmethod
@@ -132,29 +238,102 @@ class StorageBackend(ABC):
 class SQLiteResultsDatabase:
     """SQLite plus payload-file storage keyed by stable node hashes."""
 
-    def __init__(self, db_path: str | Path | None = None, runtime_version: str | None = None):
+    def __init__(self, db_path: str | Path | None = None, runtime_version: str | None = None,
+                 max_bytes: int | None = None):
         self.db_path = Path(db_path) if db_path is not None else _default_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.payload_dir = self.db_path.with_suffix(self.db_path.suffix + ".files")
         self.payload_dir.mkdir(parents=True, exist_ok=True)
+        self._purge_partial_payloads()   # debris from a killed writer is never data
         self.runtime_version = runtime_version or "unknown"
+        self._max_bytes = (_auto_cache_max_bytes(self.payload_dir)
+                           if max_bytes is None else max_bytes)
+        # Cached disk-pressure ceiling; see _effective_max_bytes.
+        self._disk_ceiling: int | None = None
+        self._disk_ceiling_at = 0.0
+        # Guard installed by the engine: "this node's RAM copy is waiting on its
+        # disk copy". Evicting such a payload strands the live value — see
+        # _enforce_budget.
+        self._spill_guard = None
         self._lock = threading.RLock()
+        self._live_node_ids: set[str] = set()  # legacy push-style live set (see set_live_nodes)
+        self._live_probe = None                # preferred: O(1) predicate from the engine
+        self._id_index: set[str] | None = None # engine's persisted-id index; kept truthful on evict
         self._connection = sqlite3.connect(str(self.db_path), check_same_thread=False, isolation_level=None, timeout=5.0)
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA synchronous=NORMAL")
         self._initialize_schema()
+        # Reads (the compute-path reload) use per-thread read-only connections so
+        # they never wait on the write lock held by the persister's writes and
+        # evictions. WAL lets readers run concurrently with the single writer, so
+        # a worker reloading an evicted input never stalls the other workers —
+        # cache housekeeping stays off the critical path.
+        self._reader_local = threading.local()
+        # Running total of stored payload bytes, so the byte budget can be
+        # enforced without restatting the payload directory on every write.
+        self._payload_bytes = int(
+            (self._connection.execute("SELECT COALESCE(SUM(payload_bytes), 0) FROM results").fetchone() or [0])[0]
+        )
+        # GreedyDual clock: rises to the key of the last evicted entry, folding
+        # recency into the cost/size eviction key. Seed at the lowest live key so
+        # entries written before this process are comparable.
+        self._gd_clock = float(
+            (self._connection.execute("SELECT COALESCE(MIN(gd_key), 0.0) FROM results WHERE payload_bytes > 0").fetchone() or [0.0])[0]
+        )
+        self._stats = {"writes": 0, "evictions": 0, "evicted_bytes": 0, "hits": 0,
+                       "evicted_dead": 0, "evicted_live": 0}
+
+    def _results_columns(self) -> set[str]:
+        rows = self._connection.execute("PRAGMA table_info(results)").fetchall()
+        return {str(row[1]) for row in rows}
 
     def _results_table_matches_schema(self) -> bool:
-        rows = self._connection.execute("PRAGMA table_info(results)").fetchall()
-        if not rows:
-            return False
-        return {str(row[1]) for row in rows} == _RESULTS_TABLE_COLUMNS
+        columns = self._results_columns()
+        return bool(columns) and columns == _RESULTS_TABLE_COLUMNS
+
+    def _migrate_results_table(self) -> bool:
+        """Grow an older table in place, or report that it cannot be grown.
+
+        Rebuilding this cache costs hours, so a schema that can only be
+        RECREATED makes every future column a choice between an improvement and
+        a user's day of compute. SQLite adds a column in O(1), and every column
+        this store adds carries a default, so an existing row is valid the
+        instant it appears. Only a column that VANISHED or changed meaning is a
+        real incompatibility, and only that drops the table.
+        """
+        columns = self._results_columns()
+        if not columns:
+            return False                                   # no table: create it
+        missing = _RESULTS_TABLE_COLUMNS - columns
+        if columns - _RESULTS_TABLE_COLUMNS:
+            return False                                   # unknown column: not ours to keep
+        if not missing.issubset(_ADDABLE_COLUMNS):
+            return False                                   # a column we cannot fabricate
+        for name in sorted(missing):
+            self._connection.execute(
+                f"ALTER TABLE results ADD COLUMN {name} {_ADDABLE_COLUMNS[name]}")
+        self._connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
+        self._connection.commit()
+        if missing:
+            logger.info("results schema migrated in place, added: %s", ", ".join(sorted(missing)))
+        return True
 
     def _initialize_schema(self) -> None:
         with self._lock:
             version = int((self._connection.execute("PRAGMA user_version").fetchone() or [0])[0])
             if version != STORE_SCHEMA_VERSION or not self._results_table_matches_schema():
+                # Grow in place when the difference is only columns this store
+                # knows how to add; the payloads and the DAG survive untouched.
+                migrated = self._migrate_results_table()
+            else:
+                migrated = True
+            if not migrated:
                 self._connection.execute("DROP TABLE IF EXISTS results")
+                # A schema reset abandons every old payload file; clear them so
+                # they don't linger uncounted against the byte budget.
+                if self.payload_dir.exists():
+                    shutil.rmtree(self.payload_dir)
+                self.payload_dir.mkdir(parents=True, exist_ok=True)
                 self._connection.execute(
                     """
                     CREATE TABLE results (
@@ -171,20 +350,67 @@ class SQLiteResultsDatabase:
                         dependencies_json TEXT NOT NULL,
                         runtime_version TEXT NOT NULL,
                         created_at REAL NOT NULL,
-                        updated_at REAL NOT NULL
+                        updated_at REAL NOT NULL,
+                        accessed_at REAL NOT NULL,
+                        payload_bytes INTEGER NOT NULL DEFAULT 0,
+                        compute_ms REAL NOT NULL DEFAULT 0,
+                        gd_key REAL NOT NULL DEFAULT 0,
+                        eviction_tier TEXT,
+                        eviction_reason TEXT,
+                        eviction_bytes INTEGER NOT NULL DEFAULT 0,
+                        eviction_at REAL
                     )
                     """
                 )
-                self._connection.execute("CREATE INDEX idx_results_status ON results(status)")
                 self._connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
+            # Idempotent, and outside the reset branch: a table that was grown
+            # in place still needs them, and IF NOT EXISTS makes saying so free.
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_results_status ON results(status)")
+            # Eviction scans by GreedyDual key among rows that hold payload bytes.
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_results_evict ON results(gd_key) WHERE payload_bytes > 0")
+            # LINEAGE, added additively: never inside the version-reset branch,
+            # because bumping the results schema drops every payload and the
+            # DAG must survive that. Keyed by the raw 32-byte content hash, not
+            # hex and not a rowid: the store is designed to be decentralizable,
+            # so ids must be identical on every machine and merging must be a
+            # plain INSERT OR IGNORE. Arguments are PACKED (N x 32 bytes, order
+            # = argument order) inside the row rather than normalized into an
+            # edge table, which would repeat the 32-byte parent key once per
+            # edge; measured at 369-sweep scale that is ~2 GB packed against
+            # ~6 GB normalized. No local integer index is built: reconstructing
+            # the DAG behind a result is one row fetch per node, which needs no
+            # index, and the index is derivable from these rows alone in ~1.3
+            # min if whole-DAG analytics ever need it.
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS node (
+                    hash       BLOB PRIMARY KEY,
+                    kind       TEXT NOT NULL,
+                    operator   TEXT NOT NULL,
+                    args       BLOB NOT NULL,
+                    kwargs     TEXT,
+                    attrs_json TEXT
+                ) WITHOUT ROWID
+                """
+            )
+
+    def _reader(self) -> sqlite3.Connection:
+        """A per-thread read-only connection (WAL: concurrent with the writer)."""
+        conn = getattr(self._reader_local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self.db_path), check_same_thread=False, isolation_level=None, timeout=5.0)
+            conn.execute("PRAGMA query_only=1")
+            self._reader_local.conn = conn
+        return conn
 
     def has(self, node_id: str) -> bool:
-        with self._lock:
-            row = self._connection.execute(
-                "SELECT 1 FROM results WHERE node_id = ? AND status = ? LIMIT 1",
-                (node_id, MATERIALIZED_STATUS),
-            ).fetchone()
-            return row is not None
+        row = self._reader().execute(
+            "SELECT 1 FROM results WHERE node_id = ? AND status = ? LIMIT 1",
+            (node_id, MATERIALIZED_STATUS),
+        ).fetchone()
+        return row is not None
 
     #def put_definition(self, node_id: str, node: NodeSpec) -> None:
     #    expression = node_payload(node)
@@ -232,18 +458,25 @@ class SQLiteResultsDatabase:
     #        self.put_definition(node_id, node)
 
     def get_record(self, node_id: str) -> ResultRecord | None:
-        with self._lock:
-            row = self._connection.execute(
-                """
-                SELECT node_id, status, format_version, vox_type, descriptor_json,
-                       payload_json, payload_file, error, metadata_json, expression_json,
-                       dependencies_json, created_at, updated_at, runtime_version
-                FROM results WHERE node_id = ?
-                """,
-                (node_id,),
-            ).fetchone()
+        # Read on a per-thread read connection with no write lock, so a compute
+        # worker reloading an evicted value runs concurrently with the persister's
+        # writes/evictions (WAL) instead of serialising behind them. Recency is
+        # deliberately not refreshed here: writing on every read would re-couple
+        # reads to the write lock, and hot values are kept resident in RAM anyway
+        # (correct consumer counts), so they are rarely reloaded from disk.
+        row = self._reader().execute(
+            """
+            SELECT node_id, status, format_version, vox_type, descriptor_json,
+                   payload_json, payload_file, error, metadata_json, expression_json,
+                   dependencies_json, created_at, updated_at, runtime_version
+            FROM results WHERE node_id = ?
+            """,
+            (node_id,),
+        ).fetchone()
         if row is None:
             return None
+        if str(row[1]) == MATERIALIZED_STATUS:
+            self._stats["hits"] += 1
         payload_bin = None
         payload_file = row[6]
         if payload_file:
@@ -274,64 +507,374 @@ class SQLiteResultsDatabase:
             runtime_version=str(row[13]),
         )
 
-    def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None) -> None:
-        encoded = encode_for_storage(value)
+    def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None,
+                    compute_ms: float = 0.0) -> None:
+        self.put_success_batch([(node_id, value, metadata, compute_ms)])
+
+    def put_success_batch(self, entries: list[tuple[str, Any, dict[str, Any] | None, float]]) -> None:
+        """Write many results in ONE transaction.
+
+        The connection is autocommit (``isolation_level=None``), so without an
+        explicit transaction every row pays its own WAL commit — at the
+        frontier scheduler's dispatch rates the writer became fsync-bound and
+        the persist queue drained slower than compute filled it. Encoding
+        (gzip — the expensive, GIL-releasing part) happens before the lock;
+        only the inserts serialize.
+        """
+        prepared = []  # (node_id, encoded, payload_file, payload_bytes, metadata_json, compute_ms)
+        for node_id, value, metadata, compute_ms, *snap in entries:
+            encoded = encode_for_storage(value, payload_snapshot=snap[0] if snap else None)
+            payload_file = None
+            payload_bytes = 0
+            if encoded.payload_bin is not None:
+                payload_file = f"{node_id}.bin"
+                self._write_payload_atomically(payload_file, encoded.payload_bin)
+                payload_bytes = len(encoded.payload_bin)
+            prepared.append((node_id, encoded, payload_file, payload_bytes,
+                             dumps_json(dict(metadata or {})), compute_ms))
         now = time.time()
-        payload_file = None
-        if encoded.payload_bin is not None:
-            payload_file = f"{node_id}.bin"
-            (self.payload_dir / payload_file).write_bytes(encoded.payload_bin)
-        metadata_json = dumps_json(dict(metadata or {}))
         with self._lock:
-            row = self._connection.execute(
-                "SELECT created_at, expression_json, dependencies_json FROM results WHERE node_id = ?",
-                (node_id,),
+            self._connection.execute("BEGIN")
+            try:
+                for item in prepared:
+                    self._put_encoded_locked(*item, now=now)
+                self._connection.execute("COMMIT")
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
+        self._enforce_budget()
+
+    def put_lineage_batch(self, rows) -> None:
+        """Insert DAG rows; idempotent, so merging two stores is a no-op replay.
+
+        Content addressing makes INSERT OR IGNORE the whole conflict story: a
+        hash that is already present describes the identical expression by
+        construction.
+        """
+        if not rows:
+            return
+        with self._lock:
+            self._connection.execute("BEGIN")
+            try:
+                self._connection.executemany(
+                    "INSERT OR IGNORE INTO node(hash,kind,operator,args,kwargs,attrs_json)"
+                    " VALUES(?,?,?,?,?,?)", rows)
+                self._connection.execute("COMMIT")
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
+
+    def _put_encoded_locked(self, node_id: str, encoded, payload_file: str | None,
+                            payload_bytes: int, metadata_json: str, compute_ms: float,
+                            now: float) -> None:
+        """Insert/update one already-encoded result row. Caller holds the lock
+        and an open transaction; budget enforcement happens once per batch."""
+        # GreedyDual-Size key: recency clock + recompute cost per byte. Small +
+        # expensive ranks highest (kept longest); large + cheap ranks lowest.
+        gd_key = self._gd_clock + (compute_ms / payload_bytes if payload_bytes else 0.0)
+        row = self._connection.execute(
+            "SELECT created_at, expression_json, dependencies_json, payload_bytes FROM results WHERE node_id = ?",
+            (node_id,),
+        ).fetchone()
+        created_at = float(row[0]) if row is not None else now
+        expression_json = row[1] if row is not None else "{}"
+        dependencies_json = row[2] if row is not None else "{}"
+        previous_bytes = int(row[3]) if row is not None else 0
+        self._connection.execute(
+            """
+            INSERT INTO results (
+                node_id, status, format_version, vox_type, descriptor_json,
+                payload_json, payload_file, error, metadata_json, expression_json,
+                dependencies_json, runtime_version, created_at, updated_at,
+                accessed_at, payload_bytes, compute_ms, gd_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(node_id) DO UPDATE SET
+                status = excluded.status,
+                format_version = excluded.format_version,
+                vox_type = excluded.vox_type,
+                descriptor_json = excluded.descriptor_json,
+                payload_json = excluded.payload_json,
+                payload_file = excluded.payload_file,
+                error = NULL,
+                metadata_json = excluded.metadata_json,
+                expression_json = excluded.expression_json,
+                dependencies_json = excluded.dependencies_json,
+                runtime_version = excluded.runtime_version,
+                updated_at = excluded.updated_at,
+                accessed_at = excluded.accessed_at,
+                payload_bytes = excluded.payload_bytes,
+                compute_ms = excluded.compute_ms,
+                -- the value is back: its eviction record is history, not state
+                eviction_tier = NULL,
+                eviction_reason = NULL,
+                eviction_bytes = 0,
+                eviction_at = NULL,
+                gd_key = excluded.gd_key
+            """,
+            (
+                node_id,
+                MATERIALIZED_STATUS,
+                encoded.format_version,
+                encoded.vox_type,
+                dumps_json(encoded.descriptor),
+                dumps_json(encoded.payload_json),
+                payload_file,
+                None,
+                metadata_json,
+                expression_json,
+                dependencies_json,
+                self.runtime_version,
+                created_at,
+                now,
+                now,
+                payload_bytes,
+                float(compute_ms),
+                gd_key,
+            ),
+        )
+        self._payload_bytes += payload_bytes - previous_bytes
+        self._stats["writes"] += 1
+
+    def set_live_nodes(self, node_ids: set[str]) -> None:
+        """Update the set of nodes still needed by active work (passed by the engine)."""
+        with self._lock:
+            self._live_node_ids = set(node_ids)
+
+    def set_live_probe(self, probe) -> None:
+        """Install an O(1) liveness predicate, replacing periodic set pushes.
+
+        The engine maintains liveness incrementally (see engine/liveness.py);
+        eviction consults the predicate per candidate instead of receiving
+        whole-set snapshots. The probe reads engine-side dicts without a lock —
+        single membership tests are GIL-atomic and staleness only shifts an
+        eviction preference, never correctness.
+        """
+        self._live_probe = probe
+
+    def set_id_index(self, index: set[str]) -> None:
+        """Share the engine's persisted-id set so eviction keeps it truthful."""
+        self._id_index = index
+
+    def materialized_ids(self) -> list[str]:
+        """All materialized node ids — one index-only scan at engine startup."""
+        rows = self._reader().execute(
+            "SELECT node_id FROM results WHERE status = ?", (MATERIALIZED_STATUS,)
+        ).fetchall()
+        return [str(r[0]) for r in rows]
+
+    def _is_live(self, node_id: str, snapshot: set[str]) -> bool:
+        if self._live_probe is not None:
+            try:
+                return bool(self._live_probe(node_id))
+            except Exception:  # noqa: BLE001 — a dying engine must not block eviction
+                return False
+        return node_id in snapshot
+
+    _EVICT_SCAN = ("SELECT node_id, payload_file, payload_bytes, gd_key FROM results "
+                   "WHERE payload_bytes > 0 ORDER BY gd_key ASC LIMIT 128")
+
+    def _write_payload_atomically(self, payload_file: str, payload_bin: bytes) -> None:
+        """Write a payload so it is either wholly there or not there at all.
+
+        A plain write leaves a TRUNCATED file behind if the process dies partway
+        through — and this engine's processes do die: the OOM killer, a SIGSEGV,
+        an operator ^C. The next run then finds a complete-looking cache row
+        pointing at a partial payload and decodes garbage: observed as
+        "cannot reshape array of size 0" in one run, and native crashes seconds
+        into several others that reused a killed run's store. A cache must never
+        be able to poison the run that inherits it.
+
+        Temp file plus rename: `os.replace` is atomic within a filesystem, and
+        the temp name carries the pid so concurrent writers never collide.
+        """
+        target = self.payload_dir / payload_file
+        tmp = self.payload_dir / f"{payload_file}.{os.getpid()}.part"
+        try:
+            tmp.write_bytes(payload_bin)
+            os.replace(tmp, target)
+        except BaseException:
+            tmp.unlink(missing_ok=True)   # never leave debris to be mistaken for data
+            raise
+
+    def _purge_partial_payloads(self) -> int:
+        """Delete `.part` files stranded by a killed writer. Returns how many."""
+        removed = 0
+        try:
+            for stale in self.payload_dir.glob("*.part"):
+                stale.unlink(missing_ok=True)
+                removed += 1
+        except OSError:
+            pass
+        return removed
+
+    def set_spill_guard(self, guard) -> None:
+        """Install the engine's "RAM is waiting on this payload" predicate."""
+        self._spill_guard = guard
+
+    def _spilled_ram_copy(self, node_id: str) -> bool:
+        """True while dropping this payload would strand a live in-RAM value.
+
+        The engine spills a value to disk precisely so it can free the RAM copy;
+        between the write landing and that eviction, the disk copy is the only
+        thing making the RAM copy droppable. Evicting it here (the last-resort
+        "evict live values" path) silently revokes the engine's only way to
+        release memory, and the run climbs to OOM with an empty candidate queue.
+        """
+        guard = self._spill_guard
+        if guard is None:
+            return False
+        try:
+            return bool(guard(node_id))
+        except Exception:  # noqa: BLE001 — a guard error must not break eviction
+            return False
+
+    def _evict_row(self, node_id: str, payload_file: str | None, nbytes: int, gd_key: float, tier: str,
+                   reason: str | None = None) -> None:
+        """Free one payload + its file, leaving a tombstone that says why.
+
+        The row survives as ``status='evicted'`` carrying its lineage
+        (expression, dependencies), its rebuild cost (``compute_ms``) and the
+        GreedyDual key that ranked it (``gd_key``) -- both already columns of
+        this row -- plus the tier, the reason and the bytes that keeping it
+        cost, which are recorded here. That record is the difference between a
+        policy that can be audited and one that can only be postulated: a
+        DELETE leaves a store in which "computed then dropped" and "never
+        computed" are the same state.
+
+        Tombstones are cheap (a few hundred bytes, no payload) but not free, so
+        a run that evicts tens of millions of values will eventually want them
+        aged out. That purge is a separate policy; keeping them is the default
+        because the information is unrecoverable once gone.
+        """
+        if payload_file:
+            (self.payload_dir / str(payload_file)).unlink(missing_ok=True)
+        now = time.time()
+        self._connection.execute(
+            "UPDATE results SET status = ?, payload_file = NULL, payload_json = '{}', "
+            "payload_bytes = 0, eviction_tier = ?, eviction_reason = ?, eviction_bytes = ?, "
+            "eviction_at = ?, updated_at = ? WHERE node_id = ?",
+            (EVICTED_STATUS, tier, reason or tier, int(nbytes or 0), now, now, node_id),
+        )
+        if self._id_index is not None:
+            self._id_index.discard(node_id)  # keep the engine's membership index truthful
+        self._payload_bytes -= int(nbytes or 0)
+        self._gd_clock = max(self._gd_clock, float(gd_key))
+        self._stats["evictions"] += 1
+        self._stats[tier] += 1  # evicted_dead | evicted_live
+        self._stats["evicted_bytes"] += int(nbytes or 0)
+
+    def _effective_max_bytes(self) -> int:
+        """The budget actually enforced right now: the configured one, capped by
+        what the disk can still give.
+
+        ``_auto_cache_max_bytes`` reads free space ONCE, at construction. That
+        number is a snapshot of a quantity this very cache is busy consuming: a
+        sweep starting with 1.7 TB free gets an ~850 GB budget and then grows
+        toward it while free space falls by the same amount, so the budget stops
+        describing the disk almost immediately. Anything else sharing the volume
+        makes it worse, and the failure is not graceful -- a full disk surfaces
+        as ENOSPC/EDQUOT inside the persister, mid-run.
+
+        So the ceiling is re-derived from CURRENT free space: allow the payload
+        to grow into what is there, minus a reserve that stays free. This binds
+        an explicit --cache-max-gb too; a budget larger than the disk is not a
+        budget the disk can honour, and silently overrunning it helps nobody.
+        """
+        now = time.time()
+        if self._disk_ceiling is None or (now - self._disk_ceiling_at) >= _DISK_PROBE_INTERVAL_S:
+            try:
+                usage = shutil.disk_usage(self.payload_dir)
+                # THE RESERVE MUST FIT THE VOLUME. A flat 50 GB minimum is
+                # larger than /tmp on this very machine (30.6 GB), so the
+                # ceiling below went to zero, `_enforce_budget` read zero as
+                # "no limit", and the cache grew unbounded -- on every volume
+                # SMALLER than the reserve, which is to say exactly where the
+                # disk needs protecting most. Measured: 24 MB held against a
+                # 5 MB budget, zero evictions.
+                reserve = min(max(_DISK_RESERVE_MIN_BYTES,
+                                  int(usage.total * _DISK_RESERVE_FRACTION)),
+                              usage.total // 2)
+                # Headroom the payload tier may occupy while leaving `reserve`
+                # free: what it holds now, plus what is free, less the reserve.
+                self._disk_ceiling = max(0, self._payload_bytes + usage.free - reserve)
+            except OSError:
+                self._disk_ceiling = self._max_bytes  # no probe: fall back to the budget
+            self._disk_ceiling_at = now
+        if self._max_bytes <= 0:
+            # No configured budget: the disk is the only limit, and -1 says there
+            # is not even that.
+            return self._disk_ceiling if self._disk_ceiling is not None else _UNBOUNDED
+        return min(self._max_bytes, self._disk_ceiling)
+
+    def _enforce_budget(self) -> None:
+        """Evict payloads to stay under budget: dead values first, live only if forced.
+
+        Runs on the async persister thread (off the event loop). Candidates are
+        ordered by GreedyDual-Size key (cheapest-to-recompute-per-byte first), and
+        the clock rises to each evicted key, folding recency into future keys.
+        A value still needed by active work (``live``) is evicted only when no dead
+        value remains — a last resort. Evicted values stay regenerable from lineage.
+        """
+        budget = self._effective_max_bytes()
+        # A budget of ZERO means there is no room, not that there is no limit.
+        # Conflating the two is what let the cache run unbounded whenever the
+        # disk-derived ceiling collapsed; only _UNBOUNDED means unbounded.
+        if budget == _UNBOUNDED or self._payload_bytes <= budget:
+            return
+        low_water = int(budget * 0.9)
+        with self._lock:
+            live = set(self._live_node_ids)  # snapshot to avoid lock contention
+            while self._payload_bytes > low_water:
+                rows = self._connection.execute(self._EVICT_SCAN).fetchall()
+                rows = [r for r in rows if not self._spilled_ram_copy(r[0])]
+                dead = [r for r in rows if not self._is_live(r[0], live)]
+                for node_id, payload_file, nbytes, gd_key in dead:
+                    if self._payload_bytes <= low_water:
+                        break
+                    self._evict_row(node_id, payload_file, nbytes, gd_key, "evicted_dead")
+                if dead or self._payload_bytes <= low_water:
+                    continue  # made progress on dead values; re-scan
+                # Everything left is live but we are still over budget: evict the
+                # cheapest live values once, then stop (graceful degradation).
+                for node_id, payload_file, nbytes, gd_key in rows:
+                    if self._payload_bytes <= low_water:
+                        break
+                    self._evict_row(node_id, payload_file, nbytes, gd_key, "evicted_live")
+                break
+
+    def stats(self) -> dict[str, Any]:
+        """Cache statistics: live entries/bytes, cumulative work banked, activity."""
+        with self._lock:
+            # Tombstones are rows without a value, so they must not be counted
+            # as entries -- "entries" answers "what can this cache still give
+            # you", and an evicted row can give you nothing but its reason.
+            entries, payload_rows, total_ms, tombstones = self._connection.execute(
+                "SELECT SUM(status = ?), COUNT(payload_file), COALESCE(SUM(compute_ms), 0), "
+                "SUM(status = ?) FROM results",
+                (MATERIALIZED_STATUS, EVICTED_STATUS),
             ).fetchone()
-            created_at = float(row[0]) if row is not None else now
-            expression_json = row[1] if row is not None else "{}"
-            dependencies_json = row[2] if row is not None else "{}"
-            self._connection.execute(
-                """
-                INSERT INTO results (
-                    node_id, status, format_version, vox_type, descriptor_json,
-                    payload_json, payload_file, error, metadata_json, expression_json,
-                    dependencies_json, runtime_version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(node_id) DO UPDATE SET
-                    status = excluded.status,
-                    format_version = excluded.format_version,
-                    vox_type = excluded.vox_type,
-                    descriptor_json = excluded.descriptor_json,
-                    payload_json = excluded.payload_json,
-                    payload_file = excluded.payload_file,
-                    error = NULL,
-                    metadata_json = excluded.metadata_json,
-                    expression_json = excluded.expression_json,
-                    dependencies_json = excluded.dependencies_json,
-                    runtime_version = excluded.runtime_version,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    node_id,
-                    MATERIALIZED_STATUS,
-                    encoded.format_version,
-                    encoded.vox_type,
-                    dumps_json(encoded.descriptor),
-                    dumps_json(encoded.payload_json),
-                    payload_file,
-                    None,
-                    metadata_json,
-                    expression_json,
-                    dependencies_json,
-                    self.runtime_version,
-                    created_at,
-                    now,
-                ),
-            )
+            top = self._connection.execute(
+                "SELECT node_id, compute_ms, payload_bytes FROM results "
+                "WHERE payload_bytes > 0 ORDER BY compute_ms DESC LIMIT 5"
+            ).fetchall()
+        return {
+            "entries": int(entries or 0),
+            "tombstones": int(tombstones or 0),
+            "payload_entries": int(payload_rows),
+            "payload_bytes": self._payload_bytes,
+            "max_bytes": self._max_bytes,
+            "effective_max_bytes": self._effective_max_bytes(),
+            "compute_ms_banked": float(total_ms),
+            **dict(self._stats),
+            "most_expensive": [{"node": n[:12], "compute_ms": round(c, 1), "bytes": b} for n, c, b in top],
+        }
 
     def delete(self, node_id: str) -> None:
         with self._lock:
+            row = self._connection.execute("SELECT payload_bytes FROM results WHERE node_id = ?", (node_id,)).fetchone()
             self._connection.execute("DELETE FROM results WHERE node_id = ?", (node_id,))
+            if row is not None:
+                self._payload_bytes -= int(row[0] or 0)
         payload = self.payload_dir / f"{node_id}.bin"
         if payload.exists():
             payload.unlink()
@@ -339,6 +882,7 @@ class SQLiteResultsDatabase:
     def clear(self) -> None:
         with self._lock:
             self._connection.execute("DELETE FROM results")
+            self._payload_bytes = 0
         for payload in self.payload_dir.glob("*.bin"):
             payload.unlink()
 
@@ -362,7 +906,14 @@ class NoCacheStorageBackend:
     def put_plan_definitions(self, plan: SymbolicPlan) -> None:
         return None
 
-    def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None) -> None:
+    def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None,
+                    compute_ms: float = 0.0) -> None:
+        return None
+
+    def set_live_nodes(self, node_ids: set[str]) -> None:
+        return None
+
+    def set_live_probe(self, probe) -> None:
         return None
 
     def delete(self, node_id: str) -> None:
@@ -419,88 +970,149 @@ class MaterializationRecord:
 
 
 class MaterializationStore:
-    """Runtime store with optional read/write-through persistence."""
+    """Two-level (memory + disk) result store with optional persistence.
 
-    def __init__(self, backend: StorageBackend | None = None, *, read_through: bool = True, write_through: bool = True):
-        self._records: dict[str, MaterializationRecord] = {}
+    Tier 1 is a bounded, LRU in-memory cache (``_memory``) holding the live
+    Python values. Tier 2 is the optional ``backend`` (disk). Bookkeeping
+    records in ``_records`` are kept for every materialized node so ``has`` and
+    ``completed_nodes`` stay correct even after a value is evicted from RAM.
+
+    A value is evicted from the memory tier only once it is durably persisted to
+    disk, so a node is never recomputed: an evicted value is reloaded from
+    tier 2 on demand. With no backend (e.g. ``--no-cache``) nothing is
+    persisted, hence nothing is evicted and the memory tier acts as an
+    unbounded per-run memo.
+    """
+
+    def __init__(
+        self,
+        backend: StorageBackend | None = None,
+        *,
+        read_through: bool = True,
+        write_through: bool = True,
+        memory_capacity: int | None = None,
+    ):
+        self._records: "OrderedDict[str, MaterializationRecord]" = OrderedDict()
+        self._memory: "OrderedDict[str, Any]" = OrderedDict()
+        self._memory_capacity = memory_capacity if memory_capacity is not None else _default_memory_capacity()
         self._backend = backend
         self._read_through = read_through
         self._write_through = write_through
         self._lock = threading.RLock()
-        self._persist_queue: queue.Queue[tuple[str, Any, dict[str, Any]]] = queue.Queue()
+        self._persist_queue: queue.Queue[tuple[str, Any, dict[str, Any]]] = queue.Queue(
+            maxsize=_default_persist_queue_max()
+        )
         self._persist_stop = threading.Event()
         self._persist_thread: threading.Thread | None = None
         if self._backend is not None and self._write_through:
             self._persist_thread = threading.Thread(target=self._persistence_loop, name="voxlogica-persist", daemon=True)
             self._persist_thread.start()
 
-    def _materialize_from_backend(self, node_id: str) -> MaterializationRecord | None:
+    def _remember(self, node_id: str, value: Any) -> None:
+        """Insert a value into the in-memory tier and trim to capacity."""
+        self._memory[node_id] = value
+        self._memory.move_to_end(node_id)
+        self._trim()
+
+    def _trim(self) -> None:
+        """Evict least-recently-used values that are safely reloadable from disk."""
+        while len(self._memory) > self._memory_capacity:
+            oldest_id = next(iter(self._memory))
+            record = self._records.get(oldest_id)
+            # Only drop a value we can reload from tier 2; otherwise the node
+            # would have to be recomputed. If the LRU victim is not yet durable,
+            # stop trimming and let the memory tier exceed capacity for now.
+            if not (self._read_through and record is not None and record.metadata.get("persisted") is True):
+                break
+            self._memory.pop(oldest_id, None)
+
+    def _load_from_backend(self, node_id: str) -> Any:
+        """Return a persisted value from tier 2 and refresh bookkeeping; None on miss."""
         if not self._read_through or self._backend is None:
             return None
         record = self._backend.get_record(node_id)
         if record is None or record.status != MATERIALIZED_STATUS:
             return None
-        materialized = MaterializationRecord(
+        self._records[node_id] = MaterializationRecord(
             status=MATERIALIZED_STATUS,
             expression=record.expression,
             dependencies=record.dependencies,
-            value=record.value,
-            metadata={**record.metadata, "source": "results-db", "cache_hit": True},
+            value=None,
+            metadata={**record.metadata, "source": "results-db", "cache_hit": True, "persisted": True},
             format_version=record.format_version,
             vox_type=record.vox_type,
         )
-        self._records[node_id] = materialized
-        return materialized
+        self._records.move_to_end(node_id)
+        return record.value
 
     def has(self, node_id: str) -> bool:
         with self._lock:
+            if node_id in self._memory:
+                return True
             record = self._records.get(node_id)
-            try:
-                if record is not None and record.status == MATERIALIZED_STATUS and record.metadata["persisted"] == True:
-                    return True
-            except KeyError:
-                if record is not None and record.status == MATERIALIZED_STATUS:
-                    return True
-            loaded = self._materialize_from_backend(node_id)
-            return loaded is not None and loaded.status == MATERIALIZED_STATUS
+            if record is not None and record.status == MATERIALIZED_STATUS and record.metadata.get("persisted") is True:
+                return True
+            return self._load_from_backend(node_id) is not None
 
     def get(self, node_id: str) -> Any:
         with self._lock:
-            record = self._records.get(node_id)
-            if record is not None and record.value == node_id:
-                if self._backend is not None:
-                    backend_record = self._backend.get_record(node_id)
-                    if backend_record is not None and backend_record.status == MATERIALIZED_STATUS:
-                        return backend_record.value
-                # raise KeyError(f"No materialized record for node {node_id}")
-                return None
-            if record is None or record.status != MATERIALIZED_STATUS:
-                # raise KeyError(f"No materialized record for node {node_id}")
-                return None
-            return record.value
+            if node_id in self._memory:
+                self._memory.move_to_end(node_id)  # tier-1 hit
+                return self._memory[node_id]
+            value = self._load_from_backend(node_id)  # tier-2 fallback
+            if value is not None:
+                self._remember(node_id, value)
+            return value
 
     def put(self, node_id: str, expression: Any, dependencies: list[str], value: Any, metadata: dict[str, Any] | None = None) -> None:
+        enqueue: tuple[str, Any, dict[str, Any]] | None = None
         with self._lock:
             record_metadata = dict(metadata or {})
             val,reason,encoded = can_serialize_value(value)
             format_version = encoded.format_version if encoded is not None else ""
-            vox_type = encoded.vox_type if encoded is not None else ""     
-            if vox_type == "bytes" or vox_type == "overlay" or vox_type == "ndarray" or vox_type == "image":
-                stored_value = node_id
-                # self._backend.put_success(node_id, value, metadata=record_metadata) if self._backend is not None else None
-            else:
-                stored_value = value
-            self._records[node_id] = MaterializationRecord(MATERIALIZED_STATUS, expression, dependencies, stored_value, record_metadata, format_version=format_version, vox_type=vox_type)
-            #if vox_type == "bytes" or vox_type == "ndarray":
-            #    return
+            vox_type = encoded.vox_type if encoded is not None else ""
+            # The bookkeeping record holds no value; the live value lives in the
+            # bounded in-memory tier (and, once persisted, on disk).
+            self._records[node_id] = MaterializationRecord(MATERIALIZED_STATUS, expression, dependencies, None, record_metadata, format_version=format_version, vox_type=vox_type)
+            self._records.move_to_end(node_id)
             if self._backend is None or not self._write_through:
+                self._remember(node_id, value)
                 return
             if not val:
-                self._records[node_id].metadata["persisted"] = False
-                self._records[node_id].metadata["persist_error"] = reason
+                record_metadata["persisted"] = False
+                record_metadata["persist_error"] = reason
+                self._remember(node_id, value)
                 return
-            self._records[node_id].metadata["persisted"] = "pending"
-            self._persist_queue.put((node_id, value, record_metadata))
+            record_metadata["persisted"] = "pending"
+            self._remember(node_id, value)
+            enqueue = (node_id, value, record_metadata)
+        # Enqueue outside the lock (the persistence thread needs the lock to mark
+        # items done). Persistence is BEST-EFFORT and must never block the producer:
+        # a blocking put here can be reached from the single engine thread and freeze
+        # all scheduling (0%-CPU hang). If the writer is behind and the queue is full,
+        # drop this write — the value stays in the in-memory tier and is recomputed
+        # if a later run needs it. Bounding of in-flight work is done upstream
+        # (AsyncPersister.over_budget), so dropping here only costs a cache entry.
+        if enqueue is not None:
+            try:
+                self._persist_queue.put_nowait(enqueue)
+            except queue.Full:
+                with self._lock:
+                    rec = self._records.get(node_id)
+                    if rec is not None:
+                        rec.metadata["persisted"] = False
+                        rec.metadata["persist_error"] = "persist queue full (dropped, best-effort)"
+
+    def forget(self, node_id: str) -> None:
+        """Drop a value from the in-memory tier once the caller no longer needs it.
+
+        Used by the executor to release intermediates whose every consumer has
+        run. The bookkeeping record is retained (so completed_nodes stays
+        correct); a persisted value remains reloadable from disk, and an
+        un-persisted one is simply recomputed if a later run needs it.
+        """
+        with self._lock:
+            self._memory.pop(node_id, None)
 
     # def fail(self, node_id: str, message: str) -> None:
     #     with self._lock:

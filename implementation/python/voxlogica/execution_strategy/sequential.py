@@ -77,8 +77,11 @@ class SequentialExecutionStrategy(ExecutionStrategy):
         """Prepare a plan for execution and reset namespace runtime state."""
         self.registry.apply_imports(plan.imported_namespaces)
         self.registry.reset_runtime_state()
-        if self.results_database is not None:
-            self.results_database.put_plan_definitions(plan)
+        # No `put_plan_definitions` here: the lazy strategy dropped that call
+        # (see its `compile`) and `SQLiteResultsDatabase` never grew the method,
+        # so every run through this strategy died on an AttributeError before
+        # evaluating anything. Node definitions reach the store through the
+        # materialization writes below.
         return PreparedPlan(
             plan=plan,
             # definition_store=DefinitionStore(plan.nodes),

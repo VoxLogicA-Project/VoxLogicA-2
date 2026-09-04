@@ -9,13 +9,22 @@ Current runtime architecture:
 - Modular results database API (`~/.voxlogica/results.db` by default)
 - Interactive REPL session runtime (CLI today, GUI-ready integration point)
 
+## Examples
+
+Runnable, commented programs live in the [example gallery](doc/gallery/README.md),
+ordered as a reading path from the language basics to a complete study: a BraTS
+threshold sweep that scores every case, reports the distribution of the per-case
+best threshold, and exports the worst cases at three anatomical levels, with and without ground truth.
+
 ## Quick Start
 
 Run from repo root:
 
 ```bash
-# Install uv once (https://docs.astral.sh/uv/)
-# Example (macOS/Linux): curl -LsSf https://astral.sh/uv/install.sh | sh
+# No prerequisites beyond python3 and git: if uv (https://docs.astral.sh/uv/) is not
+# on PATH, bootstrap downloads a checksum-verified copy into .cache/uv/bin. That needs
+# no root and writes nothing outside the checkout. Set VOXLOGICA_NO_UV_DOWNLOAD=1 to
+# require a preinstalled uv instead (offline hosts), or VOXLOGICA_UV=/path/to/uv.
 
 # Deterministic environment sync (creates/updates .venv using .python-version + pinned requirements, including pytest)
 python3 bootstrap.py
@@ -32,15 +41,71 @@ python3 bootstrap.py
 # Run with legacy side-effect policy enabled (CLI only)
 ./voxlogica run --legacy test.imgql
 
-# Start API server
+# Open the workspace UI (see "The workspace" below)
+./voxlogica
+
+# Serve the UI without opening a window (Ctrl-C to stop)
 ./voxlogica serve
 
-# Start modern dev mode (backend + Vite frontend, one command)
-./voxlogica dev
-
-# Start the UI inspector MCP server for AI/browser debugging
-./voxlogica mcp ui-inspector --url http://127.0.0.1:5173/
+# Speak MCP on stdio for whichever instance is running
+./voxlogica mcp
 ```
+
+## The workspace
+
+`./voxlogica` with no arguments opens a workspace: a bento board of cards over
+an `.imgql` file. Nothing is asked on the way in.
+
+```bash
+./voxlogica                      # a new workspace, in a window
+./voxlogica path/to/study.imgql  # serve an existing one (same as `serve <file>`)
+./voxlogica run program.imgql    # compute, with the UI attached (see below)
+```
+
+**Where your work lives.** Files live in a library in the place your platform
+keeps application data. A project is a folder in it and a file is an `.imgql`
+inside; new files start loose at the top, and the sidebar lists all of them —
+one opens in the pane at a time, so there are no tabs. Drag a file onto a project
+to move it.
+
+| | |
+|---|---|
+| macOS | `~/Library/Application Support/VoxLogicA/workspaces/<timestamp>/` |
+| Linux | `$XDG_DATA_HOME/voxlogica/workspaces/<timestamp>/` (default `~/.local/share`) |
+| Windows | `%LOCALAPPDATA%\VoxLogicA\workspaces\<timestamp>\` |
+
+Set `VOXLOGICA_HOME` to put the library somewhere else. Because projects are
+plain folders, a project *is* something you can put under version control as it
+stands.
+
+**Saving.** There is none: the file is the document, written automatically and
+debounced. Nothing is ever "unsaved".
+
+**Moving it into a repository.** *Move…* at the bottom of the window opens the
+system's own save panel and takes the file out of the library; a folder that
+existed for that one file goes with it, images and all. The layout lives in the
+file's own `//@card` comments, so from then on it diffs, merges and commits like
+any other source. The button beside it shows the file in your file manager.
+
+**Node.** The UI is built on first use, and if there is no usable Node on `PATH`
+VoxLogicA fetches an official one for your platform into its own data directory
+— checksum-verified against Node's published `SHASUMS256.txt`, unpacked per
+version, never installed system-wide. Nothing to install, nothing to add to
+`PATH`. `VOXLOGICA_NODE=/path/to/node` uses your own; `VOXLOGICA_NO_NODE_DOWNLOAD=1`
+refuses the download and tells you what to install instead.
+
+**With a computation.** `./voxlogica run program.imgql` prints its URL and then
+behaves exactly as it always did — same stdout, same exit code. If you open the
+UI it keeps serving until the last window closes; if nobody is watching it exits
+the moment the run ends.
+
+**Agents.** The instance registers an MCP server with every installed client it
+finds (Claude Code, Claude Desktop, Cursor, Codex) on first run, so an agent can
+see the same workspace you are looking at and drive it through the same named
+actions the UI uses. `VOXLOGICA_NO_MCP_REGISTER=1` turns that off.
+
+**Ports.** The UI takes the first free port from 10001 upward; `--ui-port` picks
+a different starting point. Everything binds to loopback only.
 
 ## Safety Defaults
 
@@ -162,7 +227,7 @@ For command-specific flags:
 - Module docs: `doc/dev/modules/`
 - Python package docs: `implementation/python/README.md`
 - API usage notes: `doc/user/api-usage.md`
-- Example gallery (programs + manifest): `doc/gallery/`
+- **Example gallery** (runnable, commented programs): [`doc/gallery/README.md`](doc/gallery/README.md)
 - Language guide (narrative index): `doc/user/language-gallery.md`
 - Serve studio dashboards: `doc/user/serve-studio.md`
 - VS Code MCP setup for the UI inspector: `doc/user/vscode-mcp-ui-inspector.md`

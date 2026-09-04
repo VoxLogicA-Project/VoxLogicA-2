@@ -11,6 +11,7 @@ from typing import Any, Callable, Iterable
 import time
 
 from voxlogica.lazy.ir import NodeId, SymbolicPlan
+from voxlogica.diagnostics.model import Diagnostic
 
 
 class SequenceValue:
@@ -94,3 +95,4 @@ class ExecutionResult:
     total_operations: int
     cache_summary: dict[str, Any] = field(default_factory=dict)
     node_events: list[dict[str, Any]] = field(default_factory=list)
+    diagnostics: list[Diagnostic] = field(default_factory=list)

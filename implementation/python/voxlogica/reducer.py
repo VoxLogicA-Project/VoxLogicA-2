@@ -11,6 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Sequence
 import logging
+import sys
+import threading
+import time
+
+from tqdm import tqdm
 
 from voxlogica.lazy import GoalSpec, NodeId, NodeSpec, SymbolicPlan
 from voxlogica.lazy.ir import OutputKind
@@ -43,6 +48,14 @@ logger = logging.getLogger(__name__)
 
 identifier = str
 Stack = list[tuple[str, str]]
+
+# Default cap for static loop unrolling. A `for x in <iterable> do <body>` whose
+# iterable is a compile-time-known constant sequence of length <= the cap is
+# expanded into one DAG node per element (parallelisable), instead of a single
+# sequential for_loop kernel. Longer literal lists, and all range()/dir()
+# iterables, fall back to the lazy for_loop node. Carried per-plan on WorkPlan;
+# overridable via the --for-expansion-cap CLI option (0 disables expansion).
+_DEFAULT_FOR_EXPANSION_CAP = 4096
 
 _PRIMITIVE_OPERATOR_ALIASES: dict[str, str] = {
     "!": "not_compat",
@@ -120,6 +133,9 @@ class WorkPlan:
     goals: list[GoalSpec] = field(default_factory=list)
     imported_namespaces: list[str] = field(default_factory=list)
     registry: PrimitiveRegistry = field(default_factory=PrimitiveRegistry, repr=False)
+    for_expansion_cap: int = _DEFAULT_FOR_EXPANSION_CAP
+    provenance: dict[NodeId, tuple[str, ...]] = field(default_factory=dict)
+    source_text: str | None = None
 
     def add_node(self, node: NodeSpec) -> NodeId:
         """Hash-cons a node and return the stable id assigned to it."""
@@ -127,6 +143,14 @@ class WorkPlan:
         if node_id not in self.nodes:
             self.nodes[node_id] = node
         return node_id
+
+    def add_provenance(self, node_id: NodeId, location: str | None) -> None:
+        """Record source provenance without changing content-addressed identity."""
+        if not location:
+            return
+        prior = self.provenance.get(node_id, ())
+        if location not in prior:
+            self.provenance[node_id] = (*prior, location)
 
     def add_goal(self, operation: str, operation_id: NodeId, name: str) -> None:
         """Record a top-level materialization goal such as print or save."""
@@ -189,6 +213,8 @@ class WorkPlan:
             nodes=dict(self.nodes),
             goals=list(self.goals),
             imported_namespaces=tuple(self.imported_namespaces),
+            provenance=dict(self.provenance),
+            source_text=self.source_text,
         )
 
     @property
@@ -503,10 +529,25 @@ def _plan_primitive_call(
     attrs: Optional[dict[str, Any]] = None,
     output_kind: OutputKind = "scalar",
     position: str | None = None,
+    fuse: bool = True,
 ) -> NodeId:
-    """Validate a primitive call and add its symbolic node to the plan."""
+    """Validate a primitive call and add its symbolic node to the plan.
+
+    ``fuse=False`` builds the node verbatim, bypassing the lazy sequence-access
+    rewrite; the rewrite itself uses it to emit the terminal access node without
+    re-triggering fusion on the loop it just produced.
+    """
     attrs = dict(attrs or {})
     identifier = _normalize_primitive_identifier(identifier)
+
+    # Lazy sequence access: rewrite a slice/index over a producer so only the
+    # demanded elements are ever computed (see _fuse_sequence_access). Skipped
+    # when the call carries kwargs/attrs, which these positional ops never do.
+    if fuse and identifier in _SEQUENCE_ACCESS_OPERATORS and not kwargs and not attrs:
+        fused = _fuse_sequence_access(work_plan, identifier, args)
+        if fused is not None:
+            return fused
+
     call = PrimitiveCall(args=args, kwargs=kwargs, attrs=attrs)
 
     try:
@@ -540,7 +581,9 @@ def _plan_primitive_call(
             output_kind=output_kind,
         )
 
-    return work_plan.add_node(node)
+    node_id = work_plan.add_node(node)
+    work_plan.add_provenance(node_id, position)
+    return node_id
 
 
 def _reduce_map_call(
@@ -608,6 +651,179 @@ def _reduce_map_call(
     )
 
 
+def _constant_sequence_elements(
+    work_plan: WorkPlan, node_id: NodeId
+) -> Optional[tuple[NodeId, ...]]:
+    """Return the element node ids if ``node_id`` is a sequence of constants.
+
+    A node qualifies when it is a ``sequence`` primitive (the form emitted for
+    array literals) whose every argument is a ``constant`` node. Returns ``None``
+    otherwise — including for ``range``/``dir`` sequences, whose elements are not
+    materialized as constant nodes at reduce time, so those loops stay lazy.
+    """
+    node = work_plan.nodes.get(node_id)
+    if node is None or node.kind != "primitive":
+        return None
+    if node.operator not in ("sequence", "default.sequence"):
+        return None
+    if node.kwargs:
+        return None
+    for arg_id in node.args:
+        arg = work_plan.nodes.get(arg_id)
+        if arg is None or arg.kind != "constant":
+            return None
+    return tuple(node.args)
+
+
+# Sequence producers whose bodies are position-independent (element i depends
+# only on input element i), so a positional slice/index may be pushed through
+# them into their iterable. ``filter`` is deliberately excluded: it changes both
+# length and the position→element mapping, so slicing cannot commute with it.
+_PRODUCER_OPERATORS = ("for_loop", "default.for_loop", "map", "default.map")
+_SEQUENCE_LITERAL_OPERATORS = ("sequence", "default.sequence")
+_SLICE_OPERATORS = ("subsequence", "default.subsequence", "slice", "default.slice")
+_INDEX_OPERATORS = ("index", "default.index")
+_SEQUENCE_ACCESS_OPERATORS = _SLICE_OPERATORS + _INDEX_OPERATORS
+
+
+def _is_subsequence(operator: str) -> bool:
+    return operator in ("subsequence", "default.subsequence")
+
+
+def _constant_value(work_plan: WorkPlan, node_id: NodeId) -> tuple[bool, Any]:
+    """Return ``(True, value)`` if ``node_id`` is a constant node, else ``(False, None)``."""
+    node = work_plan.nodes.get(node_id)
+    if node is not None and node.kind == "constant":
+        return True, node.attrs.get("value")
+    return False, None
+
+
+def _constant_bound(work_plan: WorkPlan, node_id: NodeId) -> tuple[bool, Optional[int]]:
+    """Interpret a slice-bound node as a constant ``int`` or open bound (``None``)."""
+    ok, value = _constant_value(work_plan, node_id)
+    if not ok:
+        return False, None
+    if value is None:
+        return True, None
+    if isinstance(value, bool):
+        return False, None
+    if isinstance(value, int):
+        return True, value
+    if isinstance(value, float) and value.is_integer():
+        return True, int(value)
+    return False, None
+
+
+def _literal_slice_range(
+    work_plan: WorkPlan, operator: str, args: tuple[NodeId, ...], length: int
+) -> Optional[tuple[int, int]]:
+    """Resolve constant slice bounds to a half-open ``[start, stop)`` over ``length``.
+
+    Returns ``None`` when a bound is not a compile-time constant, so the caller
+    falls back to the ordinary (runtime) slice node.
+    """
+    if _is_subsequence(operator):
+        if len(args) == 3:
+            ok_start, start = _constant_bound(work_plan, args[1])
+            ok_stop, stop = _constant_bound(work_plan, args[2])
+        else:  # subsequence(seq, stop)
+            ok_start, start = True, 0
+            ok_stop, stop = _constant_bound(work_plan, args[1])
+    else:  # default.slice: (seq, start, stop), either bound possibly open
+        ok_start, start = _constant_bound(work_plan, args[1])
+        ok_stop, stop = _constant_bound(work_plan, args[2])
+    if not (ok_start and ok_stop):
+        return None
+    start = 0 if start is None else max(0, start)
+    stop = length if stop is None else max(0, stop)
+    return start, min(stop, length)
+
+
+def _fuse_sequence_access(
+    work_plan: WorkPlan, operator: str, args: tuple[NodeId, ...]
+) -> Optional[NodeId]:
+    """Push a positional slice/index through its producer (short-cut fusion).
+
+    Because map/for_loop bodies are position-independent, slicing commutes with
+    them, so we only ever produce the demanded elements::
+
+        subsequence(for x in xs do e, a, b)  ->  for x in subsequence(xs, a, b) do e
+        slice      (for x in xs do e, a, b)  ->  for x in slice(xs, a, b) do e
+        index      (for x in xs do e, i)     ->  index(for x in xs[i:i+1] do e, 0)
+        index      (sequence(e0, e1, ...), i)  ->  e_i          (constant index)
+        subsequence(sequence(e0, e1, ...), a, b) -> sequence(e_a, ..., e_{b-1})
+
+    Returns the rewritten node id, or ``None`` when no rewrite applies (the
+    caller then builds the ordinary node). The recursion terminates because each
+    step moves strictly toward the leaf iterable, and rebuilding the producer
+    (a non-slice operator) never re-enters fusion.
+    """
+    if not args:
+        return None
+    producer = work_plan.nodes.get(args[0])
+    if producer is None or producer.kind != "primitive":
+        return None
+
+    # Direct positional selection over a literal sequence node.
+    if producer.operator in _SEQUENCE_LITERAL_OPERATORS and not producer.kwargs:
+        elements = producer.args
+        if operator in _INDEX_OPERATORS:
+            ok, index = _constant_bound(work_plan, args[1])
+            if ok and index is not None and 0 <= index < len(elements):
+                return elements[index]
+            return None
+        span = _literal_slice_range(work_plan, operator, args, len(elements))
+        if span is None:
+            return None
+        start, stop = span
+        return _plan_primitive_call(
+            work_plan, identifier="sequence",
+            args=elements[start:stop], output_kind="sequence",
+        )
+
+    # Push a slice through a map/for_loop into its (possibly runtime) iterable.
+    if operator in _SLICE_OPERATORS and producer.operator in _PRODUCER_OPERATORS \
+            and len(producer.args) == 2 and not producer.kwargs:
+        iterable_id, closure_id = producer.args
+        sliced_iterable = _plan_primitive_call(
+            work_plan, identifier=operator,
+            args=(iterable_id, *args[1:]), output_kind="sequence",
+        )
+        return _plan_primitive_call(
+            work_plan, identifier=producer.operator,
+            args=(sliced_iterable, closure_id), output_kind="sequence",
+        )
+
+    # Index through a map/for_loop at a constant position: slice the iterable to
+    # that single element, run the producer over it, and take the sole result.
+    # (Runtime positions are left alone: computing i+1 would need an arithmetic
+    # node, and positional indexing by a computed value is vanishingly rare.)
+    if operator in _INDEX_OPERATORS and producer.operator in _PRODUCER_OPERATORS \
+            and len(producer.args) == 2 and not producer.kwargs:
+        ok, index = _constant_bound(work_plan, args[1])
+        if not ok or index is None or index < 0:
+            return None
+        iterable_id, closure_id = producer.args
+        singleton = _plan_primitive_call(
+            work_plan, identifier="subsequence",
+            args=(iterable_id,
+                  _create_constant_node(work_plan, index),
+                  _create_constant_node(work_plan, index + 1)),
+            output_kind="sequence",
+        )
+        one_element_loop = _plan_primitive_call(
+            work_plan, identifier=producer.operator,
+            args=(singleton, closure_id), output_kind="sequence",
+        )
+        return _plan_primitive_call(
+            work_plan, identifier="index",
+            args=(one_element_loop, _create_constant_node(work_plan, 0)),
+            output_kind="scalar", fuse=False,
+        )
+
+    return None
+
+
 def reduce_expression(
     env: Environment,
     work_plan: WorkPlan,
@@ -661,7 +877,15 @@ def reduce_expression(
         if expr.identifier in {"map", "default.map"} and len(expr.arguments) == 2:
             return _reduce_map_call(env, work_plan, expr, current_stack)
 
-        if expr.identifier in _PRIMITIVE_OPERATOR_ALIASES:
+        # A user-defined function shadows the primitive alias table: resolve it
+        # through the environment below, exactly as the runtime closure path does.
+        # Without this guard the reduce path would force e.g. `!` to the scalar
+        # `not_compat` even where compat.imgql defines `let !(a) = not(a)`, so an
+        # image `!(region)` would compile to a scalar not and feed a bool into
+        # downstream image kernels (e.g. dt). See issue #20.
+        if expr.identifier in _PRIMITIVE_OPERATOR_ALIASES and not isinstance(
+            env.try_find(expr.identifier), FunctionVal
+        ):
             args_ids = tuple(
                 reduce_expression(env, work_plan, arg, current_stack)
                 for arg in expr.arguments
@@ -755,6 +979,30 @@ def reduce_expression(
 
     if isinstance(expr, EFor):
         iterable_id = reduce_expression(env, work_plan, expr.iterable, current_stack)
+
+        # Expand the loop when the iterable is a compile-time-known constant
+        # sequence: bind the loop variable to each element's constant node and
+        # re-reduce the body, emitting one DAG node per element. Hash-consing
+        # dedupes subexpressions shared across iterations. See issue #20.
+        element_ids = _constant_sequence_elements(work_plan, iterable_id)
+        if element_ids is not None and 0 <= len(element_ids) <= work_plan.for_expansion_cap:
+            body_ids = tuple(
+                reduce_expression(
+                    env.bind(expr.variable, OperationVal(element_id)),
+                    work_plan,
+                    expr.body,
+                    current_stack,
+                )
+                for element_id in element_ids
+            )
+            return _plan_primitive_call(
+                work_plan,
+                identifier="sequence",
+                args=body_ids,
+                output_kind="sequence",
+                position=expr.position,
+            )
+
         closure_id = _create_closure_node(
             variable=expr.variable,
             expression=expr.body,
@@ -881,15 +1129,75 @@ def reduce_command(
     raise RuntimeError("Reducer internal error: unknown command type")
 
 
+_PLANNING_FORMAT = "planning: {elapsed} · {desc}"
+_PLANNING_SAMPLE_S = 0.25
+# Only announce planning once it has visibly stalled: a small program reduces in
+# milliseconds and should stay silent, but a large sweep spends minutes here
+# (measured: 129 s to build 1.46 M nodes for a 30-case oracle grid) with no
+# output at all, which reads as a hang. See doc/dev/free-threaded-handover.md.
+_PLANNING_ANNOUNCE_AFTER_S = 1.0
+
+
+class _PlanningProgress:
+    """Live 'still working' readout for the silent plan-construction phase.
+
+    Reduction is a single long synchronous call: loop expansion materialises
+    the whole DAG before the executor (and its own bar) ever starts. Rather
+    than instrument the recursive reducer, a daemon thread samples the node
+    count every ``_PLANNING_SAMPLE_S``. That keeps the readout smooth even
+    though top-level commands complete very unevenly, and costs nothing but a
+    dict length read per tick.
+    """
+
+    def __init__(self, work_plan: WorkPlan) -> None:
+        self._work_plan = work_plan
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._bar: tqdm | None = None
+
+    def __enter__(self) -> "_PlanningProgress":
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="voxlogica-planning-progress")
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        # Stay silent for short reductions: waiting out the announce delay here
+        # means a fast program never creates a bar at all, so nothing has to be
+        # torn down and no stray line lands in the log.
+        if self._stop.wait(_PLANNING_ANNOUNCE_AFTER_S):
+            return
+        self._bar = tqdm(bar_format=_PLANNING_FORMAT, dynamic_ncols=True,
+                         disable=None, file=sys.stderr, leave=False)
+        while not self._stop.is_set():
+            if self._bar is not None:
+                self._bar.set_description_str(
+                    f"{len(self._work_plan.nodes):,} nodes built", refresh=True)
+            self._stop.wait(_PLANNING_SAMPLE_S)
+
+    def __exit__(self, *exc_info) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        if self._bar is not None:
+            # Leave a permanent one-line record of what planning produced; the
+            # transient bar itself is cleared (leave=False) so it does not
+            # collide with the executor bar that starts immediately after.
+            self._bar.close()
+            print(f"planning: {len(self._work_plan.nodes):,} nodes built in "
+                  f"{self._bar.format_dict['elapsed']:.1f}s", file=sys.stderr, flush=True)
+
+
 def _reduce_program_internal(
     program: Program,
     environment: Environment | None = None,
     *,
     source_name: str = "<input>",
     collect_bindings: bool = False,
+    for_expansion_cap: int = _DEFAULT_FOR_EXPANSION_CAP,
 ) -> tuple[WorkPlan, dict[str, NodeId]]:
     """Reduce a whole program, optionally tracking final declaration bindings."""
-    work_plan = WorkPlan()
+    work_plan = WorkPlan(for_expansion_cap=for_expansion_cap)
     env = Environment() if environment is None else environment
     env = _seed_program_variables(env, work_plan, source_name)
     parsed_imports: set[str] = set()
@@ -904,40 +1212,46 @@ def _reduce_program_internal(
             return
         binding = updated_env.try_find(command.identifier)
         if isinstance(binding, OperationVal):
-            declaration_bindings[command.identifier] = binding
+            # The id, not the value that holds it: the map is declared as
+            # `dict[str, NodeId]` and every caller wants a hash it can look up
+            # in the results store. An `OperationVal` here would be a type the
+            # annotation denies, discovered by whoever indexed it first.
+            declaration_bindings[command.identifier] = binding.operation_id
 
-    stdlib_path = Path(__file__).parent / "stdlib" / "stdlib.imgql"
-    if stdlib_path.exists():
-        try:
-            stdlib_program = parse_program_content(stdlib_path.read_text(encoding="utf-8"))
-            commands = list(stdlib_program.commands)
-            while commands:
-                command = commands.pop(0)
-                env, imports = reduce_command(env, work_plan, parsed_imports, command)
-                _track_binding(command, env)
-                commands = imports + commands
-        except Exception as exc:
-            logger.warning("Failed to load stdlib: %s", exc)
+    with _PlanningProgress(work_plan):
+        stdlib_path = Path(__file__).parent / "stdlib" / "stdlib.imgql"
+        if stdlib_path.exists():
+            try:
+                stdlib_program = parse_program_content(stdlib_path.read_text(encoding="utf-8"))
+                commands = list(stdlib_program.commands)
+                while commands:
+                    command = commands.pop(0)
+                    env, imports = reduce_command(env, work_plan, parsed_imports, command)
+                    _track_binding(command, env)
+                    commands = imports + commands
+            except Exception as exc:
+                logger.warning("Failed to load stdlib: %s", exc)
 
-    # Imported commands are pushed to the front of the queue so the reducer sees
-    # them in a deterministic, source-like order.
-    commands = list(program.commands)
-    # print(commands)
-    while commands:
-        command = commands.pop(0)
-        env, imports = reduce_command(env, work_plan, parsed_imports, command)
-        _track_binding(command, env)
-        commands = imports + commands
+        # Imported commands are pushed to the front of the queue so the reducer sees
+        # them in a deterministic, source-like order.
+        commands = list(program.commands)
+        while commands:
+            command = commands.pop(0)
+            env, imports = reduce_command(env, work_plan, parsed_imports, command)
+            _track_binding(command, env)
+            commands = imports + commands
 
     return work_plan, declaration_bindings
 
 
-def reduce_program(program: Program, *, source_name: str = "<input>") -> WorkPlan:
+def reduce_program(program: Program, *, source_name: str = "<input>",
+                   for_expansion_cap: int = _DEFAULT_FOR_EXPANSION_CAP) -> WorkPlan:
     """Reduce a parsed program into a work plan without exposing bindings."""
     work_plan, _bindings = _reduce_program_internal(
         program,
         collect_bindings=False,
         source_name=source_name,
+        for_expansion_cap=for_expansion_cap,
     )
     return work_plan
 

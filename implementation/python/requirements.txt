@@ -7,10 +7,20 @@ mcp==1.26.0
 playwright==1.58.0
 canonicaljson==2.0.0
 watchdog==6.0.0
-dask[complete]==2025.5.1
+# The application window: the operating system's own web view, not a bundled
+# rendering engine. PyObjC >= 12 declares free-threaded support, so importing
+# the macOS backend does not re-enable the GIL -- tests/unit/test_ui_window.py
+# is what keeps that true. Optional at runtime: with no GUI backend the UI
+# falls back to a browser window (voxlogica/ui/window.py).
+pywebview>=6.2
 numpy==2.3.2
-numba==0.64.0
-SimpleITK==2.5.2
+# numba/SimpleITK: first versions shipping free-threaded (cp314t) wheels.
+# The engine runs on a free-threaded interpreter only -- see
+# doc/dev/gil-free-default-plan.md. Do not pin these back below these floors
+# without also reverting that cutover; older releases have no cp314t wheel and
+# bootstrap will fail to resolve.
+numba>=0.66.0
+SimpleITK>=2.5.5
 nnunetv2==2.6.2
 torch==2.8.0; python_version < "3.13"
 torch==2.10.0; python_version >= "3.13"

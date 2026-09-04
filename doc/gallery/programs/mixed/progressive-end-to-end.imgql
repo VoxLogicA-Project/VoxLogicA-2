@@ -1,9 +1,13 @@
+// Three namespaces in one program: an image operation (vox1), a numeric
+// summary, and string formatting for a human-readable line of output.
 import "simpleitk"
 import "strings"
 import "vox1"
-img = ReadImage("tests/data/chris_t1.nii.gz")
-i = intensity(img)
-mask = 60 .<= i
-corr = crossCorrelation(2,i,i,tt,min(i),max(i),16)
-avgCorr = avg(corr,mask)
-summary = concat("avgCorr=", format_string("{:.4f}", avgCorr))
+
+i    = intensity(ReadImage("tests/data/chris_t1.nii.gz"))
+mask = 60 .<= i                            // voxels at or above intensity 60
+
+corr    = crossCorrelation(2, i, i, tt, min(i), max(i), 16)
+avgCorr = avg(corr, mask)                  // averaged only inside the mask
+
+print "summary" concat("avgCorr=", format_string("{:.4f}", avgCorr))
