@@ -254,6 +254,27 @@ The sister project NEARBYTES uses the same shape — RFC 6962 Merkle hashing
 content-addressed and append-only at the path layer, merge by union
 (`meta-storage-v2.md:85,113,118`).
 
+### What the bytes are compressed with
+
+Measured in-process on a real 35.7 MB payload out of a BraTS store:
+
+| | throughput | ratio |
+|---|---|---|
+| gzip level 1 (what this did) | 0.07 GB/s | 0.645 |
+| zstd level 1 | 0.58 GB/s | 0.759 |
+| **zstd level 3** | **0.29 GB/s** | **0.436** |
+
+Four times faster and a third smaller -- it wins on both axes. On a sweep that
+once overran its free space by 1.9 TB, a third is some 600 GB. And compression
+is what the persister thread actually spends its time on: SHA-256 over the same
+bytes runs at 4.50 GB/s, sixty times faster than the gzip it was queued behind.
+
+No dependency. Python 3.14 carries zstd in the standard library, and the PyPI
+`zstandard` does not even build on this free-threaded interpreter. Reads stay
+self-describing -- the codec is chosen from the magic bytes -- so existing gzip
+stores keep decoding, a store written without zstd stays readable, and a missing
+codec degrades to gzip rather than failing a run.
+
 ### Where the bytes go
 
 SQLite cannot be the answer at the scale this is heading for. Practical ceiling
@@ -727,7 +748,17 @@ The hang was not the fold. On `incoming`, with no handles involved at all:
     for i in range(0, 20) do spin(i,0)  + fold   ->  0.5 s
 
 An IDENTITY loop body wedges, and every measurement that condemned the rewriter
-used one. Filed separately: `for i in xs do i` is a legitimate program.
+used one.
+
+FOUND AND FIXED, and it is not a handles bug at all. `admission.on_complete`
+decrements a loop job's in-flight count, and constants are completed at
+DISCOVERY rather than through the ready queue -- so they never reached it. A body
+that reduces to the element itself IS a constant, so such a loop filled its
+window and never drained it: sixteen bodies admitted, the seventeenth never,
+every worker asleep and the event loop in `select()` with nothing to wake it.
+Exactly at the boundary, 16 fine and 17 hung. `on_trivial_complete` closes it,
+kept separate and cheap because it is called for every constant in a plan and
+almost none of them is a loop body.
 
 Measured again with a body that does not trip it, the tail-step rewriter is
 healthy and linear: 20 elements 0.5 s, 64 0.6 s, 200 0.8 s, 800 1.8 s. And it
@@ -753,9 +784,10 @@ becomes N -- 64 for 64 elements, against the bound of 40 that
 | rewritten fold | half | N nodes |
 
 It does NOT wedge -- 800 elements, linear -- so the frontier cost here is
-bookkeeping. But that bound was put there deliberately, and this design already
-raised it once on reasoning that was wrong and had to withdraw it. Raising it a
-second time is not a call to make quietly.
+bookkeeping, and with the constant-body deadlock fixed that is now the ONLY
+objection left to the rewriter. But that bound was put there deliberately, and
+this design already raised it once on reasoning that was wrong and had to
+withdraw it. Raising it a second time is not a call to make quietly.
 
 So the branch keeps the kernel fold and stays green. The rewriter is complete at
 commit `2ae2392` with the measurements above, ready to restore if the frontier
