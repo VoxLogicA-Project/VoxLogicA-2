@@ -17,7 +17,7 @@ def test_large_dataset_streaming_sanity(reduce_from_text, tmp_path: Path):
     goal_id = workplan.goals[0].id
 
     engine = ExecutionEngine()
-    prepared = engine.compile_plan(workplan, strategy="dask")
+    prepared = engine.compile_plan(workplan)
 
-    first_page = engine.page(prepared, goal_id, offset=0, limit=5, strategy="dask")
+    first_page = engine.page(prepared, goal_id, offset=0, limit=5)
     assert first_page.items == ["0", "1", "2", "3", "4"]

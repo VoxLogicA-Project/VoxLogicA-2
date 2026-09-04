@@ -24,7 +24,10 @@ from voxlogica.diagnostics.classify import build_report
 from voxlogica.diagnostics.store import store_report
 from voxlogica.engine.core import ComputationEngine
 from voxlogica.engine.priority import Priority
-from voxlogica.execution_strategy.results import ExecutionResult, PreparedPlan, SequenceValue
+from voxlogica.execution_strategy.base import ExecutionStrategy
+from voxlogica.execution_strategy.results import (
+    ExecutionResult, PageResult, PreparedPlan, SequenceValue,
+)
 from voxlogica.lazy.ir import NodeId, SymbolicPlan
 from voxlogica.primitives.registry import PrimitiveRegistry
 from voxlogica.storage import StorageBackend
@@ -121,8 +124,14 @@ def _unresolved_goal_context(engine: ComputationEngine, goal: Any) -> dict[str, 
     return ctx
 
 
-class EngineExecutionStrategy:
-    """Evaluates a plan as a batch of engine queries (one per goal)."""
+class EngineExecutionStrategy(ExecutionStrategy):
+    """Evaluates a plan as a batch of engine queries (one per goal).
+
+    Subclasses the contract on purpose. It did not, and so shipped without
+    `page` or `stream` -- an `AttributeError` from a public method, reached
+    through an `ExecutionEngine` that had accepted a strategy name and thrown
+    it away. The ABC turns that into an error at construction.
+    """
 
     name = "engine"
 
@@ -323,6 +332,78 @@ class EngineExecutionStrategy:
 
     # ── Goal side effects ─────────────────────────────────────────────────────────────────────
 
+    # ---- sequence access -------------------------------------------------
+    #
+    # `page` and `stream` exist so a caller can look at part of a sequence
+    # without printing the whole of it. With handle-passing they can also
+    # COMPUTE only that part: a lazy sequence's value is a tuple of handles,
+    # so slicing it and resolving the slice touches the window and nothing
+    # else. That is the whole point of the handle work, exercised by a public
+    # method rather than only by the operators.
+
+    def _evaluate(self, prepared: PreparedPlan, node: NodeId) -> tuple[Any, Any]:
+        """Compute one node -- goal or not -- and return (value, resolver).
+
+        The resolver stays valid after the engine's pool is shut down: goal
+        values are protected and the handles they name are held, which is what
+        `run` already relies on to print a goal after `engine.shutdown()`.
+        """
+        plan = prepared.plan
+        if node not in plan.nodes:
+            raise KeyError(f"node {node!r} is not in this plan")
+        self.registry.apply_imports(plan.imported_namespaces)
+        engine = ComputationEngine(registry=self.registry, backend=self.results_database,
+                                   max_concurrency=self.threads, progress=False,
+                                   debug=self.debug, threads_auto=self.threads_auto,
+                                   observe=self.observe, sparse_cache=self.sparse_cache)
+        engine.adopt_plan(plan)
+
+        async def evaluate() -> Any:
+            query = engine.submit(node)
+            await engine.run()
+            return await query.result()
+
+        value = asyncio.run(evaluate())
+        engine.shutdown()
+        return value, engine._resolve_reference
+
+    def _items(self, value: Any) -> list[Any] | None:
+        """The sequence's elements WITHOUT resolving them, or None if scalar."""
+        if isinstance(value, SequenceValue):
+            return list(value.iter_values())
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        return None
+
+    def page(self, prepared: PreparedPlan, node: NodeId, offset: int, limit: int) -> PageResult:
+        """One half-open window of a sequence node, resolving only that window."""
+        if offset < 0 or limit < 0:
+            raise ValueError("offset and limit must be non-negative")
+        value, resolve = self._evaluate(prepared, node)
+        elements = self._items(value)
+        if elements is None:
+            # A scalar is a one-item page, as the lazy strategy also reports it.
+            items = [self._materialize(value, resolve)] if offset == 0 and limit > 0 else []
+            return PageResult(items=items, offset=offset, limit=limit, next_offset=None)
+        window = elements[offset:offset + limit]
+        items = [self._materialize(item, resolve) for item in window]
+        exhausted = offset + len(window) >= len(elements)
+        return PageResult(items=items, offset=offset, limit=limit,
+                          next_offset=None if exhausted else offset + len(window))
+
+    def stream(self, prepared: PreparedPlan, node: NodeId, chunk_size: int):
+        """Yield a sequence node's elements in chunks of `chunk_size`."""
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        value, resolve = self._evaluate(prepared, node)
+        elements = self._items(value)
+        if elements is None:
+            yield [self._materialize(value, resolve)]
+            return
+        for start in range(0, len(elements), chunk_size):
+            yield [self._materialize(item, resolve)
+                   for item in elements[start:start + chunk_size]]
+
     def _side_effect(self, operation: str, name: str, value: Any, resolve=None) -> None:
         """Apply a goal's print/save effect to its materialized value."""
         if operation == "print":
@@ -358,7 +439,24 @@ class EngineExecutionStrategy:
             return [item.sitk(retain_numpy=False) if isinstance(item, PolyArray) else item
                     for item in value.iter_values()]
         if isinstance(value, list):
-            return [self._materialize(item) for item in value]
+            # Explicit stack: nesting depth is the program's to choose, and
+            # this file may not recurse on it (see AGENTS.md).
+            out: list[Any] = []
+            stack: list[tuple[list[Any], int, list[Any]]] = [(value, 0, out)]
+            while stack:
+                items, index, into = stack[-1]
+                if index == len(items):
+                    stack.pop()
+                    continue
+                stack[-1] = (items, index + 1, into)
+                item = items[index]
+                if isinstance(item, list):
+                    nested: list[Any] = []
+                    into.append(nested)
+                    stack.append((item, 0, nested))
+                else:
+                    into.append(self._materialize(item))
+            return out
         return value
 
     def _serializers(self) -> dict[str, dict]:

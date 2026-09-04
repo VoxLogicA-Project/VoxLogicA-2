@@ -58,7 +58,7 @@ def test_qualified_addition_regression(reduce_from_text):
     goal_id = plan.goals[0].id
 
     engine = ExecutionEngine()
-    prepared = engine.compile_plan(workplan, strategy="dask")
-    page = engine.page(prepared, goal_id, offset=0, limit=1, strategy="dask")
+    prepared = engine.compile_plan(workplan)
+    page = engine.page(prepared, goal_id, offset=0, limit=1)
 
     assert page.items == [5.0]

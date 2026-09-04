@@ -1,60 +1,90 @@
 {
+  "goals": [
+    {
+      "name": "out",
+      "operation": "print",
+      "target_kind": "primitive"
+    }
+  ],
   "nodes": [
     {
-      "kind": "closure",
-      "operator": "closure",
-      "output_kind": "closure",
       "argc": 0,
-      "kwarg_names": [],
       "attr_keys": [
         "body",
         "capture_names",
         "function_captures",
         "parameter"
-      ]
+      ],
+      "kind": "closure",
+      "kwarg_names": [],
+      "operator": "closure",
+      "output_kind": "closure"
     },
     {
-      "kind": "constant",
-      "operator": "constant",
-      "output_kind": "scalar",
       "argc": 0,
-      "kwarg_names": [],
       "attr_keys": [
         "value"
-      ]
+      ],
+      "kind": "constant",
+      "kwarg_names": [],
+      "operator": "constant",
+      "output_kind": "scalar"
     },
     {
-      "kind": "constant",
-      "operator": "constant",
-      "output_kind": "scalar",
       "argc": 0,
-      "kwarg_names": [],
       "attr_keys": [
         "value"
-      ]
+      ],
+      "kind": "constant",
+      "kwarg_names": [],
+      "operator": "constant",
+      "output_kind": "scalar"
     },
     {
+      "argc": 0,
+      "attr_keys": [
+        "value"
+      ],
+      "kind": "constant",
+      "kwarg_names": [],
+      "operator": "constant",
+      "output_kind": "scalar"
+    },
+    {
+      "argc": 0,
+      "attr_keys": [
+        "value"
+      ],
+      "kind": "constant",
+      "kwarg_names": [],
+      "operator": "constant",
+      "output_kind": "scalar"
+    },
+    {
+      "argc": 0,
+      "attr_keys": [
+        "value"
+      ],
+      "kind": "constant",
+      "kwarg_names": [],
+      "operator": "constant",
+      "output_kind": "scalar"
+    },
+    {
+      "argc": 2,
+      "attr_keys": [],
       "kind": "primitive",
+      "kwarg_names": [],
       "operator": "default.for_loop",
-      "output_kind": "sequence",
-      "argc": 2,
-      "kwarg_names": [],
-      "attr_keys": []
+      "output_kind": "sequence"
     },
     {
-      "kind": "primitive",
-      "operator": "default.range",
-      "output_kind": "sequence",
       "argc": 2,
+      "attr_keys": [],
+      "kind": "primitive",
       "kwarg_names": [],
-      "attr_keys": []
-    }
-  ],
-  "goals": [
-    {
-      "operation": "print",
-      "name": "out",
-      "target_kind": "primitive"
+      "operator": "default.range",
+      "output_kind": "sequence"
     }
   ]
 }

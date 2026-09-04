@@ -16,12 +16,12 @@ def test_stream_and_page_without_full_materialization(reduce_from_text, sample_d
     goal_id = plan.goals[0].id
 
     engine = ExecutionEngine()
-    prepared = engine.compile_plan(workplan, strategy="dask")
+    prepared = engine.compile_plan(workplan)
 
-    first_two_chunks = list(islice(engine.stream(prepared, goal_id, chunk_size=2, strategy="dask"), 2))
+    first_two_chunks = list(islice(engine.stream(prepared, goal_id, chunk_size=2), 2))
     assert first_two_chunks == [["alpha", "beta"], ["gamma", "delta"]]
 
-    page = engine.page(prepared, goal_id, offset=1, limit=2, strategy="dask")
+    page = engine.page(prepared, goal_id, offset=1, limit=2)
     assert page.items == ["beta", "gamma"]
 
 
@@ -32,7 +32,7 @@ def test_save_goal_writes_output(reduce_from_text, tmp_path: Path):
     workplan = reduce_from_text(program)
 
     engine = ExecutionEngine()
-    result = engine.execute_workplan(workplan, strategy="dask")
+    result = engine.execute_workplan(workplan)
 
     assert result.success
     assert output_path.exists()

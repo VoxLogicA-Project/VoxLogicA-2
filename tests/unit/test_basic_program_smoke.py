@@ -17,7 +17,7 @@ print "rows" load("__DATASET__")
     workplan = reduce_from_text(program)
 
     engine = ExecutionEngine()
-    result = engine.execute_workplan(workplan, strategy="dask")
+    result = engine.execute_workplan(workplan)
 
     assert result.success
     assert len(workplan.goals) == 2

@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from typing import Any
 import threading
 
-from voxlogica.execution_strategy import ExecutionResult, PageResult, PreparedPlan, SequentialExecutionStrategy, LazyExecutionStrategy
+from voxlogica.execution_strategy import (
+    ExecutionResult, PageResult, PreparedPlan, SequentialExecutionStrategy,
+    LazyExecutionStrategy,
+)
+from voxlogica.execution_strategy import registry
 from voxlogica.lazy.ir import NodeId, SymbolicPlan
 from voxlogica.primitives.registry import PrimitiveRegistry
 from voxlogica.storage import NoCacheStorageBackend, StorageBackend, get_storage
@@ -89,6 +93,7 @@ class ExecutionEngine:
         primitives_loader: PrimitivesLoader | None = None,
         storage_backend: StorageBackend | None = None,
         no_cache: bool = False,
+        strategy: str | None = None,
         use_engine: bool = True,
         threads: int = 0,
         engine_debug: bool = False,
@@ -99,8 +104,14 @@ class ExecutionEngine:
     ):
         """Create an engine bound to one primitive registry and one strategy.
 
-        ``use_engine`` selects the live computation engine (the default); pass
-        ``False`` to fall back to the older lazy strategy. Note the engine
+        ``strategy`` names the runtime -- see
+        ``execution_strategy.registry.available()`` for the choices, currently
+        ``"engine"`` (the default), ``"lazy"`` and ``"sequential"``. An unknown
+        name raises rather than quietly selecting the default.
+
+        ``use_engine`` is the older boolean spelling, kept for callers that
+        still pass it: ``False`` means ``strategy="lazy"``. An explicit
+        ``strategy`` wins. Note the engine
         eagerly evicts intermediates, so — unlike lazy — it does not retain every
         binding's value in ``prepared.values`` after a run; read a value through a
         ``print``/``save`` goal instead. ``threads`` caps concurrent kernels for
@@ -128,16 +139,46 @@ class ExecutionEngine:
         self.primitives = primitives_loader or PrimitivesLoader()
         self.registry = self.primitives.registry
         self.storage = (storage_backend or get_storage())
-        if use_engine:
-            from voxlogica.engine.strategy import EngineExecutionStrategy
-            self._strategy = EngineExecutionStrategy(
-                self.registry, self.storage, threads=threads, debug=engine_debug,
-                threads_auto=threads_auto, observe=observe, sparse_cache=sparse_cache)
-        else:
-            self._strategy = LazyExecutionStrategy(
-                self.registry, self.storage, threads=threads, dynamic_expansion=dynamic_expansion)
+        # Every strategy is built from the same keyword set; the registry passes
+        # on only what each one declares, so this call does not need to know
+        # which parameters belong to which runtime.
+        self._build = dict(
+            registry=self.registry, results_database=self.storage, threads=threads,
+            debug=engine_debug, engine_debug=engine_debug, threads_auto=threads_auto,
+            observe=observe, sparse_cache=sparse_cache,
+            dynamic_expansion=dynamic_expansion,
+        )
+        chosen = strategy if strategy is not None else (registry.DEFAULT if use_engine else "lazy")
+        self._strategy = self._instance(chosen)
+        #: name -> instance, so a plan compiled under one name can still be run,
+        #: paged or streamed without rebuilding its runtime.
         self.default_strategy = self._strategy.name
         self._last_prepared: PreparedPlan | None = None
+
+    def _instance(self, name: str):
+        """The strategy called ``name``, built once and reused."""
+        cache = self.__dict__.setdefault("_instances", {})
+        found = cache.get(name)
+        if found is None:
+            found = cache[name] = registry.create(name, **self._build)
+        return found
+
+    def _for(self, prepared: PreparedPlan, strategy: str | None):
+        """The strategy that must serve this prepared plan.
+
+        A ``PreparedPlan`` records the strategy that compiled it, and that
+        record is authoritative: running one strategy's compilation on another
+        is not a supported operation, and used to happen silently whenever a
+        caller passed a name. An explicit name that disagrees is an error, not
+        a preference.
+        """
+        name = prepared.strategy_name or self.default_strategy
+        if strategy is not None and strategy != name:
+            raise ValueError(
+                f"this plan was compiled by the {name!r} strategy but {strategy!r} "
+                f"was requested; recompile with compile_plan(strategy={strategy!r})"
+            )
+        return self._instance(name)
 
     def execute_workplan(
         self,
@@ -148,15 +189,15 @@ class ExecutionEngine:
         profile: str | None = None,
     ) -> ExecutionResult:
         """Compile and immediately execute a work plan in one step."""
-        del execution_id, strategy
-        prepared = self.compile_plan(workplan)
-        return self.run_prepared(prepared, goals=goals, profile=profile)
+        del execution_id
+        prepared = self.compile_plan(workplan, strategy=strategy)
+        return self.run_prepared(prepared, goals=goals, strategy=strategy,
+                                 profile=profile)
 
     def compile_plan(self, workplan, strategy: str | None = None) -> PreparedPlan:
         """Compile reducer output into a prepared execution object."""
-        del strategy
         plan = self._to_symbolic_plan(workplan)
-        prepared = self._strategy.compile(plan)
+        prepared = self._instance(strategy or self.default_strategy).compile(plan)
         self._last_prepared = prepared
         return prepared
 
@@ -173,11 +214,8 @@ class ExecutionEngine:
         ``profile`` is honored by ``EngineExecutionStrategy`` only (see its
         ``run()`` docstring); ``LazyExecutionStrategy`` ignores it.
         """
-        # print(self.storage)
-        del strategy
         self._last_prepared = prepared
-        # print(prepared)
-        return self._strategy.run(prepared, goals=goals, profile=profile)
+        return self._for(prepared, strategy).run(prepared, goals=goals, profile=profile)
 
     def stream(
         self,
@@ -187,8 +225,7 @@ class ExecutionEngine:
         strategy: str | None = None,
     ):
         """Stream a sequence node in chunks via the underlying strategy."""
-        del strategy
-        return self._strategy.stream(prepared, node, chunk_size)
+        return self._for(prepared, strategy).stream(prepared, node, chunk_size)
 
     def page(
         self,
@@ -199,8 +236,7 @@ class ExecutionEngine:
         strategy: str | None = None,
     ) -> PageResult:
         """Return one page of items from a sequence-producing node."""
-        del strategy
-        return self._strategy.page(prepared, node, offset, limit)
+        return self._for(prepared, strategy).page(prepared, node, offset, limit)
 
     def _to_symbolic_plan(self, workplan) -> SymbolicPlan:
         """Normalize reducer output into the immutable symbolic execution IR."""

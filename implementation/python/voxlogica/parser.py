@@ -378,7 +378,24 @@ grammar = r"""
     UPPER_IDENTIFIER: /[A-Z][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?/
     DOLLAR_IDENTIFIER.2: /\$[a-z][a-z0-9_]*/
     OPERATOR: /(?!\/{2})(?:[#;:_'\.|!$%&\/^=*\-+<>?@~\\]+|[A-Z][A-Z0-9]*[#;:_'\.|!$%&\/^=*\-+<>?@~\\][A-Z0-9#;:_'\.|!$%&\/^=*\-+<>?@~\\]*)/
-    number: SIGNED_NUMBER -> float
+    number: NUMBER_LITERAL -> float
+    // A sign belongs to the number only where an OPERAND cannot precede it.
+    // `common.SIGNED_NUMBER` has no such condition, so `x+1` lexed as
+    // IDENTIFIER followed by the number `+1` -- two operands in a row, and a
+    // parse error on the arithmetic every user writes. The lookbehind is
+    // fixed-width, so `re` evaluates it against the text before the scan
+    // position rather than failing like `^` does.
+    //
+    // Nothing that parses today changes meaning: application is parenthesised
+    // (`call_id_expr`), so there is no juxtaposition for `f-1` to have been.
+    // `f -1` (space, then sign) is still read as a signed number and still
+    // rejected; only the no-space infix case is newly accepted.
+    // Priority so that a sign the lookbehind ALLOWS still binds to the number
+    // rather than losing to OPERATOR: `print "c" -1` is the literal -1, as it
+    // has always been. The lookbehind is what makes raising this safe -- where
+    // an operand precedes the sign the terminal cannot match at all, so `2-1`
+    // stays subtraction.
+    NUMBER_LITERAL.3: /(?<![A-Za-z0-9_)\]])[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?/
     boolean: "true" -> true
            | "false" -> false
     string: ESCAPED_STRING
@@ -387,7 +404,6 @@ grammar = r"""
     COMMENT: "//" /[^\n]*/
     
     %import common.ESCAPED_STRING
-    %import common.SIGNED_NUMBER
     %import common.WS
     %import common.NEWLINE
     %ignore WS
