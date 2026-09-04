@@ -1,10 +1,23 @@
+// The VL1 recipe's OWN `flt`, transliterated -- not `smoothen`.
+//
+// This case exists because they are not the same operation, which is what the
+// first run of this kit found. VoxLogicA 1's stdlib and this engine's `vox1`
+// compat define an IDENTICAL `smoothen`; the TACAS'19 recipe does not use it. It
+// defines `flt` with `distlt` -- the raw distance transform and a strict `<` --
+// where `smoothen` uses `distleq`, the zero-masked `pdt` and a `>=`. Volumes
+// differ by a few per cent, and per-case Dice by 0.02 to 0.03.
 import "simpleitk"
 import "vox1"
+
+distlt(x, y) = dt(y) <. x
+flt(r, a) = distlt(r, distgeq(r, not(a)))
+
 flair = intensity(ReadImage("$FLAIR"))
 background = touch(leq_sv(0.1, flair), border(flair))
 brain = not(background)
 pflair = percentiles(flair, brain, 0.5)
 hI = geq_sv(0.95, pflair)
+
 print "raw" volume(hI)
-print "smoothed5" volume(smoothen(hI, 5.0))
-print "smoothed2" volume(smoothen(hI, 2.0))
+print "smoothed5" volume(flt(5.0, hI))
+print "smoothed2" volume(flt(2.0, hI))

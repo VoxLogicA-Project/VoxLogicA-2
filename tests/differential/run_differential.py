@@ -46,15 +46,25 @@ VENV = Path(os.environ.get("VOXLOGICA_VENV",
 GOAL = re.compile(r"^\s*\[?[^\]]*\]?\s*\[?user\]?\s*(\w+)=(.+?)\s*$")
 
 
+#: A goal line and nothing else: an identifier, `=`, then the value, with
+#: VoxLogicA 1's `[   123ms] [user] ` prefix optional.
+#:
+#: Anchored deliberately. A permissive "any line with an =" picked Python source
+#: out of a traceback -- `value = self._invoke_kernel(...)` became a goal named
+#: `value`, and a failing engine then appeared to AGREE with the others on
+#: goals none of them had. A comparison that reports agreement where one side
+#: crashed is worse than no comparison.
+_GOAL_LINE = re.compile(
+    r"^(?:\[\s*\d+ms\]\s*)?(?:\[user\]\s*)?([A-Za-z_]\w*)=(.*)$")
+
+
 def goals_from(text: str) -> dict[str, str]:
     """The printed goals of a run, whichever engine printed them."""
     found: dict[str, str] = {}
     for line in text.splitlines():
-        stripped = re.sub(r"^\[\s*\d+ms\]\s*\[user\]\s*", "", line).strip()
-        if "=" in stripped and not stripped.startswith(("[", "{", '"')):
-            name, _, value = stripped.partition("=")
-            if name and " " not in name.strip():
-                found[name.strip()] = value.strip()
+        matched = _GOAL_LINE.match(line.strip())
+        if matched:
+            found[matched.group(1)] = matched.group(2).strip()
     return found
 
 
