@@ -1,0 +1,10 @@
+import "simpleitk"
+import "vox1"
+flair = intensity(ReadImage("$FLAIR"))
+background = touch(leq_sv(0.1, flair), border(flair))
+brain = not(background)
+pflair = percentiles(flair, brain, 0.5)
+hI = geq_sv(0.95, pflair)
+print "raw" volume(hI)
+print "smoothed5" volume(smoothen(hI, 5.0))
+print "smoothed2" volume(smoothen(hI, 2.0))

@@ -24,12 +24,19 @@ HERE = Path(__file__).resolve().parent
 PROGRAMS = HERE / "programs"
 REPOS = Path(os.environ.get("VOXLOGICA_REPOS", Path.home() / "data/local/repos"))
 
-#: label -> (kind, location). `kind` says how to invoke it, not what it is.
-ENGINES: list[tuple[str, str, Path]] = [
-    ("A vl1", "vl1", Path("/home/VoxLogicA/binaries/VoxLogicA_1.3.3-experimental_linux-x64/VoxLogicA")),
-    ("B lazy", "vl2", REPOS / "vlx-main"),
-    ("C engine", "vl2", REPOS / "vlx-incoming"),
-    ("D handles", "vl2", REPOS / "vlx-handles"),
+#: label -> (kind, dialect, location). `kind` says how to invoke it; `dialect`
+#: says which program file to feed it.
+#:
+#: THE THREE VoxLogicA 2 ENGINES ARE NOT SOURCE-COMPATIBLE, which this kit found
+#: on its second case: `border` takes no arguments on `main` and one on
+#: `incoming`. So a dialect can have its own program, and a case that does not
+#: provide one falls back to `vl2`. That fallback is not a formality -- it is how
+#: the kit reports which engines a case could actually reach.
+ENGINES: list[tuple[str, str, str, Path]] = [
+    ("A vl1", "vl1", "vl1", Path("/home/VoxLogicA/binaries/VoxLogicA_1.3.3-experimental_linux-x64/VoxLogicA")),
+    ("B lazy", "vl2", "vl2main", REPOS / "vlx-main"),
+    ("C engine", "vl2", "vl2", REPOS / "vlx-incoming"),
+    ("D handles", "vl2", "vl2", REPOS / "vlx-handles"),
 ]
 
 VENV = Path(os.environ.get("VOXLOGICA_VENV",
@@ -115,9 +122,9 @@ def main() -> int:
     args = parser.parse_args()
 
     available = []
-    for label, kind, where in ENGINES:
+    for label, kind, dialect, where in ENGINES:
         if where.exists():
-            available.append((label, kind, where))
+            available.append((label, kind, dialect, where))
         else:
             print(f"skip {label}: not at {where}")
     if len(available) < 2:
@@ -132,12 +139,14 @@ def main() -> int:
     for case in cases:
         print(f"\n=== {case} ===")
         answers: dict[str, dict[str, str]] = {}
-        for label, kind, where in available:
-            suffix = "vl1" if kind == "vl1" else "vl2"
-            program = PROGRAMS / f"{case}.{suffix}.imgql"
+        for label, kind, dialect, where in available:
+            program = PROGRAMS / f"{case}.{dialect}.imgql"
+            if not program.is_file() and dialect != "vl1":
+                program = PROGRAMS / f"{case}.vl2.imgql"   # the common dialect
             if not program.is_file():
-                print(f"  {label:<10} no {suffix} program")
+                print(f"  {label:<10} no program for this dialect")
                 continue
+            suffix = program.name.split(".")[-2]
             text = program.read_text().replace("$FLAIR", args.flair)
             scratch = Path("/tmp") / f"diff_{case}_{suffix}.imgql"
             scratch.write_text(text)

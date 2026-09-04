@@ -1,0 +1,9 @@
+// `main`'s dialect: `border` takes no arguments there, one on later engines.
+import "simpleitk"
+import "vox1"
+flair = intensity(ReadImage("$FLAIR"))
+background = touch(leq_sv(0.1, flair), border)
+brain = not(background)
+pflair = percentiles(flair, brain, 0.5)
+print "hot" volume(geq_sv(0.95, pflair))
+print "brain" volume(brain)

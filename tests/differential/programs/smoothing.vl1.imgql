@@ -1,0 +1,14 @@
+// Isolates VL1's `flt` against this engine's `smoothen`: the one equivalence the
+// TACAS'19 translation assumes and nothing has ever checked.
+import "stdlib.imgql"
+let distlt(x,y) = dt(y) <. x
+let flt(r,a) = distlt(r,distgeq(r,!a))
+load img = "$FLAIR"
+let flair = intensity(img)
+let background = touch(flair <. 0.1,border)
+let brain = !background
+let pflair = percentiles(flair,brain,0.5)
+let hI = pflair >. 0.95
+print "raw" volume(hI)
+print "smoothed5" volume(flt(5.0,hI))
+print "smoothed2" volume(flt(2.0,hI))
