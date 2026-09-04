@@ -38,7 +38,7 @@ import pytest
 
 from voxlogica.engine.admission import LoopAdmission, _Job
 from voxlogica.engine.core import _EVICT_SWEEP, ComputationEngine
-from voxlogica.engine.node_table import NodeTable
+from voxlogica.engine.node_table import NodeTable, pooled_bytes_approx
 from voxlogica.lazy.ir import NodeSpec
 from voxlogica.storage import SQLiteResultsDatabase
 
@@ -51,20 +51,25 @@ def test_accounted_bytes_counts_persist_backlog() -> None:
     # Attach a stand-in persister exposing only what accounted_bytes reads.
     table._persister = types.SimpleNamespace(pending_bytes=0)
 
+    # The buffer pool is PROCESS-WIDE, so its contribution is whatever earlier
+    # tests left in it. Measure it rather than assuming zero: asserting bare
+    # totals made this test pass or fail on collection order alone.
+    pooled = pooled_bytes_approx()
+
     table.live_bytes = 500
     table._persister.pending_bytes = 0
-    assert table.accounted_bytes == 500
+    assert table.accounted_bytes == 500 + pooled
 
     # A large value was handed to the writer and then evicted from the live
     # tier: live_bytes drops, but the object is still resident in the queue.
     table.live_bytes = 0
     table._persister.pending_bytes = 800
-    assert table.accounted_bytes == 800, "backlog must count toward resident total"
+    assert table.accounted_bytes == 800 + pooled, "backlog must count toward resident total"
 
     # With no persister at all (--no-cache), accounted == live (graceful).
     table._persister = None
     table.live_bytes = 123
-    assert table.accounted_bytes == 123
+    assert table.accounted_bytes == 123 + pooled
 
 
 @pytest.mark.unit
