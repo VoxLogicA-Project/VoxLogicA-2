@@ -121,6 +121,26 @@ def close(left: str, right: str, tolerance: float) -> bool:
                for a, b in zip(*numbers))
 
 
+def consensus(values: dict[str, str], tolerance: float) -> str | None:
+    """The value the largest group of engines agrees on, or None if there is no
+    majority. With four engines a lone dissenter is identifiable; with two that
+    disagree, neither is the reference and every one is reported."""
+    groups: list[list[str]] = []
+    for value in (v for v in values.values() if v != "-"):
+        for group in groups:
+            if close(group[0], value, tolerance):
+                group.append(value)
+                break
+        else:
+            groups.append([value])
+    if not groups:
+        return None
+    groups.sort(key=len, reverse=True)
+    if len(groups) > 1 and len(groups[0]) == len(groups[1]):
+        return None
+    return groups[0][0]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", action="append", help="only these cases")
@@ -170,15 +190,18 @@ def main() -> int:
         names = sorted({n for goals in answers.values() for n in goals})
         for name in names:
             values = {label: goals.get(name, "-") for label, goals in answers.items()}
-            distinct = {v for v in values.values() if v != "-"}
-            agree = len(distinct) <= 1 or all(
-                close(a, b, args.tolerance)
-                for a in distinct for b in distinct)
-            mark = "ok " if agree else "DIFF"
-            print(f"  {mark} {name}")
+            # Name the engines that disagree rather than only that someone did.
+            # A bare DIFF next to four numbers, three of which match, reads as a
+            # comparator artefact; it took a wrong correction to learn that.
+            majority = consensus(values, args.tolerance)
+            odd = [label for label, value in values.items()
+                   if value == "-" or (majority is not None
+                                       and not close(value, majority, args.tolerance))]
+            mark = "ok " if not odd else "DIFF"
+            print(f"  {mark} {name}" + (f"   <- {', '.join(odd)}" if odd else ""))
             for label in answers:
                 print(f"       {label:<10} {values[label]}")
-            if not agree:
+            if odd:
                 failures += 1
 
     print(f"\n{failures} disagreement(s)")
