@@ -89,7 +89,6 @@ def _ensure_registered() -> None:
     if _REGISTRY:
         return
     from voxlogica.execution_strategy.lazy import LazyExecutionStrategy
-    from voxlogica.execution_strategy.sequential import SequentialExecutionStrategy
 
     def _engine(**kwargs: Any):
         from voxlogica.engine.strategy import EngineExecutionStrategy
@@ -99,5 +98,10 @@ def _ensure_registered() -> None:
              "content-addressed scheduling engine with handle-based arguments (default)")
     register("lazy", LazyExecutionStrategy,
              "the earlier demand-driven strategy; kept for comparison, see issue #53")
-    register("sequential", SequentialExecutionStrategy,
-             "one node at a time, no concurrency; for debugging")
+
+    # SequentialExecutionStrategy is deliberately NOT registered. It is
+    # unreferenced outside its own module and has no test, and it does not run:
+    # `print "a" 2+3` reaches E_INVALID_ARGUMENT after a first, separate
+    # AttributeError was removed from its `compile`. A name that always fails is
+    # worse than a name that is absent, so it is not offered until someone
+    # revives it -- at which point one `register` call here is the whole change.

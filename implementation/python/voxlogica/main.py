@@ -303,7 +303,7 @@ def _run_command_inner(args: argparse.Namespace, ui) -> int:
         execution_result = ExecutionEngine(
             storage_backend=storage,
             no_cache=args.no_cache,
-            use_engine=args.engine,
+            strategy=args.engine,
             threads=args.threads,
             threads_auto=args.threads_auto,
             engine_debug=args.engine_debug,
@@ -591,8 +591,15 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Show the technical exception chain and traceback after the concise error")
     run_parser.add_argument("--error-format", choices=["human", "json"], default="human",
                             help="Render runtime diagnostics for people (default) or tools")
-    run_parser.add_argument("--engine", action=argparse.BooleanOptionalAction, default=True,
-                            help="Use the live computation engine (default); --no-engine selects the lazy strategy")
+    from voxlogica.execution_strategy import registry as _strategies
+    run_parser.add_argument("--engine", nargs="?", metavar="NAME",
+                            choices=sorted(_strategies.available()),
+                            const=_strategies.DEFAULT, default=_strategies.DEFAULT,
+                            help="Which runtime evaluates the program: "
+                                 + "; ".join(f"{name} -- {what}"
+                                             for name, what in _strategies.available().items()))
+    run_parser.add_argument("--no-engine", dest="engine", action="store_const", const="lazy",
+                            help="Older spelling of --engine lazy")
     run_parser.add_argument("--threads", type=int, default=0, metavar="N",
                             help="Concurrent kernels (default: 0 = auto-detect, see --threads-auto)")
     run_parser.add_argument("--threads-auto", choices=["balanced", "p-cores", "logical"],
