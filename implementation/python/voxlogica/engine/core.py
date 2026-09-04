@@ -258,7 +258,15 @@ class ComputationEngine:
         # Goal dependencies are the reuse "cut": persisting them prunes whole
         # subtrees on a warm re-run (see _is_critical).
         self._critical_nodes: set[NodeId] = set()
-        self._peak_frontier = 0     # max in-flight (registered-but-incomplete) nodes
+        self._peak_frontier = 0     # max registered-but-incomplete nodes
+        # Max nodes that were RUNNABLE at once: ready to dispatch plus actually
+        # running. This is what the admission window governs -- speculative
+        # BREADTH, work opened ahead of demand -- and `_peak_frontier` is not:
+        # that counts everything registered, including nodes waiting in a chain
+        # where only one can ever run at a time. A fold expressed as nodes is
+        # deep, not wide, and conflating the two made its depth read as if it
+        # were an unroll running away.
+        self._peak_runnable = 0
         self._kernels_executed = 0  # kernels run this session (cold high; warm ~0 = full reuse)
         self._recomputes = 0        # evicted values that had to be recomputed, not reloaded
         self._in_flight = 0         # kernels currently executing (watchdog: 0 + no progress = deadlock)
@@ -1069,6 +1077,9 @@ class ComputationEngine:
         frontier = len(self.graph.incomplete)
         if frontier > self._peak_frontier:
             self._peak_frontier = frontier
+        runnable = self.ready.qsize() + self._in_flight
+        if runnable > self._peak_runnable:
+            self._peak_runnable = runnable
         self._settle_node(nid)
         # After settling, so that anything reading the value the moment it is
         # told about it finds the value there.
@@ -1764,6 +1775,7 @@ class ComputationEngine:
             "peak_live_mb": round(self.table.peak_live_bytes / 1024 ** 2, 1),
             "live_budget_mb": round(self.governor.budget / 1024 ** 2, 1),
             "peak_frontier": self._peak_frontier,
+            "peak_runnable": self._peak_runnable,
             "loop_window": self.config.loop_window,
             "kernels_executed": self._kernels_executed,
             "recomputes": self._recomputes,

@@ -110,7 +110,16 @@ def test_frontier_bounded_by_window_not_plan() -> None:
     total = len(engine.table.nodes)
     # window(4 bodies) x tiny body + structural slack << the 64-element plan
     assert engine.metrics()["peak_frontier"] < total
-    assert engine.metrics()["peak_frontier"] <= 40
+    # THE BOUND IS ON RUNNABLE WORK, not on everything registered. What the
+    # window governs is speculative BREADTH -- bodies opened ahead of demand,
+    # which is how a 369-case unroll once opened 369 things at once. A `fold`
+    # expressed as nodes is DEEP instead: one link per element, each waiting on
+    # the one before, only ever one of them runnable. Counting those as frontier
+    # made depth read like an unroll running away, which it is not.
+    #
+    # This still catches the failure the bound exists for: an unroll that admits
+    # N bodies makes N of them runnable.
+    assert engine.metrics()["peak_runnable"] <= 40
 
 
 @pytest.mark.unit
