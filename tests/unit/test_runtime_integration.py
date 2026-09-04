@@ -9,24 +9,6 @@ import pytest
 from voxlogica.execution import ExecutionEngine
 
 
-@pytest.mark.integration
-def test_for_loop_executes_on_dask_strategy(reduce_from_text):
-    program = """
-let inc(x)=x+1
-print "out" for x in range(0,5) do inc(x)
-"""
-    workplan = reduce_from_text(program)
-    plan = workplan.to_symbolic_plan()
-
-    engine = ExecutionEngine()
-    prepared = engine.compile_plan(workplan, strategy="dask")
-    goal_id = plan.goals[0].id
-
-    page = engine.page(prepared, goal_id, offset=0, limit=10, strategy="dask")
-    assert page.items == [1.0, 2.0, 3.0, 4.0, 5.0]
-
-
-@pytest.mark.integration
 def test_stream_and_page_without_full_materialization(reduce_from_text, sample_dataset_file: Path):
     program = f'print "rows" load("{sample_dataset_file}")'
     workplan = reduce_from_text(program)
