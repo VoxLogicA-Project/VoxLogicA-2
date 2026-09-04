@@ -242,3 +242,26 @@ def test_registering_what_a_rewriter_made_does_not_recurse():
     engine._register_new_subtree(accumulator, 0)     # must not raise
 
     assert accumulator in engine.graph.incomplete
+
+
+def test_a_loop_whose_body_is_a_constant_still_drains_its_window(capsys):
+    """`for i in xs do i` past the admission window used to deadlock forever.
+
+    A body that reduces to the element itself is a CONSTANT, and constants are
+    completed at DISCOVERY instead of through the ready queue -- so they never
+    reached the hook that decrements a loop job's in-flight count. The window
+    filled and never drained: sixteen bodies admitted, the seventeenth never,
+    every worker asleep and the event loop in `select()` with nothing to wake it.
+
+    Reproduced exactly at the boundary -- sixteen finished, seventeen hung -- so
+    the size here is one past the default window rather than a number chosen to
+    look safe. Nothing to do with handles; found while measuring a fold, and it
+    had been misattributing that fold's results for a day.
+    """
+    n = 17
+    result = _run('xs = for i in range(0, %d) do i\nprint "s" fold + xs' % n)
+    printed = {line.partition("=")[0].strip(): line.partition("=")[2].strip()
+               for line in capsys.readouterr().out.splitlines() if "=" in line}
+
+    assert result.success is True, result
+    assert float(printed["s"]) == float(sum(range(n)))

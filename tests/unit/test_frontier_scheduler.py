@@ -124,22 +124,3 @@ def test_values_die_with_their_last_consumer() -> None:
                 if engine.table.nodes[nid].kind == "primitive"
                 and nid not in engine._goals]
     assert not residues, f"leaked primitive values: {[r[:8] for r in residues]}"
-
-
-@pytest.mark.unit
-def test_a_loop_whose_body_is_a_constant_still_drains_its_window() -> None:
-    """`for i in xs do i` past the window used to deadlock.
-
-    A body that reduces to the element itself is a CONSTANT, and constants are
-    completed at discovery instead of through the ready queue -- so they never
-    reached the hook that decrements the job's in-flight count. The window filled
-    and never drained: every worker asleep, the event loop in select() forever.
-
-    Reproduced exactly at the boundary: sixteen elements finished, seventeen hung
-    forever. The default window is what it is measured against, so the size here
-    is one past it rather than a number chosen to look safe.
-    """
-    source = 'print "total" fold + (for i in range(0, 17) do i)\n'
-    value, _engine = _run(source)
-
-    assert value == float(sum(range(17)))
