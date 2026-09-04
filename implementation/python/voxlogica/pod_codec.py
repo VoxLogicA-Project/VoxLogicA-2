@@ -17,10 +17,20 @@ import math
 # the same bytes ran at 4.50 GB/s. Compression, not hashing, is what that thread
 # spends its time on.
 #
-# zstd level 3 on those same bytes: about 0.71 GB/s and a ratio of 0.440. EIGHT
-# TIMES FASTER AND A THIRD SMALLER -- it wins on both axes, which is unusual
-# enough to be worth the measurement being written down. On a sweep that once
-# overran its free space by 1.9 TB, a third is some 600 GB.
+# Measured in-process on those same bytes:
+#
+#     gzip-1   0.07 GB/s   ratio 0.645     (what this used to do)
+#     zstd-1   0.58 GB/s   ratio 0.759
+#     zstd-3   0.29 GB/s   ratio 0.436
+#
+# zstd-3 is FOUR TIMES FASTER AND A THIRD SMALLER -- it wins on both axes, which
+# is unusual enough to be worth writing the numbers down. zstd-1 is faster still
+# but larger than gzip-1, so it buys nothing here. On a sweep that once overran
+# its free space by 1.9 TB, a third is some 600 GB.
+#
+# No dependency: Python 3.14 carries zstd in the standard library. The
+# third-party `zstandard` is tried second, for older interpreters, and gzip is
+# the floor -- a missing codec must degrade, never fail a run.
 #
 # READS STAY SELF-DESCRIBING, and this is what makes the change safe: a payload
 # is decompressed according to the MAGIC BYTES it carries. Existing stores are
@@ -34,32 +44,43 @@ _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
 def _zstd():
-    """The zstandard module, or None if it is not installed.
+    """Something that can compress and decompress zstd, or None.
 
-    Optional on purpose: a missing wheel must degrade to gzip rather than break
-    a run, and a store written by a build without it stays readable by one with
-    it and the other way round.
+    Probed once and cached: this sits on the persister's path for every payload.
+    Returns a pair of callables so the two possible providers -- the 3.14
+    standard library and the third-party module, whose APIs differ -- are hidden
+    from the callers.
     """
-    global _ZSTD_MODULE
-    if _ZSTD_MODULE is _UNPROBED:
-        try:
-            import zstandard  # type: ignore
-        except Exception:  # noqa: BLE001
-            _ZSTD_MODULE = None
-        else:
-            _ZSTD_MODULE = zstandard
-    return _ZSTD_MODULE
+    global _ZSTD_CODEC
+    if _ZSTD_CODEC is _UNPROBED:
+        _ZSTD_CODEC = _probe_zstd()
+    return _ZSTD_CODEC
+
+
+def _probe_zstd():
+    try:
+        from compression import zstd as _std  # type: ignore  # Python 3.14+
+    except Exception:  # noqa: BLE001
+        pass
+    else:
+        return (lambda raw: _std.compress(raw, level=_ZSTD_LEVEL), _std.decompress)
+    try:
+        import zstandard  # type: ignore
+    except Exception:  # noqa: BLE001
+        return None
+    return (lambda raw: zstandard.ZstdCompressor(level=_ZSTD_LEVEL).compress(raw),
+            lambda data: zstandard.ZstdDecompressor().decompress(data))
 
 
 _UNPROBED = object()
-_ZSTD_MODULE: Any = _UNPROBED
+_ZSTD_CODEC: Any = _UNPROBED
 
 
 def _compress(raw: Any) -> bytes:
-    module = _zstd()
-    if module is None:
+    codec = _zstd()
+    if codec is None:
         return gzip.compress(raw, compresslevel=_GZIP_LEVEL)
-    return module.ZstdCompressor(level=_ZSTD_LEVEL).compress(raw)
+    return codec[0](raw)
 
 
 def _decompress(payload_bin: bytes | None) -> bytes:
@@ -67,12 +88,12 @@ def _decompress(payload_bin: bytes | None) -> bytes:
     if data[:2] == _GZIP_MAGIC:
         return gzip.decompress(data)
     if data[:4] == _ZSTD_MAGIC:
-        module = _zstd()
-        if module is None:
+        codec = _zstd()
+        if codec is None:
             raise RuntimeError(
-                "this payload is zstd-compressed and the zstandard module is not "
-                "installed; the store was written by a build that had it")
-        return module.ZstdDecompressor().decompress(data)
+                "this payload is zstd-compressed and no zstd codec is available; "
+                "the store was written by an interpreter that had one")
+        return codec[1](data)
     return data
 
 
