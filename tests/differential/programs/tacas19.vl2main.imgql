@@ -22,7 +22,7 @@ gt_of(g)    = geq_sv(1, intensity(ReadImage(index(gt_paths, g))))
 
 pflair_of(g) =
   let flair = flair_of(g) in
-  percentiles(flair, not(touch(leq_sv(0.1, flair), border(flair))), correction)
+  percentiles(flair, not(touch(leq_sv(0.1, flair), border)), correction)
 
 segment(g) =
   let pflair = pflair_of(g) in
