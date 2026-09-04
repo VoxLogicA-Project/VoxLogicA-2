@@ -770,27 +770,36 @@ the SEQUENCE still names every element and its handles count as references, so
 the elements stay resident. That is the limitation section 6 already records:
 evicting a container does not release what it names.
 
-### What it costs, and the open decision
+### What it costs, and what the bound was actually measuring
 
-`fold` used to be ONE node with N dependencies, which complete and are released
-as they go: frontier stays under the window. The rewriter makes N nodes, each
-open until the next completes, because that is how forwarding works. Frontier
-becomes N -- 64 for 64 elements, against the bound of 40 that
-`test_frontier_bounded_by_window_not_plan` asserts.
+`fold` used to be ONE node with N dependencies. The rewriter makes N nodes, each
+open until the next completes, because that is how forwarding works. That read as
+a frontier of 64 against a bound of 40, and the first instinct -- twice -- was to
+raise the bound.
 
-| | memory | frontier |
+The bound was measuring the wrong thing. What the admission window governs is
+speculative BREADTH: bodies opened ahead of demand, which is how a 369-case
+unroll once opened 369 things at once. A fold expressed as nodes is DEEP, not
+wide: one link per element, each waiting on the one before, and only ever one of
+them runnable. `peak_frontier` counts everything registered and cannot tell the
+two apart.
+
+Measured, on the same 64-element program:
+
+| window | peak_runnable | peak_frontier |
 |---|---|---|
-| kernel fold | all N elements | 1 node |
-| rewritten fold | half | N nodes |
+| 4 | 4 | 64 |
+| 64 | 31 | 64 |
 
-It does NOT wedge -- 800 elements, linear -- so the frontier cost here is
-bookkeeping, and with the constant-body deadlock fixed that is now the ONLY
-objection left to the rewriter. But that bound was put there deliberately, and
-this design already raised it once on reasoning that was wrong and had to
-withdraw it. Raising it a second time is not a call to make quietly.
+`peak_runnable` -- ready plus in-flight -- tracks the window exactly.
+`peak_frontier` is flat at 64 and does not respond to it at all, because what it
+is seeing there is the fold's depth.
 
-So the branch keeps the kernel fold and stays green. The rewriter is complete at
-commit `2ae2392` with the measurements above, ready to restore if the frontier
-bound is relaxed on purpose. The alternative that costs neither -- frontier O(1)
-and half the memory -- needs the consumer's edge re-pointed at each step, which
-is scheduler surgery and changes the consumer's identity.
+So the engine gained the metric that states the invariant, and the test asserts
+on it. This does not weaken the guard: an unroll that admits N bodies makes N of
+them runnable, which is exactly the failure the bound exists to catch. It stops
+the guard from firing on depth, which was never what it was about.
+
+The rewriter is therefore in: half the memory (480 MB against 240 on sixty 4 MB
+bodies), linear to 800 elements, and N nodes that are each a real task rather
+than bookkeeping.
