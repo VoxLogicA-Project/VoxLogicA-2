@@ -195,6 +195,7 @@ class PrimitiveRegistry:
         """Synthesize a modern spec for an old-style ``execute`` function."""
         arity = _infer_arity(kernel)
         qualified_name = f"{namespace}.{primitive_name}"
+        type_rule = getattr(kernel, "primitive_type", None)
         return PrimitiveSpec(
             name=primitive_name,
             namespace=namespace,
@@ -205,6 +206,7 @@ class PrimitiveRegistry:
             kernel_name=qualified_name,
             description="Legacy adapter primitive",
             is_legacy_adapter=True,
+            type_rule=type_rule,
         )
 
     def register(self, spec: PrimitiveSpec, kernel: KernelFn) -> None:
@@ -282,6 +284,13 @@ class PrimitiveRegistry:
     def load_primitive(self, name: str) -> KernelFn:
         """Compatibility method used by existing execution code."""
         return self.load_kernel(name)
+
+    def load_type(self, name: str) -> TypeRule:
+        """Resolve a primitive name and return its type rule, if any."""
+        spec = self.resolve(name)
+        if spec.type_rule is None:
+            raise KeyError(f"Primitive {name} has no type rule")
+        return spec.type_rule
 
     def get_spec(self, name: str) -> PrimitiveSpec:
         """Resolve a primitive name and return only its symbolic specification."""

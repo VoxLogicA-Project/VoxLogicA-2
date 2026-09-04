@@ -197,6 +197,7 @@ def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
             description=(kernel.__doc__ or "").strip(),
             elementwise=_ELEMENTWISE.get(primitive_name),
             stencil=_STENCIL.get(primitive_name),
+            type_rule=getattr(kernel, "primitive_type", None),
         )
         specs[primitive_name] = (spec, kernel)
     return specs

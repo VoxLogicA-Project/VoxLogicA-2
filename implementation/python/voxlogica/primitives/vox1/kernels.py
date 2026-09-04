@@ -8,6 +8,8 @@ from threading import RLock
 import os
 import math
 from typing import Any, SupportsFloat, cast
+from voxlogica.analysis.types import VoxNumber, VoxInt, VoxFloat
+from voxlogica.analysis.type_helpers import primitive_type, overloaded_type
 
 import numpy as np
 import SimpleITK as sitk
@@ -285,22 +287,22 @@ def _make_image_from_flat(
     image.CopyInformation(reference)
     return image
 
-
+@primitive_type(overloaded_type([VoxNumber(), VoxNumber()], VoxFloat()))
 def num_div(left: float, right: float) -> float:
     """Scalar floating-point division."""
     return float(left) / float(right)
 
-
+@primitive_type(overloaded_type([VoxNumber(), VoxNumber()], VoxFloat()))
 def num_mul(left: float, right: float) -> float:
     """Scalar floating-point multiplication."""
     return float(left) * float(right)
 
-
+@primitive_type(overloaded_type([VoxNumber(), VoxNumber()], VoxFloat()))
 def num_add(left: float, right: float) -> float:
     """Scalar floating-point addition."""
     return float(left) + float(right)
 
-
+@primitive_type(overloaded_type([VoxNumber(), VoxNumber()], VoxFloat()))
 def num_sub(left: float, right: float) -> float:
     """Scalar floating-point subtraction."""
     return float(left) - float(right)

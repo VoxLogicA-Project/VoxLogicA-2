@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, TYPE_CHECKING
+from voxlogica.analysis.types import TypeRule
 
 if TYPE_CHECKING:
     from voxlogica.lazy.ir import NodeSpec
@@ -64,7 +65,6 @@ class PrimitiveCall:
 
 PlannerFn = Callable[[PrimitiveCall], "NodeSpec"]
 KernelFn = Callable[..., Any]
-
 
 @dataclass(frozen=True)
 class ElementwiseSpec:
@@ -167,11 +167,15 @@ class PrimitiveSpec:
     #: Receive VALUES, but with the handles inside them left alone. For an
     #: operator that reaches into a container without caring what is in it:
     #: `index` wants element *i* of a sequence, and deep-resolving to get it
-    #: would materialize all N elements to hand back one. It is per-operator
-    #: rather than per-argument because it is harmless on an argument with no
-    #: handle in it -- `index`'s integer is unaffected -- which keeps the
-    #: declaration to one word.
-    shallow: bool = False
+    #: would materialize all N elements to hand back one.
+    #:
+    #: `True` applies to every argument, which is right when the operator only
+    #: ever reaches into containers -- it is harmless on an argument holding no
+    #: handle, so `index`'s integer is unaffected. A tuple names the argument
+    #: POSITIONS instead, for an operator that wants one argument untouched and
+    #: the others resolved: `gather` pairs computed flags with element handles,
+    #: so it declares `shallow=(1,)`.
+    shallow: bool | tuple[int, ...] = False
     #: Evaluating this GROWS THE GRAPH: the engine expands it into new nodes and
     #: forwards their result, rather than calling the kernel. Orthogonal to the
     #: argument mode above -- `for_loop` rewrites and never sees a handle, while
@@ -195,6 +199,7 @@ class PrimitiveSpec:
     #: Anything simpler -- a conditional, a projection, a dispatch on a tag --
     #: writes one function here and needs no engine change at all.
     rewriter: Any = None
+    type_rule: TypeRule | None = None
 
     @property
     def qualified_name(self) -> str:

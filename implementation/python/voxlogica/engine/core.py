@@ -423,7 +423,10 @@ class ComputationEngine:
                 self._flush_progress()
                 self._progress.close()
                 self._progress = None
-        self.table.release_held()  # drained: no rebuild can want them now
+            # Nothing can ask for a rebuild once the workers are down, whether
+            # the run drained or raised -- so release inside the `finally`,
+            # or a failed run leaves the hold in place for the engine's life.
+            self.table.release_held()
         self.table.flush()
         # Say what sparse caching actually bought. A flag whose effect is
         # invisible is a flag nobody can tell is working, and the number is the
