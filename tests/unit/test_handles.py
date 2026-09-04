@@ -265,3 +265,40 @@ def test_a_loop_whose_body_is_a_constant_still_drains_its_window(capsys):
 
     assert result.success is True, result
     assert float(printed["s"]) == float(sum(range(n)))
+
+
+# --- compression: zstd where it is available, gzip where it is not -----------
+
+
+def test_a_payload_round_trips_through_whichever_codec_is_present():
+    from voxlogica.pod_codec import _compress, _decompress
+
+    raw = (b"\x00" * 4096 + b"mask") * 64
+
+    assert _decompress(_compress(raw)) == raw
+
+
+def test_a_gzip_payload_from_an_older_store_still_decodes():
+    """Reads are self-describing, which is what makes changing the codec safe."""
+    import gzip
+
+    from voxlogica.pod_codec import _decompress
+
+    raw = b"an older store wrote this" * 100
+
+    assert _decompress(gzip.compress(raw, 1)) == raw
+
+
+def test_an_uncompressed_payload_passes_through():
+    from voxlogica.pod_codec import _decompress
+
+    assert _decompress(b"neither magic") == b"neither magic"
+    assert _decompress(None) == b""
+
+
+def test_zstd_is_used_when_it_is_installed():
+    from voxlogica.pod_codec import _ZSTD_MAGIC, _compress, _zstd
+
+    if _zstd() is None:
+        pytest.skip("zstandard is not installed in this environment")
+    assert _compress(b"x" * 10_000)[:4] == _ZSTD_MAGIC
