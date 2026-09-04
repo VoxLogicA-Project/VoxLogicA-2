@@ -396,6 +396,28 @@ class LoopAdmission:
                 job.in_flight += 1
                 self._schedule(body, job.priority)
 
+    def on_trivial_complete(self, nid: NodeId) -> None:
+        """A body that finished WITHOUT taking a worker turn still frees its slot.
+
+        Constants and closures are completed at discovery rather than through the
+        ready queue, so they never reached `on_complete` and never decremented
+        the job's `in_flight`. A loop whose body IS a constant -- `for i in xs do
+        i`, whose body reduces to the element itself -- therefore filled its
+        window and never drained it: sixteen bodies admitted, the seventeenth
+        never, every worker asleep and the event loop in `select()` forever.
+        Reproduced exactly at the window boundary, 16 fine and 17 hung.
+
+        Kept separate from `on_complete` and cheap on purpose: this is called for
+        EVERY constant in a plan, and most are not loop bodies. Nothing is woken
+        unless a slot actually came free.
+        """
+        job = self._body_owner.pop(nid, None)
+        if job is None:
+            return
+        job.in_flight -= 1
+        self._escape_spent = False
+        self.wake_jobs()
+
     def on_complete(self, nid: NodeId) -> None:
         """Completion hook: free the owner's window slot and wake paused jobs.
 

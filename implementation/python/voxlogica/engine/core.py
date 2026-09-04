@@ -551,6 +551,7 @@ class ComputationEngine:
             if node.kind == "constant" and nid not in self._goals:
                 self.table.set_value(nid, node.attrs.get("value"))
                 self.graph.complete_trivial(nid)
+                self.admission.on_trivial_complete(nid)
                 continue
             if node.kind == "closure":
                 # Trivial value, but its captures must stay resident until the
@@ -558,6 +559,7 @@ class ComputationEngine:
                 # them. The hold is released by the loop's expansion job.
                 self.table.set_value(nid, None)
                 self.graph.complete_trivial(nid)
+                self.admission.on_trivial_complete(nid)
                 captures = tuple(Expander.closure_capture_ids(node))
                 self.admission.hold_captures(nid, captures)
                 frontier.extend(captures)
