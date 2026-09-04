@@ -1,0 +1,8 @@
+import "stdlib.imgql"
+load img = "$FLAIR"
+let flair = intensity(img)
+let background = touch(flair <. 0.1,border)
+let brain = !background
+let pflair = percentiles(flair,brain,0.5)
+print "hot" volume(pflair >. 0.95)
+print "brain" volume(brain)

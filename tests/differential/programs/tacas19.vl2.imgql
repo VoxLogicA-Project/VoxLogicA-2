@@ -1,0 +1,31 @@
+// The VL1 reduced TACAS'19 recipe, written for this engine with VL1's OWN
+// constants, so the two can be compared case by case instead of only on time.
+import "simpleitk"
+import "vox1"
+
+dataset_root = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData"
+cases = 3
+hi_thr = 0.95        // VL1: hI = pflair >. 0.95
+vi_thr = 0.86        // VL1: vI = pflair >. 0.86
+correction = 0.5     // VL1: percentiles(flair, brain, 0.5)
+
+flair_paths = subsequence(dir(dataset_root, "*_flair.nii.gz", true, true), 0, cases)
+gt_paths    = subsequence(dir(dataset_root, "*_seg.nii.gz",   true, true), 0, cases)
+
+flair_of(g) = intensity(ReadImage(index(flair_paths, g)))
+gt_of(g)    = geq_sv(1, intensity(ReadImage(index(gt_paths, g))))
+
+pflair_of(g) =
+  let flair = flair_of(g) in
+  let background = touch(leq_sv(0.1, flair), border(flair)) in
+  percentiles(flair, not(background), correction)
+
+segment(g) =
+  let pflair = pflair_of(g) in
+  let hyper = smoothen(geq_sv(hi_thr, pflair), 5.0) in
+  let very  = smoothen(geq_sv(vi_thr, pflair), 2.0) in
+  grow(hyper, very)
+
+dice(x, y) = (2 * volume(and(x, y))) / (volume(x) + volume(y))
+
+print "dice" for g in [0, 1, 2] do dice(segment(g), gt_of(g))
