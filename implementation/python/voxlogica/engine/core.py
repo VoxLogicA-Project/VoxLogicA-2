@@ -152,6 +152,9 @@ class ComputationEngine:
         self.governor = MemoryGovernor(self.config)
         self.executor = Executor(self.registry, self.max_concurrency)
         self.expander = Expander(self.table, self.registry)
+        # A value that is neither durable nor rebuildable must never leave RAM;
+        # see NodeTable.set_recompute_guard and `_recomputable` below.
+        self.table.set_recompute_guard(self._recomputable)
         self.fusion = FusionPlanner(self.registry)
         self.numba_backend = (
             NumbaFusionBackend(self.registry, min_members=self.config.numba_min_members)
@@ -420,6 +423,7 @@ class ComputationEngine:
                 self._flush_progress()
                 self._progress.close()
                 self._progress = None
+        self.table.release_held()  # drained: no rebuild can want them now
         self.table.flush()
         # Say what sparse caching actually bought. A flag whose effect is
         # invisible is a flag nobody can tell is working, and the number is the

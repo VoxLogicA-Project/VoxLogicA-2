@@ -10,7 +10,7 @@ distleq(x,y) = x >= pdt(y)
 
 // More advanced functions
 smoothen(a,x) = distleq(x,distgeq(x,not(a)))
-dataset_root = "../../VoxLogicA/datasets/BraTS_2019_HGG"
+dataset_root = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData"
 
 // Run the fixed-threshold segmentation on a small slice of the dataset.
 dataset_slice_start = 0

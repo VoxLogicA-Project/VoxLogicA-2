@@ -28,7 +28,7 @@ import "vox1"
 import "strings"
 
 // ---------------------------------------------------------------- inputs ---
-dataset_root = "tests/data/datasets/BraTS_2019_HGG"
+dataset_root = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData"
 output_dir   = "output/aiim-sweep"
 case_count   = 20        // cases to score
 outlier_count = 10       // worst cases to export
