@@ -107,7 +107,7 @@ class ComputationEngine:
     def __init__(self, registry: PrimitiveRegistry | None = None,
                  backend: StorageBackend | None = None, max_concurrency: int = 0,
                  progress: bool = False, debug: bool = False, max_live_bytes: int = 0,
-                 threads_auto: str = "balanced",
+                 threads_auto: str = "logical",
                  observe: Callable[..., None] | None = None,
                  sparse_cache: bool = False):
         self.registry = registry or PrimitiveRegistry()

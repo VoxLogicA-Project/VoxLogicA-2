@@ -49,21 +49,44 @@ def _count_cpu_list(path: str) -> int | None:
     return total or None
 
 
-def default_concurrency(mode: str = "balanced") -> int:
+def default_concurrency(mode: str = "logical") -> int:
     """Pick a default worker-pool size.
 
     ``mode``:
-    - ``"balanced"`` (default): P-cores plus HALF the E-cores. E-cores do
-      contribute real throughput (see the sweep below) but at rising cost,
-      and useful concurrency for an ITK volume workload saturates well before
-      every logical CPU is busy; half the E-cores lands in the flat bottom of
-      the measured curve.
+    - ``"logical"`` (default): ``os.cpu_count()``, every core.
+    - ``"balanced"``: P-cores plus HALF the E-cores. This WAS the default,
+      chosen because 16 threads measured faster than 24 on the pre-handles
+      engine. It no longer does; see the second table below.
     - ``"p-cores"``: P-cores only. Minimises CPU-seconds and RSS at a real
       wall-clock cost -- the right choice on a shared box, the wrong one on a
       dedicated machine where latency is what matters.
-    - ``"logical"``: always ``os.cpu_count()``, the pre-existing behaviour.
 
-    Measured, TACAS'19 BraTS benchmark, 40 cases, fmt-5000 (8 P + 16 E):
+    Re-measured, AIIM threshold sweep, 20 BraTS2020 cases, empty store, three
+    interleaved repetitions, fmt-5000 (8 P + 16 E), handles engine:
+
+    ======= ========== ======
+    threads mean wall  %CPU
+    ======= ========== ======
+    8       27.21 s    1862%
+    16      25.09 s    1914%   <- "balanced"
+    24      24.60 s    1933%   <- "logical", the default
+    ======= ========== ======
+
+    24 is fastest, but by 2% over 16 while the drift between repetitions of
+    one setting reaches 8%: the honest reading is that they are no longer
+    distinguishable, and the reason to prefer 16 has gone. What the %CPU
+    column says matters more than the ranking -- roughly 1900% of CPU is busy
+    even at ``--threads 8``, because the kernels are internally parallel
+    (ITK's own pool). The worker count therefore does not govern how much of
+    the machine is used, which is why moving it barely moves the clock.
+
+    The table below is the measurement that chose "balanced", kept because it
+    is what this default USED to rest on. It was taken on the previous engine,
+    before handle-passing and before the memory work, and it does not
+    reproduce: the saturation point it found at 16 is no longer there.
+
+    Measured, TACAS'19 BraTS benchmark, 40 cases, fmt-5000 (8 P + 16 E),
+    PREVIOUS ENGINE:
 
     ======= ======== ========= =======
     threads wall (s) CPU-sec   RSS
@@ -71,10 +94,11 @@ def default_concurrency(mode: str = "balanced") -> int:
     8       9.12     58.7      1.96 GB   <- "p-cores"
     12      7.50     69.0      2.61 GB
     14      6.90     75.5      2.89 GB
-    16      6.85     84.4      3.12 GB   <- "balanced", the optimum
+    16      6.85     84.4      3.12 GB   <- "balanced", the optimum THEN
     18      7.06     98.0      3.28 GB
     20      7.26     112.5     3.69 GB
     24      7.84     144.9     4.38 GB   <- "logical"
+
     ======= ======== ========= =======
 
     Same ordering at full 259-case scale (16 threads 38.61s/542 CPU-s vs.

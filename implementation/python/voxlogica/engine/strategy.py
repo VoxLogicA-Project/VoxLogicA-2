@@ -136,7 +136,7 @@ class EngineExecutionStrategy(ExecutionStrategy):
     name = "engine"
 
     def __init__(self, registry: PrimitiveRegistry | None = None, results_database: StorageBackend | None = None,
-                 threads: int = 0, debug: bool = False, threads_auto: str = "balanced",
+                 threads: int = 0, debug: bool = False, threads_auto: str = "logical",
                  observe=None, sparse_cache: bool = False):
         self.registry = registry or PrimitiveRegistry()
         self._serializer_cache: dict[str, dict] | None = None

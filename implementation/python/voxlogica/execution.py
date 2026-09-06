@@ -98,7 +98,7 @@ class ExecutionEngine:
         threads: int = 0,
         engine_debug: bool = False,
         dynamic_expansion: bool = True,
-        threads_auto: str = "balanced",
+        threads_auto: str = "logical",
         observe=None,
         sparse_cache: bool = False,
     ):

@@ -603,17 +603,20 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--threads", type=int, default=0, metavar="N",
                             help="Concurrent kernels (default: 0 = auto-detect, see --threads-auto)")
     run_parser.add_argument("--threads-auto", choices=["balanced", "p-cores", "logical"],
-                            default="balanced",
+                            default="logical",
                             help="Auto-detection heuristic used when --threads is 0 (engine strategy "
-                                 "only), on a hybrid Intel P/E CPU: 'balanced' (default) uses every "
-                                 "P-core plus half the E-cores -- measured optimum on the TACAS19 BraTS "
-                                 "benchmark (16 threads: 6.85s, vs 9.12s for p-cores-only and 7.84s for "
-                                 "all 24), since useful concurrency saturates in the memory system well "
-                                 "before every logical CPU is busy. 'p-cores' uses only performance "
-                                 "cores: ~33%% slower here but ~2.5x less CPU and RAM, the right choice "
-                                 "on a shared box. 'logical' is the plain CPU count. All three collapse "
-                                 "to the plain CPU count on a non-hybrid CPU or non-Linux host. Ignored "
-                                 "when --threads is nonzero. See doc/dev/free-threaded-handover.md.")
+                                 "only), on a hybrid Intel P/E CPU. 'logical' (default) uses the plain "
+                                 "CPU count. 'balanced' uses every P-core plus half the E-cores: it was "
+                                 "the default, from a measurement on the previous engine where 16 "
+                                 "threads beat 24 (6.85s vs 7.84s). That no longer reproduces -- "
+                                 "re-measured on the AIIM threshold sweep, 24 threads is 24.60s against "
+                                 "25.09s at 16, a 2%% gap inside an 8%% drift between repetitions, and "
+                                 "about 1900%% of CPU is busy even at --threads 8 because the kernels "
+                                 "are internally parallel. 'p-cores' uses only performance cores: "
+                                 "slower, but ~2.5x less CPU and RAM, the right choice on a shared box. "
+                                 "All three collapse to the plain CPU count on a non-hybrid CPU or "
+                                 "non-Linux host. Ignored when --threads is nonzero. See "
+                                 "doc/dev/free-threaded-handover.md.")
     run_parser.add_argument("--engine-debug", action="store_true",
                             help="On engine failure, dump the stuck node frontier")
     run_parser.add_argument("--dynamic-expansion", action=argparse.BooleanOptionalAction, default=True,
