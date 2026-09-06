@@ -18,6 +18,7 @@ from voxlogica.primitives.nnunet.cases import (
     is_model,
     is_predictor,
     normalize_modalities,
+    parse_training_case,
     parse_training_cases,
 )
 
@@ -63,75 +64,127 @@ def _optional_str(kwargs: dict[str, Any], key: str, default: str = "") -> str:
     return str(_arg(kwargs, key)).strip()
 
 
-def train(**kwargs: Any) -> dict[str, Any]:
-    """Train nnUNet from [case_id, modalities, label] sequences."""
-    try:
-        raw_cases = _arg(kwargs, "0")
-        if raw_cases is None:
-            raise ValueError("train requires training_cases as argument 0")
-        try:
-            as_list(raw_cases, name="training_cases")
-        except ValueError as exc:
-            raise ValueError("train requires a training_cases sequence") from exc
+#: Layout entries that are filesystem paths. A layout crosses the graph as a
+#: plain value, so paths go out as strings and come back as `Path` here.
+_PATH_KEYS = frozenset({"nnunet_raw", "nnunet_preprocessed", "nnunet_results",
+                        "dataset_dir"})
 
-        work_root = Path(_require_str(kwargs, "1", "work_root"))
-        modalities_value = _arg(kwargs, "2")
-        modalities = (
-            infer_modalities(raw_cases)
-            if modalities_value is None
-            else normalize_modalities(modalities_value)
+
+def prepare_dataset(**kwargs: Any) -> dict[str, Any]:
+    """Create the empty nnU-Net raw dataset. Arguments: work_root, dataset_name.
+
+    Deliberately takes no cases: this is the step the per-case writes hang off,
+    and it must not depend on a single image.
+    """
+    try:
+        work_root = Path(_require_str(kwargs, "0", "work_root"))
+        dataset_name = _require_str(kwargs, "1", "dataset_name") if "1" in kwargs else "VoxLogicA"
+        dataset_id = mat.allocate_dataset_id(work_root)
+        layout = mat.prepare_training_dataset(
+            work_root=work_root, dataset_id=dataset_id, dataset_name=dataset_name
         )
-        # Argument 3 may name ONE configuration or several. Several is the
+        return {str(k): (str(v) if isinstance(v, Path) else v) for k, v in layout.items()}
+    except Exception as exc:  # noqa: BLE001
+        logger.error("nnUNet prepare_dataset failed: %s", exc)
+        raise ValueError(f"nnUNet prepare_dataset failed: {exc}") from exc
+
+
+def write_case(**kwargs: Any) -> str:
+    """Write ONE case into a prepared dataset. Arguments: dataset, case, modalities.
+
+    This is the node whose completion lets an image die. Everything it is given
+    is used once and dropped, so the images resident at any moment are those of
+    the cases in flight, not those of the training set.
+    """
+    try:
+        layout = _arg(kwargs, "0")
+        if not isinstance(layout, dict) or "dataset_dir" not in layout:
+            raise ValueError("write_case requires a dataset from nnunet.prepare_dataset")
+        modalities = normalize_modalities(_arg(kwargs, "2"))
+        case = parse_training_case(_arg(kwargs, "1"), modalities=modalities)
+        return mat.write_training_case(layout, case)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("nnUNet write_case failed: %s", exc)
+        raise ValueError(f"nnUNet write_case failed: {exc}") from exc
+
+
+def finalize_dataset(**kwargs: Any) -> dict[str, Any]:
+    """Close a written dataset. Arguments: dataset, modalities, written_ids.
+
+    `written_ids` is the sequence the per-case writes returned. Passing it makes
+    this step depend on all of them in the graph -- the dependency is an edge,
+    not an ordering someone remembered to arrange -- and it carries the training
+    count and the duplicate-id check with it.
+    """
+    try:
+        layout = _arg(kwargs, "0")
+        if not isinstance(layout, dict) or "dataset_dir" not in layout:
+            raise ValueError("finalize_dataset requires a dataset from nnunet.prepare_dataset")
+        modalities = normalize_modalities(_arg(kwargs, "1"))
+        file_ids = [str(x) for x in as_list(_arg(kwargs, "2"), name="written_ids")]
+        result = mat.finalize_training_dataset(
+            layout=layout, modalities=modalities, file_ids=file_ids, labels=DEFAULT_LABELS
+        )
+        return {str(k): (str(v) if isinstance(v, Path) else v)
+                for k, v in result["layout"].items()}
+    except Exception as exc:  # noqa: BLE001
+        logger.error("nnUNet finalize_dataset failed: %s", exc)
+        raise ValueError(f"nnUNet finalize_dataset failed: {exc}") from exc
+
+
+def train_internal(**kwargs: Any) -> dict[str, Any]:
+    """Train on a dataset already on disk. See `nnunet.train` in nnunet.imgql.
+
+    The images are NOT arguments here. That is the whole point: this used to be
+    `train(cases, ...)`, and taking every case as an argument meant every image
+    had to be resident before the kernel ran -- 25.7 GB of them on a 309-case,
+    4-modality run, which was killed at 51.4 GB RSS.
+    """
+    try:
+        layout = _arg(kwargs, "0")
+        if not isinstance(layout, dict) or "dataset_dir" not in layout:
+            raise ValueError("train_internal requires a dataset from nnunet.finalize_dataset")
+        layout = {k: (Path(v) if k in _PATH_KEYS else v) for k, v in layout.items()}
+        modalities = normalize_modalities(_arg(kwargs, "1"))
+        # Argument 2 may name ONE configuration or several. Several is the
         # documented workflow: nnU-Net plans 2d, 3d_fullres and 3d_lowres,
         # trains each, and picks -- so a program that wants that answer has to
         # be able to ask for it.
         configurations = (
-            normalize_configurations(_arg(kwargs, "3")) if "3" in kwargs else ["2d"]
+            normalize_configurations(_arg(kwargs, "2")) if "2" in kwargs else ["2d"]
         )
-        nfolds = _require_int(kwargs, "4", "nfolds", 5)
-        dataset_name = _require_str(kwargs, "5", "dataset_name") if "5" in kwargs else "VoxLogicA"
-        device = str(_arg(kwargs, "6", "cpu")).lower()
-        trainer = _optional_str(kwargs, "7", DEFAULT_TRAINER) or DEFAULT_TRAINER
-        # Argument 8: the plans identifier, which is how nnU-Net selects an
+        nfolds = _require_int(kwargs, "3", "nfolds", 5)
+        device = str(_arg(kwargs, "4", "cpu")).lower()
+        trainer = _optional_str(kwargs, "5", DEFAULT_TRAINER) or DEFAULT_TRAINER
+        # Argument 6: the plans identifier, which is how nnU-Net selects an
         # architecture preset -- "nnUNetResEncUNetLPlans" for the residual
         # encoder presets, the default otherwise. It belongs in the program
         # rather than in the environment: which network was trained is part of
         # what an experiment says it did, and the cache key must change with it.
-        plans = _optional_str(kwargs, "8", runtime.DEFAULT_PLANS) or runtime.DEFAULT_PLANS
-        # Argument 9: whether to run nnU-Net's own postprocessing step, which
+        plans = _optional_str(kwargs, "6", runtime.DEFAULT_PLANS) or runtime.DEFAULT_PLANS
+        # Argument 7: whether to run nnU-Net's own postprocessing step, which
         # the documented workflow runs between training and inference and which
         # is therefore on by default. It is a parameter because it is a claim
         # about the result -- a program that wants the raw network output must
         # be able to say so, and to say so where the reader can see it.
-        postprocess = _optional_bool(kwargs, "9", True)
-        # Argument 10: a checkpoint to start from instead of random init. This
+        postprocess = _optional_bool(kwargs, "7", True)
+        # Argument 8: a checkpoint to start from instead of random init. This
         # is how a program says "pretrained on the oracle" -- the weights are an
         # input to the experiment, so they belong in the expression that keys it.
-        pretrained = _optional_str(kwargs, "10", "")
-        labels = DEFAULT_LABELS
+        pretrained = _optional_str(kwargs, "8", "")
 
         if nfolds <= 0:
             raise ValueError("nfolds must be >= 1")
 
-        cases = parse_training_cases(raw_cases, modalities=modalities)
-        dataset_id = mat.allocate_dataset_id(work_root)
-        materialized = mat.write_training_dataset(
-            work_root=work_root,
-            dataset_id=dataset_id,
-            dataset_name=dataset_name,
-            modalities=modalities,
-            cases=cases,
-            labels=labels,
-        )
         return runtime.train_model(
-            layout=materialized["layout"],
-            dataset_id=dataset_id,
-            dataset_name=dataset_name,
+            layout=layout,
+            dataset_id=int(layout["dataset_id"]),
+            dataset_name=str(layout["dataset_name"]),
             configurations=configurations,
             modalities=modalities,
             nfolds=nfolds,
             device=device,
-            labels=labels,
+            labels=DEFAULT_LABELS,
             trainer=trainer,
             plans=plans,
             postprocess=postprocess,
@@ -195,7 +248,10 @@ def env_check(**_kwargs: Any) -> dict[str, Any]:
 
 def get_primitives() -> dict[str, Callable[..., Any]]:
     return {
-        "train": train,
+        "prepare_dataset": prepare_dataset,
+        "write_case": write_case,
+        "finalize_dataset": finalize_dataset,
+        "train_internal": train_internal,
         "make_predictor": make_predictor,
         "predict": predict,
         "env_check": env_check,
@@ -208,13 +264,19 @@ def list_primitives() -> dict[str, str]:
 
 def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
     arities = {
-        "train": AritySpec(min_args=2, max_args=11),
+        "prepare_dataset": AritySpec(min_args=1, max_args=2),
+        "write_case": AritySpec.fixed(3),
+        "finalize_dataset": AritySpec.fixed(3),
+        "train_internal": AritySpec(min_args=2, max_args=9),
         "make_predictor": AritySpec(min_args=1, max_args=6),
         "predict": AritySpec.fixed(2),
         "env_check": AritySpec.variadic(0),
     }
     descriptions = {
-        "train": "Train nnUNet from a case sequence",
+        "prepare_dataset": "Create an empty nnU-Net raw dataset",
+        "write_case": "Write one training case into a prepared dataset",
+        "finalize_dataset": "Close a written dataset (dataset.json, checks)",
+        "train_internal": "Train on a dataset already on disk; see nnunet.train",
         "make_predictor": "Load an nnU-Net predictor from a trained model handle",
         "predict": "Segment one image with a loaded nnU-Net predictor",
         "env_check": "Inspect nnUNet and torch runtime environment",

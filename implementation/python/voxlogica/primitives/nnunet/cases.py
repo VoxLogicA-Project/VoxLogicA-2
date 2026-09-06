@@ -101,26 +101,37 @@ class PredictionCase:
     modalities: list[Any]
 
 
+def parse_training_case(item: Any, *, modalities: list[str]) -> TrainingCase:
+    """Validate ONE `[case_id, modality_volumes, label_volume]` triple.
+
+    Every check here is local to the case. The one check that is not -- that no
+    two cases sanitize to the same file id -- belongs to whoever sees them all,
+    which since the per-case writing moved into the program is
+    `finalize_training_dataset`, from the ids the write nodes returned.
+    """
+    if not isinstance(item, (list, tuple)) or len(item) != 3:
+        raise ValueError("training case must be [case_id, modality_volumes, label_volume]")
+    case_id, volumes_raw, label = item
+    logical_id = str(case_id).strip()
+    if not logical_id:
+        raise ValueError("case_id cannot be empty")
+    volumes = as_list(volumes_raw, name="modality_volumes")
+    if len(volumes) != len(modalities):
+        raise ValueError(
+            f"case {logical_id!r} has {len(volumes)} modality volumes, expected {len(modalities)}"
+        )
+    return TrainingCase(logical_id, sanitize_case_id(logical_id), volumes, label)
+
+
 def parse_training_cases(raw: Any, *, modalities: list[str]) -> list[TrainingCase]:
     cases: list[TrainingCase] = []
     seen: set[str] = set()
     for item in as_list(raw, name="training_cases"):
-        if not isinstance(item, (list, tuple)) or len(item) != 3:
-            raise ValueError("training case must be [case_id, modality_volumes, label_volume]")
-        case_id, volumes_raw, label = item
-        logical_id = str(case_id).strip()
-        if not logical_id:
-            raise ValueError("case_id cannot be empty")
-        volumes = as_list(volumes_raw, name="modality_volumes")
-        if len(volumes) != len(modalities):
-            raise ValueError(
-                f"case {logical_id!r} has {len(volumes)} modality volumes, expected {len(modalities)}"
-            )
-        file_id = sanitize_case_id(logical_id)
-        if file_id in seen:
-            raise ValueError(f"duplicate case_id after sanitization: {file_id!r}")
-        seen.add(file_id)
-        cases.append(TrainingCase(logical_id, file_id, volumes, label))
+        case = parse_training_case(item, modalities=modalities)
+        if case.file_id in seen:
+            raise ValueError(f"duplicate case_id after sanitization: {case.file_id!r}")
+        seen.add(case.file_id)
+        cases.append(case)
     if not cases:
         raise ValueError("training_cases cannot be empty")
     return cases

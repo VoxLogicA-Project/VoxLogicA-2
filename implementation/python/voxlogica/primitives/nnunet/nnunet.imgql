@@ -1,0 +1,56 @@
+// nnU-Net, expressed in the language on top of the four kernels.
+//
+// WHY THIS FILE EXISTS
+//
+// `nnunet.train` used to be one Python kernel that took the whole training set
+// as an argument and looped over it internally to write the nnU-Net dataset.
+// That loop is this language's own `for`, written a second time and written
+// EAGERLY: as an operator argument, every image had to be resident before the
+// kernel could be called. A 309-case, 4-modality run held 25.7 GB of images in
+// order to write each one once and never look at it again, and was killed at
+// 51.4 GB. The evidence is in
+// looping_experiment/results/engine_measurements/2026-09-04-handles-memory-bound.
+//
+// Written here instead, the `for` is the engine's: it streams the sequence
+// through an admission window, and each image is freed as soon as its write
+// node completes, because the graph's reference count is then the only thing
+// holding it. Nothing about the memory behaviour is special-cased for nnU-Net;
+// it is what any `for` in this language already does.
+
+// True when every element is true, and true for the empty sequence. `&&` is one
+// of fold's combiners, so this needs no new machinery.
+//
+// The seed is written out even though `&&` already defaults to it: a seedless
+// `fold && s` takes the NEXT COMMAND as its second expression, because the
+// seeded form wants two and the grammar prefers it. The failure then surfaces
+// eight lines later, at whatever that command happens to be.
+let nnunet.forall(s) = fold && true s
+
+// The same, with the three remaining knobs said out loud: which architecture
+// preset nnU-Net plans with, whether its own postprocessing step runs, and
+// which checkpoint to start from. Each is a claim about the result, so a
+// program that departs from the default should show it.
+//
+// Defined with the qualified name so that the twenty programs calling
+// `nnunet.train(...)` keep working unchanged: an ImgQL module exports plain
+// top-level definitions, and without the prefix this would be `train`.
+let nnunet.train_full(cases, work_root, modalities, configurations, nfolds, dataset_name,
+               device, trainer, plans, postprocess, pretrained) =
+  let dataset = prepare_dataset(work_root, dataset_name) in
+  // One node per case. This is the whole fix.
+  let written = for case in cases do write_case(dataset, case, modalities) in
+  // `written` is passed on rather than discarded: it is what makes the close
+  // DEPEND on every write, and it carries the count and the duplicate check.
+  let ready = finalize_dataset(dataset, modalities, written) in
+  train_internal(ready, modalities, configurations, nfolds, device, trainer,
+                 plans, postprocess, pretrained)
+
+// Train from `[case_id, modality_volumes, label_volume]` triples.
+//
+// The eight parameters are the eight every program passes today, so this reads
+// exactly as the kernel it replaces. `plans`, `postprocess` and `pretrained`
+// keep the defaults the kernel gave them; a program that needs to say
+// something about those uses `train_full` below, where they are visible.
+let nnunet.train(cases, work_root, modalities, configurations, nfolds, dataset_name, device, trainer) =
+  nnunet.train_full(cases, work_root, modalities, configurations, nfolds, dataset_name,
+             device, trainer, "", true, "")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -17,6 +18,8 @@ from voxlogica.primitives.nnunet.cases import (
     TrainingCase,
 )
 from voxlogica.primitives.nnunet.io import write_label, write_nifti
+
+logger = logging.getLogger(__name__)
 
 STATE_FILE = "voxlogica_manifest.json"
 _DATASET_DIR_RE = re.compile(r"^Dataset(\d{1,3})_.+$")
@@ -83,38 +86,91 @@ def _set_nnunet_env(work_root: Path) -> dict[str, Path]:
     return roots
 
 
-def write_training_dataset(
+# The three halves of what used to be one function.
+#
+# `write_training_dataset` took every case at once and looped over them in
+# Python. That loop is the language's own `for`, written a second time and
+# written EAGERLY: as an operator argument the whole training set had to be
+# resident before the kernel was called, and a 309-case, 4-modality run held
+# 25.7 GB of images to write each one once and never touch it again. It was
+# killed at 51.4 GB (see
+# looping_experiment/results/engine_measurements/2026-09-04-handles-memory-bound).
+#
+# Split into prepare / one case / finalize, the loop moves into the program,
+# where the engine's own `for` streams it: each image is freed when its write
+# node completes, because the graph's refcount is then the only thing holding
+# it. `write_training_dataset` is kept below, in terms of these three, for
+# callers that legitimately have every case in hand already.
+
+
+def prepare_training_dataset(
     *,
     work_root: Path,
     dataset_id: int,
     dataset_name: str,
-    modalities: list[str],
-    cases: list[TrainingCase],
-    labels: dict[str, int] | None = None,
 ) -> dict[str, Any]:
+    """Create the empty nnU-Net raw dataset and return where it lives."""
     roots = _set_nnunet_env(work_root)
     folder = dataset_folder_name(dataset_id, dataset_name)
     dataset_dir = roots["nnunet_raw"] / folder
     if dataset_dir.exists():
         shutil.rmtree(dataset_dir)
+    (dataset_dir / "imagesTr").mkdir(parents=True, exist_ok=True)
+    (dataset_dir / "labelsTr").mkdir(parents=True, exist_ok=True)
+    return {**roots, "dataset_id": dataset_id, "dataset_folder": folder,
+            "dataset_dir": dataset_dir, "dataset_name": dataset_name}
+
+
+def write_training_case(layout: dict[str, Any], case: TrainingCase) -> str:
+    """Write ONE case into a prepared dataset and return the file id it used.
+
+    Nothing about this case is retained: once this returns, the engine is free
+    to drop the images, which is the whole point of doing it one at a time. The
+    file id goes back so that the caller holding every id can make the one
+    judgement a single case cannot -- that no two of them collide.
+    """
+    dataset_dir = Path(layout["dataset_dir"])
     images_tr = dataset_dir / "imagesTr"
     labels_tr = dataset_dir / "labelsTr"
-    images_tr.mkdir(parents=True, exist_ok=True)
-    labels_tr.mkdir(parents=True, exist_ok=True)
+    for index, volume in enumerate(case.modalities):
+        write_nifti(volume, images_tr / f"{case.file_id}_{index:04d}{FILE_ENDING}")
+    if write_label(case.label, labels_tr / f"{case.file_id}{FILE_ENDING}"):
+        logger.warning("nnUNet: label of case %s was sanitized", case.logical_id)
+    return case.file_id
 
+
+def finalize_training_dataset(
+    *,
+    layout: dict[str, Any],
+    modalities: list[str],
+    file_ids: list[str],
+    labels: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Write `dataset.json` and the state file, once every case is on disk.
+
+    `file_ids` is what the per-case writes returned. It is both the training
+    count and the collision check that no single case could make; passing it as
+    an argument is also what makes this step DEPEND on those writes in the
+    graph, rather than merely happening to run after them.
+    """
+    seen: set[str] = set()
+    for file_id in file_ids:
+        if file_id in seen:
+            raise ValueError(f"duplicate case_id after sanitization: {file_id!r}")
+        seen.add(file_id)
+    if not file_ids:
+        raise ValueError("training_cases cannot be empty")
+    num_training = len(file_ids)
+    work_root = Path(layout["nnunet_raw"]).parent
+    dataset_dir = Path(layout["dataset_dir"])
+    dataset_id = int(layout["dataset_id"])
+    dataset_name = str(layout["dataset_name"])
+    folder = str(layout["dataset_folder"])
     label_defs = labels or DEFAULT_LABELS
-    labels_sanitized = False
-    for case in cases:
-        for index, volume in enumerate(case.modalities):
-            write_nifti(volume, images_tr / f"{case.file_id}_{index:04d}{FILE_ENDING}")
-        labels_sanitized = (
-            write_label(case.label, labels_tr / f"{case.file_id}{FILE_ENDING}") or labels_sanitized
-        )
-
     dataset_json = {
         "channel_names": {str(index): name for index, name in enumerate(modalities)},
         "labels": label_defs,
-        "numTraining": len(cases),
+        "numTraining": num_training,
         "file_ending": FILE_ENDING,
         "dataset_name": dataset_name,
     }
@@ -131,8 +187,31 @@ def write_training_dataset(
         },
     )
 
-    layout = {**roots, "dataset_id": dataset_id, "dataset_folder": folder, "dataset_dir": dataset_dir}
-    return {"layout": layout, "labels_sanitized": labels_sanitized}
+    return {"layout": layout, "num_training": num_training}
+
+
+def write_training_dataset(
+    *,
+    work_root: Path,
+    dataset_id: int,
+    dataset_name: str,
+    modalities: list[str],
+    cases: list[TrainingCase],
+    labels: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Prepare, write every case, finalize -- for a caller holding all of them.
+
+    Kept so nothing that already had the whole training set in hand has to
+    change. A program should prefer the three steps with a `for` between them:
+    this one is as resident as the set it is given.
+    """
+    layout = prepare_training_dataset(
+        work_root=work_root, dataset_id=dataset_id, dataset_name=dataset_name
+    )
+    file_ids = [write_training_case(layout, case) for case in cases]
+    return finalize_training_dataset(
+        layout=layout, modalities=modalities, file_ids=file_ids, labels=labels,
+    )
 
 
 def write_prediction_inputs(

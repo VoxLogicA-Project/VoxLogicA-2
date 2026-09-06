@@ -6,10 +6,13 @@ from voxlogica.primitives.nnunet.kernels import (
     get_primitives,
     list_primitives,
     make_predictor,
+    finalize_dataset,
     predict,
+    prepare_dataset,
     register_primitives,
     register_specs,
-    train,
+    train_internal,
+    write_case,
 )
 
 
@@ -22,9 +25,12 @@ __all__ = [
     "get_primitives",
     "list_primitives",
     "make_predictor",
+    "finalize_dataset",
     "predict",
+    "prepare_dataset",
     "register_primitives",
     "register_specs",
     "reset_runtime_state",
-    "train",
+    "train_internal",
+    "write_case",
 ]
