@@ -66,7 +66,7 @@ def allocate_dataset_id(work_root: Path) -> int:
     return dataset_id
 
 
-def _set_nnunet_env(work_root: Path) -> dict[str, Path]:
+def nnunet_roots(work_root: Path) -> dict[str, Path]:
     roots = {
         "work_dir": work_root,
         "nnunet_raw": work_root / "nnUNet_raw",
@@ -110,7 +110,7 @@ def prepare_training_dataset(
     dataset_name: str,
 ) -> dict[str, Any]:
     """Create the empty nnU-Net raw dataset and return where it lives."""
-    roots = _set_nnunet_env(work_root)
+    roots = nnunet_roots(work_root)
     folder = dataset_folder_name(dataset_id, dataset_name)
     dataset_dir = roots["nnunet_raw"] / folder
     if dataset_dir.exists():

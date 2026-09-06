@@ -18,6 +18,7 @@ from voxlogica.primitives.nnunet.cases import (
     is_model,
     is_predictor,
     normalize_modalities,
+    build_model,
     parse_training_case,
     parse_training_cases,
 )
@@ -195,6 +196,58 @@ def train_internal(**kwargs: Any) -> dict[str, Any]:
         raise ValueError(f"nnUNet training failed: {exc}") from exc
 
 
+def load_model(**kwargs: Any) -> dict[str, Any]:
+    """A model ALREADY on disk, as a value. Arguments: work_root, configuration,
+    trainer, device.
+
+    Why this exists: the only way to name an earlier model used to be to restate
+    the `nnunet.train(...)` that produced it, which walks the whole training
+    path -- and that path decides "already trained" from the trainer DIRECTORY,
+    not from the training data (issue #57). Restating an expression that differs
+    even slightly therefore risks being handed a model trained on other cases,
+    silently. Naming the model outright cannot do that: it goes nowhere near
+    training, writes nothing, and fails loudly if the checkpoints are absent.
+
+    Everything the handle needs is recoverable: the work root's manifest records
+    the dataset id, folder, modalities and labels, and the trained folds are the
+    checkpoints that are actually there.
+    """
+    try:
+        work_root = Path(_require_str(kwargs, "0", "work_root"))
+        configuration = _require_str(kwargs, "1", "configuration") if "1" in kwargs else "3d_fullres"
+        trainer = _optional_str(kwargs, "2", DEFAULT_TRAINER) or DEFAULT_TRAINER
+        device = str(_arg(kwargs, "3", "cpu")).lower()
+        plans = _optional_str(kwargs, "4", runtime.DEFAULT_PLANS) or runtime.DEFAULT_PLANS
+
+        state = mat.load_state(work_root)
+        if not state:
+            raise ValueError(f"no nnU-Net manifest under {work_root}; nothing was trained there")
+        roots = mat.nnunet_roots(work_root)
+        directory = runtime.trainer_dir(roots["nnunet_results"], str(state["dataset_folder"]),
+                                        configuration, trainer, plans)
+        folds = [fold for fold in range(5) if runtime.fold_complete(directory, fold)]
+        if not folds:
+            raise ValueError(f"no completed fold under {directory}")
+
+        model = build_model(
+            work_root=str(work_root),
+            dataset_id=int(state["dataset_id"]),
+            dataset_folder=str(state["dataset_folder"]),
+            configuration=configuration,
+            modalities=list(state.get("modalities") or []),
+            trained_folds=folds,
+            trainer_dir=str(directory),
+            labels=state.get("labels"),
+            device=device,
+            trainer=trainer,
+        )
+        model["postprocessing"] = runtime.resolve_postprocessing(model)
+        return model
+    except Exception as exc:  # noqa: BLE001
+        logger.error("nnUNet load_model failed: %s", exc)
+        raise ValueError(f"nnUNet load_model failed: {exc}") from exc
+
+
 def make_predictor(**kwargs: Any) -> dict[str, Any]:
     """Load an nnU-Net predictor from a trained model handle."""
     try:
@@ -248,6 +301,7 @@ def env_check(**_kwargs: Any) -> dict[str, Any]:
 
 def get_primitives() -> dict[str, Callable[..., Any]]:
     return {
+        "load_model": load_model,
         "prepare_dataset": prepare_dataset,
         "write_case": write_case,
         "finalize_dataset": finalize_dataset,
@@ -264,6 +318,7 @@ def list_primitives() -> dict[str, str]:
 
 def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
     arities = {
+        "load_model": AritySpec(min_args=1, max_args=5),
         "prepare_dataset": AritySpec(min_args=1, max_args=2),
         "write_case": AritySpec.fixed(3),
         "finalize_dataset": AritySpec.fixed(3),
@@ -273,6 +328,7 @@ def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
         "env_check": AritySpec.variadic(0),
     }
     descriptions = {
+        "load_model": "Name a model already trained on disk, without training",
         "prepare_dataset": "Create an empty nnU-Net raw dataset",
         "write_case": "Write one training case into a prepared dataset",
         "finalize_dataset": "Close a written dataset (dataset.json, checks)",

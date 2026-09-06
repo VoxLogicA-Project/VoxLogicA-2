@@ -20,7 +20,7 @@ from voxlogica.primitives.nnunet.predictor_registry import reset_runtime_state a
 from voxlogica.primitives.nnunet.predictor_registry import store as store_predictor
 from voxlogica.primitives.nnunet.cases import DEFAULT_TRAINER, PREDICTOR_KIND, build_model
 from voxlogica.primitives.nnunet.io import segmentation_to_sitk, volumes_to_nnunet_array
-from voxlogica.primitives.nnunet.materialize import _set_nnunet_env, load_state, save_state
+from voxlogica.primitives.nnunet.materialize import nnunet_roots, load_state, save_state
 
 logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parents[5]
@@ -285,7 +285,7 @@ def determine_postprocessing_for(trainer_path: Path, labels_dir: Path,
         return None
 
     try:
-        _set_nnunet_env(work_root)
+        nnunet_roots(work_root)
         run_cli(
             [
                 nnunet_command("nnUNetv2_determine_postprocessing"),
@@ -455,7 +455,7 @@ def train_model(
 ) -> dict[str, Any]:
     require_nnunet()
     work_root = Path(layout["work_dir"])
-    _set_nnunet_env(work_root)
+    nnunet_roots(work_root)
     env = nnunet_env()
     if device in {"cpu", "none"}:
         env["CUDA_VISIBLE_DEVICES"] = ""
@@ -640,7 +640,7 @@ def _load_predictor_engine(model: dict[str, Any], resolved_device: str,
     from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor  # type: ignore
 
     work_root = Path(model["work_root"])
-    _set_nnunet_env(work_root)
+    nnunet_roots(work_root)
 
     torch_device = _torch_device(resolved_device)
     perform_on_device = torch_device.type == "cuda"
