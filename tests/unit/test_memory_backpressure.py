@@ -170,7 +170,11 @@ def _engine_stub(table: NodeTable, *, max_live_bytes: int) -> ComputationEngine:
     """A bare ComputationEngine exposing only what _reclaim_memory reads."""
     engine = ComputationEngine.__new__(ComputationEngine)  # bypass __init__
     engine.table = table
-    engine.graph = types.SimpleNamespace(consumers={})
+    # `hold_handles` is how a value tells the graph which nodes its handles
+    # name; every path that produces one calls it, rematerialization
+    # included. The stub needs it for the same reason the real graph has it.
+    engine.graph = types.SimpleNamespace(consumers={},
+                                         hold_handles=lambda holder, value: None)
     engine.config = types.SimpleNamespace(persist_min_compute_ms=1.0)
     # The effective budget now comes from the memory governor, which derives it
     # from live RSS rather than from a number fixed at startup (see

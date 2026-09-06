@@ -1433,6 +1433,14 @@ class ComputationEngine:
         loaded = self.table.load(nid)
         if loaded is not None:
             self._retrack_resident(nid)
+            # A value coming back from disk has never passed `_finish`, so the
+            # graph does not know which nodes its handles name -- and the eager
+            # adapter asks exactly that, in O(1), before deciding whether to
+            # resolve. Without this the adapter is told "no handles here" and
+            # hands a kernel a raw Handle: measured as "expected 2D or 3D image
+            # data, got shape () from a Handle" inside nnunet.predict, on the
+            # first run where values were shed often enough to be rebuilt.
+            self.graph.hold_handles(nid, loaded)
             return loaded
         if self._grows_the_graph(nid):
             # Its value comes from the nodes it expands into, forwarded through
@@ -1496,6 +1504,9 @@ class ComputationEngine:
                     self._track_ownerless(child)
         self.table.set_value(nid, value)
         self._retrack_resident(nid)
+        # Same reason as the reload above: a rebuilt value must tell the
+        # graph what its handles name, or the eager adapter will skip them.
+        self.graph.hold_handles(nid, value)
         return value
 
     def _retrack_resident(self, nid: NodeId) -> None:
