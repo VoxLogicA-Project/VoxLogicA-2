@@ -33,6 +33,7 @@ from typing import Any
 
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.lazy.ir import NodeId, NodeSpec
+from voxlogica.handles import Handle
 from voxlogica.parser import parse_expression_content
 from voxlogica.engine.evaluation import modes_of
 from voxlogica.primitives.registry import PrimitiveRegistry
@@ -110,9 +111,20 @@ class Expander:
         plan = WorkPlan(nodes=self.table.nodes, registry=self.registry)
         ids: list[NodeId] = []
         for item in expansion.items[start:stop]:
-            const_id = _create_constant_node(plan, item)
+            # NODES, NOT MATERIALIZATIONS. An element that is already a handle
+            # names a node the graph has: bind THAT, and the body's reference to
+            # the loop variable becomes an edge to it. Interning a constant node
+            # instead would store a second copy of the element's value, which
+            # for a sequence of images is the whole sequence in RAM -- 25.7 GB
+            # of them on a 309-case run, and the reason the iterable had to be
+            # deep-resolved before this loop could start at all.
+            #
+            # A plain value (a number from `range`, say) still becomes a
+            # constant: there is no node to point at, and it is small.
+            reference = (item.node if isinstance(item, Handle)
+                         else _create_constant_node(plan, item))
             ids.append(reduce_expression(
-                expansion.base_env.bind(expansion.variable, OperationVal(const_id)),
+                expansion.base_env.bind(expansion.variable, OperationVal(reference)),
                 plan, expansion.body_ast))
         expansion.body_ids.extend(ids)
         return ids

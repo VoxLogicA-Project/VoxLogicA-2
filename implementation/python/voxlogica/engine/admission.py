@@ -60,7 +60,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from voxlogica.engine.evaluation import NeedsExpansion, modes_of
-from voxlogica.handles import resolve_deep
+from voxlogica.handles import resolve_deep, resolve_shallow
 from voxlogica.engine.expander import Expander, Expansion
 from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.plan_size import PlanSizeEstimator
@@ -170,13 +170,18 @@ class LoopAdmission:
         self._jobs[nid] = job
         try:
             try:
-                # The expander binds each ELEMENT into the reduced body, so it is
-                # an eager consumer of its iterable: a lazy sequence hands back
-                # handles, and the body would be reduced with a handle where a
-                # number belongs -- measured as "float() argument must be a
-                # string or a real number, not 'Handle'" inside a predicate.
-                iterable = resolve_deep(self._materialize(node.args[0]),
-                                        self._materialize)
+                # SHALLOW. The container is resolved; its CONTENTS are not.
+                # The expander binds a handle element as a reference to the node
+                # it names (see Expander.reduce_chunk), so no element's value is
+                # needed to expand the loop -- only to run a body that asks for
+                # one, one element at a time, which is what the engine is for.
+                #
+                # This used to be `resolve_deep`, and it made every `for` over a
+                # sequence materialize the whole sequence before starting: 1236
+                # brain images at once, 19 GB arriving in fifteen seconds with
+                # no node running and none ready.
+                iterable = resolve_shallow(self._materialize(node.args[0]),
+                                           self._materialize)
             except NeedsExpansion as needed:
                 # A loop over a loop. Expanding this one needs its iterable's
                 # value, and the iterable is itself a node that grows the graph,
