@@ -163,6 +163,14 @@ class AsyncPersister:
         self._skip_dead = False
         self.skipped_dead = 0
         self.skipped_bytes = 0
+        #: "Can this value be rebuilt from its kernel?" -- injected by the
+        #: engine, which is the only thing that knows (it holds the expander).
+        #: Without it nothing is ever shed: shedding a value that cannot be
+        #: rebuilt loses it outright, which is exactly the --no-cache failure
+        #: the recompute guard in NodeTable.evict exists to prevent.
+        self._recompute_probe = None
+        self.shed_pressure = 0
+        self.shed_bytes = 0
         self._queue: "queue.SimpleQueue[tuple[NodeId, Any, dict, int, float, tuple[Any, ...]] | None]" = queue.SimpleQueue()
         self._lock = threading.Lock()
         self._pending_bytes = 0
@@ -199,6 +207,10 @@ class AsyncPersister:
         """
         if size is None:
             size = approx_bytes(value)
+        if self._shed(node_id):
+            self.shed_pressure += 1
+            self.shed_bytes += size
+            return
         with self._lock:
             self._pending_bytes += size
             self._drained.clear()
@@ -209,6 +221,44 @@ class AsyncPersister:
         # worker's SimpleITK call and reads unmapped pages.
         self._queue.put((node_id, value, metadata, size, compute_ms, leases,
                          _payload_snapshot(value)))
+
+    def _shed(self, node_id: NodeId) -> bool:
+        """IF I WOULD HAVE TO QUEUE, DROP IT.
+
+        The writers absorb what the disk and the compressor can absorb. Beyond
+        that a value does not wait for them: it is simply not persisted, and
+        the run computes on. Caching it was only ever an optimisation, so the
+        moment it costs the run anything it stops being one.
+
+        The queue depth is the whole signal, and that is deliberate. There is
+        no threshold to configure and nothing to measure: if every writer is
+        busy AND work is already waiting for them, this value would be joining
+        a line. On a sweep that writes faster than any disk can take it, the
+        store therefore fills at exactly the rate the machine can sustain, and
+        the run never waits for it -- while on an ordinary program, where the
+        writers keep up, nothing is shed at all and every value is cached.
+
+        SAFETY. Only a value the engine could rebuild may be shed. A loop or
+        sequence node is computed by the expansion machinery and not by a
+        kernel, so dropping it loses it: `executor._compute` on a `for_loop`
+        raises with its closure argument rematerialized to None. That is the
+        same invariant `NodeTable.evict` enforces on the way out, and it is
+        enforced here on the way in for the same reason. With no probe
+        installed the engine cannot answer the question, so nothing is shed.
+        """
+        probe = self._recompute_probe
+        if probe is None:
+            return False
+        if self._queue.qsize() < self._num_writers:
+            return False        # a writer is free; this does not wait
+        try:
+            return bool(probe(node_id))
+        except Exception:       # noqa: BLE001 -- never let a probe sink a write
+            return False
+
+    def set_recompute_probe(self, probe) -> None:
+        """Arm pressure shedding with "can this be rebuilt?" (see `_shed`)."""
+        self._recompute_probe = probe
 
     @property
     def over_budget(self) -> bool:

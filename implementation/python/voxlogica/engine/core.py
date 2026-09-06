@@ -214,6 +214,23 @@ class ComputationEngine:
         persister = getattr(self.table, "_persister", None)
         if persister is not None and hasattr(persister, "set_live_probe"):
             persister.set_live_probe(self.liveness.is_live, skip_dead=sparse_cache)
+        # The second half of --sparse-cache: PRESSURE shedding. Skipping dead
+        # values asks "will anyone read this again?"; this asks "is writing it
+        # costing the run anything right now?". A value that would have to WAIT
+        # for a writer is not written at all -- caching is an optimisation, so
+        # the moment it would cost time it stops being one.
+        #
+        # The two are complementary and were measured to be: on a sweep whose
+        # persister keeps up, the dead-value filter sees almost nothing (350 ->
+        # 314 MB/s, a 10% reduction) precisely because values are still live
+        # when their batch is written. Queue depth does not care whether a
+        # value is live.
+        #
+        # Off by default with the flag: full caching is the conservative
+        # choice, and a value shed here is one a LATER run cannot reuse.
+        if (sparse_cache and persister is not None
+                and hasattr(persister, "set_recompute_probe")):
+            persister.set_recompute_probe(self._recomputable)
         self.liveness.install(self.table._backend)
         self.admission = LoopAdmission(
             self.expander, self.graph, self.ready, self.liveness,
@@ -434,9 +451,15 @@ class ComputationEngine:
         # nearly every intermediate.
         persister = getattr(self.table, "_persister", None)
         skipped = getattr(persister, "skipped_dead", 0) if persister else 0
-        if skipped:
-            gb = getattr(persister, "skipped_bytes", 0) / 1e9
-            print(f"sparse cache: {skipped} dead values not written ({gb:.2f} GB)",
+        shed = getattr(persister, "shed_pressure", 0) if persister else 0
+        if skipped or shed:
+            parts = []
+            if skipped:
+                parts.append(f"{skipped} dead ({getattr(persister, 'skipped_bytes', 0) / 1e9:.2f} GB)")
+            if shed:
+                parts.append(f"{shed} shed under write pressure "
+                             f"({getattr(persister, 'shed_bytes', 0) / 1e9:.2f} GB)")
+            print("sparse cache: " + ", ".join(parts) + " not written",
                   file=sys.stderr, flush=True)
         if self._first_error is not None:
             raise self._first_error
