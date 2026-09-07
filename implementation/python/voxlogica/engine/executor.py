@@ -246,8 +246,18 @@ class Executor:
     def _compute(self, table: NodeTable, node_id: NodeId) -> Any:
         """Gather already-materialized inputs and invoke the kernel."""
         node = table.nodes[node_id]
+        def _lookup(dep_id):
+            try:
+                return table.values[dep_id]
+            except KeyError:
+                spec = table.nodes.get(dep_id)
+                raise KeyError(
+                    f"DIAG missing={dep_id[:12]} for={node_id[:12]} op={node.operator} "
+                    f"dep_op={getattr(spec,'operator','?')} dep_kind={getattr(spec,'kind','?')} "
+                    f"completed={dep_id in table.completed} "
+                    f"is_dep={dep_id in tuple(node.args)}") from None
         with executing(node_id, node.operator):
-            return _wrap(self._compute_node(node, lambda dep_id: table.values[dep_id]))
+            return _wrap(self._compute_node(node, _lookup))
 
     def _compute_node(self, node, lookup: Callable[[NodeId], Any]) -> Any:
         """Gather one node's inputs via ``lookup`` and invoke its kernel.
