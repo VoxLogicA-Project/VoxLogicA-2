@@ -1437,9 +1437,23 @@ class ComputationEngine:
                 self._retrack_resident(dep)
                 self.graph.hold_handles(dep, reloaded)
                 continue
-            if self._grows_the_graph(dep):
-                # Its value comes from what it expands into, so admission has
-                # to unroll it; a worker cannot.
+            if not self._recomputable(dep):
+                # NOT REBUILDABLE BY ITS KERNEL. A loop or sequence node is
+                # produced by the expansion machinery -- `executor._compute` on
+                # a `for_loop` raises, its closure argument rematerializing to
+                # None -- so scheduling it as a node computes nothing and its
+                # inputs are then read out of an empty table. That is the
+                # KeyError the `for` goals failed with: 13 of 16, the missing
+                # three being exactly the `for i in outliers do ...` ones, which
+                # is the same set Laura's eviction guard identified.
+                #
+                # Follow the alias if the expansion already produced one;
+                # otherwise admission has to unroll it again.
+                alias = self._alias.get(dep)
+                if alias is not None and alias != dep and alias in self.table.values:
+                    self._retrack_resident(dep)
+                    self._finish(dep, self.table.values[alias], persist=False)
+                    continue
                 self._await_expansion(nid, dep)
             else:
                 self._await_rebuild(nid, dep)
