@@ -366,6 +366,10 @@ class ComputationEngine:
         # (`graph.release` only fires after the consumer has *finished*, i.e.
         # strictly after its read).
         self._dispatch_pins: dict[NodeId, int] = defaultdict(int)
+        #: Why each orphaned value was kept or dropped. The policy in
+        #: `_orphaned` is only worth having if `kept` is a large share,
+        #: and only measurement can say whether it is.
+        self._orphan_stats: dict[str, int] = defaultdict(int)
 
     # ── Public API ──────────────────────────────────────────────────────────────────────────
 
@@ -990,12 +994,15 @@ class ComputationEngine:
         limit just because nothing is asking for memory yet.
         """
         if not self.table.persisted(nid):
+            self._orphan_stats["not_durable"] += 1
             self.table.evict(nid)       # not durable: keeping it is not free
             return
         size = self.table._sizeof.get(nid, 0)
         if self.table.speculative_bytes + size > self.governor.budget // 10:
+            self._orphan_stats["over_cap"] += 1
             self.table.evict(nid)
             return
+        self._orphan_stats["kept"] += 1
         self.table.speculate(nid)
 
     def _track_ownerless(self, nid: NodeId) -> None:
@@ -1866,6 +1873,7 @@ class ComputationEngine:
             "loop_window": self.config.loop_window,
             "kernels_executed": self._kernels_executed,
             "recomputes": self._recomputes,
+            "orphans": dict(self._orphan_stats),
             "expanded_loops": self.admission.expanded_loops,
             "expanded_bodies": self.admission.expanded_bodies,
             "evicted_early": self._evicted_early,
