@@ -1417,6 +1417,35 @@ class ComputationEngine:
         # which is what a hang looks like from outside.
         self.graph.await_one(waiting, to_expand)
 
+    def _await_first_missing(self, nid: NodeId, inputs=None) -> bool:
+        """Make `nid` wait for its FIRST absent input, or return False.
+
+        Reloads whatever the store still holds -- that costs no kernel and no
+        wait -- and for the first value that has to be rebuilt, schedules it and
+        parks `nid` behind the edge. Returns whether `nid` is now waiting.
+
+        One per turn, because `DependencyGraph.await_one` sets `pending` to 1
+        instead of adding to it: two requests in one turn leave the node waiting
+        for a count of one, it fires on the first arrival, and the second
+        wakeup is lost if that input finished in between.
+        """
+        for dep in (self.graph.deps(nid) if inputs is None else inputs):
+            if dep in self.table.values:
+                continue
+            reloaded = self.table.load(dep)
+            if reloaded is not None:
+                self._retrack_resident(dep)
+                self.graph.hold_handles(dep, reloaded)
+                continue
+            if self._grows_the_graph(dep):
+                # Its value comes from what it expands into, so admission has
+                # to unroll it; a worker cannot.
+                self._await_expansion(nid, dep)
+            else:
+                self._await_rebuild(nid, dep)
+            return True
+        return False
+
     def _await_rebuild(self, waiting: NodeId, dep: NodeId) -> None:
         """Schedule an evicted dependency as a NODE and wait behind the edge.
 
@@ -1702,26 +1731,21 @@ class ComputationEngine:
                         continue
                     self._reload_deferred.discard(nid)
                     # An evicted input is an uncomputed input. Reload it if the
-                    # store still has it -- that is cheap and needs no kernel --
-                    # and otherwise put it back on the queue and wait behind the
-                    # edge. See _await_rebuild for why not inline.
-                    waited = False
-                    for dep in self.graph.deps(nid):
-                        if dep in self.table.values:
-                            continue
-                        reloaded = self.table.load(dep)
-                        if reloaded is not None:
-                            self._retrack_resident(dep)
-                            self.graph.hold_handles(dep, reloaded)
-                            continue
-                        if self._grows_the_graph(dep):
-                            # Its value comes from what it expands into, so
-                            # admission has to unroll it, not a worker.
-                            self._await_expansion(nid, dep)
-                        else:
-                            self._await_rebuild(nid, dep)
-                        waited = True
-                    if waited:
+                    # store still has it -- cheap, no kernel -- and otherwise put
+                    # it back on the queue and wait behind the edge. See
+                    # _await_rebuild for why not inline.
+                    #
+                    # ONE AT A TIME, and that is not a simplification: `await_one`
+                    # SETS `pending` to 1 rather than accumulating, so asking for
+                    # two missing inputs in one turn leaves this node waiting for
+                    # a count of one. The first arrival fires it, it comes back,
+                    # finds the second still missing and asks again -- and if that
+                    # second one completed in the meantime its dependents have
+                    # already been consumed, so the wakeup is lost for good.
+                    # Measured as 3,301 nodes with pending=1 on deps that never
+                    # arrive, and only under load, because whether the second one
+                    # lands first is timing.
+                    if self._await_first_missing(nid):
                         continue
                     if self._await_named_deps(nid, node):
                         continue
@@ -1741,25 +1765,12 @@ class ComputationEngine:
                         # single-node path gives its own deps, just over the
                         # cone's aggregate external inputs.
                         # Scheduled, not rebuilt here: same reason as the
-                        # single-node path above. This was the larger half of
-                        # the loop-blocking time -- with only the single-node
-                        # path converted, the instrumentation still reported
-                        # 2,077 rebuilds and 17.3 s of kernel on the loop.
-                        waited = False
-                        for dep in cone.inputs:
-                            if dep in self.table.values:
-                                continue
-                            reloaded = self.table.load(dep)
-                            if reloaded is not None:
-                                self._retrack_resident(dep)
-                                self.graph.hold_handles(dep, reloaded)
-                                continue
-                            if self._grows_the_graph(dep):
-                                self._await_expansion(nid, dep)
-                            else:
-                                self._await_rebuild(nid, dep)
-                            waited = True
-                        if waited:
+                        # single-node path above, and one input per turn for the
+                        # same reason too. This was the larger half of the
+                        # loop-blocking time -- with only the single-node path
+                        # converted, the instrumentation still reported 2,077
+                        # rebuilds and 17.3 s of kernel on the loop.
+                        if self._await_first_missing(nid, cone.inputs):
                             continue
                         self._kernels_executed += len(cone)
                         # A fused cone is one kernel and several nodes, and all
