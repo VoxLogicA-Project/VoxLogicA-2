@@ -24,8 +24,18 @@ UV_PYTHON_INSTALL_DIR = UV_STATE_DIR / "python"
 # root and no writes outside the checkout (see _install_uv).
 UV_BIN_DIR = UV_STATE_DIR / "bin"
 UV_RELEASE_BASE = "https://github.com/astral-sh/uv/releases"
+#: The uv release bootstrap fetches when none is installed. Bump deliberately:
+#: it is a reproducibility input, not a convenience.
+DEFAULT_UV_VERSION = "0.12.5"
 RUNTIME_REQ = REPO_ROOT / "implementation" / "python" / "requirements.txt"
 TEST_REQ = REPO_ROOT / "implementation" / "python" / "requirements-test.txt"
+# Fully resolved, hashed, cross-platform locks compiled from the two files
+# above. THESE are what gets installed when they exist: requirements.txt pins
+# what we depend on, the lock pins everything those depend on in turn, and only
+# the second makes a rebuild in six months resolve what we measured. Regenerate
+# with tools/lock-requirements.sh after editing either .txt.
+RUNTIME_LOCK = REPO_ROOT / "implementation" / "python" / "requirements.lock"
+TEST_LOCK = REPO_ROOT / "implementation" / "python" / "requirements-test.lock"
 PYTHON_VERSION_FILE = REPO_ROOT / ".python-version"
 ENV_STAMP = VENV_DIR / ".voxlogica-env.json"
 DEFAULT_PYTHON_VERSION = "3.14t"
@@ -227,8 +237,13 @@ def _install_uv() -> list[str] | None:
     if not targets:
         return None
 
-    version = os.environ.get("VOXLOGICA_UV_VERSION", "").strip()
-    base = f"{UV_RELEASE_BASE}/download/{version}" if version else f"{UV_RELEASE_BASE}/latest/download"
+    # PINNED, not "latest". uv resolves the dependency graph, so which uv runs
+    # is part of what the artifact reproduces: a resolver six months newer can
+    # pick different versions from the same requirements. VOXLOGICA_UV_VERSION
+    # still overrides, and "latest" is still sayable -- explicitly.
+    version = os.environ.get("VOXLOGICA_UV_VERSION", DEFAULT_UV_VERSION).strip()
+    base = (f"{UV_RELEASE_BASE}/latest/download" if version in ("", "latest")
+            else f"{UV_RELEASE_BASE}/download/{version}")
     suffix = ".zip" if os.name == "nt" else ".tar.gz"
 
     print("uv not found; downloading a private copy into .cache/uv/bin ...", file=sys.stderr)
@@ -403,8 +418,16 @@ def _sync_requirements(
     if include_test and not TEST_REQ.exists():
         raise SystemExit(f"Missing requirements file: {TEST_REQ}")
 
-    runtime_hash = _file_sha256(RUNTIME_REQ)
-    test_hash = _file_sha256(TEST_REQ) if include_test else ""
+    # The lock wins when it is there. The test lock is compiled from BOTH .txt
+    # files, so it is a superset and installing it alone is the whole
+    # environment -- which is also why hashed and unhashed requirements never
+    # meet in one uv invocation, something uv refuses outright.
+    runtime_src = RUNTIME_LOCK if RUNTIME_LOCK.exists() else RUNTIME_REQ
+    test_src = TEST_LOCK if TEST_LOCK.exists() else TEST_REQ
+    locked = runtime_src is RUNTIME_LOCK and (not include_test or test_src is TEST_LOCK)
+
+    runtime_hash = _file_sha256(runtime_src)
+    test_hash = _file_sha256(test_src) if include_test else ""
     stamp = _load_stamp()
 
     resolved_str = f"{resolved_version[0]}.{resolved_version[1]}.{resolved_version[2]}"
@@ -426,9 +449,12 @@ def _sync_requirements(
     install_args = ["pip", "install", "--python", str(venv_python)]
     if force:
         install_args.append("--reinstall")
-    install_args.extend(["-r", str(RUNTIME_REQ)])
-    if include_test:
-        install_args.extend(["-r", str(TEST_REQ)])
+    if locked and include_test:
+        install_args.extend(["-r", str(TEST_LOCK)])   # superset of the runtime lock
+    else:
+        install_args.extend(["-r", str(runtime_src)])
+        if include_test:
+            install_args.extend(["-r", str(test_src)])
     _run_uv(uv_cmd, install_args, attempts=3)
 
     _save_stamp(
@@ -440,7 +466,9 @@ def _sync_requirements(
             "test_sha256": test_hash if include_test else stamp.get("test_sha256", ""),
         }
     )
-    print("Environment synchronized with pinned requirements.")
+    print("Environment synchronized with "
+          + ("the hashed lock files." if locked
+             else "requirements.txt (NO LOCK FILE -- versions may drift)."))
 
 
 def main() -> None:

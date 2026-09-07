@@ -50,6 +50,11 @@ ENGINE: list[str] = [
     ".python-version",                        # 3.14t -- free-threaded, required
     "implementation/python/voxlogica",        # the engine itself
     "implementation/python/requirements.txt",
+    # The locks, not just the requirements: requirements.txt says what we depend
+    # on, the lock says what THOSE depend on, with hashes. Only the second makes
+    # a rebuild months from now resolve the stack these numbers came from.
+    "implementation/python/requirements.lock",
+    "implementation/python/requirements-test.lock",
 ]
 
 #: The experiments, in the order the README presents them. `needs_dataset`
@@ -219,6 +224,9 @@ def write_checksums(out: Path) -> int:
 
 def write_readme(out: Path, paths: list[tuple[str, str, str]],
                  goals: dict[str, int], with_model: bool) -> None:
+    lock = out / "implementation/python/requirements.lock"
+    n_locked = (len(re.findall(r"^[a-zA-Z].*==", lock.read_text(encoding="utf-8"),
+                               re.MULTILINE)) if lock.exists() else 0)
     """Write the reviewer's instructions: one numbered section per experiment.
 
     Generated rather than kept by hand, so it cannot drift from the manifest:
@@ -296,9 +304,22 @@ needs nothing but this directory** -- start there.
 ./voxlogica --help
 ```
 
-The first call runs `bootstrap.py`, which downloads `uv`, reads
+The first call runs `bootstrap.py`, which downloads a pinned `uv`, reads
 `.python-version` and creates `.venv` here. Expect a few minutes and a few GB.
 It is idempotent: re-run it freely.
+
+Every version is pinned. `implementation/python/requirements.lock` resolves the
+whole transitive graph -- {n_locked} packages, each with its sha256 -- and that
+is what gets installed. A package re-uploaded under the same version fails the
+install rather than substituting itself. The last line of the bootstrap output
+says which path was taken; it must read
+
+```
+Environment synchronized with the hashed lock files.
+```
+
+If it instead mentions `requirements.txt (NO LOCK FILE ...)`, the lock did not
+travel with this artifact and versions can drift. Say so in your review.
 
 Two things that are not negotiable:
 
