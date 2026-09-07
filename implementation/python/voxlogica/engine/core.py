@@ -289,6 +289,13 @@ class ComputationEngine:
         self._peak_runnable = 0
         self._kernels_executed = 0  # kernels run this session (cold high; warm ~0 = full reuse)
         self._recomputes = 0        # evicted values that had to be recomputed, not reloaded
+        #: Seconds spent inside `_rematerialize` ON THE EVENT LOOP. Every
+        #: worker is a coroutine on that loop, so this time is not one
+        #: worker's: it is all of them, stopped. Counted because the count
+        #: alone cannot say whether 2,665 rebuilds cost a millisecond or a
+        #: quarter of the run.
+        self._remat_seconds = 0.0
+        self._remat_compute_seconds = 0.0
         self._in_flight = 0         # kernels currently executing (watchdog: 0 + no progress = deadlock)
         self._probe: ConcurrencyProbe | None = None  # set for the duration of run()
 
@@ -1430,6 +1437,16 @@ class ComputationEngine:
         """Recompute (or reload) a completed node whose value was evicted."""
         if nid in self.table.values:
             return self.table.values[nid]
+        _remat_started = time.perf_counter()
+        try:
+            return self._rematerialize_inner(nid)
+        finally:
+            self._remat_seconds += time.perf_counter() - _remat_started
+
+    def _rematerialize_inner(self, nid: NodeId) -> Any:
+        """The body of `_rematerialize`; see the timing wrapper above."""
+        if nid in self.table.values:
+            return self.table.values[nid]
         loaded = self.table.load(nid)
         if loaded is not None:
             self._retrack_resident(nid)
@@ -1474,7 +1491,11 @@ class ComputationEngine:
             for child in self.graph.deps(nid):
                 self._rematerialize(child)
             self._recomputes += 1  # an evicted value we could neither find nor reload
+            # SYNCHRONOUS, ON THE EVENT LOOP. Every other worker is a coroutine
+            # on this loop and none of them advances while this runs.
+            _compute_started = time.perf_counter()
             value = self.executor._compute(self.table, nid)
+            self._remat_compute_seconds += time.perf_counter() - _compute_started
             # Scaffolding disposal is PRESSURE-GATED, and both halves are
             # load-bearing — each was measured by getting it wrong:
             #
@@ -1820,6 +1841,8 @@ class ComputationEngine:
             "loop_window": self.config.loop_window,
             "kernels_executed": self._kernels_executed,
             "recomputes": self._recomputes,
+            "recompute_seconds": round(self._remat_seconds, 2),
+            "recompute_kernel_seconds": round(self._remat_compute_seconds, 2),
             "expanded_loops": self.admission.expanded_loops,
             "expanded_bodies": self.admission.expanded_bodies,
             "evicted_early": self._evicted_early,
