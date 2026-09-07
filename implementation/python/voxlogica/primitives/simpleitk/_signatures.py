@@ -18,7 +18,8 @@ sources, in this order:
 2. **The Python signature**, for the handful SimpleITK annotates natively
    (``ReadImage``, ``GetArrayFromImage``, ``Resample``, ...). These are almost
    exactly the ten the docstrings do not describe, so the two sources are
-   complementary rather than redundant.
+   complementary rather than redundant. That path is
+   ``type_helpers.rule_from_signature``, shared with ``vox1``.
 
 The mapping from C++ names to types is deliberately **directional**. In an
 argument position a type is as permissive as the wrapper really is: every
@@ -35,13 +36,14 @@ manufacture errors rather than find them.
 
 from __future__ import annotations
 
-import collections.abc
-import inspect
 import re
-import typing
 from typing import Any, Callable
 
-from voxlogica.analysis.type_helpers import overloads, signature_type
+from voxlogica.analysis.type_helpers import (
+    overloads,
+    rule_from_signature,
+    signature_type,
+)
 from voxlogica.analysis.types import (
     TypeRule,
     VoxAny,
@@ -185,79 +187,6 @@ def _rules_from_docstring(name: str, func: Callable[..., Any]) -> list[TypeRule]
     return rules
 
 
-def _python_type(annotation: Any, *, argument: bool) -> VoxType:
-    """Map a Python annotation to a static type, permissively for arguments."""
-    if annotation is inspect.Parameter.empty:
-        return VoxAny()
-
-    if isinstance(annotation, str):
-        # SimpleITK writes some annotations as strings ('numpy.ndarray').
-        return VoxImage() if "ndarray" in annotation else VoxAny()
-
-    origin = typing.get_origin(annotation)
-    if origin is not None:
-        arguments = [a for a in typing.get_args(annotation) if a is not type(None)]
-        if not arguments:
-            return VoxAny()
-        mapped = {_python_type(a, argument=argument) for a in arguments}
-        if origin in (list, tuple, set, frozenset, collections.abc.Iterable,
-                      collections.abc.Sequence, collections.abc.Collection):
-            element = mapped.pop() if len(mapped) == 1 else VoxAny()
-            return VoxSequence(element)
-        # A union is only as precise as its least precise member.
-        return mapped.pop() if len(mapped) == 1 else VoxAny()
-
-    if not isinstance(annotation, type):
-        return VoxAny()
-
-    import numpy as np
-    import SimpleITK as sitk
-
-    if issubclass(annotation, sitk.Image) or issubclass(annotation, np.ndarray):
-        return VoxImage()
-    if issubclass(annotation, bool):
-        return VoxAny() if argument else VoxBool()
-    if issubclass(annotation, int):
-        return VoxNumber() if argument else VoxInt()
-    if issubclass(annotation, float):
-        return VoxNumber() if argument else VoxFloat()
-    if issubclass(annotation, str):
-        return VoxString()
-    return VoxAny()
-
-
-def _rule_from_python_signature(func: Callable[..., Any]) -> TypeRule | None:
-    """Build a rule from a natively annotated Python signature, if it has one."""
-    try:
-        signature = inspect.signature(func)
-    except (TypeError, ValueError):
-        return None
-
-    parameters = list(signature.parameters.values())
-    if any(
-        parameter.kind
-        in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-        for parameter in parameters
-    ):
-        # A ``*args`` wrapper carries no positional structure; only its
-        # docstring knows the overloads, and that path already ran.
-        return None
-    if not any(p.annotation is not inspect.Parameter.empty for p in parameters):
-        return None
-
-    required: list[VoxType] = []
-    optional: list[VoxType] = []
-    for parameter in parameters:
-        mapped = _python_type(parameter.annotation, argument=True)
-        if parameter.default is inspect.Parameter.empty:
-            required.append(mapped)
-        else:
-            optional.append(mapped)
-
-    return_type = _python_type(signature.return_annotation, argument=False)
-    return signature_type(required, return_type, optional=optional)
-
-
 def type_rule_for(name: str, func: Callable[..., Any]) -> TypeRule | None:
     """Return the derived type rule for one SimpleITK function, or ``None``.
 
@@ -269,7 +198,7 @@ def type_rule_for(name: str, func: Callable[..., Any]) -> TypeRule | None:
         return docstring_rules[0]
     if docstring_rules:
         return overloads(docstring_rules)
-    return _rule_from_python_signature(func)
+    return rule_from_signature(func)
 
 
 def derived_rules(source_functions: dict[str, Callable[..., Any]]) -> dict[str, TypeRule]:

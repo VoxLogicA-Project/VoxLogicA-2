@@ -1,5 +1,7 @@
 """Division primitive for scalar values and aligned sequences."""
 
+from voxlogica.analysis.type_helpers import dispatching_binary_type
+from voxlogica.analysis.types import VoxFloat
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 from voxlogica.primitives.default._sequence_math import apply_binary_op
 
@@ -26,4 +28,5 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     planner=default_planner_factory("default.division", kind="scalar"),
     kernel_name="default.division",
     description="Division operation for numeric values",
+    type_rule=dispatching_binary_type(VoxFloat()),
 )

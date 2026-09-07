@@ -9,6 +9,9 @@ the type checker exactly as the kernel stands to the engine.
 
 from __future__ import annotations
 
+import collections.abc
+import inspect
+import typing
 from typing import Any, Callable, Sequence
 
 import numpy as np
@@ -21,6 +24,7 @@ from voxlogica.analysis.types import (
     VoxFloat,
     VoxImage,
     VoxInt,
+    VoxMap,
     VoxNumber,
     VoxSequence,
     VoxString,
@@ -229,6 +233,194 @@ def element_of(container: VoxType) -> VoxType | None:
     if isinstance(container, VoxSequence):
         return container.element_type
     return None
+
+
+def broadcasting_type(inner: TypeRule) -> TypeRule:
+    """Lift a binary rule through element-wise sequence broadcasting.
+
+    ``default._sequence_math.apply_binary_op`` — which every arithmetic,
+    comparison and boolean operator in ``default`` and ``vox1`` runs through —
+    applies the scalar operation element by element as soon as either operand is
+    sequence-like, and returns a list. The type of ``xs + 1`` is therefore the
+    type of ``x + 1`` wrapped in a sequence, which is what this expresses,
+    recursively for a sequence of sequences.
+    """
+
+    def rule(actual: list[VoxType]) -> VoxType:
+        if any(isinstance(given, VoxSequence) for given in actual):
+            elements = [
+                given.element_type if isinstance(given, VoxSequence) else given
+                for given in actual
+            ]
+            return VoxSequence(rule(elements))
+        return inner(actual)
+
+    return rule
+
+
+def dispatching_binary_type(scalar_result: VoxType) -> TypeRule:
+    """Build the rule of a binary operator over scalars, images and sequences.
+
+    Every arithmetic, comparison and boolean operator in ``default`` and
+    ``vox1`` has the same shape: if either operand is an image the result is an
+    image, otherwise both are scalars and the result is ``scalar_result``; and
+    all of them run through ``apply_binary_op``, which maps element-wise over a
+    sequence operand.
+
+    ``bool`` sits beside ``number`` among the scalar operands on purpose. The
+    scalar paths call ``float()`` or ``bool()`` on what they are given, so
+    ``x == true`` runs, and a rule that rejected it would invent an error.
+    """
+    scalars: tuple[VoxType, ...] = (VoxBool(), VoxNumber())
+    alternatives = [simple_type([VoxImage(), VoxImage()], VoxImage())]
+    alternatives += [simple_type([VoxImage(), s], VoxImage()) for s in scalars]
+    alternatives += [simple_type([s, VoxImage()], VoxImage()) for s in scalars]
+    alternatives += [
+        simple_type([left, right], scalar_result)
+        for left in scalars
+        for right in scalars
+    ]
+    return broadcasting_type(overloads(alternatives))
+
+
+def python_annotation_type(annotation: Any, *, argument: bool) -> VoxType:
+    """Map a Python annotation to a static type, permissively for arguments.
+
+    Directional for the same reason the SimpleITK mapping is: an ``int``-shaped
+    parameter has to accept any number, because every numeric literal in a
+    VoxLogicA program is a float, while an ``int`` *result* really is one.
+    ``bool`` in an argument position maps to ``any``: a kernel that takes one
+    calls ``bool()`` on whatever it gets, so a program passing a number runs.
+    """
+    if annotation is inspect.Parameter.empty or annotation is None:
+        return VoxAny()
+
+    if isinstance(annotation, str):
+        # Unresolved string annotation (a module using `from __future__ import
+        # annotations` whose names could not be resolved). Match on the name.
+        name = annotation.rsplit(".", 1)[-1]
+        return {
+            "Image": VoxImage(),
+            "ndarray": VoxImage(),
+            "str": VoxString(),
+            "bool": VoxAny() if argument else VoxBool(),
+            "int": VoxNumber() if argument else VoxInt(),
+            "float": VoxNumber() if argument else VoxFloat(),
+        }.get(name, VoxAny())
+
+    origin = typing.get_origin(annotation)
+    if origin is not None:
+        arguments = [a for a in typing.get_args(annotation) if a is not type(None)]
+        if not arguments:
+            return VoxAny()
+        mapped = {python_annotation_type(a, argument=argument) for a in arguments}
+        if origin in (dict, collections.abc.Mapping, collections.abc.MutableMapping):
+            key, value = (typing.get_args(annotation) + (Any, Any))[:2]
+            return VoxMap(
+                python_annotation_type(key, argument=argument),
+                python_annotation_type(value, argument=argument),
+            )
+        if origin in (list, tuple, set, frozenset, collections.abc.Iterable,
+                      collections.abc.Sequence, collections.abc.Collection):
+            return VoxSequence(mapped.pop() if len(mapped) == 1 else VoxAny())
+        # A union is only as precise as its least precise member.
+        return mapped.pop() if len(mapped) == 1 else VoxAny()
+
+    if not isinstance(annotation, type):
+        return VoxAny()
+    if issubclass(annotation, (sitk.Image, np.ndarray)):
+        return VoxImage()
+    if issubclass(annotation, bool):
+        return VoxAny() if argument else VoxBool()
+    if issubclass(annotation, int):
+        return VoxNumber() if argument else VoxInt()
+    if issubclass(annotation, float):
+        return VoxNumber() if argument else VoxFloat()
+    if issubclass(annotation, str):
+        return VoxString()
+    return VoxAny()
+
+
+def rule_from_signature(func: Callable[..., Any], arity: Any = None) -> TypeRule | None:
+    """Derive a rule from a kernel's own Python annotations, or ``None``.
+
+    ``None`` when the function carries no usable annotation at all, or when it
+    is variadic and therefore has no positional structure to describe.
+
+    When ``arity`` is given it, not the signature, decides how many arguments
+    the rule accepts, and the mapped types are padded with ``any`` to fit. A
+    kernel's declared ``AritySpec`` and its Python signature can legitimately
+    disagree — the spec is what the reducer enforces — and a rule that rejected
+    a call the reducer accepts would be a defect of this analysis, not of the
+    program.
+    """
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return None
+
+    parameters = list(signature.parameters.values())
+
+    # Resolve string annotations against the defining module where possible.
+    try:
+        hints = typing.get_type_hints(func)
+    except Exception:  # noqa: BLE001 - an unresolvable hint is not fatal here
+        hints = {}
+
+    if any(
+        parameter.kind
+        in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        for parameter in parameters
+    ):
+        # A ``*args``/``**kwargs`` kernel has no positional structure to
+        # describe, but its result annotation still says what comes out — which
+        # is what a caller's type depends on. Arguments go unchecked.
+        declared = python_annotation_type(
+            hints.get("return", signature.return_annotation), argument=False
+        )
+        if isinstance(declared, VoxAny):
+            return None
+        return lambda actual: declared
+
+    def annotation_of(parameter: inspect.Parameter) -> Any:
+        return hints.get(parameter.name, parameter.annotation)
+
+    if not any(
+        annotation_of(p) is not inspect.Parameter.empty for p in parameters
+    ) and "return" not in hints and signature.return_annotation is signature.empty:
+        return None
+
+    mapped = [
+        python_annotation_type(annotation_of(p), argument=True) for p in parameters
+    ]
+    return_type = python_annotation_type(
+        hints.get("return", signature.return_annotation), argument=False
+    )
+
+    if arity is None:
+        required = [
+            mapped[index]
+            for index, parameter in enumerate(parameters)
+            if parameter.default is inspect.Parameter.empty
+        ]
+        optional = mapped[len(required):]
+        return signature_type(required, return_type, optional=optional)
+
+    if arity.max_args is None:
+        # Variadic by declaration: only the result is describable.
+        def rule(actual: list[VoxType]) -> VoxType:
+            if len(actual) < arity.min_args:
+                raise VoxTypeError(
+                    f"expected at least {arity.min_args} argument(s), got {len(actual)}"
+                )
+            return return_type
+
+        return rule
+
+    expected = (mapped + [VoxAny()] * arity.max_args)[: arity.max_args]
+    return signature_type(
+        expected[: arity.min_args], return_type, optional=expected[arity.min_args:]
+    )
 
 
 def infer_literal_type(value: Any) -> VoxType:

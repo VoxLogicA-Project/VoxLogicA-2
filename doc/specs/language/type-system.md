@@ -135,6 +135,8 @@ Helpers in `analysis/type_helpers.py`:
 | `index_type()` | `(sequence, i) -> element` |
 | `slice_type()` | windowing; the sequence type is preserved |
 | `overloads([rule, ...])` | an overloaded primitive; see below |
+| `dispatching_binary_type(scalar)` | an operator over scalars, images and sequences |
+| `broadcasting_type(rule)` | lifts a rule through element-wise sequence broadcasting |
 
 ### Overloaded primitives
 
@@ -153,12 +155,39 @@ A rule rejects a call by raising `VoxTypeError`; the checker turns that into an
 `E_TYPE` diagnostic located at the call site and carries on with `any`, so one
 bad call does not hide the rest of the program.
 
+## Operators that dispatch
+
+Every arithmetic, comparison and boolean operator in `default` and `vox1` has
+one shape: if either operand is an image the result is an image, otherwise both
+are scalars and the result is the scalar one — and all of them run through
+`default._sequence_math.apply_binary_op`, which maps element-wise as soon as
+either operand is a sequence. `dispatching_binary_type` states exactly that, so
+`img > 0.5` is an image, `1 + 2` is a float, and `xs + 1` is a sequence of
+whatever `x + 1` is.
+
+`bool` sits beside `number` among the scalar operands on purpose: the scalar
+paths call `float()` or `bool()` on what they are given, so `x == true` runs,
+and a rule that rejected it would invent an error.
+
 ## Derived rules
 
-A rule does not have to be written by hand. `simpleitk` exposes ~350 SWIG
-wrappers, which already carry their own signatures, so its rules are **derived**
-at registration time (`primitives/simpleitk/_signatures.py`) from two
-complementary sources:
+Most rules are not written by hand.
+
+**From a kernel's own annotations.** `PrimitiveRegistry.load_type` derives a
+rule from the kernel's Python signature when its spec declares none. One place
+decides what an annotation means, and every namespace benefits — including the
+legacy `**kwargs` adapters, whose result annotation is the only part of their
+signature that says anything. Derivation is lazy and memoized: a registry is
+built per work plan, so a run that never type-checks pays nothing.
+
+The declared `AritySpec`, not the signature, bounds a derived rule, and the
+mapped types are padded with `any` to fit. The two can legitimately disagree,
+and the spec is what the reducer enforces; a rule that rejected a call the
+reducer accepts would be a defect of this analysis, not of the program.
+
+**From SWIG docstrings.** `simpleitk` exposes ~350 wrappers whose Python
+signatures are mostly `*args`. Its rules come from
+`primitives/simpleitk/_signatures.py`, which reads two complementary sources:
 
 1. **The SWIG docstring**, which opens with the C++ signature(s):
 
@@ -175,6 +204,10 @@ complementary sources:
 2. **The Python signature**, for the handful SimpleITK annotates natively
    (`ReadImage`, `GetArrayFromImage`, `Resample`, ...) — almost exactly the ten
    the docstrings do not describe.
+
+Coverage is 481 of 495 primitives. What is left declares nothing anywhere:
+`default.load`, `default.overlay`, the `test` namespace's fixtures, and
+`simpleitk.namedtuple` (stdlib, registered by the namespace scan by accident).
 
 The name-to-type mapping is deliberately **directional**. In an argument
 position every integer width maps to `number`, because the wrapper casts a float

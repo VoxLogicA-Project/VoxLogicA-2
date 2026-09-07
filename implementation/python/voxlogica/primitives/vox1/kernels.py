@@ -14,8 +14,20 @@ from voxlogica.analysis.type_helpers import primitive_type, overloaded_type
 import numpy as np
 import SimpleITK as sitk
 
-from voxlogica.analysis.type_helpers import primitive_type, simple_type
-from voxlogica.analysis.types import VoxBool, VoxFloat, VoxNumber
+from voxlogica.analysis.type_helpers import (
+    dispatching_binary_type,
+    overloads,
+    primitive_type,
+    simple_type,
+)
+from voxlogica.analysis.types import (
+    TypeRule,
+    VoxBool,
+    VoxFloat,
+    VoxImage,
+    VoxNumber,
+    VoxType,
+)
 try:
     from numba import get_num_threads, njit, prange
     _HAS_NUMBA = True
@@ -291,8 +303,28 @@ def _make_image_from_flat(
     return image
 
 
+# ── Type rules for the dispatching operators ─────────────────────────────────
+#
+# These are the only vox1 kernels whose result type is not in their annotation:
+# they are declared ``object -> object`` because they genuinely dispatch, so the
+# registry cannot derive anything from them. ``dispatching_binary_type`` states
+# the dispatch that ``_add_values``, ``_comparison_values`` and ``logical_and``
+# actually implement.
+
+_ARITHMETIC_RULE = dispatching_binary_type(VoxFloat())
+_COMPARISON_RULE = dispatching_binary_type(VoxBool())
+_BOOLEAN_RULE = dispatching_binary_type(VoxBool())
+_NOT_RULE = overloads([
+    simple_type([VoxImage()], VoxImage()),
+    simple_type([VoxBool()], VoxBool()),
+    simple_type([VoxNumber()], VoxBool()),
+])
+
+
 @primitive_type(simple_type([VoxNumber(), VoxNumber()], VoxFloat()))
-def num_div(left: float, right: float) -> float:
+def num_div(
+
+left: float, right: float) -> float:
     """Scalar floating-point division."""
     return float(left) / float(right)
 
@@ -333,6 +365,7 @@ def bool_not_scalar(value: bool) -> bool:
     return not bool(value)
 
 
+@primitive_type(_NOT_RULE)
 def not_compat(value: object) -> object:
     """Boolean not dispatching over scalars and images."""
     if isinstance(value, (bool, int, float)):
@@ -421,6 +454,7 @@ def _comparison_values(left: object, right: object, op_name: str) -> object:
     raise ValueError(f"Unsupported comparison operator: {op_name}")
 
 
+@primitive_type(_COMPARISON_RULE)
 def equal(left: object, right: object) -> object:
     """Scalar or voxel-wise equality."""
     return apply_binary_op(
@@ -431,6 +465,7 @@ def equal(left: object, right: object) -> object:
     )
 
 
+@primitive_type(_COMPARISON_RULE)
 def not_equal(left: object, right: object) -> object:
     """Scalar or voxel-wise inequality."""
     return apply_binary_op(
@@ -441,6 +476,7 @@ def not_equal(left: object, right: object) -> object:
     )
 
 
+@primitive_type(_COMPARISON_RULE)
 def less(left: object, right: object) -> object:
     """Scalar or voxel-wise less-than."""
     return apply_binary_op(
@@ -451,6 +487,7 @@ def less(left: object, right: object) -> object:
     )
 
 
+@primitive_type(_COMPARISON_RULE)
 def less_equal(left: object, right: object) -> object:
     """Scalar or voxel-wise less-or-equal."""
     return apply_binary_op(
@@ -461,6 +498,7 @@ def less_equal(left: object, right: object) -> object:
     )
 
 
+@primitive_type(_COMPARISON_RULE)
 def greater(left: object, right: object) -> object:
     """Scalar or voxel-wise greater-than."""
     return apply_binary_op(
@@ -471,6 +509,7 @@ def greater(left: object, right: object) -> object:
     )
 
 
+@primitive_type(_COMPARISON_RULE)
 def greater_equal(left: object, right: object) -> object:
     """Scalar or voxel-wise greater-or-equal."""
     return apply_binary_op(
@@ -517,6 +556,7 @@ def logical_not(image: object) -> sitk.Image:
     return sitk.Not(img)
 
 
+@primitive_type(_BOOLEAN_RULE)
 def logical_and(left: object, right: object) -> object:
     """Voxel-wise boolean and."""
     if _is_image(left) or _is_image(right):
@@ -536,6 +576,7 @@ def logical_and(left: object, right: object) -> object:
     return bool(left) and bool(right)
 
 
+@primitive_type(_BOOLEAN_RULE)
 def logical_or(left: object, right: object) -> object:
     """Voxel-wise boolean or."""
     if _is_image(left) or _is_image(right):
@@ -701,21 +742,25 @@ def _sub_values(left: object, right: object) -> object:
     return float(cast(SupportsFloat, left)) - float(cast(SupportsFloat, right))
 
 
+@primitive_type(_ARITHMETIC_RULE)
 def add(left: object, right: object) -> object:
     """Voxel-wise or scalar addition."""
     return apply_binary_op("Add", left, right, _add_values)
 
 
+@primitive_type(_ARITHMETIC_RULE)
 def multiply(left: object, right: object) -> object:
     """Voxel-wise or scalar multiplication."""
     return apply_binary_op("Multiply", left, right, _mul_values)
 
 
+@primitive_type(_ARITHMETIC_RULE)
 def divide(left: object, right: object) -> object:
     """Voxel-wise or scalar division."""
     return apply_binary_op("Division", left, right, _div_values)
 
 
+@primitive_type(_ARITHMETIC_RULE)
 def subtract(left: object, right: object) -> object:
     """Voxel-wise or scalar subtraction."""
     return apply_binary_op("Subtraction", left, right, _sub_values)

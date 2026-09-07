@@ -195,6 +195,8 @@ def register_specs() -> dict[str, tuple[PrimitiveSpec, Callable[..., Any]]]:
             planner=default_planner_factory(qualified, kind="scalar"),
             kernel_name=qualified,
             description=(kernel.__doc__ or "").strip(),
+            # Only explicitly declared rules here; the registry derives the
+            # rest from each kernel's own annotations.
             type_rule=getattr(kernel, "type_rule", None),
             elementwise=_ELEMENTWISE.get(primitive_name),
             stencil=_STENCIL.get(primitive_name),

@@ -182,9 +182,21 @@ def test_indexing_a_non_sequence_is_reported():
 
 def test_a_primitive_without_a_rule_constrains_nothing():
     """Gradual by construction: silence, not a diagnostic, and ``any``."""
-    result = check('import "vox1"\nprint "x" (1 + 2)\n')
+    from voxlogica.primitives.registry import PrimitiveRegistry
+
+    registry = PrimitiveRegistry()
+    assert registry.resolve("load").type_rule is None, (
+        "`load` has gained a type rule; pick another undeclared primitive here"
+    )
+    result = check('print "x" load("nonexistent.nii.gz")\n')
     assert result.ok
     assert result.goal_types["x"] == VoxAny()
+
+
+def test_scalar_arithmetic_is_typed_through_the_operator():
+    result = check('import "vox1"\nprint "x" (1 + 2)\n')
+    assert result.ok
+    assert result.goal_types["x"] == VoxFloat()
 
 
 def test_diagnostics_are_deduplicated_per_location():
@@ -460,3 +472,120 @@ def test_a_string_where_an_image_belongs_is_caught():
     result = check('import "simpleitk"\nprint "bad" Median("not an image")\n')
     assert not result.ok
     assert "expected image" in result.diagnostics[0].message
+
+
+# ── Operators that dispatch over scalars, images and sequences ───────────────
+
+
+def test_a_dispatching_operator_follows_its_operands():
+    from voxlogica.analysis.type_helpers import dispatching_binary_type
+
+    rule = dispatching_binary_type(VoxFloat())
+    assert rule([VoxImage(), VoxImage()]) == VoxImage()
+    assert rule([VoxImage(), VoxFloat()]) == VoxImage()
+    assert rule([VoxFloat(), VoxImage()]) == VoxImage()
+    assert rule([VoxInt(), VoxFloat()]) == VoxFloat()
+
+
+def test_a_dispatching_operator_broadcasts_over_sequences():
+    """`apply_binary_op` maps element-wise as soon as one operand is a sequence."""
+    from voxlogica.analysis.type_helpers import dispatching_binary_type
+
+    rule = dispatching_binary_type(VoxFloat())
+    assert rule([VoxSequence(VoxInt()), VoxFloat()]) == VoxSequence(VoxFloat())
+    assert rule([VoxSequence(VoxImage()), VoxFloat()]) == VoxSequence(VoxImage())
+    assert rule([VoxSequence(VoxSequence(VoxInt())), VoxInt()]) == VoxSequence(
+        VoxSequence(VoxFloat())
+    )
+
+
+def test_a_dispatching_operator_accepts_a_boolean_operand():
+    """The scalar path calls float()/bool(), so `x == true` runs."""
+    from voxlogica.analysis.type_helpers import dispatching_binary_type
+
+    rule = dispatching_binary_type(VoxBool())
+    assert rule([VoxBool(), VoxInt()]) == VoxBool()
+    assert rule([VoxImage(), VoxBool()]) == VoxImage()
+
+
+def test_a_dispatching_operator_stays_precise_under_a_known_operand():
+    from voxlogica.analysis.type_helpers import dispatching_binary_type
+
+    rule = dispatching_binary_type(VoxFloat())
+    # One image operand proves the result is an image whatever the other is.
+    assert rule([VoxImage(), VoxAny()]) == VoxImage()
+    # Two unknowns prove nothing.
+    assert rule([VoxAny(), VoxAny()]) == VoxAny()
+
+
+def test_a_dispatching_operator_rejects_an_operand_it_cannot_combine():
+    from voxlogica.analysis.type_helpers import dispatching_binary_type
+
+    with pytest.raises(VoxTypeError):
+        dispatching_binary_type(VoxFloat())([VoxString(), VoxInt()])
+
+
+# ── Rules derived by the registry from a kernel's own annotations ────────────
+
+
+def test_the_registry_derives_a_rule_from_kernel_annotations():
+    """`vox1.dt` declares no rule but annotates `-> sitk.Image`."""
+    from voxlogica.primitives.registry import PrimitiveRegistry
+
+    registry = PrimitiveRegistry()
+    registry.import_namespace("vox1")
+    assert registry.load_type("vox1.dt")([VoxImage()]) == VoxImage()
+
+
+def test_a_derived_rule_is_computed_once_and_reused():
+    """Derivation is lazy so a run that never type-checks does not pay for it."""
+    from voxlogica.primitives.registry import PrimitiveRegistry
+
+    registry = PrimitiveRegistry()
+    registry.import_namespace("vox1")
+    assert registry.resolve("vox1.dt").type_rule is None
+    assert registry._derived_type_rules == {}
+    assert registry.load_type("vox1.dt") is registry.load_type("vox1.dt")
+
+
+def test_a_derived_rule_never_narrows_the_declared_arity():
+    """The spec's AritySpec, not the signature, bounds the derived rule."""
+    from voxlogica.primitives.registry import PrimitiveRegistry
+
+    registry = PrimitiveRegistry()
+    registry.import_namespace("vox1")
+    for name in ("vox1.dt", "vox1.near", "vox1.interior"):
+        spec = registry.resolve(name)
+        arguments = [VoxAny()] * spec.arity.min_args
+        registry.load_type(name)(arguments)  # must not raise
+
+
+def test_a_kwargs_kernel_still_declares_its_result():
+    """A legacy `**kwargs` adapter has no argument structure, only a result."""
+    from voxlogica.primitives.registry import PrimitiveRegistry
+
+    registry = PrimitiveRegistry()
+    registry.import_namespace("strings")
+    assert registry.load_type("strings.concat")([VoxAny(), VoxAny()]) == VoxString()
+
+
+def test_an_image_pipeline_keeps_its_type_through_the_operators():
+    """What the BraTS programs actually do: threshold, dilate, combine."""
+    program = (
+        'import "vox1"\n'
+        'import "simpleitk"\n'
+        'let img = ReadImage("x.nii.gz")\n'
+        "let mask = img > 0.5\n"
+        'print "grown" (N(mask) & mask)\n'
+        'print "size" volume(mask)\n'
+    )
+    result = check(program)
+    assert result.ok, [d.message for d in result.diagnostics]
+    assert result.goal_types["grown"] == VoxImage()
+    assert result.goal_types["size"] == VoxFloat()
+
+
+def test_a_string_operand_to_an_image_operator_is_caught():
+    result = check('import "vox1"\nlet bad = "text" > 0.5\nprint "b" bad\n')
+    assert not result.ok
+    assert "no overload accepts" in result.diagnostics[0].message
