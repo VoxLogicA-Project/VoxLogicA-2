@@ -1473,8 +1473,18 @@ class ComputationEngine:
         """
         priority = self._priority.get(waiting, 0)
         self._priority[dep] = max(self._priority.get(dep, 0), priority)
-        if dep not in self.graph.incomplete:
-            self.graph.register(dep)
+        # DELIBERATELY NOT RE-REGISTERED. `register` sets `pending[dep]` to the
+        # number of its own incomplete dependencies, and `await_one` then SETS
+        # that same counter to 1 -- so a node with two unmet inputs ends up
+        # waiting for one, fires on the first arrival, asks again, and loses the
+        # second wakeup if it landed in between. Chained one rebuild deep that
+        # produced 2,950 stuck nodes, each waiting on a node that was itself
+        # waiting, with an empty queue.
+        #
+        # It does not need registering. `on_complete` discards from `incomplete`
+        # (a no-op here) and then fires whoever is waiting, which is all this
+        # needs; and the node's own turn will reload or schedule ITS inputs the
+        # same way this one did.
         # ONLY IF NOBODY IS ALREADY BRINGING IT BACK. Two waiters on one evicted
         # input both ask for it, and a second push means a second worker pops it
         # while the first is inside the kernel: `begin` refuses, correctly, with
