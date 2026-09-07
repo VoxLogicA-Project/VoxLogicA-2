@@ -1417,6 +1417,41 @@ class ComputationEngine:
         # which is what a hang looks like from outside.
         self.graph.await_one(waiting, to_expand)
 
+    def _await_rebuild(self, waiting: NodeId, dep: NodeId) -> None:
+        """Schedule an evicted dependency as a NODE and wait behind the edge.
+
+        An input whose value was evicted is, from the scheduler's point of view,
+        an input that has not been computed -- and that is a case the engine
+        already handles, with an edge. Rebuilding it inline instead is the one
+        place where the engine still does work off the graph, and it costs on
+        every count:
+
+        - it runs the kernel on the EVENT LOOP, so the thing that dispatches
+          work stops to do one node's work itself. Measured on an AIIM sweep:
+          1,433 rebuilds, 10.86 s of kernel inside a 33 s run, which is the
+          starved tail in issue #60 -- 19 nodes ready, workers free, nothing
+          parked, because the router was busy.
+        - nothing in the graph says the value is wanted, so every eviction path
+          is free to take it away again mid-rebuild. `_pin_dispatch` covers the
+          pressure paths and not `release`, and patching one path at a time did
+          not converge: three attempts, three different failures.
+
+        Going through the queue gets all of it right for free: the kernel runs
+        in the pool like any other, the waiter holds a real consumer reference
+        so the refcount protects the value, and `_finish` does the accounting.
+        The DAG is again the only witness of what depends on what, which is the
+        rule the handle work is built on -- this was the last place violating it.
+        """
+        priority = self._priority.get(waiting, 0)
+        self._priority[dep] = max(self._priority.get(dep, 0), priority)
+        if dep not in self.graph.incomplete:
+            self.graph.register(dep)
+        self.ready.push(dep, priority)
+        # WAIT, do not requeue: a waiter pushed straight back is dispatched
+        # before the rebuild has happened and asks again -- the queue spinning
+        # on itself, which is what `_await_expansion` learned the hard way.
+        self.graph.await_one(waiting, dep)
+
     def _grows_the_graph(self, nid: NodeId) -> bool:
         """Whether evaluating this node expands the graph instead of computing.
 
@@ -1555,8 +1590,23 @@ class ComputationEngine:
         while True:
             nid = await self.ready.pop()
             try:
-                if self._first_error is not None or nid in self.table.completed:
-                    continue  # cancelled, or a duplicate of an already-finished node
+                if self._first_error is not None:
+                    continue  # cancelled
+                if nid in self.table.completed and nid in self.table.values:
+                    continue  # a duplicate of an already-finished node
+                if nid in self.table.completed and nid not in self.table.values:
+                    # COMPUTED IS NOT THE SAME AS RESIDENT, and conflating them
+                    # is what forced rebuilds off the graph: a completed node
+                    # whose value was evicted could not be scheduled again, so
+                    # whoever needed it had to rebuild it by hand. Reload if the
+                    # store has it; otherwise fall through and compute it, which
+                    # `begin` permits precisely because the value is absent.
+                    reloaded = self.table.load(nid)
+                    if reloaded is not None:
+                        self._retrack_resident(nid)
+                        self.graph.hold_handles(nid, reloaded)
+                        self._finish(nid, reloaded, persist=False)
+                        continue
                 node = self.table.nodes[nid]
                 if nid in self._alias:
                     seq_id = self._alias.pop(nid)
@@ -1628,16 +1678,27 @@ class ComputationEngine:
                         self.ready.push(nid, self._priority.get(nid, 0))
                         continue
                     self._reload_deferred.discard(nid)
-                    try:
-                        for dep in self.graph.deps(nid):
-                            if dep not in self.table.values:
-                                self._rematerialize(dep)  # deps evicted under pressure
-                    except NeedsExpansion as needed:
-                        # A dependency that GROWS THE GRAPH cannot be rebuilt by
-                        # this road. Put it back on the frontier so admission
-                        # expands it, and requeue this node behind it -- the same
-                        # defer-and-retry the reload gate above already uses.
-                        self._await_expansion(nid, needed.node_id)
+                    # An evicted input is an uncomputed input. Reload it if the
+                    # store still has it -- that is cheap and needs no kernel --
+                    # and otherwise put it back on the queue and wait behind the
+                    # edge. See _await_rebuild for why not inline.
+                    waited = False
+                    for dep in self.graph.deps(nid):
+                        if dep in self.table.values:
+                            continue
+                        reloaded = self.table.load(dep)
+                        if reloaded is not None:
+                            self._retrack_resident(dep)
+                            self.graph.hold_handles(dep, reloaded)
+                            continue
+                        if self._grows_the_graph(dep):
+                            # Its value comes from what it expands into, so
+                            # admission has to unroll it, not a worker.
+                            self._await_expansion(nid, dep)
+                        else:
+                            self._await_rebuild(nid, dep)
+                        waited = True
+                    if waited:
                         continue
                     if self._await_named_deps(nid, node):
                         continue
