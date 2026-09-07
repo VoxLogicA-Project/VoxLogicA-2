@@ -1446,7 +1446,13 @@ class ComputationEngine:
         self._priority[dep] = max(self._priority.get(dep, 0), priority)
         if dep not in self.graph.incomplete:
             self.graph.register(dep)
-        self.ready.push(dep, priority)
+        # ONLY IF NOBODY IS ALREADY BRINGING IT BACK. Two waiters on one evicted
+        # input both ask for it, and a second push means a second worker pops it
+        # while the first is inside the kernel: `begin` refuses, correctly, with
+        # DoubleComputationError. `claimable` is the engine's own answer to "is
+        # this free to compute" -- false while running, false once resident.
+        if self.table.is_claimable(dep):
+            self.ready.push(dep, priority)
         # WAIT, do not requeue: a waiter pushed straight back is dispatched
         # before the rebuild has happened and asks again -- the queue spinning
         # on itself, which is what `_await_expansion` learned the hard way.
@@ -1594,6 +1600,14 @@ class ComputationEngine:
                     continue  # cancelled
                 if nid in self.table.completed and nid in self.table.values:
                     continue  # a duplicate of an already-finished node
+                if nid not in self.table.values and not self.table.is_claimable(nid):
+                    # RUNNING (not claimable, and no value yet): another worker
+                    # is computing it. Whoever waits, waits on the edge, so
+                    # dropping this turn loses nothing -- and taking it would
+                    # trip `begin`'s single-computation guard. The `values`
+                    # test is what keeps this from swallowing a node that is
+                    # merely resident, which the forwarding branch below wants.
+                    continue
                 if nid in self.table.completed and nid not in self.table.values:
                     # COMPUTED IS NOT THE SAME AS RESIDENT, and conflating them
                     # is what forced rebuilds off the graph: a completed node
