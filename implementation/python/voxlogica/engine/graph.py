@@ -64,6 +64,9 @@ class DependencyGraph:
         # and "hold this unreferenced value for a later sweep". Defaults keep a
         # bare graph (tests, --no-cache paths) behaving exactly as before.
         self.pinned = lambda nid: False
+        #: Set by the engine: what to do with a value whose last
+        #: registered consumer has run. See `release`.
+        self.on_orphan = None
         self.defer = lambda nid: None
 
     # ── Structure ─────────────────────────────────────────────────────────────
@@ -97,6 +100,11 @@ class DependencyGraph:
         self.registered_total += 1
         unmet = 0
         for dep in (self.deps(nid) if deps is None else deps):
+            if self.consumers.get(dep, 0) == 0:
+                # Wanted again: whatever was keeping it on speculation is now a
+                # real consumer, so it counts against the budget like any other
+                # resident value.
+                self.table.unspeculate(dep)
             self.consumers[dep] = self.consumers.get(dep, 0) + 1
             if dep in self.incomplete:
                 unmet += 1
@@ -318,7 +326,20 @@ class DependencyGraph:
         else:
             del self.consumers[nid]  # drop the entry: state is frontier-only
             if nid not in self.protected:
-                self.table.evict(nid)
+                # ORPHANED, NOT NECESSARILY DEAD. Zero consumers means every
+                # one registered SO FAR has run, and with dynamic expansion
+                # more appear later: a for-loop unrolls case by case, so a
+                # shared subexpression is routinely orphaned before the case
+                # that wants it next has been expanded. Measured on an AIIM
+                # sweep: 735 of 1,234 rebuilds came from this line.
+                #
+                # The engine decides whether to keep it, because only it knows
+                # whether the value is durable -- see
+                # ComputationEngine._orphaned.
+                if self.on_orphan is not None:
+                    self.on_orphan(nid)
+                else:
+                    self.table.evict(nid)
             # The holder is gone, so what its value named is no longer held by
             # it. Popped before releasing: a ref cycle cannot exist (handles
             # name nodes, nodes form a DAG), but re-entering through the same

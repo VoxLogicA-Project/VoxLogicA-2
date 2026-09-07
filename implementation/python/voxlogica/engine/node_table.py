@@ -117,6 +117,11 @@ class NodeTable:
         self.nodes: dict[NodeId, NodeSpec] = _LoopWatchingNodes()
         self.values: dict[NodeId, Any] = {}
         self._running: set[NodeId] = set()
+        #: Values kept ON SPECULATION after their last registered consumer ran:
+        #: already on disk, so dropping one costs nothing and reusing it costs
+        #: nothing either. See ComputationEngine._orphaned.
+        self.speculative: set[NodeId] = set()
+        self.speculative_bytes = 0
         #: Set by ComputationEngine: "can this value be rebuilt from its kernel?"
         self._recompute_guard: Any = None
         #: Values held back by that guard, released when the run drains.
@@ -280,7 +285,15 @@ class NodeTable:
         admission trims them before enforcing its hard ceiling.
         """
         backlog = 0 if self._persister is None else self._persister.pending_bytes
-        return self.live_bytes + backlog + pooled_bytes_approx()
+        # SPECULATIVE BYTES DO NOT COUNT. This total is what admission parks on,
+        # so anything included in it shapes the schedule -- and a value kept
+        # only in case someone wants it again must not do that. It can be
+        # dropped this instant, with no write, because it is already durable;
+        # counting it would let a speculative cache narrow the window and
+        # change what runs, which is exactly how earlier attempts at retaining
+        # these values broke the frontier bound.
+        return (self.live_bytes - self.speculative_bytes
+                + backlog + pooled_bytes_approx())
 
     _LINEAGE_BATCH = 512
 
@@ -509,6 +522,20 @@ class NodeTable:
                                0.0, size=self._sizeof.get(node_id))
         return True
 
+    def unspeculate(self, node_id: NodeId) -> None:
+        """This value is wanted again, so it is no longer held on speculation."""
+        if node_id in self.speculative:
+            self.speculative.discard(node_id)
+            self.speculative_bytes -= self._sizeof.get(node_id, 0)
+            if self.speculative_bytes < 0:
+                self.speculative_bytes = 0
+
+    def speculate(self, node_id: NodeId) -> None:
+        """Keep this value on speculation; it is durable, so dropping is free."""
+        if node_id not in self.speculative:
+            self.speculative.add(node_id)
+            self.speculative_bytes += self._sizeof.get(node_id, 0)
+
     def set_recompute_guard(self, predicate: Any) -> None:
         """Install "can this node be rebuilt without a disk copy?".
 
@@ -545,6 +572,7 @@ class NodeTable:
             self._held_unrecoverable.add(node_id)
             return
         self._held_unrecoverable.discard(node_id)
+        self.unspeculate(node_id)   # gone is gone; keep the counter honest
         value = self.values.pop(node_id, _MISSING)
         if value is not _MISSING:
             # Forget the id only once its write has LANDED: from then on
