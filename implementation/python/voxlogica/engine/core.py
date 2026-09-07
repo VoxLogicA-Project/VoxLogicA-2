@@ -1894,12 +1894,29 @@ class ComputationEngine:
         print(f"[stuck] qsize={self.ready.qsize()} outstanding={self.ready.outstanding} "
               f"completed={len(self.table.completed)} stuck={len(stuck)} "
               f"alias={len(self._alias)} jobs={self.admission.active_jobs}", file=sys.stderr)
-        for nid in stuck[:12]:
+        for nid in stuck[:6]:
             node = self.table.nodes[nid]
-            unmet = [d[:8] for d in self.graph.deps(nid) if d in self.graph.incomplete]
+            unmet = [d for d in self.graph.deps(nid) if d in self.graph.incomplete]
             print(f"  {nid[:8]} op={node.operator} kind={node.kind} "
                   f"pending={self.graph.pending.get(nid)} alias={nid in self._alias} "
-                  f"unmet={unmet}", file=sys.stderr)
+                  f"unmet={[d[:8] for d in unmet]} "
+                  f"deps_all={[d[:8] for d in self.graph.deps(nid)]}", file=sys.stderr)
+            # The state of what it waits for, which is the whole question: a
+            # dep that is complete means a lost wakeup, one that is incomplete
+            # and unqueued means it was dropped, one that is running means the
+            # wait is legitimate and something else stalled.
+            for d in unmet[:3]:
+                dspec = self.table.nodes.get(d)
+                print(f"      dep {d[:8]} op={getattr(dspec,'operator','?')} "
+                      f"completed={d in self.table.completed} "
+                      f"resident={d in self.table.values} "
+                      f"claimable={self.table.is_claimable(d)} "
+                      f"incomplete={d in self.graph.incomplete} "
+                      f"pending={self.graph.pending.get(d)} "
+                      f"consumers={self.graph.consumers.get(d)} "
+                      f"dependents={len(self.graph._dependents.get(d, ()))} "
+                      f"queued={self.ready.contains(d) if hasattr(self.ready,'contains') else '?'}",
+                      file=sys.stderr)
 
     # ── Helpers ─────────────────────────────────────────────────────────────────────────────
 
