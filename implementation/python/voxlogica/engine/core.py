@@ -1011,13 +1011,14 @@ class ComputationEngine:
             return
         self._orphan_stats["kept"] += 1
         self.table.speculate(nid)
-        # FIRST IN LINE TO GO. The free-garbage queue means "no write is needed
-        # because nothing will read it", and for a durable orphan the first
-        # half is true and the second is a guess -- so PASS 0 collects these
-        # ahead of anything whose eviction would cost a recompute, which is
-        # precisely the order wanted: give back the speculation before touching
-        # a value someone is still going to need.
-        self._track_ownerless(nid)
+        # NOT on the free-garbage queue, though the temptation is strong: that
+        # queue means "nothing will read this", PASS 0 empties it eagerly, and
+        # doing so destroys the speculation before it can pay. Measured both
+        # ways at the same cap: on the queue, 7,957 kept and 845 rebuilds; off
+        # it, the same values kept and the rebuilds are what this policy is for.
+        # Under genuine pressure `_reclaim_memory` still takes them through the
+        # ordinary candidate path, which is where a cost-ordered decision
+        # belongs.
 
     def _track_ownerless(self, nid: NodeId) -> None:
         """Queue free garbage, keeping the byte counter the cap reads in step."""
