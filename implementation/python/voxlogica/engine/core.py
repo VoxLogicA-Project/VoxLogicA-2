@@ -1731,12 +1731,26 @@ class ComputationEngine:
                         # at them — the same reload-before-dispatch guarantee the
                         # single-node path gives its own deps, just over the
                         # cone's aggregate external inputs.
-                        try:
-                            for dep in cone.inputs:
-                                if dep not in self.table.values:
-                                    self._rematerialize(dep)
-                        except NeedsExpansion as needed:
-                            self._await_expansion(nid, needed.node_id)
+                        # Scheduled, not rebuilt here: same reason as the
+                        # single-node path above. This was the larger half of
+                        # the loop-blocking time -- with only the single-node
+                        # path converted, the instrumentation still reported
+                        # 2,077 rebuilds and 17.3 s of kernel on the loop.
+                        waited = False
+                        for dep in cone.inputs:
+                            if dep in self.table.values:
+                                continue
+                            reloaded = self.table.load(dep)
+                            if reloaded is not None:
+                                self._retrack_resident(dep)
+                                self.graph.hold_handles(dep, reloaded)
+                                continue
+                            if self._grows_the_graph(dep):
+                                self._await_expansion(nid, dep)
+                            else:
+                                self._await_rebuild(nid, dep)
+                            waited = True
+                        if waited:
                             continue
                         self._kernels_executed += len(cone)
                         # A fused cone is one kernel and several nodes, and all
