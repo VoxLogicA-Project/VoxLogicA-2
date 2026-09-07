@@ -998,12 +998,26 @@ class ComputationEngine:
             self.table.evict(nid)       # not durable: keeping it is not free
             return
         size = self.table._sizeof.get(nid, 0)
-        if self.table.speculative_bytes + size > self.governor.budget // 10:
+        # HALF THE BUDGET, not a tenth. A tenth was chosen by analogy with the
+        # buffer pool and measured far too small: of 11,369 orphans it kept 175
+        # and refused 7,780 for want of room -- and those 175 alone cut rebuilds
+        # from 1,363 to 599. The analogy was wrong because these bytes are not
+        # like the pool's: they are already on disk, so they are given back the
+        # instant anything wants memory, and they are excluded from the total
+        # admission parks on for exactly that reason.
+        if self.table.speculative_bytes + size > self.governor.budget // 2:
             self._orphan_stats["over_cap"] += 1
             self.table.evict(nid)
             return
         self._orphan_stats["kept"] += 1
         self.table.speculate(nid)
+        # FIRST IN LINE TO GO. The free-garbage queue means "no write is needed
+        # because nothing will read it", and for a durable orphan the first
+        # half is true and the second is a guess -- so PASS 0 collects these
+        # ahead of anything whose eviction would cost a recompute, which is
+        # precisely the order wanted: give back the speculation before touching
+        # a value someone is still going to need.
+        self._track_ownerless(nid)
 
     def _track_ownerless(self, nid: NodeId) -> None:
         """Queue free garbage, keeping the byte counter the cap reads in step."""
