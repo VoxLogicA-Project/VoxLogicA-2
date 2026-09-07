@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import pathlib
 import shutil
+import collections
 import types
 from collections import deque
 
@@ -198,6 +199,8 @@ def _engine_stub(table: NodeTable, *, max_live_bytes: int) -> ComputationEngine:
     # `_rematerialize` times itself; the stub bypasses __init__, so the
     # counters it writes into have to exist here too.
     engine._remat_seconds = 0.0
+    engine._evict_reason = {}
+    engine._remat_by_reason = collections.defaultdict(int)
     engine._remat_compute_seconds = 0.0
     return engine
 
@@ -1070,6 +1073,8 @@ def test_recompute_scaffolding_is_freed_not_stranded() -> None:
     # `_rematerialize` times itself; the stub bypasses __init__, so the
     # counters it writes into have to exist here too.
     engine._remat_seconds = 0.0
+    engine._evict_reason = {}
+    engine._remat_by_reason = collections.defaultdict(int)
     engine._remat_compute_seconds = 0.0
     for nid, operator in (("child", "vox1.dt"), ("parent", "vox1.and")):
         table.nodes[nid] = NodeSpec(kind="primitive", operator=operator)

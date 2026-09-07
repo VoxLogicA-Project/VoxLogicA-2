@@ -64,6 +64,8 @@ class DependencyGraph:
         # and "hold this unreferenced value for a later sweep". Defaults keep a
         # bare graph (tests, --no-cache paths) behaving exactly as before.
         self.pinned = lambda nid: False
+        #: Set by the engine to attribute an eviction to its cause.
+        self.note_evict = None
         self.defer = lambda nid: None
 
     # ── Structure ─────────────────────────────────────────────────────────────
@@ -294,6 +296,8 @@ class DependencyGraph:
         else:
             del self.consumers[nid]  # drop the entry: state is frontier-only
             if nid not in self.protected:
+                if self.note_evict is not None:
+                    self.note_evict(nid, "refcount")
                 self.table.evict(nid)
             # The holder is gone, so what its value named is no longer held by
             # it. Popped before releasing: a ref cycle cannot exist (handles

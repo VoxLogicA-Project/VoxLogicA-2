@@ -201,6 +201,7 @@ class ComputationEngine:
         # rely on "a reader is a registered consumer" to know the value is
         # safe to free — it has to ask (see DependencyGraph.complete_cone).
         self.graph.pinned = lambda nid: self._dispatch_pins.get(nid, 0) > 0
+        self.graph.note_evict = lambda nid, why: self._evict_reason.__setitem__(nid, why)
         self.graph.defer = self._track_ownerless
         self.liveness = LivenessProbe(self.graph)
         # --sparse-cache: hand the same predicate the disk cache uses for
@@ -296,6 +297,11 @@ class ComputationEngine:
         #: quarter of the run.
         self._remat_seconds = 0.0
         self._remat_compute_seconds = 0.0
+        #: Why rebuilds happen: a value dropped by the refcount and
+        #: wanted again is a different problem from one spilled under
+        #: pressure, and the counts say which one to work on.
+        self._evict_reason: dict[NodeId, str] = {}
+        self._remat_by_reason: dict[str, int] = defaultdict(int)
         self._in_flight = 0         # kernels currently executing (watchdog: 0 + no progress = deadlock)
         self._probe: ConcurrencyProbe | None = None  # set for the duration of run()
 
@@ -871,6 +877,7 @@ class ComputationEngine:
                 self._spill_pending.append(nid)   # a dispatch is reading it RIGHT NOW: retry later
                 continue
             if self.table.persisted(nid):
+                self._evict_reason[nid] = "reclaim_pass0"
                 self.table.evict(nid)
                 self._evicted_early += 1
             else:
@@ -901,6 +908,7 @@ class ComputationEngine:
                 self._evict_candidates.append(nid)
                 continue
             if self.table.persisted(nid):
+                self._evict_reason[nid] = "reclaim_pass1"
                 self.table.evict(nid)
                 self._evicted_early += 1
             elif (self.table.compute_ms_of(nid) < sacrifice_ms
@@ -920,6 +928,7 @@ class ComputationEngine:
                 # The bar itself is pressure-scaled (`sacrifice_ms` above), so
                 # the disk tier keeps doing its job — holding what is worth
                 # reusing — until RSS says there is no room to be choosy.
+                self._evict_reason[nid] = "reclaim_pass2"
                 self.table.evict(nid)
                 self._evicted_early += 1
             elif self.table.spill(nid):
@@ -964,6 +973,7 @@ class ComputationEngine:
         """
         if self._dispatch_pins.get(nid, 0) > 0 or nid in self._goals:
             return
+        self._evict_reason[nid] = "ownerless"
         self.table.evict(nid)
         self._evicted_early += 1
 
@@ -1491,6 +1501,7 @@ class ComputationEngine:
             for child in self.graph.deps(nid):
                 self._rematerialize(child)
             self._recomputes += 1  # an evicted value we could neither find nor reload
+            self._remat_by_reason[self._evict_reason.get(nid, "unknown")] += 1
             # SYNCHRONOUS, ON THE EVENT LOOP. Every other worker is a coroutine
             # on this loop and none of them advances while this runs.
             _compute_started = time.perf_counter()
@@ -1841,6 +1852,7 @@ class ComputationEngine:
             "loop_window": self.config.loop_window,
             "kernels_executed": self._kernels_executed,
             "recomputes": self._recomputes,
+            "recomputes_by_reason": dict(self._remat_by_reason),
             "recompute_seconds": round(self._remat_seconds, 2),
             "recompute_kernel_seconds": round(self._remat_compute_seconds, 2),
             "expanded_loops": self.admission.expanded_loops,
