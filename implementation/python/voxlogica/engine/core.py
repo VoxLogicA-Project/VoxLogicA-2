@@ -1418,6 +1418,71 @@ class ComputationEngine:
             # thing it would spin on has happened.
             self.ready.push(waiting, priority)
 
+    def _await_missing_inputs(self, nid: NodeId, inputs=None) -> bool:
+        """Make `nid` wait for whatever inputs are not available. True if it waits.
+
+        An evicted input is, to a scheduler, an input that has not been
+        computed -- and that is a case the engine already answers with an edge.
+        Rebuilding it inline instead was the one place the engine still did
+        work off the graph, and it cost on every count: the kernel ran on the
+        EVENT LOOP, so the thing that dispatches work stopped to do one node's
+        work itself (measured: 1,433 rebuilds, 10.86 s of kernel in a 33 s run,
+        the starved tail of issue #60); and nothing in the graph said the value
+        was wanted, so every eviction path was free to take it away again.
+
+        Reload first when the store still has it: that costs no kernel and no
+        wait. Ask for all of them in one turn, which is safe now that the wait
+        count accumulates instead of being assigned -- see await_one.
+        """
+        waiting = False
+        for dep in (self.graph.deps(nid) if inputs is None else inputs):
+            if dep in self.table.values:
+                continue
+            reloaded = self.table.load(dep)
+            if reloaded is not None:
+                self._retrack_resident(dep)
+                self.graph.hold_handles(dep, reloaded)
+                continue
+            if not self._recomputable(dep):
+                # Produced by the expansion machinery, not by a kernel:
+                # `executor._compute` on a `for_loop` raises, its closure
+                # argument rematerializing to None. Scheduling it computes
+                # nothing and its consumers then read an empty table.
+                alias = self._alias.get(dep)
+                if alias is not None and alias != dep and alias in self.table.values:
+                    self._finish(dep, self.table.values[alias], persist=False)
+                    continue
+                self._await_expansion(nid, dep)
+                waiting = True
+                continue
+            if self._await_rebuild(nid, dep):
+                waiting = True
+        return waiting
+
+    def _await_rebuild(self, waiting: NodeId, dep: NodeId) -> bool:
+        """Schedule an evicted input and wait behind the edge. True if waiting.
+
+        Registered, because that is what takes references on the rebuild's own
+        inputs: without it their consumer counts are already zero, they are
+        released while the kernel reads them, and a completed CONSTANT goes
+        missing inside `executor._compute`.
+
+        Pushed only when nothing is already bringing it back -- two waiters on
+        one evicted input would otherwise have a second worker pop it while the
+        first is inside the kernel, and `begin` refuses that, correctly.
+        """
+        priority = self._priority.get(waiting, 0)
+        self._priority[dep] = max(self._priority.get(dep, 0), priority)
+        if dep not in self.graph.incomplete:
+            self.graph.register(dep)
+        if self.table.is_claimable(dep):
+            self.ready.push(dep, priority)
+        # WAIT, do not requeue: a waiter pushed straight back is dispatched
+        # before the rebuild has happened and asks again -- the queue spinning
+        # on itself. A refusal means it arrived meanwhile, so there is nothing
+        # to wait for and the caller should look again.
+        return self.graph.await_one(waiting, dep)
+
     def _grows_the_graph(self, nid: NodeId) -> bool:
         """Whether evaluating this node expands the graph instead of computing.
 
@@ -1542,8 +1607,26 @@ class ComputationEngine:
         while True:
             nid = await self.ready.pop()
             try:
-                if self._first_error is not None or nid in self.table.completed:
-                    continue  # cancelled, or a duplicate of an already-finished node
+                if self._first_error is not None:
+                    continue  # cancelled
+                if (nid in self.table.completed and nid in self.table.values
+                        and nid not in self.graph.incomplete):
+                    continue  # a duplicate of an already-finished node
+                if nid not in self.table.values and not self.table.is_claimable(nid):
+                    continue  # another worker is computing it; its waiters wait
+                # COMPUTED IS NOT RESIDENT. Conflating them is what forced
+                # rebuilds off the graph: a completed node whose value had been
+                # evicted could not be scheduled again, so whoever needed it had
+                # to rebuild it by hand, on the event loop. Reload if the store
+                # has it; otherwise fall through and compute it, which `begin`
+                # permits precisely because the value is absent.
+                if nid in self.table.completed and nid not in self.table.values:
+                    reloaded = self.table.load(nid)
+                    if reloaded is not None:
+                        self._retrack_resident(nid)
+                        self.graph.hold_handles(nid, reloaded)
+                        self._finish(nid, reloaded, persist=False)
+                        continue
                 node = self.table.nodes[nid]
                 if nid in self._alias:
                     seq_id = self._alias.pop(nid)
@@ -1615,16 +1698,10 @@ class ComputationEngine:
                         self.ready.push(nid, self._priority.get(nid, 0))
                         continue
                     self._reload_deferred.discard(nid)
-                    try:
-                        for dep in self.graph.deps(nid):
-                            if dep not in self.table.values:
-                                self._rematerialize(dep)  # deps evicted under pressure
-                    except NeedsExpansion as needed:
-                        # A dependency that GROWS THE GRAPH cannot be rebuilt by
-                        # this road. Put it back on the frontier so admission
-                        # expands it, and requeue this node behind it -- the same
-                        # defer-and-retry the reload gate above already uses.
-                        self._await_expansion(nid, needed.node_id)
+                    # An evicted input is an uncomputed input: reload it, or
+                    # schedule it and wait behind the edge. See
+                    # _await_missing_inputs for why not inline.
+                    if self._await_missing_inputs(nid):
                         continue
                     if self._await_named_deps(nid, node):
                         continue
@@ -1643,12 +1720,7 @@ class ComputationEngine:
                         # at them — the same reload-before-dispatch guarantee the
                         # single-node path gives its own deps, just over the
                         # cone's aggregate external inputs.
-                        try:
-                            for dep in cone.inputs:
-                                if dep not in self.table.values:
-                                    self._rematerialize(dep)
-                        except NeedsExpansion as needed:
-                            self._await_expansion(nid, needed.node_id)
+                        if self._await_missing_inputs(nid, cone.inputs):
                             continue
                         self._kernels_executed += len(cone)
                         # A fused cone is one kernel and several nodes, and all
