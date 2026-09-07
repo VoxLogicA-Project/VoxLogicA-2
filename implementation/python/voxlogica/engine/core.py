@@ -1598,8 +1598,17 @@ class ComputationEngine:
             try:
                 if self._first_error is not None:
                     continue  # cancelled
-                if nid in self.table.completed and nid in self.table.values:
+                if (nid in self.table.completed and nid in self.table.values
+                        and nid not in self.graph.incomplete):
                     continue  # a duplicate of an already-finished node
+                # A node RE-REGISTERED as a rebuild (see _await_rebuild) is in
+                # `graph.incomplete` again even though it is in `completed`, and
+                # skipping it here leaves it incomplete forever with its waiters
+                # pending on it. Measured as "engine finished with an unresolved
+                # goal", 3,301 stuck nodes, and only under load -- whether the
+                # value happens to be resident by the time the node is popped is
+                # a matter of timing, which is why a quiet machine hid it. Fall
+                # through: the forwarding branch below completes it properly.
                 if nid not in self.table.values and not self.table.is_claimable(nid):
                     # RUNNING (not claimable, and no value yet): another worker
                     # is computing it. Whoever waits, waits on the edge, so
