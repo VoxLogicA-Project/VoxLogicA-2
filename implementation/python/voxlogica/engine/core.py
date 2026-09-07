@@ -1473,18 +1473,13 @@ class ComputationEngine:
         """
         priority = self._priority.get(waiting, 0)
         self._priority[dep] = max(self._priority.get(dep, 0), priority)
-        # DELIBERATELY NOT RE-REGISTERED. `register` sets `pending[dep]` to the
-        # number of its own incomplete dependencies, and `await_one` then SETS
-        # that same counter to 1 -- so a node with two unmet inputs ends up
-        # waiting for one, fires on the first arrival, asks again, and loses the
-        # second wakeup if it landed in between. Chained one rebuild deep that
-        # produced 2,950 stuck nodes, each waiting on a node that was itself
-        # waiting, with an empty queue.
-        #
-        # It does not need registering. `on_complete` discards from `incomplete`
-        # (a no-op here) and then fires whoever is waiting, which is all this
-        # needs; and the node's own turn will reload or schedule ITS inputs the
-        # same way this one did.
+        # REGISTERED, because that is what takes references on the rebuild's
+        # own inputs: without it their consumer counts are already zero, they
+        # are released while the kernel is reading them, and a completed
+        # CONSTANT goes missing inside `executor._compute`. Removing this call
+        # to protect the pending counter traded one failure for the other.
+        if dep not in self.graph.incomplete:
+            self.graph.register(dep)
         # ONLY IF NOBODY IS ALREADY BRINGING IT BACK. Two waiters on one evicted
         # input both ask for it, and a second push means a second worker pops it
         # while the first is inside the kernel: `begin` refuses, correctly, with
@@ -1495,7 +1490,10 @@ class ComputationEngine:
         # WAIT, do not requeue: a waiter pushed straight back is dispatched
         # before the rebuild has happened and asks again -- the queue spinning
         # on itself, which is what `_await_expansion` learned the hard way.
-        self.graph.await_one(waiting, dep)
+        #
+        # `await_extra`, not `await_one`: the latter SETS the counter to 1 and
+        # would erase what `register` put there. See DependencyGraph.await_extra.
+        self.graph.await_extra(waiting, dep)
 
     def _grows_the_graph(self, nid: NodeId) -> bool:
         """Whether evaluating this node expands the graph instead of computing.

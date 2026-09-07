@@ -124,6 +124,20 @@ class DependencyGraph:
         self.pending[nid] = 1
         self._dependents[dep].append(nid)
 
+    def await_extra(self, nid: NodeId, dep: NodeId) -> None:
+        """Add ONE dependency to what `nid` is already waiting for.
+
+        `await_one` SETS the counter to 1, which is what loop splicing wants: a
+        loop node waits for its spliced sequence and nothing else. A rebuild
+        cannot use it. `register` has already put a count there -- the number of
+        the node's own incomplete inputs -- and overwriting it made the node
+        fire on the first arrival of several, ask again, and lose the wakeup for
+        anything that had completed in between. Measured as 2,950 nodes each
+        waiting on a node that was itself waiting, with an empty queue.
+        """
+        self.pending[nid] = self.pending.get(nid, 0) + 1
+        self._dependents[dep].append(nid)
+
     def on_complete(self, nid: NodeId, release_inputs: bool = True) -> list[NodeId]:
         """Record completion; return newly-fired dependents. O(degree).
 
