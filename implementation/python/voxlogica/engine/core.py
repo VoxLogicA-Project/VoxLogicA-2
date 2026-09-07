@@ -372,6 +372,9 @@ class ComputationEngine:
         # (`graph.release` only fires after the consumer has *finished*, i.e.
         # strictly after its read).
         self._dispatch_pins: dict[NodeId, int] = defaultdict(int)
+        #: waiter -> inputs pinned for it by `_await_rebuild`, released
+        #: on its next turn. Bounded by the number of waiting nodes.
+        self._rebuild_holds: dict[NodeId, list[NodeId]] = defaultdict(list)
 
     # ── Public API ──────────────────────────────────────────────────────────────────────────
 
@@ -1453,10 +1456,32 @@ class ComputationEngine:
         # this free to compute" -- false while running, false once resident.
         if self.table.is_claimable(dep):
             self.ready.push(dep, priority)
+        # HELD UNTIL THE WAITER HAS IT. `register` already keeps the REFCOUNT
+        # from dropping `dep` while `waiting` is incomplete, so the `release`
+        # path is covered. Pressure eviction is not: `_reclaim_memory` may
+        # spill a value that still has consumers, by design. With a store that
+        # is harmless -- the waiter reloads -- but with no durable copy
+        # (--no-cache, or a value shed under write pressure) the waiter finds
+        # it missing again, asks again, and nothing bounds the cycle. A
+        # livelock that burns CPU rather than stopping, which from outside
+        # looks like a slow run and not a stuck one.
+        #
+        # The pin is released in `_release_rebuild_holds` when the waiter
+        # actually runs, so it lasts one wait and not the run.
+        self._pin_dispatch((dep,))
+        self._rebuild_holds[waiting].append(dep)
         # WAIT, do not requeue: a waiter pushed straight back is dispatched
         # before the rebuild has happened and asks again -- the queue spinning
         # on itself, which is what `_await_expansion` learned the hard way.
         self.graph.await_one(waiting, dep)
+
+    def _release_rebuild_holds(self, waiting: NodeId) -> None:
+        """Drop the pins taken so this node's rebuilt inputs would still be
+        there when it ran. Called at the top of its next turn, whether or not
+        the inputs are still needed."""
+        held = self._rebuild_holds.pop(waiting, None)
+        if held:
+            self._unpin_dispatch(held)
 
     def _grows_the_graph(self, nid: NodeId) -> bool:
         """Whether evaluating this node expands the graph instead of computing.
@@ -1596,6 +1621,10 @@ class ComputationEngine:
         while True:
             nid = await self.ready.pop()
             try:
+                # Whatever this turn does, the inputs pinned for it by a
+                # previous turn's `_await_rebuild` are no longer its business.
+                if nid in self._rebuild_holds:
+                    self._release_rebuild_holds(nid)
                 if self._first_error is not None:
                     continue  # cancelled
                 if nid in self.table.completed and nid in self.table.values:
