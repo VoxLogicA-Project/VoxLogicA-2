@@ -201,7 +201,6 @@ class ComputationEngine:
         # rely on "a reader is a registered consumer" to know the value is
         # safe to free — it has to ask (see DependencyGraph.complete_cone).
         self.graph.pinned = lambda nid: self._dispatch_pins.get(nid, 0) > 0
-        self.graph.on_orphan = self._orphaned
         self.graph.defer = self._track_ownerless
         self.liveness = LivenessProbe(self.graph)
         # --sparse-cache: hand the same predicate the disk cache uses for
@@ -366,10 +365,6 @@ class ComputationEngine:
         # (`graph.release` only fires after the consumer has *finished*, i.e.
         # strictly after its read).
         self._dispatch_pins: dict[NodeId, int] = defaultdict(int)
-        #: Why each orphaned value was kept or dropped. The policy in
-        #: `_orphaned` is only worth having if `kept` is a large share,
-        #: and only measurement can say whether it is.
-        self._orphan_stats: dict[str, int] = defaultdict(int)
 
     # ── Public API ──────────────────────────────────────────────────────────────────────────
 
@@ -449,13 +444,6 @@ class ComputationEngine:
             # the run drained or raised -- so release inside the `finally`,
             # or a failed run leaves the hold in place for the engine's life.
             self.table.release_held()
-            # Speculation is over: no later consumer can appear once the
-            # workers are down, so the live tier ends holding goals and
-            # nothing else, which test_values_die_with_their_last_consumer
-            # pins. `evict` keeps a pending write alive, so the store still
-            # ends up with what a later RUN wants.
-            for nid in tuple(self.table.speculative):
-                self.table.evict(nid)
         self.table.flush()
         # Say what sparse caching actually bought. A flag whose effect is
         # invisible is a flag nobody can tell is working, and the number is the
@@ -971,54 +959,6 @@ class ComputationEngine:
             return
         self.table.evict(nid)
         self._evicted_early += 1
-
-    def _orphaned(self, nid: NodeId) -> None:
-        """Every consumer registered so far has run. Keep it only if free.
-
-        ONLY IF IT IS ALREADY ON DISK. That single condition is what makes
-        keeping it safe rather than a gamble:
-
-        - dropping it later costs nothing -- no write, no spill -- so it need
-          not count against the budget admission parks on, and cannot narrow
-          the window or change what runs;
-        - reusing it costs nothing either, not even a reload;
-        - and a later run still finds it, because it is already persisted.
-
-        Earlier attempts kept orphans without that condition and paid for it
-        both ways: reclaim freed them without writing, so a warm run recomputed
-        16 nodes where the cold run had computed 10; and counting them as
-        resident moved the admission window and broke the frontier bound.
-
-        The cap is a tenth of the budget, the share the buffer pool takes, for
-        the same reason: a speculative cache should not be able to grow without
-        limit just because nothing is asking for memory yet.
-        """
-        if not self.table.persisted(nid):
-            self._orphan_stats["not_durable"] += 1
-            self.table.evict(nid)       # not durable: keeping it is not free
-            return
-        size = self.table._sizeof.get(nid, 0)
-        # HALF THE BUDGET, not a tenth. A tenth was chosen by analogy with the
-        # buffer pool and measured far too small: of 11,369 orphans it kept 175
-        # and refused 7,780 for want of room -- and those 175 alone cut rebuilds
-        # from 1,363 to 599. The analogy was wrong because these bytes are not
-        # like the pool's: they are already on disk, so they are given back the
-        # instant anything wants memory, and they are excluded from the total
-        # admission parks on for exactly that reason.
-        if self.table.speculative_bytes + size > self.governor.budget // 2:
-            self._orphan_stats["over_cap"] += 1
-            self.table.evict(nid)
-            return
-        self._orphan_stats["kept"] += 1
-        self.table.speculate(nid)
-        # NOT on the free-garbage queue, though the temptation is strong: that
-        # queue means "nothing will read this", PASS 0 empties it eagerly, and
-        # doing so destroys the speculation before it can pay. Measured both
-        # ways at the same cap: on the queue, 7,957 kept and 845 rebuilds; off
-        # it, the same values kept and the rebuilds are what this policy is for.
-        # Under genuine pressure `_reclaim_memory` still takes them through the
-        # ordinary candidate path, which is where a cost-ordered decision
-        # belongs.
 
     def _track_ownerless(self, nid: NodeId) -> None:
         """Queue free garbage, keeping the byte counter the cap reads in step."""
@@ -1888,7 +1828,6 @@ class ComputationEngine:
             "loop_window": self.config.loop_window,
             "kernels_executed": self._kernels_executed,
             "recomputes": self._recomputes,
-            "orphans": dict(self._orphan_stats),
             "expanded_loops": self.admission.expanded_loops,
             "expanded_bodies": self.admission.expanded_bodies,
             "evicted_early": self._evicted_early,
