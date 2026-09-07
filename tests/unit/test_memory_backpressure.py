@@ -195,6 +195,10 @@ def _engine_stub(table: NodeTable, *, max_live_bytes: int) -> ComputationEngine:
     engine._dispatch_pins = {}
     engine._goals = set()
     engine._recomputes = 0
+    # `_rematerialize` times itself; the stub bypasses __init__, so the
+    # counters it writes into have to exist here too.
+    engine._remat_seconds = 0.0
+    engine._remat_compute_seconds = 0.0
     return engine
 
 
@@ -1063,6 +1067,10 @@ def test_recompute_scaffolding_is_freed_not_stranded() -> None:
     engine = _engine_stub(table, max_live_bytes=1)
     engine.graph = DependencyGraph(table)
     engine._recomputes = 0
+    # `_rematerialize` times itself; the stub bypasses __init__, so the
+    # counters it writes into have to exist here too.
+    engine._remat_seconds = 0.0
+    engine._remat_compute_seconds = 0.0
     for nid, operator in (("child", "vox1.dt"), ("parent", "vox1.and")):
         table.nodes[nid] = NodeSpec(kind="primitive", operator=operator)
     engine.graph.register_dependency = None  # unused here; deps come from the stub below
