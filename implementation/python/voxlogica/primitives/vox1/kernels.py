@@ -13,6 +13,9 @@ from voxlogica.analysis.type_helpers import primitive_type, overloaded_type
 
 import numpy as np
 import SimpleITK as sitk
+
+from voxlogica.analysis.type_helpers import primitive_type, simple_type
+from voxlogica.analysis.types import VoxBool, VoxFloat, VoxNumber
 try:
     from numba import get_num_threads, njit, prange
     _HAS_NUMBA = True
@@ -287,37 +290,44 @@ def _make_image_from_flat(
     image.CopyInformation(reference)
     return image
 
-@primitive_type(overloaded_type([VoxNumber(), VoxNumber()], VoxFloat()))
+
+@primitive_type(simple_type([VoxNumber(), VoxNumber()], VoxFloat()))
 def num_div(left: float, right: float) -> float:
     """Scalar floating-point division."""
     return float(left) / float(right)
 
-@primitive_type(overloaded_type([VoxNumber(), VoxNumber()], VoxFloat()))
+
+@primitive_type(simple_type([VoxNumber(), VoxNumber()], VoxFloat()))
 def num_mul(left: float, right: float) -> float:
     """Scalar floating-point multiplication."""
     return float(left) * float(right)
 
-@primitive_type(overloaded_type([VoxNumber(), VoxNumber()], VoxFloat()))
+
+@primitive_type(simple_type([VoxNumber(), VoxNumber()], VoxFloat()))
 def num_add(left: float, right: float) -> float:
     """Scalar floating-point addition."""
     return float(left) + float(right)
 
-@primitive_type(overloaded_type([VoxNumber(), VoxNumber()], VoxFloat()))
+
+@primitive_type(simple_type([VoxNumber(), VoxNumber()], VoxFloat()))
 def num_sub(left: float, right: float) -> float:
     """Scalar floating-point subtraction."""
     return float(left) - float(right)
 
 
+@primitive_type(simple_type([VoxBool(), VoxBool()], VoxBool()))
 def bool_and_scalar(left: bool, right: bool) -> bool:
     """Scalar boolean and."""
     return bool(left) and bool(right)
 
 
+@primitive_type(simple_type([VoxBool(), VoxBool()], VoxBool()))
 def bool_or_scalar(left: bool, right: bool) -> bool:
     """Scalar boolean or."""
     return bool(left) or bool(right)
 
 
+@primitive_type(simple_type([VoxBool()], VoxBool()))
 def bool_not_scalar(value: bool) -> bool:
     """Scalar boolean not."""
     return not bool(value)
@@ -330,31 +340,37 @@ def not_compat(value: object) -> object:
     return logical_not(value)
 
 
+@primitive_type(simple_type([VoxNumber(), VoxNumber()], VoxBool()))
 def num_eq(left: float, right: float) -> bool:
     """Scalar floating-point equality."""
     return float(left) == float(right)
 
 
+@primitive_type(simple_type([VoxNumber(), VoxNumber()], VoxBool()))
 def num_neq(left: float, right: float) -> bool:
     """Scalar floating-point inequality."""
     return float(left) != float(right)
 
 
+@primitive_type(simple_type([VoxNumber(), VoxNumber()], VoxBool()))
 def num_leq(left: float, right: float) -> bool:
     """Scalar floating-point less-or-equal."""
     return float(left) <= float(right)
 
 
+@primitive_type(simple_type([VoxNumber(), VoxNumber()], VoxBool()))
 def num_lt(left: float, right: float) -> bool:
     """Scalar floating-point less-than."""
     return float(left) < float(right)
 
 
+@primitive_type(simple_type([VoxNumber(), VoxNumber()], VoxBool()))
 def num_geq(left: float, right: float) -> bool:
     """Scalar floating-point greater-or-equal."""
     return float(left) >= float(right)
 
 
+@primitive_type(simple_type([VoxNumber(), VoxNumber()], VoxBool()))
 def num_gt(left: float, right: float) -> bool:
     """Scalar floating-point greater-than."""
     return float(left) > float(right)

@@ -11,6 +11,7 @@ from collections.abc import Iterable
 
 from voxlogica.execution_strategy.results import SequenceValue
 
+from voxlogica.analysis.type_helpers import index_type
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 
 
@@ -74,4 +75,5 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     kernel_name="default.index",
     shallow=True,
     description="Tuple/list index access",
+    type_rule=index_type(),
 )

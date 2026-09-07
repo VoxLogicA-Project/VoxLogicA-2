@@ -281,6 +281,19 @@ def _run_command_inner(args: argparse.Namespace, ui) -> int:
         print(render_legacy_error_block(exc.format_block(), color=color_enabled(stream=sys.stderr)), file=sys.stderr)
         return 2
 
+    if getattr(args, "typecheck", True):
+        result = _typecheck(workplan)
+        _print_type_warnings(result)
+        if not result.ok:
+            print(
+                render_legacy_error_block(
+                    StaticAnalysisError(result.diagnostics).format_block(),
+                    color=color_enabled(stream=sys.stderr),
+                ),
+                file=sys.stderr,
+            )
+            return 2
+
     _write_text(args.save_syntax, syntax.to_syntax())
     _write_text(args.save_task_graph, str(workplan))
     if args.save_task_graph_as_dot:
@@ -334,6 +347,89 @@ def _run_command_inner(args: argparse.Namespace, ui) -> int:
         print(json.dumps(summary, indent=2))
         print(f"Execution time: {execution_result.execution_time:.2f} seconds")
 
+    return 0
+
+
+def _typecheck(workplan):
+    """Run the type checker over a reduced plan as an abstract execution.
+
+    Deliberately shares nothing with the executor but the plan itself: the
+    checker walks the same DAG with types where the engine puts values, so a
+    program that is rejected here would have failed there.
+    """
+    from voxlogica.analysis.type_checker import TypeChecker
+
+    return TypeChecker(workplan.registry).check_plan(workplan.to_symbolic_plan())
+
+
+def _print_type_warnings(result) -> None:
+    """Report where the checker widened to ``any`` instead of looking further.
+
+    These never fail a run: a limit of the analysis is not a defect in the
+    program. They go to stderr so a clean stdout stays machine-readable.
+    """
+    for warning in result.warnings:
+        prefix = warning.code
+        if warning.location:
+            prefix = f"{prefix} at {warning.location}"
+        print(f"{prefix}: {warning.message}", file=sys.stderr)
+
+
+def typecheck_command(args: argparse.Namespace) -> int:
+    """Implement the ``typecheck`` subcommand: abstract execution, no run."""
+    _configure_logging(args.debug)
+    try:
+        program_text = Path(args.filename).read_text(encoding="utf-8")
+    except OSError as exc:
+        _render_exception(exc, args)
+        return 3
+    try:
+        _, workplan = build_workplan(program_text, source_name=args.filename,
+                                     for_expansion_cap=args.for_expansion_cap)
+    except ProgramParseError as exc:
+        print(render_legacy_error_block(exc.format_block(), color=color_enabled(stream=sys.stderr)), file=sys.stderr)
+        return 2
+    except StaticAnalysisError as exc:
+        print(render_legacy_error_block(exc.format_block(), color=color_enabled(stream=sys.stderr)), file=sys.stderr)
+        return 2
+
+    result = _typecheck(workplan)
+    goal_types = {name: str(vox_type) for name, vox_type in result.goal_types.items()}
+
+    if args.json:
+        print(json.dumps({
+            "ok": result.ok,
+            "goals": goal_types,
+            "diagnostics": [
+                {"code": d.code, "message": d.message, "location": d.location, "symbol": d.symbol}
+                for d in result.diagnostics
+            ],
+            "warnings": [
+                {"code": w.code, "message": w.message, "location": w.location, "symbol": w.symbol}
+                for w in result.warnings
+            ],
+        }, indent=2))
+    elif goal_types:
+        for name, rendered in goal_types.items():
+            print(f"{name}: {rendered}")
+    else:
+        # Nothing is demanded, so nothing was executed abstractly -- exactly what
+        # `run` would do with this program. Say so rather than printing nothing.
+        print("No goals to check (the program has no print or save command).")
+
+    if not args.json:
+        _print_type_warnings(result)
+
+    if not result.ok:
+        if not args.json:
+            print(
+                render_legacy_error_block(
+                    StaticAnalysisError(result.diagnostics).format_block(),
+                    color=color_enabled(stream=sys.stderr),
+                ),
+                file=sys.stderr,
+            )
+        return 2
     return 0
 
 
@@ -566,6 +662,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--save-task-graph-as-json")
     run_parser.add_argument("--save-syntax")
     run_parser.add_argument("--execute", action=argparse.BooleanOptionalAction, default=True)
+    run_parser.add_argument("--typecheck", action=argparse.BooleanOptionalAction, default=True,
+                            help="Type-check the plan before running it (default). The check is "
+                                 "gradual -- a primitive that declares no type rule constrains "
+                                 "nothing -- so it only rejects a mismatch it can prove.")
     run_parser.add_argument("--no-cache", action="store_true", help="Force recomputation without reading or writing the store")
     run_parser.add_argument(
         "--delete-cache",
@@ -670,6 +770,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Speak MCP on stdio for whichever VoxLogicA instance is running.")
     mcp_parser.add_argument("--debug", action="store_true")
     mcp_parser.set_defaults(handler=mcp_command)
+
+    typecheck_parser = subparsers.add_parser(
+        "typecheck",
+        help="Type-check a program by executing its plan abstractly, without running it.")
+    typecheck_parser.add_argument("filename", help="VoxLogicA program file")
+    typecheck_parser.add_argument("--json", action="store_true",
+                                  help="Emit goal types and diagnostics as JSON")
+    typecheck_parser.add_argument("--for-expansion-cap", type=int, default=4096, metavar="N",
+                                  help="Reducer loop-unrolling cap (matches `run`)")
+    typecheck_parser.add_argument("--debug", action="store_true")
+    typecheck_parser.add_argument("--error-details", action="store_true")
+    typecheck_parser.add_argument("--error-format", choices=["human", "json"], default="human")
+    typecheck_parser.set_defaults(handler=typecheck_command)
 
     list_parser = subparsers.add_parser("list-primitives", help="List primitive kernels.")
     list_parser.set_defaults(handler=list_primitives_command)

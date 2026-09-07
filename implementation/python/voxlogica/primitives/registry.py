@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 import importlib
 import inspect
 import logging
@@ -23,6 +23,9 @@ from voxlogica.primitives.api import (
     default_planner_factory,
     validate_spec,
 )
+
+if TYPE_CHECKING:
+    from voxlogica.analysis.types import TypeRule
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +209,7 @@ class PrimitiveRegistry:
             kernel_name=qualified_name,
             description="Legacy adapter primitive",
             is_legacy_adapter=True,
-            type_rule=type_rule,
+            type_rule=getattr(kernel, "type_rule", None),
         )
 
     def register(self, spec: PrimitiveSpec, kernel: KernelFn) -> None:
@@ -285,8 +288,12 @@ class PrimitiveRegistry:
         """Compatibility method used by existing execution code."""
         return self.load_kernel(name)
 
-    def load_type(self, name: str) -> TypeRule:
-        """Resolve a primitive name and return its type rule, if any."""
+    def load_type(self, name: str) -> "TypeRule":
+        """Resolve a primitive name and return its declared type rule.
+
+        Raises ``KeyError`` when the primitive is unknown *or* declares no rule;
+        the type checker treats both the same way, as "nothing is claimed".
+        """
         spec = self.resolve(name)
         if spec.type_rule is None:
             raise KeyError(f"Primitive {name} has no type rule")

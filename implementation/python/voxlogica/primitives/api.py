@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, TYPE_CHECKING
-from voxlogica.analysis.types import TypeRule
 
 if TYPE_CHECKING:
+    from voxlogica.analysis.types import TypeRule
     from voxlogica.lazy.ir import NodeSpec
 
 PrimitiveKind = Literal["scalar", "sequence", "tree", "dataset", "effect", "overlay"]
@@ -199,7 +199,10 @@ class PrimitiveSpec:
     #: Anything simpler -- a conditional, a projection, a dispatch on a tag --
     #: writes one function here and needs no engine change at all.
     rewriter: Any = None
-    type_rule: TypeRule | None = None
+    #: The primitive's abstract transfer function, consumed by
+    #: ``analysis.type_checker``. ``None`` means "declares nothing", which the
+    #: checker reads as ``VoxAny`` — not as an error.
+    type_rule: "TypeRule | None" = None
 
     @property
     def qualified_name(self) -> str:

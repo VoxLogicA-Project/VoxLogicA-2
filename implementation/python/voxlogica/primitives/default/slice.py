@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from voxlogica.execution_strategy.results import SequenceValue
+from voxlogica.analysis.type_helpers import slice_type
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 
 
@@ -104,4 +105,5 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     kernel_name="default.slice",
     shallow=True,
     description="Extract a sequence slice with optional bounds",
+    type_rule=slice_type(),
 )
