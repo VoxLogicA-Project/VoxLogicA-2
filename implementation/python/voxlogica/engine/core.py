@@ -1387,8 +1387,11 @@ class ComputationEngine:
                 if ref not in self.graph.incomplete:
                     self.graph.register(ref)
                 self.ready.push(ref, priority)
-                self.graph.await_one(nid, ref)
-                waiting = True
+                if self.graph.await_one(nid, ref):
+                    waiting = True
+                # else it completed between the check and here, so its value is
+                # available and this node has nothing to wait for: fall through
+                # and let the caller look again rather than park forever.
         return waiting
 
     def _await_expansion(self, waiting: NodeId, to_expand: NodeId) -> None:
@@ -1408,7 +1411,12 @@ class ComputationEngine:
         # meant it was dispatched again before the expansion had happened, raised
         # NeedsExpansion again, and was pushed again: a queue spinning on itself,
         # which is what a hang looks like from outside.
-        self.graph.await_one(waiting, to_expand)
+        if not self.graph.await_one(waiting, to_expand):
+            # Refused: it completed already, so there is nothing left to wait
+            # for and parking would be permanent. Requeue instead -- the same
+            # spin the comment above warns about cannot happen now, because the
+            # thing it would spin on has happened.
+            self.ready.push(waiting, priority)
 
     def _grows_the_graph(self, nid: NodeId) -> bool:
         """Whether evaluating this node expands the graph instead of computing.

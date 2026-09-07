@@ -101,8 +101,14 @@ class DependencyGraph:
             if dep in self.incomplete:
                 unmet += 1
                 self._dependents[dep].append(nid)
-        self.pending[nid] = unmet
-        return unmet == 0
+        # ACCUMULATED, not assigned. A node registered a second time -- which
+        # is how an evicted value is asked for again -- would otherwise have
+        # whatever it was already waiting for overwritten, and the wakeups for
+        # those inputs are then lost: they decrement a counter that no longer
+        # counts them. See DependencyGraph.await_one and engine/waiting.py,
+        # where the rule is stated and tested on its own.
+        self.pending[nid] = self.pending.get(nid, 0) + unmet
+        return self.pending[nid] == 0
 
     def complete_trivial(self, nid: NodeId) -> None:
         """Mark a never-registered node (constant/closure) completed.
@@ -114,15 +120,33 @@ class DependencyGraph:
         self.registered_total += 1
         self.table.completed.add(nid)
 
-    def await_one(self, nid: NodeId, dep: NodeId) -> None:
-        """Make an already-registered node wait for one extra dependency.
+    def await_one(self, nid: NodeId, dep: NodeId) -> bool:
+        """Make a node wait for ONE MORE dependency. False if it is already met.
 
         Used by loop splicing: the loop node (still on the frontier after its
         expansion turn) re-fires when its spliced sequence completes. The
         caller is responsible for any value hold on ``dep``.
+
+        TWO RULES, both learned by breaking them (engine/waiting.py states and
+        tests them without an engine attached):
+
+        - the count is ADDED TO, never assigned. Setting it to 1 meant a node
+          asked to wait for a second input waited for one: it fired on the
+          first arrival, asked again, and lost the wakeup for anything that had
+          completed in between. Measured as 2,950 nodes pending on inputs that
+          never arrived, an empty queue, and "engine finished with an
+          unresolved goal" -- only under load, because which input lands first
+          is timing.
+        - a dependency that has ALREADY completed cannot be waited for. Its
+          arrival has been announced and will not be announced again, so the
+          wait would never be answered. The caller is told instead, and can
+          look at the value rather than parking on it.
         """
-        self.pending[nid] = 1
+        if dep not in self.incomplete:
+            return False
+        self.pending[nid] = self.pending.get(nid, 0) + 1
         self._dependents[dep].append(nid)
+        return True
 
     def on_complete(self, nid: NodeId, release_inputs: bool = True) -> list[NodeId]:
         """Record completion; return newly-fired dependents. O(degree).
