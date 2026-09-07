@@ -294,6 +294,27 @@ def _run_command_inner(args: argparse.Namespace, ui) -> int:
             )
             return 2
 
+    if args.execute and not workplan.goals:
+        # SILENT SUCCESS IS THE FAILURE MODE HERE. Evaluation is demand-driven:
+        # only what a `print` or `save` asks for is computed. So a program with
+        # no goal builds its graph, demands nothing, and exits 0 in a fraction
+        # of a second having read no file and computed no voxel -- which reads
+        # exactly like a run that worked. Refuse instead, because nobody types
+        # `voxlogica run` to compute nothing.
+        #
+        # Gated on `args.execute` so `--no-execute` keeps working: dumping the
+        # task graph of a goal-less program is a legitimate thing to ask for,
+        # and that is the request that says so.
+        print(
+            f"{args.filename}: no goals -- this program has no `print` or `save` "
+            "command.\n"
+            "Evaluation is demand-driven, so nothing would be computed and the "
+            "run would report success having done no work.\n"
+            "Add a goal, or pass --no-execute to build the plan without running it.",
+            file=sys.stderr,
+        )
+        return 2
+
     _write_text(args.save_syntax, syntax.to_syntax())
     _write_text(args.save_task_graph, str(workplan))
     if args.save_task_graph_as_dot:
