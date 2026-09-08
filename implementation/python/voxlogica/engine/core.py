@@ -1386,9 +1386,17 @@ class ComputationEngine:
                 self._priority[ref] = max(self._priority.get(ref, 0), priority)
                 if ref not in self.graph.incomplete:
                     self.graph.register(ref)
-                self.ready.push(ref, priority)
-                self.graph.await_one(nid, ref)
-                waiting = True
+                if not self.table.is_running(ref):
+                    # `graph.incomplete` says registered-and-unfinished, which
+                    # includes in flight, so the guard above does not cover this
+                    # push. Offering a running node again is harmless now that
+                    # the worker absorbs it, but it is still a wasted pop.
+                    self.ready.push(ref, priority)
+                if self.graph.await_one(nid, ref):
+                    waiting = True
+                # else it completed between the check and here, so its value is
+                # available and this node has nothing to wait for: fall through
+                # and let the caller look again rather than park forever.
         return waiting
 
     def _await_expansion(self, waiting: NodeId, to_expand: NodeId) -> None:
@@ -1403,12 +1411,18 @@ class ComputationEngine:
         self._priority[to_expand] = max(self._priority.get(to_expand, 0), priority)
         if to_expand not in self.graph.incomplete:
             self.graph.register(to_expand)
-        self.ready.push(to_expand, priority)
+        if not self.table.is_running(to_expand):
+            self.ready.push(to_expand, priority)   # see _await_named_deps
         # WAIT for it, do not requeue behind it. Pushing the waiter straight back
         # meant it was dispatched again before the expansion had happened, raised
         # NeedsExpansion again, and was pushed again: a queue spinning on itself,
         # which is what a hang looks like from outside.
-        self.graph.await_one(waiting, to_expand)
+        if not self.graph.await_one(waiting, to_expand):
+            # Refused: it completed already, so there is nothing left to wait
+            # for and parking would be permanent. Requeue instead -- the same
+            # spin the comment above warns about cannot happen now, because the
+            # thing it would spin on has happened.
+            self.ready.push(waiting, priority)
 
     def _grows_the_graph(self, nid: NodeId) -> bool:
         """Whether evaluating this node expands the graph instead of computing.
@@ -1534,8 +1548,16 @@ class ComputationEngine:
         while True:
             nid = await self.ready.pop()
             try:
-                if self._first_error is not None or nid in self.table.completed:
-                    continue  # cancelled, or a duplicate of an already-finished node
+                if (self._first_error is not None or nid in self.table.completed
+                        or self.table.is_running(nid)):
+                    # Cancelled, or a duplicate offer. `completed` alone was not
+                    # enough: a node offered a second time WHILE A WORKER IS ON
+                    # IT reached `table.begin` and raised DoubleComputationError,
+                    # killing a run non-deterministically (always the operator
+                    # with the most instances in flight, never at --threads 1,
+                    # where the duplicate is popped only after the first
+                    # computation finished and `completed` absorbed it).
+                    continue
                 node = self.table.nodes[nid]
                 if nid in self._alias:
                     seq_id = self._alias.pop(nid)
