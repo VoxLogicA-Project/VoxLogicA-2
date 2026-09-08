@@ -52,3 +52,47 @@ That table also caught something real on `incoming`: 2 of 3 runs at ITK=24 died
 with `E_INTERNAL: engine finished with an unresolved goal` on
 `print "outlier_dice"`, and 0 of 3 at ITK=1. It did not reproduce in the clean
 run (0 of 6). Still open, still timing-dependent.
+
+## Where the missing CPU is: the tail, and it is serial
+
+The per-second samples answer the question the means could not. `m2_base_24_1.cpu`,
+one value per second:
+
+```
+1675 2248 2239 1935 2372 2346 2266 2137 2418 2336 2246 2341 2179 2063 2259 1993
+2350 2080 2241 2285 1847 | 1491 664 1028 854 1149 738 266
+```
+
+Twenty-one seconds at 1900–2420%, i.e. **19 to 24 of the 24 cores busy**, then
+seven seconds at 270–1150%. `scheduler-core` is the same shape. So nothing fails
+to fill the CPU during the parallel phase; the mean is an average of a saturated
+phase and a starved tail, and 1900% is what 2200% for 75% of the run and 900%
+for 25% of it comes to.
+
+`tail.sh` asks what the tail is made of, by changing `outlier_count` — the
+number of cases whose three planes get exported — and nothing else:
+
+| outliers exported | wall (s) | saturated phase (s) | tail (s) | CPU during the tail |
+|---|---|---|---|---|
+| 2 | 26 | 21 | 5 | 1741 → 152% |
+| 10 | 28 | 21 | 7 | 1491 → 266% |
+| 20 | 33 | 21 | 12 | 1440, 235, 321, 215, 1905, 598 … 923% |
+
+The tail is the export phase: its LENGTH scales with the number of cases
+exported, while the saturated phase stays at 21 s. But its CPU **does not scale
+with it** — twenty independent per-case chains occupy no more of the machine
+than two do, and the n=20 run spends three seconds at 215–321%, which is one to
+three cores.
+
+That rules out the obvious explanation. The tail is not short of independent
+work; it is serial work inside the engine. The export path is the one part of
+this program that expands dynamically — `equator_z` reduces
+`for zi in range(pole_low(m), pole_high(m) + 1)`, whose bounds are computed —
+and expansion runs on the event-loop thread (`engine/expander.py::_reduce_chunk`
+calls `reduce_expression` per element), which is also the only thread that can
+dispatch. Twenty cases times some forty planes each is eight hundred body
+reductions competing with dispatch for one thread.
+
+That is a hypothesis with a measurement behind it, not a conclusion: what is
+established is that the tail is serial and that its width is not the cause.
+Identifying it needs the expander instrumented, which is the next step.
