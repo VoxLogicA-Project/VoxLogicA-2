@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 import SimpleITK as sitk
 
+from voxlogica.analysis.type_helpers import signature_type
+from voxlogica.analysis.types import VoxImage, VoxNumber
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 from voxlogica.primitives.geom._draw import as_float, as_int
 
@@ -36,4 +38,5 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     planner=default_planner_factory("geom.blank", kind="scalar"),
     kernel_name="geom.blank",
     description="Create a blank 2D canvas",
+    type_rule=signature_type([VoxNumber(), VoxNumber()], VoxImage(), optional=[VoxNumber()]),
 )

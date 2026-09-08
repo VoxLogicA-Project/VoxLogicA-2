@@ -49,5 +49,9 @@ predictor = nnunet.make_predictor(model)
 test_a_seg = nnunet.predict(predictor, index(index(test_a, 1), 0))
 test_b_seg = nnunet.predict(predictor, index(index(test_b, 1), 0))
 
-print "test_a_seg" test_a_seg
-print "test_b_seg" test_b_seg
+// Written to disk rather than left as a goal value: a `print` goal is applied
+// by the strategy and its value is never handed back to the caller, and whether
+// a value is in the results store depends on how long it took to compute. A
+// file is the one answer a test can ask for without depending on either.
+print "written_a" WriteImage(test_a_seg, concat(work_root, "/test_a_seg.nii.gz"))
+print "written_b" WriteImage(test_b_seg, concat(work_root, "/test_b_seg.nii.gz"))

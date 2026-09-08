@@ -157,25 +157,11 @@ class Expander:
 
     def _closure_environment(self, closure: NodeSpec) -> Any:
         """Rebuild the closure's reduce-time environment from its captures."""
-        from voxlogica.reducer import Environment, OperationVal
-
-        env = Environment({})
-        for name, arg_id in zip(closure.attrs.get("capture_names", []), closure.args, strict=False):
-            env = env.bind(name, OperationVal(arg_id))
-        for name, spec in dict(closure.attrs.get("function_captures", {})).items():
-            env = env.bind(name, self._function_value(spec))
-        return env
+        return closure_environment(closure)
 
     def _function_value(self, spec: dict) -> Any:
         """Rebuild a captured FunctionVal from its serialized spec."""
-        from voxlogica.reducer import Environment, OperationVal, FunctionVal
-
-        env = Environment({})
-        for name, node_id in dict(spec.get("captures", {})).items():
-            env = env.bind(name, OperationVal(node_id))
-        for name, nested in dict(spec.get("functions", {})).items():
-            env = env.bind(name, self._function_value(nested))
-        return FunctionVal(env, list(spec.get("parameters", [])), parse_expression_content(str(spec["body"])))
+        return function_value(spec)
 
     @staticmethod
     def function_capture_ids(attrs: dict) -> set[NodeId]:
@@ -198,3 +184,33 @@ class Expander:
     def closure_capture_ids(node: NodeSpec) -> set[NodeId]:
         """All node ids a closure captures (pinned so expansion can re-read them)."""
         return set(node.args) | Expander.function_capture_ids(node.attrs)
+
+
+def closure_environment(closure: NodeSpec) -> Any:
+    """Rebuild a closure node's reduce-time environment from its captures.
+
+    Module level because the type checker rebuilds the same environment to
+    reduce a closure body abstractly (``analysis/type_checker.py``); both the
+    expander and the checker must reconstruct captures identically or the two
+    would disagree about what a loop body means.
+    """
+    from voxlogica.reducer import Environment, OperationVal
+
+    env = Environment({})
+    for name, arg_id in zip(closure.attrs.get("capture_names", []), closure.args, strict=False):
+        env = env.bind(name, OperationVal(arg_id))
+    for name, spec in dict(closure.attrs.get("function_captures", {})).items():
+        env = env.bind(name, function_value(spec))
+    return env
+
+
+def function_value(spec: dict) -> Any:
+    """Rebuild a captured FunctionVal from its serialized spec."""
+    from voxlogica.reducer import Environment, OperationVal, FunctionVal
+
+    env = Environment({})
+    for name, node_id in dict(spec.get("captures", {})).items():
+        env = env.bind(name, OperationVal(node_id))
+    for name, nested in dict(spec.get("functions", {})).items():
+        env = env.bind(name, function_value(nested))
+    return FunctionVal(env, list(spec.get("parameters", [])), parse_expression_content(str(spec["body"])))

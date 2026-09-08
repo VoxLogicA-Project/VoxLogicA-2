@@ -186,8 +186,16 @@ def register_specs() -> Dict[str, tuple[PrimitiveSpec, Callable]]:
     if _dynamic_specs_cache:
         return _dynamic_specs_cache
 
+    # Type rules are derived from the wrapped functions rather than declared:
+    # ~350 SWIG wrappers already carry their own signatures, and the overload
+    # sets exist only in their docstrings. See _signatures.py.
+    from voxlogica.primitives.simpleitk._signatures import derived_rules
+
+    # _source_functions_cache is filled by get_primitives(), so derive after it.
+    kernels = get_primitives()
     specs: Dict[str, tuple[PrimitiveSpec, Callable]] = {}
-    for name, kernel in get_primitives().items():
+    type_rules = derived_rules(_source_functions_cache)
+    for name, kernel in kernels.items():
         qualified = f"simpleitk.{name}"
         source_func = _source_functions_cache.get(name, kernel)
         spec = PrimitiveSpec(
@@ -199,6 +207,7 @@ def register_specs() -> Dict[str, tuple[PrimitiveSpec, Callable]]:
             planner=default_planner_factory(qualified, kind="scalar"),
             kernel_name=qualified,
             description=_primitives_list_cache.get(name, f"SimpleITK {name}"),
+            type_rule=type_rules.get(name),
         )
         specs[name] = (spec, kernel)
 

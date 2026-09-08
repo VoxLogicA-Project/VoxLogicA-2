@@ -15,10 +15,11 @@ from voxlogica.storage import NoCacheStorageBackend
 PROGRAM_PATH = Path(__file__).with_name("train_predict_circles.imgql")
 
 
-def _segmentation_array(value) -> np.ndarray:
+def _segmentation_array(path: Path) -> np.ndarray:
     import SimpleITK as sitk
 
-    return np.asarray(sitk.GetArrayFromImage(value))
+    assert path.is_file(), f"the program did not write {path}"
+    return np.asarray(sitk.GetArrayFromImage(sitk.ReadImage(str(path))))
 
 
 @pytest.mark.e2e
@@ -34,15 +35,15 @@ def test_nnunet_segments_circles_not_squares(tmp_path: Path) -> None:
         str(work_root),
     )
     syntax = parse_program_content(program_text, source_name=str(PROGRAM_PATH))
-    workplan, bindings = reduce_program_with_bindings(syntax, source_name=str(PROGRAM_PATH))
+    workplan, _bindings = reduce_program_with_bindings(syntax, source_name=str(PROGRAM_PATH))
 
     engine = ExecutionEngine(storage_backend=NoCacheStorageBackend(), no_cache=True)
     prepared = engine.compile_plan(workplan)
     result = engine.run_prepared(prepared)
     assert result.success, result.failed_operations
 
-    test_a_seg = _segmentation_array(prepared.values[bindings["test_a_seg"].operation_id])
-    test_b_seg = _segmentation_array(prepared.values[bindings["test_b_seg"].operation_id])
+    test_a_seg = _segmentation_array(work_root / "test_a_seg.nii.gz")
+    test_b_seg = _segmentation_array(work_root / "test_b_seg.nii.gz")
 
     assert float(test_a_seg[32, 40]) >= 0.5
     assert float(test_a_seg[32, 24]) < 0.5

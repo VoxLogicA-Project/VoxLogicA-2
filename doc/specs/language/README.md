@@ -6,6 +6,7 @@ Current specs:
 
 - [syntax.md](./syntax.md): concrete surface syntax accepted by the parser.
 - [semantics.md](./semantics.md): execution-facing meaning of core expression forms and operators.
+- [type-system.md](./type-system.md): static types, the rules primitives declare, and the abstract execution that checks them before a run.
 
 Rules for language specs in this directory:
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 import importlib
 import inspect
 import logging
@@ -23,6 +23,9 @@ from voxlogica.primitives.api import (
     default_planner_factory,
     validate_spec,
 )
+
+if TYPE_CHECKING:
+    from voxlogica.analysis.types import TypeRule
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,11 @@ class PrimitiveRegistry:
         self._imgql_exports_by_namespace: dict[str, tuple[Command, ...]] = {}
         self._loaded_namespaces: set[str] = set()
         self._legacy_warning_emitted: set[str] = set()
+        #: Rules derived from kernel annotations, on first ask. Deriving eagerly
+        #: would put ``inspect``/``typing`` work on every registry construction,
+        #: and a registry is built per work plan — a cost paid by every run,
+        #: including the ones that never type-check anything.
+        self._derived_type_rules: dict[str, TypeRule | None] = {}
 
         self._discover_namespaces()
         self.import_namespace("default")
@@ -206,7 +214,7 @@ class PrimitiveRegistry:
             kernel_name=qualified_name,
             description="Legacy adapter primitive",
             is_legacy_adapter=True,
-            type_rule=type_rule,
+            type_rule=getattr(kernel, "type_rule", None),
         )
 
     def register(self, spec: PrimitiveSpec, kernel: KernelFn) -> None:
@@ -285,12 +293,45 @@ class PrimitiveRegistry:
         """Compatibility method used by existing execution code."""
         return self.load_kernel(name)
 
-    def load_type(self, name: str) -> TypeRule:
-        """Resolve a primitive name and return its type rule, if any."""
+    def load_type(self, name: str) -> "TypeRule":
+        """Resolve a primitive name and return its type rule.
+
+        A primitive that declares no rule usually still annotates its kernel,
+        and those annotations describe the same contract a rule would. Deriving
+        here means one place decides what an annotation means and every
+        namespace benefits — including the legacy ``**kwargs`` adapters, whose
+        result annotation is the only part of their signature that says
+        anything.
+
+        Raises ``KeyError`` when the primitive is unknown, or when nothing —
+        neither a declaration nor an annotation — says anything about it; the
+        type checker treats both the same way, as "nothing is claimed".
+        """
         spec = self.resolve(name)
-        if spec.type_rule is None:
+        if spec.type_rule is not None:
+            return spec.type_rule
+
+        qualified = spec.qualified_name
+        if qualified not in self._derived_type_rules:
+            from voxlogica.analysis.type_helpers import rule_from_signature
+
+            kernel = self._kernels_by_name.get(spec.kernel_name)
+            self._derived_type_rules[qualified] = (
+                None if kernel is None else rule_from_signature(kernel, spec.arity)
+            )
+
+        derived = self._derived_type_rules[qualified]
+        if derived is None:
             raise KeyError(f"Primitive {name} has no type rule")
-        return spec.type_rule
+        return derived
+
+    def has_type_rule(self, name: str) -> bool:
+        """Whether anything — declared or derived — describes this primitive."""
+        try:
+            self.load_type(name)
+        except KeyError:
+            return False
+        return True
 
     def get_spec(self, name: str) -> PrimitiveSpec:
         """Resolve a primitive name and return only its symbolic specification."""

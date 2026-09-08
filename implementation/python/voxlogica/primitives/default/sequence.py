@@ -16,6 +16,7 @@ changes is that the elements are now individually resident values the governor
 can spill and evict, instead of one gathered list that could be neither.
 """
 
+from voxlogica.analysis.type_helpers import sequence_of_arguments
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 
 
@@ -39,4 +40,5 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     kernel_name="default.sequence",
     lazy=True,
     description="Construct a sequence from literal elements",
+    type_rule=sequence_of_arguments(),
 )

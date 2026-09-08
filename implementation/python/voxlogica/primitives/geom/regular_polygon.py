@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from voxlogica.analysis.type_helpers import simple_type
+from voxlogica.analysis.types import VoxImage, VoxNumber
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 from voxlogica.primitives.geom._draw import (
     as_float,
@@ -48,4 +50,5 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     planner=default_planner_factory("geom.regular_polygon", kind="scalar"),
     kernel_name="geom.regular_polygon",
     description="Draw a filled regular polygon on a 2D image",
+    type_rule=simple_type([VoxImage(), VoxNumber(), VoxNumber(), VoxNumber(), VoxNumber(), VoxNumber()], VoxImage()),
 )

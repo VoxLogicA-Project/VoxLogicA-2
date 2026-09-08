@@ -1,5 +1,7 @@
 """Primitive that constructs an integer range as a Python list."""
 
+from voxlogica.analysis.type_helpers import signature_type
+from voxlogica.analysis.types import VoxInt, VoxNumber, VoxSequence
 from voxlogica.primitives.api import AritySpec, PrimitiveSpec, default_planner_factory
 
 
@@ -39,4 +41,5 @@ PRIMITIVE_SPEC = PrimitiveSpec(
     planner=default_planner_factory("default.range", kind="sequence"),
     kernel_name="default.range",
     description="Create a sequence from integer range bounds",
+    type_rule=signature_type([VoxNumber()], VoxSequence(VoxInt()), optional=[VoxNumber()]),
 )
