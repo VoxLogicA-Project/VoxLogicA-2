@@ -391,6 +391,20 @@ class NodeTable:
         """
         return node_id not in self._running and node_id not in self.values
 
+    def is_running(self, node_id: NodeId) -> bool:
+        """Whether a worker is computing this node RIGHT NOW.
+
+        Distinct from `is_claimable`, which also refuses a node whose value is
+        already present: the scheduler has a legitimate branch for that case
+        (forward the value) and only needs to know about the in-flight one.
+
+        The ready queue is a hint and not ownership -- several paths re-offer a
+        node they cannot know is in flight, because `graph.incomplete` does not
+        distinguish "queued" from "running" -- so the worker asks this before
+        claiming, and a duplicate offer costs one wasted pop instead of the run.
+        """
+        return node_id in self._running
+
     def begin(self, node_id: NodeId) -> None:
         """Mark a node as under computation, enforcing single computation."""
         if node_id in self._running or node_id in self.values:
