@@ -180,6 +180,89 @@ MODEL_SETTINGS_RE = {
     "configuration": re.compile(r'^\s*nnunet_config\s*=\s*"([^"]+)"', re.MULTILINE),
 }
 
+#: What each experiment printed here, so a reviewer can tell "it ran" from
+#: "it ran and was right". Kept as data rather than prose so it can be replaced
+#: wholesale when we have more runs -- and so the README cannot describe an
+#: oracle the manifest does not have.
+#:
+#: `tolerance` is 0 where repetition has shown the values do not move, and
+#: non-zero only where it has shown they do. Do not soften a 0 to make a
+#: comparison pass: the whole value of the number is that it is exact.
+ORACLE: dict[str, dict] = {
+    "doc/gallery/programs/brats2020/brats-five-cases.imgql": {
+        "provenance": "Repeated runs, identical. These same values are in "
+                      "doc/gallery/programs/brats2020/README.md, measured "
+                      "independently and earlier.",
+        "tolerance": 0.0,
+        "values": [
+            ("case_002_best", "0.8959418354477335", "compact, near-median tumour"),
+            ("case_079_best", "0.0", "**expected**: smallest tumour in BraTS "
+                                     "(7,285 voxels), raises no seed. See below."),
+            ("case_089_best", "0.6518925047022751", "most multifocal case"),
+            ("case_230_best", "0.9584736373313636", "the median case"),
+            ("case_328_best", "0.9131447438872032", "largest tumour"),
+            ("average_best", "0.6838905442737151", "mean of the five"),
+        ],
+        "note": "**A Dice of exactly 0.000 on case 079 is the correct answer, not a "
+                "failure.** The method seeds on the top 5% of FLAIR intensity within "
+                "the brain and grows from there; a tumour that small raises no seed, "
+                "and there is nothing to grow. It is in the sample precisely because "
+                "a five-case example containing only cases the method handles would "
+                "be an advertisement rather than a sample. If you get 0.000 here, you "
+                "have reproduced our result.",
+    },
+    "doc/gallery/programs/simpleitk/brats-threshold-sweep-aiim.imgql": {
+        "provenance": "Six runs across two days: warm cache, empty store, and "
+                      "--no-cache at 1, 4 and 16 threads. Bit-identical every time.",
+        "tolerance": 0.0,
+        "values": [
+            ("dice_fixed_mean", "0.8069413698956456", "the single published threshold"),
+            ("dice_best_mean", "0.8513501430954795", "per-case best"),
+            ("dice_best_median", "0.8904556073150862", ""),
+            ("dice_best_stdev", "0.10944800755354497", ""),
+            ("vi_thr_mean", "0.89", ""),
+            ("vi_thr_median", "0.91", ""),
+            ("vi_thr_stdev", "0.03879772103996235", ""),
+            ("vi_thr_distribution",
+             "[[0.81,2],[0.83,1],[0.85,1],[0.86,1],[0.87,1],[0.88,1],[0.89,1],[0.9,2],[0.92,10]]",
+             "**the study's result**: nine thresholds win across twenty cases"),
+        ],
+        "note": "These are exact. The engine is deterministic in its values: the same "
+                "digits came back at every thread count and with the disk cache both "
+                "present and absent. A difference here is a real difference, not "
+                "scheduling noise -- start with your SimpleITK version.",
+    },
+    "doc/gallery/programs/nnunet/brats-threshold-sweep-nnunet.imgql": {
+        "provenance": "TWO complete runs only, and they do not agree exactly -- see "
+                      "the tolerance. Treat these as provisional.",
+        "tolerance": 1e-4,
+        "values": [
+            ("model_dice_mean", "0.8587639323175942",
+             "how close the learned reference is to the annotation. Read first"),
+            ("model_dice_median", "0.915215395099846", ""),
+            ("model_dice_stdev", "0.11011126546439001",
+             "large: on some cases the network is weak"),
+            ("dice_fixed_mean", "0.8069294344441907", ""),
+            ("dice_best_mean", "0.8501644032661126", ""),
+            ("dice_best_median", "0.9258472009239862", ""),
+            ("dice_best_stdev", "0.18727162374301137", ""),
+            ("vi_thr_mean", "0.8945000000000001", "**exact**, no tolerance"),
+            ("vi_thr_median", "0.9", "**exact**"),
+            ("vi_thr_stdev", "0.041986840043543486", "**exact**"),
+            ("vi_thr_distribution", "[[0.73,1],[0.87,2],[0.89,4],[0.9,4],[0.91,2],[0.92,7]]",
+             "**exact**, and the point of the experiment"),
+        ],
+        "note": "**The digits move; the thresholds do not.** Across our two runs six of "
+                "twenty per-case Dice values differed, by at most 2.7e-05, and every "
+                "aggregate moved in the sixth decimal or beyond. But `best_vi_thr` and "
+                "`vi_thr_distribution` came back IDENTICAL. That is the claim this "
+                "experiment makes: the case-dependence of the permissive threshold "
+                "survives replacing a human annotation with a learned one, and it "
+                "survives the network being retrained. Compare the distribution "
+                "exactly; compare the Dice values to 1e-4.",
+    },
+}
+
 #: Never copied, wherever they appear.
 EXCLUDE_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".DS_Store"}
 EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
@@ -274,6 +357,29 @@ def write_checksums(out: Path) -> int:
     return count
 
 
+def _oracle_block(spec: dict) -> str:
+    """The expected values for one experiment, or an honest note that we have none."""
+    oracle = ORACLE.get(spec["path"])
+    if not oracle:
+        return ("**Expected values:** none recorded. This program is a pass/fail check; "
+                "there is no number here to compare.\n")
+    tol = oracle["tolerance"]
+    how = ("compared **exactly** -- these do not move" if tol == 0
+           else f"compared to within **{tol:g}**, except where a row says exact")
+    rows = "\n".join(f"| `{name}` | `{value}` | {why} |"
+                      for name, value, why in oracle["values"])
+    return f"""**Expected values**, {how}.
+
+| goal | our value | |
+|---|---|---|
+{rows}
+
+*Where these come from:* {oracle['provenance']}
+
+{oracle['note']}
+"""
+
+
 def write_readme(out: Path, paths: list[tuple[str, str, str]],
                  goals: dict[str, int], with_model: bool) -> None:
     lock = out / "implementation/python/requirements.lock"
@@ -292,7 +398,8 @@ def write_readme(out: Path, paths: list[tuple[str, str, str]],
 
     index_rows = "\n".join(
         f"| {i} | {s['title']} | {_needs(s)} | {s['minutes']} | {goals[s['path']]} "
-        f"| {s['reproducibility']} |"
+        f"| {s['reproducibility']} "
+        f"| {'yes, section C' if s['path'] in ORACLE else 'none (pass/fail)'} |"
         for i, s in enumerate(PROGRAMS, 1))
 
     sections = []
@@ -340,6 +447,7 @@ find {spec['outputs'].split()[0]} -type f | wc -l     # {spec['total_files']}
 A count lower than that means some writes were never demanded, not that they
 failed -- see section D.
 
+{_oracle_block(spec)}
 """)
 
     to_edit = "\n".join(f"| `{p}` | `{n}` | `{v}` |" for p, n, v in paths) or \
@@ -366,8 +474,8 @@ failed -- see section D.
 Built from the repository by `tools/make_artifact.py`; `PROVENANCE.json` records
 the exact commit.
 
-| # | experiment | needs | time (min) | goals | reproducible |
-|---|---|---|---|---|---|
+| # | experiment | needs | time (min) | goals | reproducible | expected values |
+|---|---|---|---|---|---|---|
 {index_rows}
 
 Read sections A and B once, then run the experiments in order. **Experiment 1
@@ -592,6 +700,11 @@ def main() -> int:
         print("    skipped (pass --with-model to include ~240 MB of weights)")
 
     step(6, "Checking the programs")
+    shipped = {spec["path"] for spec in PROGRAMS}
+    orphaned = sorted(set(ORACLE) - shipped)
+    if orphaned:
+        sys.exit("ORACLE has expected values for programs this artifact does not "
+                 "ship:\n  " + "\n  ".join(orphaned))
     dud, paths, goals = check_programs(out)
     for program, name, value in paths:
         print(f"    {Path(program).name}: {name} = {value}")

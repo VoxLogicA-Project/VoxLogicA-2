@@ -26,7 +26,7 @@ lista di partenza — sono venuti fuori facendo il resto.
 |---|---|---|---|
 | **7** | **Race nello scheduler: un run muore a caso** | **bloccante** | **aperto, caratterizzato** |
 | 1 | Programmi che escono 0 senza calcolare niente | bloccante | fatto (motore) / 6 programmi da sistemare |
-| 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | **aperto** |
+| 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | **fatto per 2 e 3, provvisorio per 4** |
 | 3 | Percorsi dataset assoluti dentro i programmi | alta | mitigato nell'artifact, aperto nel repo |
 | 4 | L'artifact non si ricostruisce: niente lockfile, pin aperti | alta | fatto (`cbb8cdd`) |
 | 5 | Nessun manifest del dataset | media | **aperto** |
@@ -153,9 +153,47 @@ costerebbero, al peggio, una lettura doppia. Sollevare al secondo claim
 trasforma una race benigna nella morte dell'intero run. Va deciso se
 l'invariante è "non deve succedere" o "non deve costare".
 
-**Workaround per l'artifact:** `--threads 1`. Funziona e costa il parallelismo,
-cioè esattamente la cosa che il motore vende. Non è una risposta accettabile in
-un artifact che presenta un motore concorrente.
+**Aggiornamento del pomeriggio: `--threads 1` NON è un workaround.** Lo stesso
+programma, a un thread, è poi fallito in un terzo modo ancora:
+
+```
+[stuck] qsize=0 outstanding=11 completed=1539 stuck=4
+  5734eb47 op=default.for_loop kind=primitive pending=0 alias=False unmet=[]
+  a0551e3b op=default.median  pending=1 unmet=['5734eb47']
+  ...
+NeedsExpansion: 9434d297... must be expanded, not computed
+```
+
+Un `for_loop` con `pending=0` e `unmet=[]` — niente lo blocca, coda vuota — che
+non parte comunque, e tre consumatori che lo aspettano per sempre. Poi il motore
+prova a ricostruirlo per rematerializzazione (`core.py:1475`, ricorsivo, fino al
+`raise` a 1454) e non può: un nodo loop si espande, non si calcola.
+
+**Il pattern che emerge dai cinque run.**
+
+| run | store | thread | esito |
+|---|---|---|---|
+| 09:28 | popolato | 24 | `DoubleComputationError` |
+| 10:34 | popolato | 24 | `DoubleComputationError` ×3 |
+| 10:36 | quasi freddo | 1 | 23/23 |
+| ~13:00 | caldo | 1 | `NeedsExpansion`, 17/23 |
+| 14:2x | **vuoto** | 1 | 23/23 |
+
+**Fallisce quando lo store contiene già i valori.** Il sospetto si sposta dal
+solo scheduler al percorso sfratto/rematerializzazione, che è dove i due errori
+si incontrano.
+
+**Ipotesi, dichiarata come tale.** Sistemando il bug di `--no-cache` il
+2026-09-07 avevo scritto che restava *"una race più stretta in `release` —
+store presente ma scrittura non ancora atterrata — mai osservata"*. Questa ne
+ha la forma esatta: il valore di un nodo loop viene sfrattato perché lo si crede
+durevole, la scrittura non è atterrata, e la rematerializzazione non lo può
+ricreare perché i loop non si ricalcolano. Un solo run con store vuoto non è una
+dimostrazione, ma è la traccia più stretta che abbiamo, e va data a Vincenzo
+insieme al resto.
+
+**Nessun workaround noto.** Né `--threads 1` né uno store vuoto sono garanzie:
+sono solo le condizioni in cui finora è passato.
 
 **Assegnato a Vincenzo** (motore). Serve un test che fallisca in modo
 affidabile prima di qualunque patch.
@@ -272,23 +310,70 @@ calcolare), la frase era imprecisa e sta anche nel commit `81f001e`.
 
 ---
 
-## 2. Nessun oracolo — BLOCCANTE
+## 2. Oracolo — FATTO per gli esperimenti 2 e 3, PROVVISORIO per il 4
 
-**Cosa vede il revisore.** Ottiene dei numeri. Non ha nulla con cui
-confrontarli, se non leggere il PDF del paper e confrontare a occhio.
+**Fatto il 2026-09-08.** I valori attesi vivono in `ORACLE`, dentro
+`tools/make_artifact.py`, e il README del revisore li rende in una tabella per
+esperimento. Sono dati, non prosa, così si sostituiscono in blocco quando
+avremo più run; e lo script si rifiuta di costruire se `ORACLE` contiene un
+programma che l'artifact non spedisce.
 
-**Estensione.** `git grep` per i nomi delle metriche (`dice_best_mean`,
-`vi_thr_median`) nei file tracciati trova solo `doc/dev/replicating-tacas19-and-aiim.md`,
-che dice **quali** numeri guardare ma non **quanto** devono valere. L'unico
-documento con valori attesi è `doc/user/brats-tests-howto.md`, che è
-gitignorato (`.gitignore:65`) e resta tale: contiene troppi riferimenti a
-username e a questa macchina.
+**Esperimento 2** (cinque casi) — tolleranza **0**.
 
-**Fix.** Un file tracciato con valori attesi e tolleranze, più uno script
-`verify.sh` che confronta e ritorna diverso da zero se non tornano.
+| goal | valore |
+|---|---|
+| `case_002_best` | 0,8959418354477335 |
+| `case_079_best` | **0,0** |
+| `case_089_best` | 0,6518925047022751 |
+| `case_230_best` | 0,9584736373313636 |
+| `case_328_best` | 0,9131447438872032 |
+| `average_best` | 0,6838905442737151 |
 
-**Output atteso dopo il fix.** `./verify.sh` stampa una tabella
-atteso/ottenuto/delta ed esce 0 solo se tutto sta nelle tolleranze.
+Scoperta utile: **l'oracolo esisteva già** e non lo sapevamo.
+`doc/gallery/programs/brats2020/README.md` ha una tabella "What it prints" con
+gli stessi valori al terzo decimale, misurati indipendentemente e prima. Girano
+uguali sullo stack pinnato. Lo zero sul caso 079 è la risposta giusta, non un
+fallimento — il tumore più piccolo del dataset non alza nessun seme — ed è nel
+campione apposta. Nel README dell'artifact quello zero ha la sua spiegazione
+accanto, altrimenti un revisore lo legge come un errore.
+
+**Esperimento 3** (AIIM) — tolleranza **0**, sei run su due giorni: cache calda,
+store vuoto, `--no-cache` a 1, 4 e 16 thread. Bit-identici ogni volta.
+
+| goal | valore |
+|---|---|
+| `dice_fixed_mean` | 0,8069413698956456 |
+| `dice_best_mean` | 0,8513501430954795 |
+| `dice_best_median` | 0,8904556073150862 |
+| `dice_best_stdev` | 0,10944800755354497 |
+| `vi_thr_median` | 0,91 |
+| `vi_thr_distribution` | `[[0.81,2],[0.83,1],[0.85,1],[0.86,1],[0.87,1],[0.88,1],[0.89,1],[0.9,2],[0.92,10]]` |
+
+**Esperimento 4** (nnU-Net) — **provvisorio**, tolleranza **10⁻⁴** sulle Dice,
+**esatta** su soglie e distribuzione. Due soli run completi, e non coincidono.
+
+Misurato fra i due:
+
+| | |
+|---|---|
+| `best_dice` cambiati | 6 su 20 |
+| scarto massimo | **2,7·10⁻⁵** |
+| aggregati (`model_dice_mean`, `dice_best_*`) | si muovono dalla sesta cifra |
+| `best_vi_thr`, `vi_thr_distribution` | **identiche** |
+
+Questo è il numero che serviva. Il README prometteva al revisore che *"quello
+che deve riprodursi è la forma del risultato, non le cifre"*: adesso non è più
+una dichiarazione di principio, è misurata, con un ordine di grandezza. La
+tolleranza 10⁻⁴ copre con margine il 2,7·10⁻⁵ osservato.
+
+**Perché resta provvisorio.** Due run non sono una distribuzione. E soprattutto
+l'esperimento 4 oggi gira una volta su tre — vedi il punto 7 e il bug di
+rematerializzazione qui sotto. Un oracolo su un esperimento che fallisce due
+volte su tre è un aneddoto con delle cifre. Va rifatto quando il motore è
+affidabile.
+
+**Cosa manca ancora.** Un `verify.sh` che confronti e ritorni diverso da zero.
+Oggi il revisore ha i numeri e li guarda; non ha un comando che glielo dica.
 
 ---
 
