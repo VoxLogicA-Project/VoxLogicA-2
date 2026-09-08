@@ -9,6 +9,12 @@ Current runtime architecture:
 - Modular results database API (`~/.voxlogica/results.db` by default)
 - Interactive REPL session runtime (CLI today, GUI-ready integration point)
 
+## Learning the language
+
+Start at [**doc/user/README.md**](doc/user/README.md), which says which document
+answers which question about writing ImgQL: the narrative guide, the runnable
+gallery, and the syntax/semantics/type specs.
+
 ## Examples
 
 Runnable, commented programs live in the [example gallery](doc/gallery/README.md),
