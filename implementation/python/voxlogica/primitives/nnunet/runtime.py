@@ -223,6 +223,29 @@ def postprocessing_pkl(trainer_path: Path, fold: int) -> Path:
     return trainer_path / f"fold_{fold}" / "validation" / "postprocessing.pkl"
 
 
+def _plain(value: Any) -> Any:
+    """Strip numpy out of a value that has to survive as JSON.
+
+    The model handle is serialized into the run state and content-addressed by
+    the engine, so everything on it must be a plain Python value. nnU-Net's
+    postprocessing kwargs carry label ids as numpy integers, and np.int64 is
+    not JSON -- which ended a completed 1000-epoch training with "Object of
+    type int64 is not JSON serializable", AFTER the weights were on disk and
+    the validation Dice was computed. The whole run failed on the last line of
+    bookkeeping; converting here is what keeps that impossible.
+    """
+    if isinstance(value, dict):
+        return {_plain(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_plain(v) for v in value]
+    # numpy scalar: 0-d and knows how to become a Python number.
+    if getattr(value, "ndim", None) == 0 and hasattr(value, "item"):
+        return value.item()
+    if hasattr(value, "tolist"):  # ndarray
+        return value.tolist()
+    return value
+
+
 def _decision_from_pickle(path: Path) -> dict[str, Any] | None:
     """Read the decision nnU-Net left on disk, as values a model can carry.
 
@@ -241,7 +264,7 @@ def _decision_from_pickle(path: Path) -> dict[str, Any] | None:
         return None
     return {
         "operations": [getattr(fn, "__name__", str(fn)) for fn in pp_fns],
-        "kwargs": [dict(kw) for kw in pp_kwargs],
+        "kwargs": [_plain(dict(kw)) for kw in pp_kwargs],
     }
 
 
