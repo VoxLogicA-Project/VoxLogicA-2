@@ -55,6 +55,10 @@ ENGINE: list[str] = [
     # a rebuild months from now resolve the stack these numbers came from.
     "implementation/python/requirements.lock",
     "implementation/python/requirements-test.lock",
+    # The dataset contract. The programs index cases by POSITION, so which copy
+    # of BraTS a reviewer has is part of what the numbers mean.
+    "tools/dataset_manifest.py",
+    "tools/brats2020-manifest.json",
 ]
 
 #: The experiments, in the order the README presents them. `needs_dataset`
@@ -535,6 +539,32 @@ ships them; `doc/gallery/programs/brats2020/data/README.md` names the five.
 
 **A wrong path does not pass silently.** `dir` fails when its root does not
 exist, and the engine refuses a program whose goals would compute nothing.
+
+### Check that your BraTS is the same BraTS
+
+```bash
+python3 tools/dataset_manifest.py /path/to/MICCAI_BraTS2020_TrainingData
+```
+
+Expected: `OK: this dataset matches the one the expected values were measured
+on.` and exit status 0. It takes a few seconds; `--quick` skips the hashing and
+compares sizes only.
+
+**Why this is not ceremony.** The experiments select cases by POSITION --
+`subsequence(dir(...), 0, case_count)` in the AIIM sweep, `train_start` and
+`eval_start` in the nnU-Net one. One case missing, one extra, or a stray file
+matching the glob, and every position from there on names a different case. The
+run still succeeds. The Dice values are still plausible. They are answers to a
+different question, and nothing in the output says so.
+
+So the check does not just count files: it compares the ORDERED listing and, on
+a mismatch, names the index where the two diverge. Everything from that index
+onwards is reading data we did not measure.
+
+One trap it also catches: if you assemble the dataset out of symlinks, `dir`
+orders the files by the path each symlink RESOLVES TO, not by the names in your
+directory. The order you see is then not the order the programs get. Link whole
+case directories from a single place, or copy.
 
 ## C. Run the experiments
 

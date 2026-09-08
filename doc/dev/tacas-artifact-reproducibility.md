@@ -30,7 +30,7 @@ lista di partenza — sono venuti fuori facendo il resto.
 | 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | **fatto per 2 e 3, provvisorio per 4** |
 | 3 | Percorsi dataset assoluti dentro i programmi | alta | mitigato nell'artifact, aperto nel repo |
 | 4 | L'artifact non si ricostruisce: niente lockfile, pin aperti | alta | fatto (`cbb8cdd`) |
-| 5 | Nessun manifest del dataset | media | **aperto** |
+| 5 | Nessun manifest del dataset | media | **fatto** |
 | 6 | Test il cui esito dipende dallo spazio libero in `/tmp` | alta | fatto (`ad55306`) |
 | **8** | **Lavoro costoso perso per un errore a valle** | media | causa immediata fatta (`b0b68a1`), architettura aperta |
 | — | Determinismo dei valori | — | verificato, con una riserva (vedi 7) |
@@ -464,22 +464,41 @@ quale riga controllare a fine bootstrap.
 
 ---
 
-## 5. Nessun manifest del dataset — MEDIA
+## 5. Manifest del dataset — FATTO il 2026-09-08
 
-**Cosa vede il revisore.** Si è procurato "BraTS 2020". Non ha modo di sapere
-se ha *lo stesso* BraTS 2020 che abbiamo usato noi, con gli stessi casi nello
-stesso ordine.
+`tools/dataset_manifest.py` più `tools/brats2020-manifest.json` (404 KB, 1845
+file, sha256 per ciascuno). Entrambi viaggiano nell'artifact, e il README dice
+al revisore di lanciarlo prima di tutto il resto.
 
-**Perché conta qui più del solito.** I programmi selezionano i casi per
-*posizione*: `subsequence(dir(...), 0, case_count)` nell'AIIM, `train_start` /
-`eval_start` nel programma nnU-Net. L'ordine viene da `sorted()` sui nomi file.
-Un caso in più, un caso in meno, o una directory annidata diversamente, e il
-revisore sta valutando un insieme di casi diverso ottenendo numeri diversi,
-senza nessun segnale che qualcosa non torni.
+```
+python3 tools/dataset_manifest.py /path/to/MICCAI_BraTS2020_TrainingData
+```
 
-**Fix.** Un manifest tracciato con: numero di casi atteso, nomi dei casi
-attesi nell'ordine in cui `dir` li restituisce, e un hash per file. Più un
-controllo che lo confronti prima di partire.
+**Non conta i file: confronta l'ordine.** I programmi selezionano per posizione,
+quindi il contratto è la sequenza, non la cardinalità. Su un disallineamento lo
+strumento nomina **l'indice** in cui le due liste divergono, perché da lì in poi
+ogni posizione indica un caso diverso.
+
+Verificato in entrambe le direzioni:
+
+| prova | esito |
+|---|---|
+| dataset vero, 369 casi | `OK`, exit 0, 1845 file per dimensione e sha256, ~3 s |
+| copia con il caso 005 rimosso | `FAILED`, exit 1, *"diverges at index 4"* |
+
+L'indice 4 è esattamente il caso tolto. Un AIIM su quella copia sarebbe girato
+senza errori restituendo Dice plausibili e non confrontabili.
+
+**Una trappola trovata scrivendolo, che riguarda il motore e non lo strumento.**
+`dir` con `full_paths` costruisce `str(entry.resolve())` e ordina **quello**
+(`primitives/default/dir.py`). Se il dataset è una fattoria di symlink, l'ordine
+segue i **target**, non i nomi sotto la root: il revisore vede un ordine e i
+programmi ne ricevono un altro, senza nessun segnale. Lo strumento lo rileva e
+lo dice; il README dell'artifact istruisce a collegare intere directory di caso
+da un unico posto, o a copiare.
+
+Nota di merito al dataset che abbiamo: i glob sono puliti, 369 file per
+modalità, nessuna sottodirectory che inquini la ricerca ricorsiva.
 
 ---
 
