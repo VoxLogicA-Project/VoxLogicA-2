@@ -4,7 +4,10 @@ VoxLogicA is a symbolic, declarative computation language for building and execu
 
 Current runtime architecture:
 - Symbolic reducer (`AST -> SymbolicPlan`)
-- Dask execution runtime (single supported strategy)
+- Two named execution strategies, selected with `--engine <name>`: `engine`
+  (content-addressed scheduling engine with handle-based arguments, the
+  default) and `lazy` (the earlier demand-driven strategy, kept for
+  comparison — see issue #53)
 - Stable primitive contract (`PrimitiveSpec`)
 - Modular results database API (`~/.voxlogica/results.db` by default)
 - Interactive REPL session runtime (CLI today, GUI-ready integration point)
@@ -154,7 +157,7 @@ Python version policy:
 ## Interactive REPL
 
 ```bash
-./voxlogica repl --execution-strategy dask
+./voxlogica repl
 # optional legacy mode:
 ./voxlogica repl --legacy
 ```
@@ -202,7 +205,7 @@ Why this is lazy/symbolic:
 ### Explore interactively
 
 ```bash
-./voxlogica repl --execution-strategy dask
+./voxlogica repl
 # then in the REPL:
 :load tests/threshold_sweep.imgql
 thresholds

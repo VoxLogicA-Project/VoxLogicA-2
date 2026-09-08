@@ -106,8 +106,10 @@ class ExecutionEngine:
 
         ``strategy`` names the runtime -- see
         ``execution_strategy.registry.available()`` for the choices, currently
-        ``"engine"`` (the default), ``"lazy"`` and ``"sequential"``. An unknown
-        name raises rather than quietly selecting the default.
+        ``"engine"`` (the default) and ``"lazy"``. An unknown name raises rather
+        than quietly selecting the default -- including ``"sequential"``, which
+        exists as a module but is deliberately not registered (see the comment
+        in ``registry._ensure_registered``).
 
         ``use_engine`` is the older boolean spelling, kept for callers that
         still pass it: ``False`` means ``strategy="lazy"``. An explicit

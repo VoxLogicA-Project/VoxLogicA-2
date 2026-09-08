@@ -57,7 +57,6 @@ subexpression across the whole sweep; a Python loop cannot.
 | [manual.md](manual.md) | The workspace application — cards, views, what a run looks like while it runs. This is the **interface** manual, not the language one |
 | [serve-studio.md](serve-studio.md) | Serving the UI without opening a window |
 | [api-usage.md](api-usage.md) | Driving VoxLogicA from Python |
-| [dask-dashboard.md](dask-dashboard.md) | The Dask dashboard, for the Dask strategy |
 | [vscode-mcp-ui-inspector.md](vscode-mcp-ui-inspector.md) | The MCP server that inspects and drives the running UI |
 
 ## Conventions for programs in this repository
