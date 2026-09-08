@@ -18,15 +18,183 @@ tecnicamente vero.
 
 ## Riepilogo
 
+Aggiornato 2026-09-08. La numerazione è quella originale, così i riferimenti
+nei commit continuano a valere; i punti 7 e 8 sono nuovi e non erano nella
+lista di partenza — sono venuti fuori facendo il resto.
+
 | # | Criticità | Gravità | Stato |
 |---|---|---|---|
-| 1 | Programmi che escono 0 senza calcolare niente | **bloccante** | **fatto** (motore) / da fare (i 6 programmi) |
-| 2 | Nessun oracolo: nessun valore atteso tracciato | **bloccante** | da fare |
-| 3 | Percorsi dataset assoluti dentro i programmi | alta | da fare |
-| 4 | L'artifact non si ricostruisce: niente lockfile, pin aperti | alta | **fatto** (`cbb8cdd`) |
-| 5 | Nessun manifest del dataset | media | da fare |
-| 6 | Test il cui esito dipende dallo spazio libero in `/tmp` | **alta** | **fatto**, branch `fix/disk-reserve-collapse` |
-| — | Determinismo del motore parallelo | — | **verificato, assolto** |
+| **7** | **Race nello scheduler: un run muore a caso** | **bloccante** | **aperto, caratterizzato** |
+| 1 | Programmi che escono 0 senza calcolare niente | bloccante | fatto (motore) / 6 programmi da sistemare |
+| 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | **aperto** |
+| 3 | Percorsi dataset assoluti dentro i programmi | alta | mitigato nell'artifact, aperto nel repo |
+| 4 | L'artifact non si ricostruisce: niente lockfile, pin aperti | alta | fatto (`cbb8cdd`) |
+| 5 | Nessun manifest del dataset | media | **aperto** |
+| 6 | Test il cui esito dipende dallo spazio libero in `/tmp` | alta | fatto (`ad55306`) |
+| **8** | **Lavoro costoso perso per un errore a valle** | media | causa immediata fatta (`b0b68a1`), architettura aperta |
+| — | Determinismo dei valori | — | verificato, con una riserva (vedi 7) |
+
+I tre aperti sono di natura diversa. Il **7** è un bug del motore e va a
+Vincenzo. Il **2** e il **5** non sono patch: sono decisioni su quali numeri
+dichiarare e quale dataset dichiarare, e le prendi tu.
+
+## Cosa esiste adesso che prima non c'era
+
+`tools/make_artifact.py` (`596a7a4`, `6a0459a`) costruisce la cartella
+dell'artifact dal checkout, in un secondo, tutte le volte che serve. Quattro
+liste in cima — `ENGINE`, `PROGRAMS`, `MODEL`, `EXCLUDE` — sono l'intera
+configurazione; il README del revisore è generato da quelle e dai file
+copiati, quindi non può divergere.
+
+I quattro esperimenti spediti:
+
+| # | esperimento | serve | tempo | goal | riproducibile |
+|---|---|---|---|---|---|
+| 1 | smoke test (cerchi sintetici) | niente | 15-25 min | 1 | pass/fail |
+| 2 | ricetta TACAS, cinque casi | BraTS2020 | 2-5 min | 15 | bit-identical |
+| 3 | sweep AIIM | BraTS2020 | 60-170 min | 16 | bit-identical |
+| 4 | sweep AIIM su riferimento appreso | BraTS2020 + GPU | ore | 23 | no, allena una rete |
+
+Lo script rifiuta di spedire dati BraTS, rifiuta pesi che nessun programma
+spedito può usare, e si ferma se un programma non ha goal.
+
+## Il modello preaddestrato, e cosa costa davvero
+
+Allenato il 2026-09-07: 1000 epoche, 50 casi, `3d_fullres`, ~13 ore.
+Validation Dice **0,8856**, che il postprocessing porta a **0,8865**. I pesi
+stanno in `/home/laura/nnunet-brats-work`, che è dove `MODEL` li cerca.
+
+**I pesi risparmiano il training, non il dataset.** In
+`runtime.py::train_model`, `nnUNetv2_plan_and_preprocess` gira
+incondizionatamente *prima* del controllo per-fold "checkpoint già esistente",
+quindi i casi grezzi vengono comunque materializzati e preprocessati. Senza
+BraTS l'esperimento 4 non parte, pesi o non pesi. È scritto nel README del
+revisore invece di essere lasciato intendere.
+
+## Il risultato dell'esperimento 4, primo run completo
+
+Fuori campione, casi 50-69, che la rete non ha mai visto:
+
+| metrica | valore |
+|---|---|
+| `model_dice_mean` | 0,8588 |
+| `model_dice_median` | 0,9152 |
+| `model_dice_stdev` | 0,1101 |
+| `dice_fixed_mean` (soglia pubblicata) | 0,8069 |
+| `dice_best_mean` | 0,8502 |
+| `vi_thr_median` | 0,90 |
+
+```
+vi_thr_distribution = [[0.73,1], [0.87,2], [0.89,4], [0.90,4], [0.91,2], [0.92,7]]
+```
+
+**La dispersione sopravvive.** Sei soglie diverse vincono su venti casi. La
+case-dependence di `viThr` non era un artefatto dell'annotatore: resta quando
+il riferimento diventa la predizione di una rete.
+
+Da leggere con la riserva che i numeri stessi impongono: `model_dice_stdev` è
+0,11 con un caso a 0,54, quindi su alcuni casi il riferimento appreso è debole
+e lì la soglia "migliore" concorda con un modello mediocre. Mediana 0,915
+contro media 0,859 dice esattamente questo.
+
+---
+
+---
+
+## 7. Race nello scheduler: un run muore a caso — BLOCCANTE
+
+Scoperta il 2026-09-08, non era nella lista di partenza. È adesso la cosa più
+grave che abbiamo.
+
+**Cosa vede il revisore.** Lancia un esperimento. Dopo un minuto, o dopo un'ora,
+muore con un errore interno. Rilancia, e muore in un punto diverso. Oppure
+funziona. Non c'è niente che possa fare al riguardo.
+
+```
+DoubleComputationError: node <id> already running
+NodeExecutionError: simpleitk.ReadImage failed while evaluating node <id>
+```
+
+**Non è una condizione esterna: è il motore che dichiara sé stesso in errore.**
+Il commento accanto alla chiamata che solleva (`core.py:1718`, dentro `_worker`)
+dice `# enforces the no-double-computation invariant`, e il docstring di
+`node_table.py:23` dice *"already running or materialized is a scheduler bug,
+so `begin` raises"*.
+
+**Riproduzione**, ~1 minuto perché il training viene saltato:
+
+```
+./voxlogica run --no-serve doc/gallery/programs/nnunet/brats-threshold-sweep-nnunet.imgql
+```
+
+| thread | esito | log |
+|---|---|---|
+| 24 (default) | fallisce, nodo `65df2c47d30d` | `nnunet-sweep-20260908-0928.log` |
+| 24 (default) | fallisce, nodo `ee5f76f1cf97`, **tre volte** | `nnunet-sweep-20260908-1034.log` |
+| **1** | **passa**, 23/23 goal, 76,63 s | `nnunet-sweep-t1-1036.log` |
+
+Tre fatti che insieme dicono cos'è:
+
+1. **Il nodo cambia a ogni run.** Se fosse un difetto strutturale del grafo — un
+   nodo raggiungibile due volte per costruzione — sarebbe sempre lo stesso. Che
+   cambi dice che la vittima è casuale.
+2. **È sempre `simpleitk.ReadImage`**, il nodo con più istanze concorrenti in
+   volo: 20 casi per 4 modalità.
+3. **A un thread sparisce.**
+
+**Perché è peggio di come suona.** `ReadImage` è un nodo ordinario in un `for`
+su venti casi. Non c'è niente di specifico di nnU-Net. Lo sweep AIIM ha lo
+stesso tipo di nodo sulla stessa scala e in decine di run non ha mai fallito:
+**capire perché no è probabilmente la traccia migliore che abbiamo**, non un
+motivo per stare tranquilli.
+
+C'è anche una domanda di progetto sotto: due worker sullo stesso `ReadImage`
+costerebbero, al peggio, una lettura doppia. Sollevare al secondo claim
+trasforma una race benigna nella morte dell'intero run. Va deciso se
+l'invariante è "non deve succedere" o "non deve costare".
+
+**Workaround per l'artifact:** `--threads 1`. Funziona e costa il parallelismo,
+cioè esattamente la cosa che il motore vende. Non è una risposta accettabile in
+un artifact che presenta un motore concorrente.
+
+**Assegnato a Vincenzo** (motore). Serve un test che fallisca in modo
+affidabile prima di qualunque patch.
+
+---
+
+## 8. Lavoro costoso perso per un errore a valle — MEDIA
+
+**Cosa è successo.** Il 2026-09-07 un training di 1000 epoche è arrivato in
+fondo — tredici ore, Dice di validazione 0,8856, `checkpoint_final.pth`
+scritto, postprocessing determinato — e poi il run è morto:
+
+```
+ERROR: nnUNet training failed: Object of type int64 is not JSON serializable
+```
+
+Tutto ciò che costava era riuscito. È fallita l'ultima riga di contabilità.
+
+**Causa immediata, risolta** (`b0b68a1`). `_decision_from_pickle` restituiva i
+kwargs del postprocessing come `dict(kw)`, e lì dentro gli id delle label sono
+`numpy.int64`; finivano in `materialize.py:48` `json.dumps`. Corretto con
+`_plain`, che converte al confine dove il docstring già dichiarava l'invariante
+— *"values a model can carry"* — più `tests/unit/test_nnunet_decision_is_json.py`.
+
+**Quello che resta è architetturale.** `nnunet.train_internal` è un kernel solo:
+training, postprocessing e scrittura dello stato falliscono insieme. Qui le
+tredici ore si sono salvate **solo perché nnU-Net tiene i suoi checkpoint su
+disco per conto proprio** — per fortuna, non per progetto. Se il valore costoso
+fosse stato in RAM sarebbe sparito.
+
+Domande aperte, per Vincenzo: se un kernel di lunga durata debba poter rendere
+durevole un risultato prima di passi che possono fallire; e se il confine del
+nodo sia nel punto giusto, cioè se training, postprocessing e stato debbano
+essere tre nodi invece di uno.
+
+**Terza cosa, della stessa famiglia:** il motore fa content-addressing di questi
+valori, quindi un `numpy.int64` non è solo non-JSON — non è nemmeno una chiave
+stabile fra versioni di numpy. Serve un audit degli altri confini dove un valore
+di libreria esterna finisce su un handle o nello store.
 
 ---
 
@@ -89,9 +257,18 @@ questa classe; va comunque riparato o ritirato.
 il grafo di `tropical_slices.imgql` è **vuoto** (0 righe). Non è che calcolava
 poco: non c'era proprio niente da calcolare.
 
-**Resta da fare.** Decidere per ognuno dei sei: dargli un goal, o ritirarlo
-dalla gallery. Tre sono citati in `doc/gallery/README.md` e
+**Deciso il 2026-09-07: per ora i sei si ignorano.** Nessuno dei tre programmi
+BraTS spediti nell'artifact è fra questi, e la guardia nel motore fa sì che non
+possano più fingere di aver funzionato. Restano da sistemare o ritirare quando
+si rimette mano alla gallery; tre sono citati in `doc/gallery/README.md` e
 `doc/user/language-gallery.md`, quindi ritirarli tocca anche quelle tabelle.
+
+Correzione di un'affermazione precedente: avevo scritto che
+`--no-execute --save-task-graph` produce un grafo *vuoto* per
+`tropical_slices.imgql`. Il file non è vuoto — contiene una riga di riepilogo,
+`WorkPlan(nodes=4, goals=0, imports=[...])`. Il mio `wc -l` diceva 0 solo perché
+manca l'a-capo finale. La sostanza regge (4 nodi, zero goal, niente da
+calcolare), la frase era imprecisa e sta anche nel commit `81f001e`.
 
 ---
 
@@ -115,7 +292,7 @@ atteso/ottenuto/delta ed esce 0 solo se tutto sta nelle tolleranze.
 
 ---
 
-## 3. Percorsi dataset assoluti dentro i programmi — ALTA
+## 3. Percorsi dataset assoluti — MITIGATO NELL'ARTIFACT, APERTO NEL REPO
 
 **Cosa vede il revisore.** Ha scaricato BraTS dove voleva lui. Deve aprire e
 modificare N file sorgente prima di poter lanciare qualcosa.
@@ -151,6 +328,24 @@ che lo verifichi né che lo dica al revisore al momento giusto.
 
 **Fix.** Il percorso viene da una variabile d'ambiente o da un file di
 configurazione, letto una volta sola, non riscritto in ogni programma.
+
+**Mitigato il 2026-09-08, per l'artifact.** Il README generato elenca in una
+tabella ogni percorso da cambiare, letto dai file **copiati** invece che scritto
+a mano. Il revisore passa da "cercare in 11 file" a "cambiare 4 righe che ti
+abbiamo elencato":
+
+```
+brats-five-cases.imgql:            dataset_root = ./doc/gallery/programs/brats2020/data
+brats-threshold-sweep-aiim.imgql:  dataset_root = /home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData
+brats-threshold-sweep-nnunet.imgql: dataset_root = /home/VoxLogicA/datasets/...
+brats-threshold-sweep-nnunet.imgql: work_root    = /home/laura/nnunet-brats-work
+```
+
+E se sbaglia, `dir` fallisce invece di restituire una lista vuota.
+
+**Quello che resta aperto.** La stringa specifica di questa macchina è ancora
+dentro il programma e va editata a mano; e nel repo il problema è intatto —
+l'artifact non è il repo. Da **alta** scende a **bassa**, non a chiuso.
 
 ---
 
@@ -322,7 +517,7 @@ questa classe di problemi.
 
 ---
 
-## Determinismo — VERIFICATO, ASSOLTO
+## Determinismo dei valori — VERIFICATO, con una riserva
 
 Non è una criticità: è stato controllato ed è a posto. Resta qui perché è la
 prima cosa che un revisore chiederebbe di un motore concorrente, free-threaded,
@@ -346,8 +541,14 @@ con `--no-cache` (nessun livello su disco, quindi ogni valore ricalcolato).
 Bit per bit, su tutti e 16 i goal, comprese le liste `best_dice` a 16 cifre
 decimali. Il numero di thread cambia solo il tempo.
 
-**Cosa non copre.** Una macchina sola (stessa CPU, stesso SimpleITK — vedi
-punto 4); un programma solo; e nulla sul percorso GPU. Il programma nnU-Net
+**La riserva, aggiunta il 2026-09-08.** Questo dice che i valori NON dipendono
+dal numero di thread. Non dice che il run arrivi in fondo: il punto 7 è una race
+che uccide il processo a parallelismo alto, e i due enunciati sono indipendenti.
+"Deterministico" e "affidabile" sono cose diverse, e qui abbiamo il primo senza
+il secondo.
+
+**Cosa non copre, inoltre.** Una macchina sola (stessa CPU, stesso SimpleITK —
+vedi punto 4); un programma solo; e nulla sul percorso GPU. Il programma nnU-Net
 resta non riproducibile per costruzione (GPU, seed, cuDNN) a meno di congelare
 e distribuire i pesi.
 
