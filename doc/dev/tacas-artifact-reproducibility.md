@@ -25,7 +25,7 @@ lista di partenza — sono venuti fuori facendo il resto.
 | # | Criticità | Gravità | Stato |
 |---|---|---|---|
 | **7a** | Doppio dispatch: `DoubleComputationError` | bloccante | **fatto da Vincenzo** (`a313172`) |
-| **7b** | **Rematerializzazione: `NeedsExpansion` a store caldo** | **bloccante** | **aperto, isolato** |
+| **7b** | **Rematerializzazione: `NeedsExpansion` a store caldo** | bloccante | **fatto** (potatura del nodo loop) |
 | 1 | Programmi che escono 0 senza calcolare niente | bloccante | fatto (motore) / 6 programmi da sistemare |
 | 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | **fatto per 2 e 3, provvisorio per 4** |
 | 3 | Percorsi dataset assoluti dentro i programmi | alta | mitigato nell'artifact, aperto nel repo |
@@ -35,9 +35,8 @@ lista di partenza — sono venuti fuori facendo il resto.
 | **8** | **Lavoro costoso perso per un errore a valle** | media | causa immediata fatta (`b0b68a1`), architettura aperta |
 | — | Determinismo dei valori | — | verificato, con una riserva (vedi 7) |
 
-I tre aperti sono di natura diversa. Il **7** è un bug del motore e va a
-Vincenzo. Il **2** e il **5** non sono patch: sono decisioni su quali numeri
-dichiarare e quale dataset dichiarare, e le prendi tu.
+Gli aperti sono di natura diversa. Il **2** e il **5** non sono patch: sono
+decisioni su quali numeri dichiarare e quale dataset dichiarare, e le prendi tu.
 
 ## Cosa esiste adesso che prima non c'era
 
@@ -140,21 +139,15 @@ arriva più per un duplicato benigno.
 
 ---
 
-## 7b. Rematerializzazione: `NeedsExpansion` a store caldo — BLOCCANTE, APERTO
+## 7b. Rematerializzazione: `NeedsExpansion` a store caldo — CHIUSO il 2026-09-08
 
-Non è l'altra faccia del 7a: **sopravvive alla sua correzione**, quindi è un bug
-indipendente. Prima del merge era mascherato dal doppio dispatch.
+Non era l'altra faccia del 7a: sopravviveva alla sua correzione. Era un bug
+indipendente, mascherato prima del merge dal doppio dispatch.
 
 ```
 [stuck] qsize=0 outstanding=49 completed=1485 stuck=0 alias=10 jobs=0
 NeedsExpansion: 9434d297... must be expanded, not computed
 ```
-
-Percorso: `strategy.py:410 _side_effect` -> `:435 _materialize` ->
-`handles.py:95 resolve_deep` -> `:132 _rebuild` ->
-`core.py:1282 _resolve_reference` -> `:1475 _rematerialize` (ricorsivo) ->
-`:1454 raise`. Un nodo loop si espande, non si calcola, e la rematerializzazione
-non lo sa ricreare.
 
 **I sei run.**
 
@@ -167,22 +160,84 @@ non lo sa ricreare.
 | 14:2x | **vuoto** | 1 | 23/23 |
 | post-merge | caldo | 24 | `NeedsExpansion`, **21/23**, `stuck=0` |
 
-**Fallisce quando lo store contiene già i valori.** Dopo il merge lo stallo
-cambia forma: non c'è più un `for_loop` fermo con dipendenze soddisfatte, ma 49
-nodi in sospeso con la coda vuota. Mancano solo `exported` e `exported_planes`.
+**La causa, misurata sullo store e non ipotizzata.** L'ipotesi che avevo scritto
+— sfratto di un valore creduto durevole, scrittura non atterrata — era
+sbagliata. Interrogando `~/.voxlogica/results.db` sul nodo della traccia:
 
-**Ipotesi, ancora dichiarata come tale.** Sistemando il bug di `--no-cache` il
-2026-09-07 avevo scritto che restava *"una race più stretta in `release` — store
-presente ma scrittura non ancora atterrata — mai osservata"*. Questa ne ha la
-forma: il valore di un nodo loop viene sfrattato perché lo si crede durevole, la
-scrittura non è atterrata, e la rematerializzazione non lo può ricreare perché i
-loop non si ricalcolano. Regge meglio di stamattina, perché sopravvive alla
-correzione del doppio dispatch e quindi non ne era una conseguenza.
+| campo | valore |
+|---|---|
+| `metadata_json` | `{"operator":"default.for_loop"}` |
+| `status` | `materialized` |
+| `payload_json` | `sequence-json-v1`, 69 handle |
+| i 69 elementi | 69 su 69 presenti, tutti `materialized` |
+| righe `evicted` nell'intero store | **zero** |
 
-**Nessun workaround noto.** Né `--threads 1` né uno store vuoto sono garanzie:
-sono solo le condizioni in cui finora è passato.
+Niente era andato perso. Lo sfratto su disco non aveva mai girato — e lascia
+tombstone permanenti, quindi la loro assenza è una prova, non un indizio.
 
----
+Il valore era intatto e **il motore lo rifiutava**. Un nodo loop persiste un
+container che nomina i propri body per hash, e quegli id esistono solo dopo
+l'espansione; `NodeTable.load` esige (`_references_are_answerable`) che siano
+internati in *questo* run e quindi restituisce `None`. Ma su un run caldo
+`_available` aveva potato il nodo loop proprio perché `persisted()` era vero:
+promessa che lo store non può mantenere. `_rematerialize` legge quel `None` come
+"non c'è", non trova alias e solleva `NeedsExpansion`.
+
+Verificato sul valore reale, con la guardia vera:
+
+| stato del run | guardia | `load()` |
+|---|---|---|
+| loop espanso (69 body internati) | `True` | restituisce il valore |
+| loop **potato** perché `persisted` | **`False`** | **`None`** |
+
+È deterministico, non una race: su store caldo è garantito. Spiega la tabella
+meglio dell'ipotesi precedente — store vuoto passa sempre perché il loop si
+espande e i body si internano.
+
+**Il fix**, in `engine/core.py`:
+
+1. **Un nodo che fa crescere il grafo non è mai "disponibile da disco"**
+   (`_available` e la copia inline in `_schedule_subgraph`). La potatura non
+   vale la pena difenderla: lo scheduling arriva a quel nodo solo perché un
+   consumatore sopra di lui va ricalcolato, e quel consumatore ne chiederà il
+   valore. Riespandere costa la lista degli hash; gli elementi continuano a
+   venire dal disco.
+2. **L'inoltro loop→sequence sopravvive al turno del worker.** `_alias` viene
+   consumato quando il loop inoltra, e da lì in poi il loop non sapeva più da
+   dove veniva il suo valore — mentre la sequence spliced teneva sul disco lo
+   stesso payload (`for_loop 9434d297` e `sequence bcf0c3d3`, righe identiche).
+   La risoluzione ora legge `_forward`, che dura quanto il run.
+3. **Un waiter non viene mai parcheggiato su un loop già completato.**
+   `_await_expansion` faceva `register` prima di `await_one`, quindi rimetteva
+   il nodo in `incomplete` e il wait veniva concesso su un arrivo già
+   annunciato: coda vuota che non drena mai (`qsize=0 outstanding=49 stuck=0`).
+   Ora riprova una volta (un altro worker può averlo completato nel frattempo) e
+   poi rifiuta nominando il nodo, invece di appendere il run.
+
+**Test:** `tests/unit/test_warm_loop_node_is_still_expandable.py`, 4 casi.
+3 sono rossi senza il fix, tutti verdi con.
+
+**Verifiche.**
+
+| prova | esito |
+|---|---|
+| `tests/unit` + `tests/contract` | 1210 passati, 3 skipped, 0 falliti |
+| esperimento 2, store nuovo | exit 0, 9,83 s, sei valori **identici all'oracolo** |
+| esperimento 2, stesso store, 2° run | exit 0, 2,86 s, identici |
+| esperimento 2, stesso store, 3° run | exit 0, 2,61 s, identici |
+| costo della mancata potatura (warm pre-fix contro post-fix) | 2,50 s contro 2,61-2,86 s |
+
+Il riuso a caldo regge: la seconda e la terza esecuzione restano ~3,5x più
+veloci della prima, e non potare più il nodo loop non si misura oltre il rumore
+su questo programma.
+
+**Quello che resta.** Il percorso di materializzazione dei goal
+(`strategy.py::_side_effect`) non cattura `NeedsExpansion` e gira a motore
+spento, dove nessuno potrebbe comunque espandere. Con questo fix non ci arriva
+più nulla, ma resta un punto in cui un errore del motore arriva all'utente come
+traceback. Da rivedere separatamente. Va inoltre rifatto un run completo
+dell'esperimento 4, che è quello su cui il bug si manifestava: qui è verificato
+sull'esperimento 2, che è il più rapido ad avere un oracolo esatto.
 
 ## 8. Lavoro costoso perso per un errore a valle — MEDIA
 

@@ -270,6 +270,18 @@ class ComputationEngine:
         # ── Per-node scheduling extras (pruned at completion) ──
         self._priority: dict[NodeId, int] = {}
         self._alias: dict[NodeId, NodeId] = {}      # a loop node -> its spliced sequence node
+        # The SAME forwarding, kept for the whole run. `_alias` is scheduling
+        # state and is popped the moment the loop node takes its forwarding turn
+        # (`_worker`); after that the loop id no longer knows where its value
+        # came from, so a later rematerialization of it raised NeedsExpansion
+        # even though the spliced sequence still held the identical payload on
+        # disk (measured: for_loop 9434d297 and sequence bcf0c3d3, byte-identical
+        # `sequence-json-v1` rows in the same store). Resolution reads this map,
+        # never `_alias`.
+        self._forward: dict[NodeId, NodeId] = {}
+        # (waiter, expansion target) pairs already given a second chance; see
+        # _await_expansion.
+        self._expansion_retried: set[tuple[NodeId, NodeId]] = set()
         self.executor._handle_resolver = self._resolve_reference
         self.executor._names_handles = self.graph.names_handles
         self._reload_deferred: set[NodeId] = set()  # deferred once to prefer resident-ready work
@@ -560,8 +572,24 @@ class ComputationEngine:
         THE availability rule — every registration path uses this one predicate
         (goals excepted: they are always scheduled so their queries settle
         through the normal completion path).
+
+        A NODE THAT GROWS THE GRAPH IS NEVER AVAILABLE FROM DISK, however
+        materialized its row looks. Its stored value is a container naming its
+        bodies by hash, and those ids exist only once the loop has been
+        expanded; `NodeTable.load` therefore refuses it
+        (`_references_are_answerable`) and `_rematerialize` has nothing left but
+        `NeedsExpansion`. Pruning here promised a value the store cannot serve —
+        measured as a warm-store sweep dying at goal materialization with 21 of
+        23 goals, on a store where the row and all 69 of its elements were
+        intact. Nor is the pruning worth defending: scheduling only reaches this
+        node because a consumer above it must be recomputed, and that consumer
+        will ask for the value. Re-expanding costs the list of hashes; every
+        element it names is still served from disk.
         """
-        return nid in self.table.completed or (nid not in self._goals and self.table.persisted(nid))
+        return nid in self.table.completed or (
+            nid not in self._goals
+            and not self._grows_the_graph(nid)
+            and self.table.persisted(nid))
 
     def _schedule_subgraph(self, goal: NodeId, priority: int) -> None:
         """BFS from a goal, pruning at available nodes, registering the rest.
@@ -583,8 +611,9 @@ class ComputationEngine:
                 continue
             if nid in completed:
                 continue
-            if nid not in self._goals and self.table.persisted(nid):
-                continue  # cached: loaded on demand
+            if (nid not in self._goals and not self._grows_the_graph(nid)
+                    and self.table.persisted(nid)):
+                continue  # cached: loaded on demand (see _available)
             node = self.table.nodes[nid]
             if node.kind == "constant" and nid not in self._goals:
                 self.table.set_value(nid, node.attrs.get("value"))
@@ -1003,6 +1032,7 @@ class ComputationEngine:
         the forward has happened.
         """
         self._alias[loop_id] = seq_id
+        self._forward[loop_id] = seq_id
         self.graph.pin(seq_id)
         self._priority[seq_id] = max(self._priority.get(seq_id, 0), priority)
         if seq_id in self.graph.incomplete:
@@ -1254,7 +1284,9 @@ class ComputationEngine:
         The critical set is deliberately small and cheap, yet covers nearly the
         whole DAG on a warm re-run:
         - goal-dependency *cut* nodes — pruning one collapses its entire subtree;
-        - structural loop/sequence nodes — same leverage, and they gate re-expansion;
+        - structural loop/sequence nodes — their elements are what a warm re-run
+          reuses (the loop node ITSELF is never pruned: `_available` explains
+          why its stored container cannot be served);
         - widely-shared results (high fan-out) — a per-case image feeding every
           combo, so a *variant* sweep reuses it and recomputes only its changed tail.
         Everything else (large one-shot intermediates) stays best-effort: forcing
@@ -1276,9 +1308,9 @@ class ComputationEngine:
         `_rematerialize` unchanged.
         """
         seen: set[NodeId] = set()
-        while nid in self._alias and nid not in self.table.values and nid not in seen:
+        while nid in self._forward and nid not in self.table.values and nid not in seen:
             seen.add(nid)
-            nid = self._alias[nid]
+            nid = self._forward[nid]
         return self._rematerialize(nid)
 
     def _rewrite_of(self, node) -> NodeId | None:
@@ -1339,6 +1371,13 @@ class ComputationEngine:
         """This node's value is that node's value. Same forwarding a loop uses."""
         self._register_new_subtree(target, priority)
         self._alias[nid] = target
+        if self._grows_the_graph(nid):
+            # Only where a rematerialization could not recompute the node
+            # anyway. An ordinary rewrite (a fold's chain, a conditional) is
+            # rebuilt by its own kernel, and a fold chain is as long as the
+            # sequence: keeping a forwarding entry per link would cost memory
+            # proportional to the program for no gain.
+            self._forward[nid] = target
         self.graph.pin(target)
         self._priority[target] = max(self._priority.get(target, 0), priority)
         if target in self.graph.incomplete:
@@ -1408,6 +1447,29 @@ class ComputationEngine:
         on its next turn.
         """
         priority = self._priority.get(waiting, 0)
+        if to_expand in self.table.completed:
+            # It has already had its expansion turn and no worker will give it
+            # another: `_worker` drops a completed node before dispatch. The
+            # `await_one` refusal below cannot catch this, because `register`
+            # just above would have put it back on `incomplete` and the wait
+            # would then be granted — on an arrival that has already been
+            # announced. Measured as an empty queue that never drains:
+            # qsize=0 outstanding=49 stuck=0.
+            #
+            # One retry, because a concurrent worker may have completed it in
+            # the window between the raise and here, in which case its value is
+            # there now and the waiter only needs to look again. A second visit
+            # means the value is genuinely unreachable — not resident, not
+            # loadable, not forwarded — and saying so beats hanging.
+            key = (waiting, to_expand)
+            if key not in self._expansion_retried:
+                self._expansion_retried.add(key)
+                self.ready.push(waiting, priority)
+                return
+            raise RuntimeError(
+                f"node {to_expand[:12]} grows the graph, has already completed, and its "
+                f"value can be neither loaded nor forwarded; {waiting[:12]} needs it. "
+                f"This is an engine bug — please report.")
         self._priority[to_expand] = max(self._priority.get(to_expand, 0), priority)
         if to_expand not in self.graph.incomplete:
             self.graph.register(to_expand)
@@ -1462,7 +1524,7 @@ class ComputationEngine:
             # not guarded against, it is simply not an option: `for_loop` has a
             # kernel, it belongs to the strict runtime, and it fails on a closure
             # the engine never builds.
-            alias = self._alias.get(nid)
+            alias = self._forward.get(nid)
             if alias is not None and alias != nid:
                 return self._resolve_reference(alias)
             raise NeedsExpansion(nid)
@@ -1562,13 +1624,14 @@ class ComputationEngine:
                 if nid in self._alias:
                     seq_id = self._alias.pop(nid)
                     # persist=True even though seq_id already holds the same
-                    # value durably: the loop id is the *statically known*
-                    # pruning point — a warm re-run prunes at it and skips
-                    # re-expansion entirely (the spliced sequence id is only
-                    # discoverable BY re-expanding), and serve/inspect tooling
-                    # addresses sequence items by the loop's id. The price is
-                    # one duplicated payload per loop in the persist backlog;
-                    # those bytes are accounted, so admission absorbs them.
+                    # value durably: the loop id is the statically known name for
+                    # this value, and serve/inspect tooling addresses sequence
+                    # items by it. It is NOT a pruning point — `_available`
+                    # refuses to prune there, because the container names its
+                    # bodies by hash and those ids exist only after expansion.
+                    # The price is one duplicated payload per loop in the
+                    # persist backlog; those bytes are accounted, so admission
+                    # absorbs them.
                     self._finish(nid, self._rematerialize(seq_id))  # forward spliced result
                     self.graph.release(seq_id)                      # the forward's hold
                 elif nid in self.table.values:
