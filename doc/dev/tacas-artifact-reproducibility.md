@@ -24,7 +24,8 @@ lista di partenza — sono venuti fuori facendo il resto.
 
 | # | Criticità | Gravità | Stato |
 |---|---|---|---|
-| **7** | **Race nello scheduler: un run muore a caso** | **bloccante** | **aperto, caratterizzato** |
+| **7a** | Doppio dispatch: `DoubleComputationError` | bloccante | **fatto da Vincenzo** (`a313172`) |
+| **7b** | **Rematerializzazione: `NeedsExpansion` a store caldo** | **bloccante** | **aperto, isolato** |
 | 1 | Programmi che escono 0 senza calcolare niente | bloccante | fatto (motore) / 6 programmi da sistemare |
 | 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | **fatto per 2 e 3, provvisorio per 4** |
 | 3 | Percorsi dataset assoluti dentro i programmi | alta | mitigato nell'artifact, aperto nel repo |
@@ -101,102 +102,85 @@ contro media 0,859 dice esattamente questo.
 
 ---
 
-## 7. Race nello scheduler: un run muore a caso — BLOCCANTE
+## 7a. Doppio dispatch — CHIUSO da Vincenzo il 2026-09-08
 
-Scoperta il 2026-09-08, non era nella lista di partenza. È adesso la cosa più
-grave che abbiamo.
-
-**Cosa vede il revisore.** Lancia un esperimento. Dopo un minuto, o dopo un'ora,
-muore con un errore interno. Rilancia, e muore in un punto diverso. Oppure
-funziona. Non c'è niente che possa fare al riguardo.
+Segnalato da qui come fallimento non deterministico dello sweep nnU-Net:
 
 ```
 DoubleComputationError: node <id> already running
 NodeExecutionError: simpleitk.ReadImage failed while evaluating node <id>
 ```
 
-**Non è una condizione esterna: è il motore che dichiara sé stesso in errore.**
-Il commento accanto alla chiamata che solleva (`core.py:1718`, dentro `_worker`)
-dice `# enforces the no-double-computation invariant`, e il docstring di
-`node_table.py:23` dice *"already running or materialized is a scheduler bug,
-so `begin` raises"*.
+Le tre proprietà che avevamo raccolto — la vittima cambia a ogni run, è sempre
+`ReadImage`, sparisce a `--threads 1` — sono quelle che hanno nominato la causa.
+Chiuso in `a313172`.
 
-**Riproduzione**, ~1 minuto perché il training viene saltato:
+**La causa.** Fra il pop del nodo e `table.begin` non c'è nessun `await`, quindi
+due coroutine non possono interlacciarsi lì: lo stesso id era stato **offerto**
+due volte. `_await_named_deps` e `_await_expansion` proteggono la registrazione
+ma lasciano scoperta la push, e `graph.incomplete` significa
+*registrato-e-non-finito*, che include un nodo che un worker sta eseguendo in
+quel momento.
 
-```
-./voxlogica run --no-serve doc/gallery/programs/nnunet/brats-threshold-sweep-nnunet.imgql
-```
+**Perché l'AIIM non falliva mai**, che era la domanda che gli avevamo indicato
+come traccia migliore: `_await_named_deps` si entra solo per una dipendenza il
+cui valore contiene handle, cioè una sequenza costruita pigramente. Nel
+programma nnU-Net `modalities_of(i)` è un letterale di quattro `ReadImage`
+passato a `nnunet.predict`, che è eager, e quei ref sono condivisi con
+`pflair_of(i)`, quindi spesso già in volo. Nell'AIIM `ReadImage` è un arco
+ordinario — `index(flair_paths, i)` produce una stringa, non un handle — e quel
+percorso non viene mai preso.
 
-| thread | esito | log |
-|---|---|---|
-| 24 (default) | fallisce, nodo `65df2c47d30d` | `nnunet-sweep-20260908-0928.log` |
-| 24 (default) | fallisce, nodo `ee5f76f1cf97`, **tre volte** | `nnunet-sweep-20260908-1034.log` |
-| **1** | **passa**, 23/23 goal, 76,63 s | `nnunet-sweep-t1-1036.log` |
+**La scelta di progetto** è quella che avevamo posto come domanda aperta: se
+l'invariante sia "non deve succedere" o "non deve costare". La risposta è la
+seconda. La ready queue è un suggerimento, non proprietà; `_worker` chiede
+`table.is_running` prima di reclamare e un'offerta duplicata costa un pop
+sprecato. `begin` continua a sollevare: l'invariante non cambia, non ci si
+arriva più per un duplicato benigno.
 
-Tre fatti che insieme dicono cos'è:
+---
 
-1. **Il nodo cambia a ogni run.** Se fosse un difetto strutturale del grafo — un
-   nodo raggiungibile due volte per costruzione — sarebbe sempre lo stesso. Che
-   cambi dice che la vittima è casuale.
-2. **È sempre `simpleitk.ReadImage`**, il nodo con più istanze concorrenti in
-   volo: 20 casi per 4 modalità.
-3. **A un thread sparisce.**
+## 7b. Rematerializzazione: `NeedsExpansion` a store caldo — BLOCCANTE, APERTO
 
-**Perché è peggio di come suona.** `ReadImage` è un nodo ordinario in un `for`
-su venti casi. Non c'è niente di specifico di nnU-Net. Lo sweep AIIM ha lo
-stesso tipo di nodo sulla stessa scala e in decine di run non ha mai fallito:
-**capire perché no è probabilmente la traccia migliore che abbiamo**, non un
-motivo per stare tranquilli.
-
-C'è anche una domanda di progetto sotto: due worker sullo stesso `ReadImage`
-costerebbero, al peggio, una lettura doppia. Sollevare al secondo claim
-trasforma una race benigna nella morte dell'intero run. Va deciso se
-l'invariante è "non deve succedere" o "non deve costare".
-
-**Aggiornamento del pomeriggio: `--threads 1` NON è un workaround.** Lo stesso
-programma, a un thread, è poi fallito in un terzo modo ancora:
+Non è l'altra faccia del 7a: **sopravvive alla sua correzione**, quindi è un bug
+indipendente. Prima del merge era mascherato dal doppio dispatch.
 
 ```
-[stuck] qsize=0 outstanding=11 completed=1539 stuck=4
-  5734eb47 op=default.for_loop kind=primitive pending=0 alias=False unmet=[]
-  a0551e3b op=default.median  pending=1 unmet=['5734eb47']
-  ...
+[stuck] qsize=0 outstanding=49 completed=1485 stuck=0 alias=10 jobs=0
 NeedsExpansion: 9434d297... must be expanded, not computed
 ```
 
-Un `for_loop` con `pending=0` e `unmet=[]` — niente lo blocca, coda vuota — che
-non parte comunque, e tre consumatori che lo aspettano per sempre. Poi il motore
-prova a ricostruirlo per rematerializzazione (`core.py:1475`, ricorsivo, fino al
-`raise` a 1454) e non può: un nodo loop si espande, non si calcola.
+Percorso: `strategy.py:410 _side_effect` -> `:435 _materialize` ->
+`handles.py:95 resolve_deep` -> `:132 _rebuild` ->
+`core.py:1282 _resolve_reference` -> `:1475 _rematerialize` (ricorsivo) ->
+`:1454 raise`. Un nodo loop si espande, non si calcola, e la rematerializzazione
+non lo sa ricreare.
 
-**Il pattern che emerge dai cinque run.**
+**I sei run.**
 
 | run | store | thread | esito |
 |---|---|---|---|
 | 09:28 | popolato | 24 | `DoubleComputationError` |
-| 10:34 | popolato | 24 | `DoubleComputationError` ×3 |
+| 10:34 | popolato | 24 | `DoubleComputationError` x3 |
 | 10:36 | quasi freddo | 1 | 23/23 |
-| ~13:00 | caldo | 1 | `NeedsExpansion`, 17/23 |
+| ~13:00 | caldo | 1 | `NeedsExpansion`, 17/23, un `for_loop` con `pending=0 unmet=[]` |
 | 14:2x | **vuoto** | 1 | 23/23 |
+| post-merge | caldo | 24 | `NeedsExpansion`, **21/23**, `stuck=0` |
 
-**Fallisce quando lo store contiene già i valori.** Il sospetto si sposta dal
-solo scheduler al percorso sfratto/rematerializzazione, che è dove i due errori
-si incontrano.
+**Fallisce quando lo store contiene già i valori.** Dopo il merge lo stallo
+cambia forma: non c'è più un `for_loop` fermo con dipendenze soddisfatte, ma 49
+nodi in sospeso con la coda vuota. Mancano solo `exported` e `exported_planes`.
 
-**Ipotesi, dichiarata come tale.** Sistemando il bug di `--no-cache` il
-2026-09-07 avevo scritto che restava *"una race più stretta in `release` —
-store presente ma scrittura non ancora atterrata — mai osservata"*. Questa ne
-ha la forma esatta: il valore di un nodo loop viene sfrattato perché lo si crede
-durevole, la scrittura non è atterrata, e la rematerializzazione non lo può
-ricreare perché i loop non si ricalcolano. Un solo run con store vuoto non è una
-dimostrazione, ma è la traccia più stretta che abbiamo, e va data a Vincenzo
-insieme al resto.
+**Ipotesi, ancora dichiarata come tale.** Sistemando il bug di `--no-cache` il
+2026-09-07 avevo scritto che restava *"una race più stretta in `release` — store
+presente ma scrittura non ancora atterrata — mai osservata"*. Questa ne ha la
+forma: il valore di un nodo loop viene sfrattato perché lo si crede durevole, la
+scrittura non è atterrata, e la rematerializzazione non lo può ricreare perché i
+loop non si ricalcolano. Regge meglio di stamattina, perché sopravvive alla
+correzione del doppio dispatch e quindi non ne era una conseguenza.
 
 **Nessun workaround noto.** Né `--threads 1` né uno store vuoto sono garanzie:
 sono solo le condizioni in cui finora è passato.
-
-**Assegnato a Vincenzo** (motore). Serve un test che fallisca in modo
-affidabile prima di qualunque patch.
 
 ---
 
