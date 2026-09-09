@@ -72,6 +72,18 @@ def _tune_glibc_for_volumes() -> None:
         M_MMAP_THRESHOLD, M_TRIM_THRESHOLD = -3, -1
         libc.mallopt(M_MMAP_THRESHOLD, 64 * 1024 * 1024)
         libc.mallopt(M_TRIM_THRESHOLD, 256 * 1024 * 1024)
+        # NOT M_MMAP_MAX. Tried and refuted: forbidding malloc's mmap, on the
+        # theory that ITK's aligned image buffers were being served by mmap and
+        # returned by munmap regardless of the threshold above, changed nothing.
+        # A/B on the 60-case sweep, mallopt accepted (returns 1) in both arms:
+        # 281,927 minor faults/s and 263 node/s with mmap allowed, 287,627 and
+        # 268 with it forbidden. The faults are not malloc's mmap.
+        #
+        # And the faults are not the lever either: at a live budget where
+        # throughput is nearly twice as high they are still 226,089/s. ~1 GB/s
+        # of first-touch is simply what allocating this much memory costs. What
+        # collapses throughput is DIRECT RECLAIM, and that is a function of how
+        # close the process runs to the machine -- see governor._RSS_SHARE.
     except (OSError, AttributeError, TypeError):
         pass
 

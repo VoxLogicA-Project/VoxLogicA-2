@@ -1,0 +1,4 @@
+share=0.30  CPU= 2192%  RSS= 15.9GB  reclaim_diretto=   2072 pag/s  543 node/s
+share=0.50  CPU= 2090%  RSS= 22.5GB  reclaim_diretto=   1112 pag/s  536 node/s
+share=0.60  CPU= 2069%  RSS= 27.1GB  reclaim_diretto=   9473 pag/s  238 node/s
+share=0.30  CPU= 2098%  RSS= 15.4GB  minorfault=  226089/s  reclaim_diretto=   5024/s  463 node/s

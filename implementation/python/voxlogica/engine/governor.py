@@ -81,7 +81,28 @@ _GB = 1024 ** 3
 
 #: How much of the box this process may ever occupy. Above this the kernel is
 #: paging or reaping, and either outcome is worse than a smaller live tier.
-_RSS_SHARE = 0.75
+#: What fraction of the machine this process may occupy. MEASURED, not chosen:
+#: on the 60-case sweep, in six-minute windows on an idle 61 GB host, changing
+#: only this constant,
+#:
+#:     0.30   2098-2192%   15.4-15.9 GB   direct reclaim 2.1-5.0k/s   463-543 node/s
+#:     0.40   2208%        19.6 GB                                    529 node/s
+#:     0.50   2090%        22.5 GB        direct reclaim 1.1k/s       536 node/s
+#:     0.60   2069%        27.1 GB        direct reclaim 9.5k/s       238 node/s
+#:     0.75   1986%        30.4 GB        direct reclaim 6-15k/s      263-304 node/s
+#:
+#: There is a cliff between 0.50 and 0.60 and it is not gradual: throughput
+#: halves while CPU BARELY MOVES. That is the tell -- at 2100% of 2400% the
+#: cores are equally busy either side of the cliff, doing 238 node/s on one
+#: side and 536 on the other, because past it they are executing the kernel's
+#: page reclaim instead of our kernels. A thread that cannot get a free page
+#: reclaims one itself, and 9-35 MB of output per node is a lot of pages.
+#:
+#: 0.45 sits in the middle of the measured plateau with margin below the cliff.
+#: The value is still a constant, which is the wrong shape: the right control
+#: is the machine's AVAILABLE memory and pgscan_direct as the signal that we
+#: are over the line. Recorded in doc/dev/measurements/2026-09-09-ram-share/.
+_RSS_SHARE = 0.45
 #: Held back for the OS, the page cache and anything else on the machine, so
 #: the ceiling derived from MemAvailable never claims the last free byte.
 _RESERVE = 6 * _GB

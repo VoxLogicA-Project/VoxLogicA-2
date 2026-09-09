@@ -75,3 +75,57 @@ Still to measure, before changing anything shipped:
 The total node count differs between the two windows (239,277 against 215,209)
 because dynamic expansion depends on what is resident; the rate comparison is
 unaffected but the absolute node counts are not comparable.
+
+---
+
+## The shape of the cliff, and two refuted hypotheses
+
+Six-minute windows of the same program from the same warm store, idle machine,
+changing only `_RSS_SHARE`:
+
+| share | CPU | RSS | direct reclaim | **node/s** |
+|---|---|---|---|---|
+| 0.30 | 2098–2192% | 15.4–15.9 GB | 2.1–5.0k/s | **463–543** |
+| 0.40 | 2208% | 19.6 GB | — | **529** |
+| 0.50 | 2090% | 22.5 GB | 1.1k/s | **536** |
+| **0.60** | 2069% | 27.1 GB | **9.5k/s** | **238** |
+| 0.75 | 1986% | 30.4 GB | 6–15k/s | **263–304** |
+
+**The cliff is between 0.50 and 0.60, and CPU barely moves across it.** 2069%
+against 2090% while throughput halves, 536 → 238 node/s. That is the single most
+informative number in this whole investigation: at ~2100% of 2400% the cores are
+equally busy on both sides of the cliff, doing 2.3× the useful work on one side.
+The cores were never idle. They were executing the kernel's page reclaim.
+
+It also retires "chase CPU utilisation" for good: utilisation cannot distinguish
+238 node/s from 536.
+
+### Refuted: malloc's mmap
+
+Hypothesis: ITK aligns image buffers for SIMD, glibc serves a large `memalign`
+with `mmap` and returns it with `munmap` regardless of `M_MMAP_THRESHOLD`, so
+every filter output is fresh kernel memory. A/B with `mallopt(M_MMAP_MAX, 0)`,
+accepted in both arms (returns 1):
+
+```
+mmap allowed     2085% CPU   28.3 GB   281,927 minor faults/s   263 node/s
+mmap forbidden   2124% CPU   28.7 GB   287,627 minor faults/s   268 node/s
+```
+
+No difference. The faults do not come from malloc's mmap. The knob was removed
+rather than left on unmeasured.
+
+### Refuted: the minor faults themselves
+
+At a live budget where throughput is nearly twice as high, the faults are still
+there: **226,089/s at share 0.30 against 281,927/s at 0.75**, while node/s is
+463 against 263. About 1 GB/s of first-touch is simply what allocating this much
+memory costs, and it is not what collapses throughput. **Direct reclaim is.**
+
+### Disposition
+
+`_RSS_SHARE = 0.45`, in the middle of the measured plateau with margin below the
+cliff. That is still a constant, which is the wrong shape for something that
+depends on the machine and on what else is running: the right control is
+available memory, with `pgscan_direct` as the signal that the process is over
+the line. Recorded as the next change rather than smuggled into this one.
