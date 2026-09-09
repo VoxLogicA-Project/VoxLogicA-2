@@ -49,6 +49,10 @@ from voxlogica.engine.itk_threads import apply_itk_threads
 from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.memlog import MemoryLogger
+#: Nanoseconds of artificial work per completion, on the loop. 0 in
+#: every shipped configuration; a measurement rewrites this line.
+_LOOP_DELAY_NS = 0
+
 from voxlogica.engine.persist import _NO_SNAPSHOT
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.engine.evaluation import (NeedsExpansion, RewriteContext,
@@ -1286,6 +1290,17 @@ class ComputationEngine:
         if _c is not None:
             _c.add("fin_evicttrack", time.perf_counter_ns() - _t)
             _t = time.perf_counter_ns()
+        # EXPERIMENT ONLY, and zero unless a measurement sets it. A BUSY WAIT,
+        # not a sleep: a sleep would yield the loop and measure something else
+        # entirely, while this occupies the loop thread exactly as real
+        # per-completion work does. It exists to make the single-server model
+        # quantitative -- busy pool threads should be (loop occupancy)/(L+delta)
+        # x D -- rather than merely directional. See
+        # doc/dev/measurements/2026-09-09-why-workers-wait/.
+        if _LOOP_DELAY_NS:
+            _deadline = time.perf_counter_ns() + _LOOP_DELAY_NS
+            while time.perf_counter_ns() < _deadline:
+                pass
         moved = self.table._sizeof.get(nid, 0)
         for dep in self.graph.deps(nid):
             moved += self.table._sizeof.get(dep, 0)
