@@ -80,6 +80,13 @@ def test_measurement_records_its_own_provenance_and_an_exact_total(tmp_path: Pat
     assert auth["mean_cpu_percent"] is not None and auth["mean_cpu_percent"] > 0
     assert auth["cores_available"] >= 1
 
+    out = header["outcome"]
+    # A measurement of a failed run must say so, in the same file as the
+    # timings: a sweep that aborts early looks fast, and one did.
+    assert out["recorded"] is True
+    assert out["goals_total"] == 1 and out["goals_resolved"] == 1
+    assert out["complete"] is True and out["error"] is None
+
     inst = header["instrument"]
     # Non-perturbation as a measurement, not a promise. On a host without
     # RUSAGE_THREAD it must SAY so rather than imply zero.

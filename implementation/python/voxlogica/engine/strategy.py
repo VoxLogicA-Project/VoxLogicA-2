@@ -276,6 +276,11 @@ class EngineExecutionStrategy(ExecutionStrategy):
             try:
                 values, run_error = asyncio.run(evaluate())
             finally:
+                # Before stop(), so the file says what the run achieved. A fast
+                # run that aborted early must not read as a fast run.
+                meter.set_outcome(goals_total=len(plan.goals),
+                                  goals_resolved=len(values),
+                                  error=run_error)
                 meter.stop()
 
         # This engine was constructed fresh above and is not shared with any

@@ -20,6 +20,9 @@ REPS=${4:-3}
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 mkdir -p "$OUTDIR"
+# The config file must not live where the report globs, or it is read as data.
+[ "$(cd "$(dirname "$CONFIGS")" && pwd)" = "$(cd "$OUTDIR" && pwd)" ] && \
+  echo "compare.sh: note -- the config file is inside the output directory" >&2
 
 mapfile -t lines < <(grep -v '^\s*#' "$CONFIGS" | grep -v '^\s*$')
 for rep in $(seq 1 "$REPS"); do
@@ -38,4 +41,4 @@ for rep in $(seq 1 "$REPS"); do
 done
 
 echo >&2
-"$REPO/.venv/bin/python" "$REPO/tools/measure/report.py" "$OUTDIR"/*.tsv
+"$REPO/.venv/bin/python" "$REPO/tools/measure/report.py" "$OUTDIR"/*_rep*.tsv

@@ -26,6 +26,9 @@ from pathlib import Path
 def load(path: Path) -> tuple[dict, list[str], list[list[str]]]:
     header_lines, columns, rows = [], [], []
     with open(path, encoding="utf-8") as handle:
+        first = handle.readline()
+        if not first.startswith("# voxlogica measurement"):
+            raise ValueError("not a measurement file (no version line)")
         for line in handle:
             line = line.rstrip("\n")
             if line.startswith("# voxlogica measurement"):
@@ -79,15 +82,16 @@ def main(argv: list[str]) -> int:
     print("        in-process sampling on its own thread for the shape, rates")
     print("        computed from measured intervals (engine/measure.py)")
     print()
-    head = ("file", "wall s", "mean CPU", "of", "peak RSS", "sat>=90%", "loop>=90%",
-            "instrument", "commit")
+    head = ("file", "outcome", "wall s", "mean CPU", "of", "peak RSS",
+            "sat>=90%", "loop>=90%", "instrument", "commit")
     print("\t".join(head))
     for name in argv:
         path = Path(name)
         try:
             header, columns, rows = load(path)
         except Exception as exc:                            # noqa: BLE001
-            print(f"{path.name}\tunreadable: {exc}")
+            if "not a measurement file" not in str(exc):
+                print(f"{path.name}\tunreadable: {exc}")
             continue
         auth = header.get("authoritative", {})
         inst = header.get("instrument", {})
@@ -97,8 +101,16 @@ def main(argv: list[str]) -> int:
         sat = sum(1 for _, p, _ in pts if p >= 0.90 * ceiling)
         loop_hot = sum(1 for _, _, lp in pts if lp is not None and lp >= 90.0)
         share = inst.get("sampler_share_of_run_cpu")
+        out = header.get("outcome", {})
+        if not out.get("recorded"):
+            verdict = "?"
+        elif out.get("complete"):
+            verdict = "complete"
+        else:
+            verdict = f"INCOMPLETE {out.get('goals_resolved')}/{out.get('goals_total')}"
         print("\t".join([
             path.name,
+            verdict,
             f"{auth.get('wall_s', 0):.1f}",
             f"{auth.get('mean_cpu_percent')}%",
             f"{ceiling:.0f}%",
@@ -109,6 +121,9 @@ def main(argv: list[str]) -> int:
             (header.get("commit") or "")[:8] + ("+dirty" if header.get("working_tree_dirty") else ""),
         ]))
     print()
+    print("outcome:   a run that did not resolve every goal is INCOMPLETE, and")
+    print("           its timings mean nothing: a sweep that aborts early looks")
+    print("           fast. Compare only complete runs.")
     print("sat>=90%:  samples at or above 90% of every core busy")
     print("loop>=90%: samples where the event-loop thread alone held ~a full")
     print("           core -- with a low process figure beside it, that is the")

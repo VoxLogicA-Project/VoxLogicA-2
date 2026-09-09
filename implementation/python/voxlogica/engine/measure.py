@@ -141,7 +141,7 @@ class Measurement:
 
     __slots__ = ("_path", "_period", "_snapshot", "_samples", "_thread", "_stop",
                  "_loop_tid", "_started_ns", "_start_rusage", "_meta",
-                 "_sampler_cpu_s", "_program", "_flags")
+                 "_sampler_cpu_s", "_program", "_flags", "_outcome")
 
     def __init__(self, path: str | Path, snapshot: Callable[[], dict[str, Any]],
                  *, program: str = "", flags: dict[str, Any] | None = None,
@@ -159,6 +159,7 @@ class Measurement:
         self._program = program
         self._flags = dict(flags or {})
         self._meta: dict[str, Any] = {}
+        self._outcome: dict[str, Any] = {"recorded": False}
 
     # ── the engine's side of the contract ────────────────────────────────────
 
@@ -174,6 +175,25 @@ class Measurement:
             self._loop_tid = threading.get_native_id()
         except AttributeError:            # pre-3.8 or an exotic platform
             self._loop_tid = None
+
+    def set_outcome(self, *, goals_total: int, goals_resolved: int,
+                    error: BaseException | None) -> None:
+        """What the run actually achieved. Called before ``stop``.
+
+        A MEASUREMENT OF A FAILED RUN MUST SAY SO. A sweep that aborts early
+        looks fast: a run of a broken build once finished in 26.3 s against 30 s
+        for the working one and was reported as the fastest of three, because
+        nothing in the numbers said it had produced 13 of 16 goals instead of
+        16. So the outcome sits in the same file as the timings, and the report
+        prints it in the same row.
+        """
+        self._outcome = {
+            "recorded": True,
+            "goals_total": int(goals_total),
+            "goals_resolved": int(goals_resolved),
+            "complete": goals_resolved >= goals_total and error is None,
+            "error": None if error is None else f"{type(error).__name__}: {error}",
+        }
 
     def start(self) -> None:
         self._started_ns = time.perf_counter_ns()
@@ -293,6 +313,7 @@ class Measurement:
         intervals = [(b.t_ns - a.t_ns) / 1e9
                      for a, b in zip(self._samples, self._samples[1:])]
         header = dict(self._meta)
+        header["outcome"] = self._outcome
         header["authoritative"] = {
             # THE number. getrusage is accumulated by the kernel and read once,
             # so it has no sampling error; every claim about total CPU should
@@ -346,7 +367,11 @@ class Measurement:
                 row.extend(sample.engine.get(key, "") for key in engine_keys)
                 out.write("\t".join(str(value) for value in row) + "\n")
         mean = header["authoritative"]["mean_cpu_percent"]
-        print(f"[measure] {self._path}: {wall_s:.1f} s wall, {mean}% mean CPU "
+        verdict = ("" if not self._outcome.get("recorded")
+                   else " COMPLETE" if self._outcome.get("complete")
+                   else f" INCOMPLETE ({self._outcome.get('goals_resolved')}"
+                        f"/{self._outcome.get('goals_total')} goals)")
+        print(f"[measure]{verdict} {self._path}: {wall_s:.1f} s wall, {mean}% mean CPU "
               f"of {os.cpu_count() * 100}% available, {len(self._samples)} samples, "
               f"instrument cost "
               f"{f'{self._sampler_cpu_s:.2f} CPU-s' if self._sampler_cpu_s >= 0 else 'unavailable'}",
