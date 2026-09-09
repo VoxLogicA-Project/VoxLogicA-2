@@ -1,0 +1,3 @@
+high     share=0.75  CPU=1986%  RSS=30.4 GB  304 node/s  63,194/239,277 nodes
+low      share=0.40  CPU=2208%  RSS=19.6 GB  529 node/s  107,189/215,209 nodes
+DONE
