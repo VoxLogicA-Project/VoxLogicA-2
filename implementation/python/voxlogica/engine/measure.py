@@ -656,3 +656,47 @@ class Measurement:
         written_mb = (last.disk[1] - first.disk[1]) * _SECTOR_BYTES / 1e6
         return (f"{self._device} {util:.0f}% utilised, "
                 f"{written_mb / span_s:.1f} MB/s written")
+
+
+class LoopClock:
+    """Where the event loop's own CPU goes, phase by phase.
+
+    The loop is the measured ceiling: at loop occupancy below 25% the process
+    ran 2250-2369% of 2400%, and at 90% or above it collapsed to 791-1086%,
+    monotonically across twelve runs. But "the loop is busy" is not a defect
+    anyone can fix -- the defect is whichever phase inside it is expensive, and
+    that had never been attributed. Guessing produced three wrong answers in one
+    day (ITK oversubscription, page faults, memory bandwidth), so this measures
+    instead.
+
+    Deliberately not a context manager: creating one object per phase per node
+    would cost more than the phases it is timing at the dispatch rates involved.
+    The caller takes ``perf_counter_ns()`` itself and hands over the delta.
+
+    Held as ``None`` when nothing is measuring, so the cost when off is one
+    ``is not None`` test at each phase boundary -- against phases that are
+    themselves microseconds of dictionary and list work at minimum.
+    """
+
+    __slots__ = ("ns", "hits")
+
+    def __init__(self) -> None:
+        self.ns: dict[str, int] = {}
+        self.hits: dict[str, int] = {}
+
+    def add(self, phase: str, delta_ns: int) -> None:
+        self.ns[phase] = self.ns.get(phase, 0) + delta_ns
+        self.hits[phase] = self.hits.get(phase, 0) + 1
+
+    def snapshot(self) -> dict[str, Any]:
+        """Phase totals in milliseconds, plus the count of times each ran.
+
+        Milliseconds because the interesting quantity is "how much of a
+        thirty-second run", and counts because a phase that is cheap per call
+        and ruinous in aggregate looks identical to the reverse without them.
+        """
+        out: dict[str, Any] = {}
+        for phase, total in self.ns.items():
+            out[f"loop_{phase}_ms"] = round(total / 1e6, 3)
+            out[f"loop_{phase}_n"] = self.hits.get(phase, 0)
+        return out

@@ -307,6 +307,10 @@ class ComputationEngine:
         #: and is the only state any dispatch path would have to consult, which
         #: is why it consults none: the object is touched twice, in run().
         self.measurement: Any = None
+        #: Phase attribution for the event loop, or None. See measure.LoopClock:
+        #: "the loop is busy" is not something anyone can fix, so the phases
+        #: inside it are timed instead of guessed at.
+        self._clock: Any = None
 
         # ── Schedule-time fusion (engine/fusion.py) ──
         self._cones_dispatched = 0  # number of cone dispatches (>=2 members each)
@@ -440,6 +444,8 @@ class ComputationEngine:
             # without assuming it is the main thread. The loop-versus-workers
             # split is the decomposition that identified the only real stall we
             # have found, so it must not rest on an assumption.
+            from voxlogica.engine.measure import LoopClock
+            self._clock = LoopClock()
             self.measurement.register_loop_thread()
             self.measurement.start()
         self._memlog = MemoryLogger(self._memory_snapshot)
@@ -663,6 +669,40 @@ class ComputationEngine:
         else:
             self.ready.push(nid, priority)
 
+    # ── loop-phase timing shims ──────────────────────────────────────────────
+    #
+    # Renaming plus a wrapper rather than probes inside each body: the phases
+    # are whole-method, the bodies have several returns, and a shim cannot
+    # accidentally leave a phase open on one of them. Free when off -- the
+    # wrapper is bypassed entirely because `_clock` is None.
+
+    def _await_expansion(self, waiting: NodeId, to_expand: NodeId) -> None:
+        if self._clock is None:
+            return self._await_expansion_timed(waiting, to_expand)
+        _t = time.perf_counter_ns()
+        try:
+            return self._await_expansion_timed(waiting, to_expand)
+        finally:
+            self._clock.add("await_expansion", time.perf_counter_ns() - _t)
+
+    def _await_named_deps(self, nid: NodeId, node) -> bool:
+        if self._clock is None:
+            return self._await_named_deps_timed(nid, node)
+        _t = time.perf_counter_ns()
+        try:
+            return self._await_named_deps_timed(nid, node)
+        finally:
+            self._clock.add("named_deps", time.perf_counter_ns() - _t)
+
+    def _reclaim_memory(self, *args, **kwargs):
+        if self._clock is None:
+            return self._reclaim_memory_timed(*args, **kwargs)
+        _t = time.perf_counter_ns()
+        try:
+            return self._reclaim_memory_timed(*args, **kwargs)
+        finally:
+            self._clock.add("reclaim", time.perf_counter_ns() - _t)
+
     def _memory_snapshot(self) -> dict[str, Any]:
         """One reading for the memory-forensics logger (see engine/memlog.py)."""
         backlog = self.table._persister.pending_bytes if self.table._persister else 0
@@ -689,6 +729,10 @@ class ComputationEngine:
             # this column is the only record of what was running beside the
             # thread that died. See engine/inflight.py.
             "executing": inflight.render(),
+            # Cumulative, not per-interval: the reader differences consecutive
+            # samples, which is the same rule every other rate in the
+            # measurement obeys.
+            **(self._clock.snapshot() if self._clock is not None else {}),
         }
 
     def _resident_census(self) -> dict[str, int]:
@@ -790,7 +834,7 @@ class ComputationEngine:
         if self.admission.active_jobs and self.ready.qsize() < self.max_concurrency:
             self.admission.wake_jobs()
 
-    def _reclaim_memory(self) -> None:
+    def _reclaim_memory_timed(self) -> None:
         """Evict durably-persisted-but-still-pending values under memory pressure.
 
         THE VALVE FOR THE SEQUENCE-ASSEMBLY FLOOR: refcounting alone holds a
@@ -1062,7 +1106,12 @@ class ComputationEngine:
         # through that branch, so its handles went unrecorded and the O(1) check
         # in `_eager` then said a value named nothing when it named everything.
         # `_finish` is the one funnel every value goes through.
+        _c = self._clock
+        _t = time.perf_counter_ns() if _c is not None else 0
         self.graph.hold_handles(nid, value)
+        if _c is not None:
+            _c.add("fin_holdhandles", time.perf_counter_ns() - _t)
+            _t = time.perf_counter_ns()
         will_be_durable = False
         if persist:
             critical = self._is_critical(nid, node)
@@ -1094,12 +1143,21 @@ class ComputationEngine:
             # it safely.
             will_be_durable = self.table.complete(nid, value, compute_ms,
                                                   critical=critical, persist=worth_it)
+            if _c is not None:
+                _c.add("fin_complete", time.perf_counter_ns() - _t)
+                _t = time.perf_counter_ns()
             if node.operator in _SEQUENCE_OPERATORS:
                 for index, item in enumerate(value):
                     self.table.complete_item(nid, index, item)
+                if _c is not None:
+                    _c.add("fin_items", time.perf_counter_ns() - _t)
+                    _t = time.perf_counter_ns()
         else:
             self.table.set_value(nid, value)
             self.table.completed.add(nid)
+            if _c is not None:
+                _c.add("fin_setvalue", time.perf_counter_ns() - _t)
+                _t = time.perf_counter_ns()
         # Closures never release their captures here — the loop's expansion job
         # owns that hold (see LoopAdmission.hold_captures).
         for child in self.graph.on_complete(nid, release_inputs=node.kind != "closure"):
@@ -1107,6 +1165,9 @@ class ComputationEngine:
                 self._enqueue(child)
         self._priority.pop(nid, None)
         self.admission.on_complete(nid)
+        if _c is not None:
+            _c.add("fin_oncomplete", time.perf_counter_ns() - _t)
+            _t = time.perf_counter_ns()
         # EVERY resident value with unrun consumers is a reclaim candidate.
         # This deliberately does NOT pre-filter on durability: a value the
         # worth-it gate declined to persist is not un-reclaimable, it is
@@ -1124,10 +1185,16 @@ class ComputationEngine:
                 self._spill_pending.append(nid)
             else:
                 self._track_evict_candidate(nid)
+        if _c is not None:
+            _c.add("fin_evicttrack", time.perf_counter_ns() - _t)
+            _t = time.perf_counter_ns()
         moved = self.table._sizeof.get(nid, 0)
         for dep in self.graph.deps(nid):
             moved += self.table._sizeof.get(dep, 0)
         self._bandwidth.add(moved)
+        if _c is not None:
+            _c.add("fin_bandwidth", time.perf_counter_ns() - _t)
+            _t = time.perf_counter_ns()
         frontier = len(self.graph.incomplete)
         if frontier > self._peak_frontier:
             self._peak_frontier = frontier
@@ -1375,7 +1442,7 @@ class ComputationEngine:
             else:
                 self.ready.push(nid, priority)
 
-    def _await_named_deps(self, nid: NodeId, node) -> bool:
+    def _await_named_deps_timed(self, nid: NodeId, node) -> bool:
         """Make the nodes an EAGER node's arguments name by handle real deps.
 
         An eager operator is about to be handed values, so every handle inside
@@ -1423,7 +1490,7 @@ class ComputationEngine:
                 # and let the caller look again rather than park forever.
         return waiting
 
-    def _await_expansion(self, waiting: NodeId, to_expand: NodeId) -> None:
+    def _await_expansion_timed(self, waiting: NodeId, to_expand: NodeId) -> None:
         """Put a graph-growing node back on the frontier and requeue its waiter.
 
         `_rematerialize` cannot rebuild such a node: its value comes from what it
@@ -1597,6 +1664,7 @@ class ComputationEngine:
                     # computation finished and `completed` absorbed it).
                     continue
                 node = self.table.nodes[nid]
+                _t0 = time.perf_counter_ns() if self._clock is not None else 0
                 if nid in self._alias and nid not in self._forwarded:
                     # The alias is KEPT (see `_forwarded`): only the forward is
                     # once-only, and that is what this set records.
@@ -1612,6 +1680,8 @@ class ComputationEngine:
                     # those bytes are accounted, so admission absorbs them.
                     self._finish(nid, self._rematerialize(seq_id))  # forward spliced result
                     self.graph.release(seq_id)                      # the forward's hold
+                    if self._clock is not None:
+                        self._clock.add("alias", time.perf_counter_ns() - _t0)
                 elif nid in self.table.values:
                     # Materialized since this node was enqueued — a warm cache can
                     # fill table.values via load() (disk reload) or a shared path
@@ -1778,6 +1848,9 @@ class ComputationEngine:
                                             compute_ms=per_member_ms, skip_enqueue=cone_set)
                         continue
 
+                    if self._clock is not None:
+                        self._clock.add("predispatch", time.perf_counter_ns() - _t0)
+                        _t0 = time.perf_counter_ns()
                     self.table.begin(nid)  # enforces the no-double-computation invariant
                     self._report(nid, "computing")
                     self._kernels_executed += 1
@@ -1785,13 +1858,18 @@ class ComputationEngine:
                     self._in_flight += 1
                     deps = self.graph.deps(nid)
                     self._pin_dispatch(deps)  # see _pin_dispatch: protects the rematerialize above
+                    if self._clock is not None:
+                        self._clock.add("dispatch", time.perf_counter_ns() - _t0)
                     try:
                         value = await self.executor.run(self.table, nid)
                     finally:
                         self._in_flight -= 1
                         self._unpin_dispatch(deps)
                     # measured recompute cost feeds the cache's cost-aware eviction
+                    _tf = time.perf_counter_ns() if self._clock is not None else 0
                     self._finish(nid, value, compute_ms=(time.perf_counter() - started) * 1000.0)
+                    if self._clock is not None:
+                        self._clock.add("finish", time.perf_counter_ns() - _tf)
             except Exception as exc:  # noqa: BLE001
                 self._fail_node(nid, exc)
             finally:
