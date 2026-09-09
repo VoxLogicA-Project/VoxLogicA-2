@@ -1,0 +1,61 @@
+== normal rep 1
+== nowritecache rep 1
+  FAILED, see nowritecache_rep1.out
+== nocache rep 1
+  FAILED, see nocache_rep1.out
+== sparse rep 1
+  FAILED, see sparse_rep1.out
+== normal rep 2
+== nowritecache rep 2
+  FAILED, see nowritecache_rep2.out
+== nocache rep 2
+  FAILED, see nocache_rep2.out
+== sparse rep 2
+  FAILED, see sparse_rep2.out
+== normal rep 3
+== nowritecache rep 3
+  FAILED, see nowritecache_rep3.out
+== nocache rep 3
+  FAILED, see nocache_rep3.out
+== sparse rep 3
+  FAILED, see sparse_rep3.out
+
+target: where the ceiling is in one voxlogica run -- CPU, the event
+        loop, or the block device under the store
+method: getrusage(RUSAGE_SELF) at start and exit for the totals;
+        in-process sampling on its own thread for the shape, rates
+        computed from measured intervals (engine/measure.py).
+        Device figures are /proc/diskstats io_ticks and sectors for
+        the device backing the store; proc figures are
+        /proc/self/io; thr D is our own threads in uninterruptible
+        sleep, sampled once a second.
+
+file	outcome	wall s	mean CPU	of	peak RSS	sat>=90%	loop>=90%	dev util	dev q	dev MB/s w	proc MB/s w	thr D	thr R	of thr	device	instrument	commit
+nocache_rep1.tsv	INCOMPLETE 13/16	18.7	2265.8%	2400%	7.1 GB	64/74	0/74	0%	0.01	0.0	0.0	0.50/18	35.1	132	nvme0n1	0.0703%	b27db24a
+nocache_rep2.tsv	INCOMPLETE 13/16	19.4	2209.8%	2400%	9.1 GB	57/77	0/77	0%	0.01	0.0	0.0	0.05/19	33.4	132	nvme0n1	0.0755%	b27db24a
+nocache_rep3.tsv	INCOMPLETE 13/16	18.4	2256.8%	2400%	6.8 GB	64/73	0/73	0%	0.00	0.0	0.0	0.00/18	35.9	132	nvme0n1	0.0703%	b27db24a
+normal_rep1.tsv	complete	26.9	1913.6%	2400%	10.1 GB	55/107	17/107	9%	11.33	198.7	214.5	0.04/26	29.6	136	nvme0n1	0.0671%	b27db24a
+normal_rep2.tsv	complete	26.9	1906.9%	2400%	9.4 GB	57/107	20/107	10%	9.35	174.8	216.0	0.08/26	28.8	136	nvme0n1	0.0704%	b27db24a
+normal_rep3.tsv	complete	27.9	1863.8%	2400%	11.9 GB	54/111	17/111	5%	2.98	90.5	202.3	0.07/27	26.6	136	nvme0n1	0.0768%	b27db24a
+nowritecache_rep1.tsv	INCOMPLETE 13/16	23.7	1806.8%	2400%	9.1 GB	45/94	27/94	0%	0.02	0.1	0.0	0.00/23	22.6	135	nvme0n1	0.0698%	b27db24a
+nowritecache_rep2.tsv	INCOMPLETE 13/16	24.2	1775.2%	2400%	9.2 GB	43/96	30/96	0%	0.01	0.0	0.0	0.08/24	24.7	136	nvme0n1	0.0735%	b27db24a
+nowritecache_rep3.tsv	INCOMPLETE 13/16	23.5	1818.4%	2400%	9.4 GB	43/93	25/93	0%	0.01	0.1	0.0	0.00/23	24.9	135	nvme0n1	0.0702%	b27db24a
+sparse_rep1.tsv	INCOMPLETE 13/16	24.9	1980.9%	2400%	10.5 GB	60/99	5/99	2%	0.09	4.1	162.9	0.08/24	30.4	136	nvme0n1	0.0659%	b27db24a
+sparse_rep2.tsv	INCOMPLETE 13/16	24.2	2008.5%	2400%	10.1 GB	51/96	4/96	2%	0.07	3.5	159.9	0.38/24	37.2	136	nvme0n1	0.0671%	b27db24a
+sparse_rep3.tsv	INCOMPLETE 13/16	25.2	1926.4%	2400%	10.1 GB	44/100	7/100	10%	0.20	5.2	153.2	0.04/25	29.6	136	nvme0n1	0.0722%	b27db24a
+
+outcome:   a run that did not resolve every goal is INCOMPLETE, and
+           its timings mean nothing: a sweep that aborts early looks
+           fast. Compare only complete runs.
+sat>=90%:  samples at or above 90% of every core busy
+loop>=90%: samples where the event-loop thread alone held ~a full
+           core -- with a low process figure beside it, that is the
+           starvation signature: workers idle, waiting on the loop
+dev util:  fraction of wall time the device had a request in flight
+           (io_ticks/elapsed). 100% is saturation; MB/s is not.
+dev q:     mean requests in flight (weighted io ms / elapsed). Above
+           1 means requests were queueing behind each other.
+thr D:     mean of OUR threads in uninterruptible sleep, over the
+           N samples that carry a census (shown as mean/N). A busy
+           device with thr D at 0 is somebody else's I/O, not ours.
+-:         not measured on this host, which is not the same as zero

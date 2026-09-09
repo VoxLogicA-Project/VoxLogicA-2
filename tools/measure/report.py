@@ -126,10 +126,15 @@ def derive(header: dict, columns: list[str], rows: list[list[str]]) -> list[dict
             "proc_write_mb_s": rate("io_write_bytes", 1e-6),
             "proc_read_mb_s": rate("io_read_bytes", 1e-6),
             "proc_wchar_mb_s": rate("io_wchar", 1e-6),
-            # A per-sample state, not a rate: reported at the interval's end.
+            # Per-sample states, not rates: reported at the interval's end.
             "thr_total": _cell(after, at("thr_total")),
             "thr_running": _cell(after, at("thr_running")),
             "thr_disk": _cell(after, at("thr_disk")),
+            # The engine's own view of how much work it HAD. Idle cores with
+            # `ready + in_flight` below the core count are not a resource
+            # problem at all, and no other column can tell that case apart.
+            "ready": _cell(after, at("ready")),
+            "in_flight": _cell(after, at("in_flight")),
         }
         out.append(point)
     return out

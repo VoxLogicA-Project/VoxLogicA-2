@@ -1,0 +1,77 @@
+run.sh: machine quiet for 60s after waiting 55s; measuring
+[voxlogica] memory log: /tmp/voxlogica-memlog-3788694.tsv
+[voxlogica] peak RSS 9604 MB (memory log: /tmp/voxlogica-memlog-3788694.tsv)
+[measure] COMPLETE /home/vincenzo/meas/2026-09-09-io-and-loop/out/normal_rep1.tsv: 26.9 s wall, 1913.6% mean CPU of 2400% available, 108 samples, nvme0n1 9% utilised, 198.7 MB/s written, instrument cost 0.35 CPU-s
+n_cases=20.0
+dice_fixed_mean=0.8069413698956456
+dice_best_mean=0.8513501430954795
+dice_best_median=0.8904556073150862
+dice_best_stdev=0.10944800755354497
+vi_thr_mean=0.89
+vi_thr_median=0.91
+vi_thr_stdev=0.03879772103996235
+vi_thr_distribution=[[0.81, 2], [0.83, 1], [0.85, 1], [0.86, 1], [0.87, 1], [0.88, 1], [0.89, 1], [0.9, 2], [0.92, 10]]
+best_dice=[0.9217559331391336, 0.8419586073473041, 0.7690590160424536, 0.9266470929071902, 0.712866791531869, 0.931081163137084, 0.9161301613891215, 0.4580704175129068, 0.9003476886169289, 0.8099011725679006, 0.902416217209077, 0.8189720158151413, 0.876338464112431, 0.9049149026015753, 0.9305649697358876, 0.8773000174869334, 0.9152331646479461, 0.8325338514785354, 0.8912743838336643, 0.889636830796508]
+best_vi_thr=[0.81, 0.92, 0.92, 0.9, 0.83, 0.87, 0.92, 0.92, 0.81, 0.85, 0.92, 0.92, 0.89, 0.92, 0.9, 0.88, 0.92, 0.92, 0.92, 0.86]
+outlier_cases=[7, 4, 2, 9, 11, 17, 1, 12, 15, 19]
+outlier_dice=[0.4580704175129068, 0.712866791531869, 0.7690590160424536, 0.8099011725679006, 0.8189720158151413, 0.8325338514785354, 0.8419586073473041, 0.876338464112431, 0.8773000174869334, 0.889636830796508]
+outlier_paths=['/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_008/BraTS20_Training_008_flair.nii.gz', '/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_005/BraTS20_Training_005_flair.nii.gz', '/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_003/BraTS20_Training_003_flair.nii.gz', '/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_010/BraTS20_Training_010_flair.nii.gz', '/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_012/BraTS20_Training_012_flair.nii.gz', '/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_018/BraTS20_Training_018_flair.nii.gz', '/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_002/BraTS20_Training_002_flair.nii.gz', '/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_013/BraTS20_Training_013_flair.nii.gz', '/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_016/BraTS20_Training_016_flair.nii.gz', '/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_020/BraTS20_Training_020_flair.nii.gz']
+exported_planes=[[19, 38.0, 54], [85, 92.0, 104], [61, 72.0, 88], [75, 82.0, 103], [51, 67.0, 77], [63, 82.0, 93], [39, 52.0, 67], [72, 84.0, 100], [72, 89.0, 106], [36, 55.0, 75]]
+exported=[[[None, None, None], [None, None, None], [None, None, None]], [[None, None, None], [None, None, None], [None, None, None]], [[None, None, None], [None, None, None], [None, None, None]], [[None, None, None], [None, None, None], [None, None, None]], [[None, None, None], [None, None, None], [None, None, None]], [[None, None, None], [None, None, None], [None, None, None]], [[None, None, None], [None, None, None], [None, None, None]], [[None, None, None], [None, None, None], [None, None, None]], [[None, None, None], [None, None, None], [None, None, None]], [[None, None, None], [None, None, None], [None, None, None]]]
+{
+  "nodes": 52,
+  "goals": 16,
+  "imports": [
+    "simpleitk",
+    "vox1",
+    "strings"
+  ],
+  "execution": {
+    "success": true,
+    "completed_operations": 15356,
+    "failed_operations": {},
+    "execution_time": 27.983458995819092,
+    "total_operations": 15360,
+    "cache_summary": {
+      "max_concurrency": 32,
+      "mean_concurrency": 29.72,
+      "peak_concurrency": 32,
+      "saturation": 0.929,
+      "peak_live_mb": 3645.2,
+      "live_budget_mb": 25081.0,
+      "peak_frontier": 3620,
+      "peak_runnable": 173,
+      "loop_window": 32,
+      "kernels_executed": 15084,
+      "recomputes": 554,
+      "expanded_loops": 68,
+      "expanded_bodies": 1186,
+      "evicted_early": 0,
+      "spilled_early": 0,
+      "ceiling_escapes": 0,
+      "min_loop_window": 32,
+      "bytes_moved_gb": 145.9,
+      "machine_copy_bandwidth_gbs": 38.1,
+      "cones_dispatched": 3298,
+      "ops_fused": 4884,
+      "mean_cone_size": 2.48,
+      "interiors_elided": 4374,
+      "cones_numba": 3262,
+      "numba_compiles_started": 13,
+      "numba_compiles_finished": 13,
+      "numba_compiles_failed": 0,
+      "buffer_pool_allocations": 2981,
+      "buffer_pool_reuses": 2662,
+      "buffer_pool_returns": 2708,
+      "buffer_pool_drops": 2730,
+      "buffer_pool_mb": 1566.7,
+      "buffer_pool_peak_mb": 2205.2,
+      "cache_hits": 411,
+      "cache_bytes_mb": 5381.9,
+      "evicted_dead": 0,
+      "evicted_live": 0
+    },
+    "diagnostics": []
+  }
+}
+Execution time: 27.98 seconds

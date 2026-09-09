@@ -1,0 +1,20 @@
+run.sh: machine quiet for 60s after waiting 55s; measuring
+[voxlogica] memory log: /tmp/voxlogica-memlog-3792409.tsv
+[voxlogica] peak RSS 8282 MB (memory log: /tmp/voxlogica-memlog-3792409.tsv)
+[measure] INCOMPLETE (13/16 goals) /home/vincenzo/meas/2026-09-09-io-and-loop/out/nocache_rep2.tsv: 19.4 s wall, 2209.8% mean CPU of 2400% available, 78 samples, nvme0n1 0% utilised, 0.0 MB/s written, instrument cost 0.32 CPU-s
+error[E_INTERNAL]: VoxLogicA2 execution failed
+
+NeedsExpansion: 903d965fcc8e2849cc2b007ca13c4f05ca59dfdec394af410816e6f66eb494eb must be expanded, not computed
+
+Hint: Use the details id for the technical cause chain.
+
+Details: voxlogica errors show VLX-375CEFCC
+n_cases=20.0
+dice_fixed_mean=0.8069413698956456
+dice_best_mean=0.8513501430954795
+dice_best_median=0.8904556073150862
+dice_best_stdev=0.10944800755354497
+vi_thr_mean=0.89
+vi_thr_median=0.91
+vi_thr_stdev=0.03879772103996235
+vi_thr_distribution=[[0.81, 2], [0.83, 1], [0.85, 1], [0.86, 1], [0.87, 1], [0.88, 1], [0.89, 1], [0.9, 2], [0.92, 10]]

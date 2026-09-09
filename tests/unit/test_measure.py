@@ -305,3 +305,88 @@ def test_the_measurement_file_says_whether_io_was_available(tmp_path: Path) -> N
     report = _report_module()
     # Whatever the platform, the report must produce a row rather than raise.
     assert report.main([str(out)]) == 0
+
+
+@pytest.mark.unit
+def test_shortfall_attribution_charges_each_interval_once() -> None:
+    """The four classes must sum to the shortfall, or they are not a partition.
+
+    Three synthetic intervals on a 4-core machine, one per cause, all with the
+    same shortfall, plus one saturated interval that contributes none. The
+    precedence is the claim under test: an interval with nothing runnable is
+    charged to work-starvation even though the loop is also hot, because a
+    machine with no work is not waiting for a resource.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "vox_measure_attribution", REPO / "tools" / "measure" / "attribution.py")
+    attribution = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(attribution)
+
+    columns = ["t_ns", "proc_ticks", "loop_ticks", "thr_disk", "ready", "in_flight"]
+    # 100 ticks/s, 1 s intervals. 200 ticks = 200% of the 400% available, so
+    # every unsaturated interval below is short by exactly 2 core-seconds.
+    rows = [
+        # t=0                       start
+        ["0",          "0",   "0",   "",  "",   ""],
+        # loop hot (100 ticks = 100% of a core), work available
+        ["1000000000", "200", "100", "0", "40", "4"],
+        # loop cool, work available, a thread in D
+        ["2000000000", "400", "110", "2", "40", "4"],
+        # loop hot AND nothing runnable -> charged to starvation, not the loop
+        ["3000000000", "600", "210", "0", "1",  "0"],
+        # saturated: no shortfall to charge to anyone
+        ["4000000000", "1000", "220", "0", "40", "4"],
+    ]
+    header = {"ticks_per_second": 100, "authoritative": {"cores_available": 4}}
+    result = attribution.classify(header, columns, rows)
+
+    assert result["shortfall_core_s"] == pytest.approx(6.0)
+    part = result["partition"]
+    assert part["loop-bound"] == pytest.approx(2.0)
+    assert part["disk-wait"] == pytest.approx(2.0)
+    assert part["work-starved"] == pytest.approx(2.0)
+    assert part["unexplained"] == pytest.approx(0.0)
+    assert sum(part.values()) == pytest.approx(result["shortfall_core_s"])
+    # The D-thread bound needs no classification: two threads in D for one of
+    # the four census-carrying seconds is two core-seconds, a mean of half a
+    # thread, and -- every interval here carrying a census -- the same two
+    # core-seconds again once that mean is extended over the measured span.
+    assert result["d_thread_bound_census_core_s"] == pytest.approx(2.0)
+    assert result["mean_d_threads"] == pytest.approx(0.5)
+    assert result["d_thread_bound_core_s"] == pytest.approx(2.0)
+    assert result["census_coverage"] == pytest.approx(1.0)
+
+
+@pytest.mark.unit
+def test_the_dose_response_is_duration_weighted_and_covers_every_interval() -> None:
+    """The band table is the finding, so it must not double-count or drop time.
+
+    A single threshold on loop CPU is arbitrary and moves the answer; the bands
+    exist so the argument rests on monotonicity instead. That only works if the
+    bands are disjoint, exhaustive over intervals that have both readings, and
+    weighted by elapsed time rather than by sample count.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "vox_measure_attribution2", REPO / "tools" / "measure" / "attribution.py")
+    attribution = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(attribution)
+
+    columns = ["t_ns", "proc_ticks", "loop_ticks"]
+    rows = [
+        ["0", "0", "0"],
+        ["1000000000", "400", "10"],       # 1 s, loop 10%, proc 400%
+        ["1250000000", "425", "35"],       # 0.25 s, loop 100%, proc 100%
+    ]
+    header = {"ticks_per_second": 100, "authoritative": {"cores_available": 4}}
+    result = attribution.classify(header, columns, rows)
+    bands = {f"{lo:.0f}": (n, cpu, span)
+             for lo, _hi, n, cpu, _idle, span in result["bands"]}
+    assert bands["0"][0] == 1 and bands["0"][1] == pytest.approx(400.0)
+    assert bands["90"][0] == 1 and bands["90"][1] == pytest.approx(100.0)
+    # Exhaustive: the bands account for all 1.25 s of measured time.
+    assert sum(b[5] for b in result["bands"]) == pytest.approx(1.25)
+    assert result["measured_s"] == pytest.approx(1.25)
