@@ -28,6 +28,8 @@ from typing import Any, Callable, TYPE_CHECKING
 import numpy as np
 
 from voxlogica.arrays import PolyArray
+
+_POLY = PolyArray
 from voxlogica.buffer_pool import acquire_numpy, buffer_states, recycle_unleased_states
 from voxlogica.engine.evaluation import modes_of
 from voxlogica.engine.inflight import executing
@@ -299,6 +301,26 @@ class Executor:
         # worth-it gate the loop applies is applied here first: a value the
         # engine would not persist is not copied, and a value it might persist
         # for the rarer `critical` reason falls back to the loop's own copy.
+        # THE NUMPY VIEW, BUILT ONCE, HERE. The payload copy in
+        # `AsyncPersister.submit` is 94-96% of `NodeTable.complete` and 1.2-1.9 ms
+        # of the single event loop per completion, worth ~5 s of a 26.8 s run
+        # (doc/dev/measurements/2026-09-09-why-workers-wait/). It exists because
+        # a writer thread compressing a live SimpleITK alias raced sitk's own
+        # copy-on-write: `GetArrayViewFromImage` can call MakeUnique, which
+        # reallocates and frees the buffer another thread is reading -- observed
+        # as a SIGSEGV through `arrays.pinned_view`.
+        #
+        # Building the view HERE removes the race rather than paying to avoid
+        # it: this is the moment the image is freshly created and unshared, so
+        # MakeUnique is a no-op, and the alias is then CACHED on the PolyArray
+        # so every later reader -- including the writer thread -- gets the same
+        # read-only alias and nothing triggers copy-on-write again. Costs no
+        # memory: an alias, not a copy.
+        if _POLY is not None and isinstance(value, _POLY):
+            try:
+                value.np()
+            except Exception:                               # noqa: BLE001
+                pass          # not array-like, or sitk absent: nothing to cache
         if self._snapshots is not None and self._should_snapshot is not None:
             if self._should_snapshot(node_id):
                 from voxlogica.engine.persist import _payload_snapshot

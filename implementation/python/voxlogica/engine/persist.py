@@ -71,6 +71,31 @@ def _trace_mmap():
 _NO_SNAPSHOT = object()
 
 
+def _payload_alias(value):
+    """A snapshot over the value's ALREADY-CACHED numpy view, or None.
+
+    Returns None unless the view exists and is a contiguous read-only alias --
+    i.e. unless `Executor._compute` built it on the worker. No copy is made, so
+    this is only safe because that view is cached: every reader gets the same
+    alias and nothing triggers SimpleITK's copy-on-write, which is what used to
+    free the buffer under the writer.
+    """
+    views = getattr(value, "_views", None)
+    if not isinstance(views, dict):
+        return None
+    array = views.get("np")
+    if array is None or not getattr(value, "_readonly_np", False):
+        return None
+    try:
+        view = memoryview(array)
+        if not view.c_contiguous:
+            return None
+        return PayloadSnapshot(data=view, dtype=str(array.dtype),
+                               shape=tuple(array.shape), size=int(array.size))
+    except (TypeError, ValueError, BufferError):
+        return None
+
+
 def _payload_snapshot(value):
     """Copy a volumetric payload's bytes, or None when there is nothing to copy.
 
@@ -182,6 +207,9 @@ class AsyncPersister:
         #: happening on the path that matters and the wall clock will say so.
         self.snapshots_on_loop = 0
         self.snapshots_from_worker = 0
+        #: Payloads handed to the writer as an ALIAS rather than a copy. The
+        #: point of the change is that this becomes the common case.
+        self.snapshots_aliased = 0
         self._queue: "queue.SimpleQueue[tuple[NodeId, Any, dict, int, float, tuple[Any, ...]] | None]" = queue.SimpleQueue()
         self._lock = threading.Lock()
         self._pending_bytes = 0
@@ -243,8 +271,16 @@ class AsyncPersister:
         # producer supplied it, use it; otherwise fall back to copying here,
         # which is still correct and is what the recompute path does.
         if snapshot is _NO_SNAPSHOT:
-            snapshot = _payload_snapshot(value)
-            self.snapshots_on_loop += 1
+            # THE CACHED ALIAS, when there is one: the worker built the numpy
+            # view already (see Executor._compute), so the buffer cannot move
+            # under the writer and the copy this used to make is unnecessary.
+            # That copy was 94-96% of the loop's largest phase.
+            snapshot = _payload_alias(value)
+            if snapshot is None:
+                snapshot = _payload_snapshot(value)
+                self.snapshots_on_loop += 1
+            else:
+                self.snapshots_aliased += 1
         else:
             self.snapshots_from_worker += 1
         self._queue.put((node_id, value, metadata, size, compute_ms, leases,
