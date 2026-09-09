@@ -39,9 +39,26 @@ def _run(args: list[str], tmp_path: Path):
 
 
 def _load_header(path: Path) -> dict:
-    lines = [l[2:] for l in path.read_text(encoding="utf-8").splitlines()
-             if l.startswith("# ") and not l.startswith("# voxlogica measurement")]
-    return json.loads("\n".join(lines))
+    """The report, as JSON.
+
+    It used to be a TSV with a `#`-commented JSON header, and the derivations
+    lived in an external script; the tool computes them itself now and writes
+    one JSON object, so the sections that used to be called `authoritative` and
+    `instrument` in the header are `totals` and `instrument` in the report. The
+    old shape is flattened in here rather than in every assertion below.
+    """
+    if path.suffix != ".json":
+        path = path.with_suffix(".json")
+    report = json.loads(path.read_text(encoding="utf-8"))
+    flat = dict(report.get("environment", {}))
+    flat["authoritative"] = dict(report["totals"])
+    flat["authoritative"].setdefault("wall_s", report["totals"]["wall_seconds"])
+    flat["authoritative"].setdefault("cores_available", report["totals"]["cores_available"])
+    flat["outcome"] = report["outcome"]
+    flat["instrument"] = dict(report["instrument"])
+    flat["instrument"].setdefault("sampler_cpu_s", report["instrument"]["sampler_cpu_seconds"])
+    flat["instrument"].setdefault("note", report["instrument"]["rate_rule"])
+    return flat
 
 
 @pytest.mark.unit
@@ -55,6 +72,7 @@ def test_measurement_is_off_by_default(tmp_path: Path) -> None:
     result = _run(["run", "--no-serve", str(program)], tmp_path)
     assert result.returncode == 0, result.stderr[-2000:]
     assert not list(tmp_path.glob("*.tsv")), "a measurement was written unasked"
+    assert not list(tmp_path.glob("*.json")), "a report was written unasked"
     assert "[measure]" not in result.stderr
 
 
@@ -62,7 +80,7 @@ def test_measurement_is_off_by_default(tmp_path: Path) -> None:
 def test_measurement_records_its_own_provenance_and_an_exact_total(tmp_path: Path) -> None:
     """The file must answer "what ran, where, and how do you know" by itself."""
     program = _program(tmp_path)
-    out = tmp_path / "m.tsv"
+    out = tmp_path / "m.json"
     result = _run(["run", "--no-serve", "--measure", str(out), str(program)], tmp_path)
     assert result.returncode == 0, result.stderr[-2000:]
     assert out.is_file(), result.stderr[-2000:]
@@ -284,8 +302,12 @@ def test_the_measurement_file_says_whether_io_was_available(tmp_path: Path) -> N
     inferred from blank cells.
     """
     program = _program(tmp_path)
-    out = tmp_path / "io.tsv"
-    result = _run(["run", "--no-serve", "--measure", str(out), str(program)], tmp_path)
+    out = tmp_path / "io.json"
+    # `--measure-series` because the per-sample COLUMNS are what this test is
+    # about; the report itself carries the derived `io` section and does not
+    # repeat them, which is the point of separating the two.
+    result = _run(["run", "--no-serve", "--measure", str(out), "--measure-series",
+                   str(program)], tmp_path)
     assert result.returncode == 0, result.stderr[-2000:]
     header = _load_header(out)
     for key in ("block_device", "device_stats_available", "process_io_available",
@@ -296,15 +318,17 @@ def test_the_measurement_file_says_whether_io_was_available(tmp_path: Path) -> N
     assert header["census_every_n_ticks"] >= 1
     assert header["census_period_s"] == pytest.approx(1.0, abs=0.5)
 
-    columns = next(line for line in out.read_text(encoding="utf-8").splitlines()
-                   if not line.startswith("#")).split("\t")
+    series = out.with_suffix(".samples.tsv")
+    assert series.is_file(), "--measure-series wrote no sample file"
+    columns = series.read_text(encoding="utf-8").splitlines()[0].split("\t")
     for name in ("io_wchar", "io_write_bytes", "io_cancelled_write_bytes",
                  "dev_io_ticks_ms", "dev_weighted_io_ms", "thr_disk"):
         assert name in columns, f"column {name} missing"
 
-    report = _report_module()
-    # Whatever the platform, the report must produce a row rather than raise.
-    assert report.main([str(out)]) == 0
+    # And the report's own `io` section must exist whatever the platform, so a
+    # reader is never left inferring availability from blank cells.
+    report_json = json.loads(out.read_text(encoding="utf-8"))
+    assert "io" in report_json and "threads" in report_json
 
 
 @pytest.mark.unit

@@ -109,6 +109,17 @@ _PROGRESS_FORMAT = "goals: {n:>3}/{total} |{bar:12}| {elapsed} · {desc}"
 class ComputationEngine:
     """A persistent, content-addressed, priority-scheduled evaluator."""
 
+    #: CLASS attribute, so an instance that bypasses ``__init__`` -- the engine
+    #: stubs several unit tests build to exercise one method in isolation --
+    #: still has it. Instrumentation must never be able to break a code path,
+    #: and a phase probe reading `self._clock` on such a stub raised
+    #: AttributeError in exactly that way.
+    _clock: Any = None
+    #: None on an instance that bypassed ``__init__``. NOT a class-level set:
+    #: that would be one mirror shared by every engine in the process.
+    _spill_member: Any = None
+
+
     def __init__(self, registry: PrimitiveRegistry | None = None,
                  backend: StorageBackend | None = None, max_concurrency: int = 0,
                  progress: bool = False, debug: bool = False, max_live_bytes: int = 0,
@@ -381,6 +392,13 @@ class ComputationEngine:
         # free, kept on their own queue so they are never starved behind the
         # much larger not-yet-spilled backlog (see _reclaim_memory PASS 1).
         self._spill_pending: deque[NodeId] = deque()
+        #: Membership mirror of `_spill_pending`. The census used to answer
+        #: "is this value waiting for its write" by building
+        #: `set(self._spill_pending)` on every memory-log snapshot; at the
+        #: 5,912,075 entries measured on the sixty-case sweep that is a
+        #: six-million-element set constructed every few seconds, on the thread
+        #: whose whole job is to observe cheaply.
+        self._spill_member: set[NodeId] = set()
         # Ownerless values (recompute scaffolding whose consumers already ran).
         # Freeing one costs NOTHING — no write, and no future read to satisfy —
         # whereas evicting a value that still has a consumer buys the same bytes
@@ -848,7 +866,7 @@ class ComputationEngine:
         exception handling make it best-effort, per memlog's contract.
         """
         try:
-            tracked = (set(self._evict_candidates) | set(self._spill_pending)
+            tracked = (set(self._evict_candidates) | set(self._spill_member or ())
                        | set(self._ownerless))
             buckets = {"goal": 0, "pinned": 0, "ownerless": 0, "durable": 0,
                        "write_queued": 0, "undurable": 0,
@@ -1008,10 +1026,27 @@ class ComputationEngine:
                 self._track_evict_candidate(nid)  # gained a consumer: not garbage
                 continue
             self._drop_ownerless(nid)
+        # DRAINED ON EVERY TURN, not only when over budget. The gate used to be
+        # `if over_budget else 0`, which meant that under budget nothing was
+        # ever removed while `_finish` kept appending one entry per durable
+        # completion. Measured on the sixty-case oracle sweep: 5,912,075 entries
+        # after five and a half hours, throughput down from 568 to 92 node/s
+        # with the process still at 2073% of 2400% CPU and the disk and the
+        # machine both idle. The CPU was full of scanning our own dead ids, and
+        # each capped pass spent its whole budget discarding them while the live
+        # entries sat millions deep -- the same burial this file already records
+        # for another queue.
+        #
+        # Under budget the sweep still costs nothing to skip a dead entry, and
+        # an entry whose write HAS landed is handed to the ordinary cost-aware
+        # queue instead of being evicted: there is room, so nothing needs to be
+        # thrown away, but it must not stay here either.
         scanned = 0
-        limit = min(len(self._spill_pending), _EVICT_SWEEP) if over_budget else 0
+        limit = min(len(self._spill_pending), _EVICT_SWEEP)
         while scanned < limit:
             nid = self._spill_pending.popleft()
+            if self._spill_member is not None:
+                self._spill_member.discard(nid)
             scanned += 1
             if nid not in self.table.values:
                 continue                          # already gone
@@ -1020,12 +1055,19 @@ class ComputationEngine:
                 continue
             if self._dispatch_pins.get(nid, 0) > 0:
                 self._spill_pending.append(nid)   # a dispatch is reading it RIGHT NOW: retry later
+                if self._spill_member is not None:
+                    self._spill_member.add(nid)
                 continue
             if self.table.persisted(nid):
-                self.table.evict(nid)
-                self._evicted_early += 1
+                if over_budget:
+                    self.table.evict(nid)
+                    self._evicted_early += 1
+                else:
+                    self._track_evict_candidate(nid)   # durable, and there is room
             else:
                 self._spill_pending.append(nid)  # write still in flight; look again later
+                if self._spill_member is not None:
+                    self._spill_member.add(nid)
         # Re-read: PASS 0/1 may have freed enough that no consumer-holding value
         # needs to pay a recompute this turn.
         if not self._evict_candidates or self.table.accounted_bytes <= budget:
@@ -1080,6 +1122,8 @@ class ComputationEngine:
                 # re-offer it to the writer (spill respects the backlog
                 # budget) and let PASS 1 evict it when the write lands.
                 self._spill_pending.append(nid)
+                if self._spill_member is not None:
+                    self._spill_member.add(nid)
             else:
                 # Writer still saturated: nothing can leave RAM this way right
                 # now. Keep the candidate; a later sweep retries.
@@ -1285,6 +1329,8 @@ class ComputationEngine:
         if nid not in self._goals and self.graph.consumers.get(nid, 0) > 0:
             if will_be_durable:
                 self._spill_pending.append(nid)
+                if self._spill_member is not None:
+                    self._spill_member.add(nid)
             else:
                 self._track_evict_candidate(nid)
         if _c is not None:

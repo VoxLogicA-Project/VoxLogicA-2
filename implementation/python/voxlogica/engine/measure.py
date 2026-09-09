@@ -749,14 +749,30 @@ class Measurement:
             for key, value in sample.engine.items():
                 if key not in keys and not isinstance(value, (dict, list)):
                     keys.append(key)
+        # The optional groups are written as their own columns, in a fixed
+        # order, and EMPTY rather than zero when the reading was not taken --
+        # the census fires on one tick in four, and a zero there would read as
+        # "no threads in D" instead of "not asked".
+        io_cols = [f"io_{k}" for k in _IO_KEYS]
+        dev_cols = ["dev_sectors_read", "dev_sectors_written",
+                    "dev_io_ticks_ms", "dev_weighted_io_ms"]
+        thr_cols = ["thr_total", "thr_running", "thr_sleeping", "thr_disk"]
         columns = ["t_ns", "proc_ticks", "loop_ticks", "rss_bytes",
-                   "minflt", "majflt", "nvcsw", "nivcsw", *keys]
+                   "minflt", "majflt", "nvcsw", "nivcsw",
+                   *io_cols, *dev_cols, *thr_cols, *keys]
+
+        def cells(values, width):
+            return list(values) if values and len(values) >= width else [""] * width
+
         with open(path, "w", encoding="utf-8") as out:
             out.write("\t".join(columns) + "\n")
             for sample in self._samples:
                 row: list[Any] = [sample.t_ns, sample.proc_ticks, sample.loop_ticks,
                                   sample.rss_bytes, sample.minflt, sample.majflt,
                                   sample.nvcsw, sample.nivcsw]
+                row.extend(cells(sample.io, len(io_cols)))
+                row.extend(cells(sample.disk, len(dev_cols)))
+                row.extend(cells(sample.census, len(thr_cols)))
                 row.extend(sample.engine.get(key, "") for key in keys)
                 out.write("\t".join(str(value) for value in row) + "\n")
 
