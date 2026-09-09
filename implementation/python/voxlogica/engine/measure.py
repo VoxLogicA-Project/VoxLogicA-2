@@ -666,7 +666,23 @@ class Measurement:
             "io": {key: last.get(key) for key in
                    ("io_wchar", "io_write_bytes", "io_read_bytes",
                     "io_cancelled_write_bytes", "dev_io_ticks_ms",
-                    "dev_sectors_written", "thr_disk", "thr_total")},
+                    "dev_sectors_written")},
+            # WHAT THE THREADS ARE DOING, distributed rather than last-valued.
+            # `in_flight` counts kernels DISPATCHED, so a kernel blocked on a
+            # lock or a store read counts as in flight and "the scheduler fills
+            # the machine" cannot be read off it. The count of threads actually
+            # RUNNABLE can: if it tracks the CPU figure, the CPU figure is
+            # telling the truth about how much of the machine is working.
+            "threads": _census(self._samples),
+            # THE PAIR, IN TIME. Aggregates cannot answer the question: 31.75
+            # threads runnable on average against 18.6 cores' worth of CPU
+            # looks like a contradiction, and it is only resolved by asking
+            # what the CPU was doing DURING the intervals when 32 threads were
+            # runnable. If those intervals are at the ceiling, the whole
+            # shortfall is the minority of intervals with nothing to run, which
+            # is starvation and locates itself; if they are not, threads are
+            # runnable and not being served, which is a different fault.
+            "runnable_vs_cpu": _runnable_vs_cpu(self._samples, ceiling),
             "instrument": {
                 "samples": len(self._samples),
                 "period_requested_s": self._period,
@@ -721,6 +737,80 @@ class Measurement:
                                   sample.nvcsw, sample.nivcsw]
                 row.extend(sample.engine.get(key, "") for key in keys)
                 out.write("\t".join(str(value) for value in row) + "\n")
+
+
+def _runnable_vs_cpu(samples: list, ceiling: float) -> list[dict[str, Any]]:
+    """Process CPU% during the intervals ENDING at each census, binned.
+
+    A census is a snapshot at an instant; CPU% needs two readings. So each
+    census is paired with the interval that ends at it -- the closest honest
+    pairing available -- and the rate comes from that interval's own elapsed
+    time, as everywhere else here.
+    """
+    pairs: list[tuple[int, float]] = []
+    previous = None
+    for sample in samples:
+        if previous is not None and sample.census and len(sample.census) >= 2:
+            dt = (sample.t_ns - previous.t_ns) / 1e9
+            if dt > 0 and sample.proc_ticks >= 0 and previous.proc_ticks >= 0:
+                cpu = (sample.proc_ticks - previous.proc_ticks) / _TICKS / dt * 100.0
+                pairs.append((int(sample.census[1]), cpu))
+        previous = sample
+    if not pairs:
+        return []
+    bins = ((0, 4), (5, 12), (13, 20), (21, 28), (29, 40), (41, 10 ** 6))
+    out = []
+    for low, high in bins:
+        chosen = [cpu for runnable, cpu in pairs if low <= runnable <= high]
+        if not chosen:
+            continue
+        out.append({
+            "runnable": f"{low}-{high}" if high < 10 ** 6 else f"{low}+",
+            "intervals": len(chosen),
+            "cpu_percent_mean": round(sum(chosen) / len(chosen), 0),
+            "cpu_percent_max": round(max(chosen), 0),
+            "share_of_ceiling": round(sum(chosen) / len(chosen) / ceiling, 3),
+        })
+    return out
+
+
+def _census(samples: list) -> dict[str, Any]:
+    """Thread-state distribution over the run, from the periodic census.
+
+    Only some samples carry it (it is the one O(threads) reading, so it runs
+    about once a second), and the empty ones are skipped rather than
+    interpolated: a reader must never be able to mistake a gap for a zero.
+    """
+    running, sleeping, disk, total = [], [], [], []
+    for sample in samples:
+        # ON THE SAMPLE, not in the engine dict: the census is a reading this
+        # instrument takes, not something the engine reports. Looking for it in
+        # the wrong place returned an empty census with no error, which is
+        # exactly the failure mode a measurement must not have.
+        values = sample.census
+        if not values or len(values) < 4:
+            continue
+        total.append(int(values[0]))
+        running.append(int(values[1]))
+        sleeping.append(int(values[2]))
+        disk.append(int(values[3]))
+    if not running:
+        return {"censuses": 0, "note": "no thread census in this run"}
+    ordered = sorted(running)
+    return {
+        "censuses": len(running),
+        "threads_total_mean": round(sum(total) / len(total), 1),
+        "runnable_mean": round(sum(running) / len(running), 2),
+        "runnable_median": ordered[len(ordered) // 2],
+        "runnable_max": max(running),
+        "runnable_p10": ordered[max(0, int(0.10 * len(ordered)) - 1)],
+        "sleeping_mean": round(sum(sleeping) / len(sleeping), 1),
+        "uninterruptible_mean": round(sum(disk) / len(disk), 2),
+        "note": ("runnable = threads in R. Compare with totals.mean_cpu_percent "
+                 "/ 100: if they agree, the CPU figure is an honest account of "
+                 "how much of the machine is working, and the remaining threads "
+                 "are blocked rather than starved of cores."),
+    }
 
 
 class LoopClock:
