@@ -1,5 +1,11 @@
 # VoxLogicA-2 Development Documentation
 
+**Performance results live in [measurements/](measurements/README.md)** — one
+directory per experiment, each with the JSON reports the engine wrote and a
+note saying what was tried, what it cost in wall time and in energy, and
+whether it was kept. Read the rules at the top of that page before quoting a
+number from it.
+
 This directory contains comprehensive documentation for VoxLogicA-2 development, organized into modules and development notes.
 
 ## Module Documentation (`modules/`)

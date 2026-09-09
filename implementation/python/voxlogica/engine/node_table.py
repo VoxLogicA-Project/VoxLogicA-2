@@ -26,6 +26,7 @@ already running or materialized is a scheduler bug, so ``begin`` raises.
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 from voxlogica.arrays import PolyArray
@@ -117,6 +118,9 @@ class NodeTable:
         self.nodes: dict[NodeId, NodeSpec] = _LoopWatchingNodes()
         self.values: dict[NodeId, Any] = {}
         self._running: set[NodeId] = set()
+        #: engine.measure.LoopClock, or None when nothing is measuring. The two
+        #: probes inside `complete` are its only users.
+        self.finish_clock: Any = None
         #: Set by ComputationEngine: "can this value be rebuilt from its kernel?"
         self._recompute_guard: Any = None
         #: Values held back by that guard, released when the run drains.
@@ -454,10 +458,20 @@ class NodeTable:
         (barring write failure) become durable, which is what makes it a valid
         proactive-eviction candidate (see ComputationEngine._reclaim_memory).
         """
+        # SPLIT AND TIMED. `complete` is 3.40 of 4.0 seconds of the event loop
+        # during the export phase -- 2,647 calls at 1.28 ms -- and the loop is
+        # the ceiling there: 31 threads runnable, 31 kernels in flight, machine
+        # at 8-10 of 24 cores. WHICH HALF costs decides what can move off the
+        # loop, and moving the wrong half already cost one experiment.
+        clock = self.finish_clock
+        t = time.perf_counter_ns() if clock is not None else 0
         self._running.discard(node_id)
         size = self.set_value(node_id, value)
         self.completed.add(node_id)
         self._compute_ms[node_id] = compute_ms
+        if clock is not None:
+            clock.add("tbl_setvalue", time.perf_counter_ns() - t)
+            t = time.perf_counter_ns()
         if self._persister is not None and (critical or (persist and not self._persister.over_budget)):
             node = self.nodes[node_id]
             # Record the in-flight write BEFORE submitting: `spill` consults this
@@ -465,6 +479,8 @@ class NodeTable:
             self._write_queued.add(node_id)
             self._persister.submit(node_id, value, {"source": "runtime", "operator": node.operator},
                                    compute_ms, size=size, snapshot=snapshot)
+            if clock is not None:
+                clock.add("tbl_submit", time.perf_counter_ns() - t)
             return True
         return False
 

@@ -483,6 +483,7 @@ class ComputationEngine:
             # have found, so it must not rest on an assumption.
             from voxlogica.engine.measure import LoopClock
             self._clock = LoopClock()
+            self.table.finish_clock = self._clock
             self.measurement.register_loop_thread()
             self.measurement.start()
         self._memlog = MemoryLogger(self._memory_snapshot)

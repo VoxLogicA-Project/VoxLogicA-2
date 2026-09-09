@@ -639,6 +639,28 @@ class Measurement:
                 "involuntary_switches": end.ru_nivcsw - start.ru_nivcsw,
                 "source": "getrusage(RUSAGE_SELF), read once at start and once at exit",
             },
+            # THROUGHPUT AND ENERGY, the two numbers a change has to move in the
+            # right direction together. `completions_per_second` is what the
+            # engine actually retires and is the only rate that a change to the
+            # completion path can improve; `cpu_seconds` in totals is
+            # proportional to energy, so a shorter wall clock bought with more
+            # CPU-seconds is a heater, not an optimisation. Every intervention
+            # measured on 2026-09-09 that raised CPU% raised cpu_seconds and
+            # got slower or stayed level.
+            "throughput": {
+                "completions": last.get("completed"),
+                "completions_per_second": (round((last.get("completed") or 0) / wall_s, 1)
+                                           if wall_s > 0 else None),
+                "kernels_per_second": (round((last.get("kernels_executed") or 0) / wall_s, 1)
+                                       if wall_s > 0 else None),
+                "cpu_seconds_per_completion_ms": (
+                    round(1000.0 * cpu_s / last["completed"], 3)
+                    if last.get("completed") else None),
+                "note": ("cpu_seconds_per_completion is the energy cost of one unit of "
+                         "work. A change must not raise it. Context switches are in "
+                         "totals: a parallelisation that trades loop time for switching "
+                         "shows up there and in this ratio, not in CPU%."),
+            },
             # WORK, so a CPU rise caused by doing more is never read as a win.
             "work": {key: last.get(key) for key in
                      ("kernels_executed", "recomputes", "cones_dispatched",
