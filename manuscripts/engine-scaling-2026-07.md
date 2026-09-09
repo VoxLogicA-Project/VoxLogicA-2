@@ -1009,3 +1009,250 @@ section:
   structural win already happened, and what remains is optimization at the
   margin -- valuable, but categorically smaller, and, per this document's own
   repeated experience, easy to get backwards without measuring first.
+
+# Part VI — an instrument first, then the memory cliff (2026-09-09)
+
+## 27. Why this part starts with the instrument and not with a change
+
+Parts I–V each proposed a mechanism, changed it, and timed the result. Part VI
+began differently, and the reason is a failure rather than a preference: on
+2026-09-09 two measurements of the same sixty-case sweep, taken an hour apart,
+reported **2059%** and **1094%** of an available 2400% CPU. Both were wrong.
+
+The first divided CPU-tick deltas by an *assumed* one-second sampling period
+while each iteration actually took 1.389 s, because the sampler was reading 135
+`/proc/<pid>/task/*/stat` files per tick: a 39% overstatement manufactured
+entirely by the instrument. The second timestamped correctly, but its per-tick
+cost both stole CPU from the run and starved the sampler itself (observed
+intervals up to 2.5 s), so its lower figure was depressed by an unknown amount.
+
+An instrument whose error is unknown and whose perturbation is unmeasured cannot
+support a claim, and both of those numbers had been quoted as findings. So the
+first work of this part was to build one that can, and to make it part of the
+tool rather than a script beside it.
+
+## 28. What `--measure` reports, and the four rules it obeys
+
+`--measure <report>.json` writes one self-describing JSON report. It is off by
+default and free when off: no sampler thread is created and no dispatch path
+gains a branch.
+
+Four rules, each of which exists because breaking it produced a wrong number:
+
+1. **The process measures itself.** No external sampler competing for the cores
+   under measurement.
+2. **Every sample carries its own timestamp.** Rates come from the interval that
+   elapsed, never from the interval that was requested, and the achieved
+   interval statistics are in the report so a reader can see the sampler's own
+   jitter.
+3. **Per-sample cost is bounded and constant** — a fixed five `/proc` reads and
+   one `getrusage`, whatever the thread count. ITK's pools push this process
+   past 130 threads; an instrument that scales with that is measuring itself.
+   The one unavoidably O(threads) reading, the R/S/D census, fires on every
+   fourth tick and leaves its columns empty on the rest, so a gap can never be
+   mistaken for a zero.
+4. **The instrument measures its own footprint** with `RUSAGE_THREAD` and
+   prints it: **0.066–0.077% of run CPU**, 0.3–0.4 CPU-seconds out of 390–520.
+   Non-perturbation is a number in the output rather than a claim in a comment.
+
+The headline totals are never sampled. They come from `getrusage(RUSAGE_SELF)`
+read once at start and once at exit, so they have no sampling error at all; the
+per-sample series exists to show the *shape*, and the report says so where a
+reader will see it.
+
+Ten sections per report: environment (argv, commit, dirty flag, host, CPU model,
+core count, free-threaded build, live GIL state), outcome, totals, work,
+work-by-operator, shape, event loop with per-phase attribution, I/O, threads,
+and instrument.
+
+## 29. The measures that decide, in order of authority
+
+The single most consequential result of this part is negative and
+methodological: **on this workload CPU utilisation is anti-correlated with
+speed.** The fastest ITK width runs at 1859% and the second-slowest at 2030%;
+and across the memory sweep in §31, throughput halves from 536 to 238 node/s
+while CPU moves only from 2090% to 2069%.
+
+So the report carries, and the reader is directed to use, in this order:
+
+| measure | what it decides |
+|---|---|
+| **wall clock on a fixed mixed task** | the verdict. Every timing here is the same 20-case sweep or the same 60-case sweep, never a microbenchmark |
+| **`cpu_seconds`** | proportional to ENERGY. A shorter run bought with more CPU-seconds is a heater |
+| **CPU-ms per completion** | the energy cost of one unit of work; must not rise |
+| **`kernels_executed`, `recomputes`** | the WORK. A better time or CPU with more work is a regression wearing a better number |
+| `completions/s` | a diagnostic only — confounded by node size, so never compared across programs or phases |
+| involuntary context switches | catches a parallelisation that trades one thread's time for scheduler churn |
+| goals resolved | gates everything: an aborted sweep looks fast, and one was once reported as the fastest of three |
+| CPU% | **not** on this list, for the reason above |
+
+Three interventions were reverted on exactly these grounds after looking like
+wins on CPU%: moving the loop's payload copy (+55 points of CPU, no wall
+change), adaptive ITK filter width (2062%, 75% slower), and ITK=1 (highest CPU
+of four widths, 76% slower).
+
+## 30. How each candidate was chosen, and what was excluded
+
+The procedure was: exclude by measurement, then intervene, then judge on the
+table in §29 — and record the negative results as fully as the positive ones,
+because they are what stops a hypothesis being tried twice.
+
+Excluded, each with its own measurement:
+
+- **The GIL.** Verified off on the live process: `/proc/<pid>/cmdline` reads
+  `python -X gil=0 -m voxlogica.main`. An earlier claim that SimpleITK's import
+  re-enabled it was measured on a bare interpreter — a launch path this project
+  never uses — and retracted.
+- **The disk.** Device 5–10% utilised while writing 4.17 GB; threads in
+  uninterruptible sleep 0.00–0.09 on average; `--no-write-cache` writes 0.00 GB
+  and does not recover the CPU.
+- **ITK's internal width.** The recorded conclusion ("itk=24 wins at 8 workers,
+  itk=1 at 18") is false on this engine: default 28.2 s, 24 → 28.5 s, 4 →
+  49.3 s, 1 → 49.7 s. Leave it alone.
+- **Worker count.** Three repetitions each: 32 → 26.3 s, 20 → 28.1, 16 → 29.3,
+  8 → 29.0, 4 → 32.1. A "plateau from 20 upward" seen in single runs did not
+  survive repetition and was withdrawn.
+- **Aggregate scheduling.** 25.5 kernels in flight on 24 cores, 106% of the
+  work-over-cores floor, and kernels off-CPU 26% of their own runtime. There is
+  no dispatch decision that reaches inside a kernel.
+- **Memory bandwidth as an explanation of per-kernel cost.** Withdrawn: 32
+  workers pinned to 8 P-cores take the same wall time as 8 on the same cores
+  while every per-kernel figure quadruples, so the growth was oversubscription
+  of a *wall-time* measure (`compute_ms` is the kernel's wall time, not its
+  CPU).
+
+Two structural facts came out of that exclusion and are worth stating on their
+own. The engine's "N workers" are **coroutines on one thread**
+(`asyncio.create_task`), and only the kernel leaves it, via `run_in_executor`
+onto a thread pool; each coroutine holds at most one outstanding submission, so
+**the pool's work queue is empty in every sampled interval**. And the machine is
+not 24 equal cores: 8 P-cores at 5.6–5.8 GHz against 16 E-cores at 4.6 GHz,
+measured at 1.28× apart, which makes the box about 2050% in P-core-equivalents.
+A 2400% target was asking for capacity it does not have in the units the number
+is printed in.
+
+## 31. The result: a cliff in the memory policy, worth 2.3× throughput
+
+Every measurement above was taken on the 20-case calibration sweep, which never
+exceeds ~12 GB of RSS. The real workload — the sixty-case double oracle sweep —
+reaches 42 GB on a 61 GB host, and **no measurement on the small program could
+see what that does.** Generalising from it is the mistake underneath several
+days of work.
+
+On the real sweep, on an idle machine, in six-minute windows from the same warm
+store, changing only `governor._RSS_SHARE` (the fraction of the machine the
+governor permits this process to occupy):
+
+| share | CPU | RSS | direct reclaim | **node/s** |
+|---|---|---|---|---|
+| 0.30 | 2098–2192% | 15.4–15.9 GB | 2.1–5.0k pages/s | **463–543** |
+| 0.40 | 2208% | 19.6 GB | — | **529** |
+| 0.50 | 2090% | 22.5 GB | 1.1k/s | **536** |
+| **0.60** | 2069% | 27.1 GB | **9.5k/s** | **238** |
+| 0.75 (as shipped) | 1986% | 30.4 GB | 6–15k/s | **263–304** |
+
+**The cliff is between 0.50 and 0.60, and CPU barely moves across it** — 2090%
+against 2069% while throughput halves. That is the most informative number in
+this part. At ~2100% of 2400% the cores are equally busy on both sides and do
+2.3× the useful work on one of them, because past the cliff a thread that cannot
+obtain a free page **reclaims one itself**, and 9–35 MB of output per node is a
+great many pages. The cores were never idle; they were executing the kernel's
+page reclaim. Corroborating readings at 0.75: `MemAvailable` 10.8 GB, PSI memory
+`full` 2.7–3.8%, `pgscan_direct` 6,000–15,000 pages/s continuously.
+
+Two hypotheses about the same symptom were refuted on the way and removed:
+
+- **malloc's `mmap`.** ITK aligns image buffers for SIMD and glibc serves a
+  large `memalign` with `mmap` regardless of `M_MMAP_THRESHOLD`, so forbidding
+  it looked like the fix. A/B with `mallopt(M_MMAP_MAX, 0)`, accepted in both
+  arms: 281,927 minor faults/s and 263 node/s with `mmap` allowed, 287,627 and
+  268 with it forbidden. No difference.
+- **The minor faults themselves.** Still 226,089/s where throughput is nearly
+  twice as high. About 1 GB/s of first-touch is simply what allocating this much
+  memory costs; it is not what collapses throughput. Direct reclaim is.
+
+`_RSS_SHARE` is now **0.45**, in the middle of the measured plateau with margin
+below the cliff. Under it, the sixty-case double oracle sweep runs at a sustained
+**512 node/s with all 24 cores at 95–100%**, against 263–304 node/s before.
+
+## 32. Two smaller results, both kept
+
+**Squared distance where only a radius is compared.** `vox1.dt` was 54% of the
+20-case sweep's entire kernel time (940 calls, 348.7 CPU-seconds, 371 ms each)
+and every consumer in `vox1/compat.imgql` only ever compares it against a
+radius. Comparing squared distances against the squared radius is exactly
+equivalent there — both sides non-negative, squaring monotone — and removes a
+square root per voxel. Added as `dt2` rather than a flag on `dt`, because `dt`'s
+value is a distance and a program may use it as one. Measured: **−4% wall,
+−9.5% on the dominant kernel, CPU flat, `dice_best_mean` identical to all
+sixteen digits.**
+
+**An alias instead of a copy on the persist path.** `AsyncPersister.submit` was
+copying every persisted payload on the event loop — 94–96% of
+`NodeTable.complete`, itself 1.2–1.9 ms of the single loop thread per
+completion. The copy existed because SimpleITK images are copy-on-write and a
+writer thread compressing a live alias had segfaulted through `MakeUnique`. The
+numpy view is now built **once, on the worker**, at the moment the image is
+fresh and unshared where `MakeUnique` is a no-op, and cached, so every later
+reader including the writer gets the same read-only alias and nothing triggers
+copy-on-write again. Measured, three repetitions: **wall −11.3%** (24.3 s
+against 27.4), **CPU-seconds −3.2%**, **CPU-ms per completion −3.5%**,
+**recomputes −11%**, **peak RSS −7%**, loop occupancy 67% → 40%, kernels
+unchanged, Dice identical.
+
+The second of these is instructive about the first two attempts on the same
+mechanism, both reverted: relocating the copy to the worker *while keeping the
+alias* held two buffers per value, raised recomputes 37% and energy 2.6%, and
+bought no wall clock. Removing a copy and adding one look identical in a phase
+attribution and opposite in the memory counters.
+
+## 33. That the event loop bounds the tail, proven by intervention
+
+The 20-case sweep spends its last 5.6 s of 27.7 at 800–1000% while 31 threads
+are runnable, 31 kernels are in flight, the pool's queue is empty, and the
+asyncio thread sits at 96–104% of a core. To settle whether that is cause or
+correlation, a busy wait of known duration was injected into the loop's
+per-completion path — a busy wait rather than a sleep, since a sleep yields the
+loop and would measure something else — with nothing else changed:
+
+| Δ per completion | wall | cores busy | loop occupancy | kernels | CPU-s |
+|---|---|---|---|---|---|
+| 0 | 26.8 s | 18.54 | 68% | 15,086 | 496 |
+| +600 µs | 29.8 s | 16.59 | 81% | 15,068 | 494 |
+| +1200 µs | 37.4 s | 13.46 | 88% | 15,019 | 504 |
+| +2400 µs | 52.7 s | 9.95 | 92% | 15,027 | 525 |
+
+Adding 2.4 ms to **one thread** nearly doubles the run with the kernel count
+identical and CPU-seconds flat. Utilisation falls monotonically while the loop's
+occupancy rises to meet the delay — the shape of a single server whose slack is
+consumed first. Near the operating point the slope is about **5 s of wall clock
+per millisecond of per-completion loop cost**, which is what makes the alias
+change in §32 worth what it is worth.
+
+## 34. The next step, and why it is not another constant
+
+`_RSS_SHARE = 0.45` is the right *value* and the wrong *shape*. A fixed fraction
+of total memory cannot know how much of the machine is already in use, what page
+cache the kernel needs, or that another tenant has arrived — and the cost of
+being wrong is charged to the allocating thread rather than to the engine's own
+accounting, which is why the governor's own budget looked healthy at 25 GB while
+RSS stood at 42 GB.
+
+The control should be the machine's **available** memory, with `pgscan_direct`
+per second as the signal that the process is over the line: it is a direct,
+cheap, kernel-maintained measure of *precisely* the thing that costs, and it
+distinguishes "the box is full" from "our accounting says we are fine". A
+governor reading it would tighten before the cliff instead of being told a
+number chosen on one host.
+
+Two further items follow from Part VI's own measurements rather than from
+intuition. The export phase's 2,643 completions of small per-slice values pay
+the loop's per-completion cost 2,643 times; fusion already makes several nodes
+one kernel, and extending its coverage there attacks the count rather than the
+cost — the only remaining route, since paying that cost *elsewhere* was measured
+and closed. And the ball-opening formulation of `smoothen` runs the 20-case
+sweep in 16.4 s against 27.1 — 42% faster with 45% fewer kernels — but is a
+different computation: the discrete ball of radius r implies `d > r` where
+`distgeq` asks `d >= r`, a difference of 21,103 voxels on one case, and the Dice
+moves 0.8514 → 0.8612. That is a method choice for whoever owns the experiment,
+not an optimisation, and it is recorded rather than taken.
