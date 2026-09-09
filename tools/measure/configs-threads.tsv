@@ -1,0 +1,3 @@
+threads32	--threads 32
+threads24	--threads 24
+threads16	--threads 16

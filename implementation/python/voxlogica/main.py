@@ -306,8 +306,8 @@ def _run_command_inner(args: argparse.Namespace, ui) -> int:
 
     execution_result = None
     if args.execute:
-        if args.profile is not None and not args.engine:
-            logger.warning("--profile has no effect with --no-engine (lazy strategy doesn't support it)")
+        if args.measure is not None and not args.engine:
+            logger.warning("--measure has no effect with --no-engine (only the engine is instrumented)")
         storage = NoCacheStorageBackend() if args.no_cache else SQLiteResultsDatabase(
             db_path=args.store_db,
             max_bytes=int(args.cache_max_gb * 1024 ** 3) if args.cache_max_gb else None)
@@ -326,7 +326,7 @@ def _run_command_inner(args: argparse.Namespace, ui) -> int:
             # when nobody is serving a UI, which is the case that must stay
             # free: an observer that is `None` is not called at all.
             observe=ui.results.observe if ui is not None and ui.results else None,
-        ).execute_workplan(workplan, profile=args.profile)
+        ).execute_workplan(workplan, measure=args.measure)
         if not execution_result.success:
             for diagnostic in execution_result.diagnostics:
                 _render_diagnostic(diagnostic, args)
@@ -730,14 +730,19 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Unroll runtime-valued for-loops into parallel nodes (lazy strategy)")
     run_parser.add_argument("--for-expansion-cap", type=int, default=4096, metavar="N",
                             help="Max constant-loop static unroll length (0 disables)")
-    run_parser.add_argument("--profile", nargs="?", const="", default=None, metavar="PATH",
-                            help="DEPRECATED -- do not use for performance questions. cProfile has "
-                                 "one global call stack and no representation for this engine's "
-                                 "concurrent workers, so its numbers can be arbitrarily wrong "
-                                 "(measured: 1389s of cumulative time reported inside a 52s run). "
-                                 "Use /usr/bin/time -v's %%CPU and the engine's own saturation / "
-                                 "cpu-per-wall figures instead. Kept only for single-threaded "
-                                 "debugging of the reducer.")
+    run_parser.add_argument("--measure", nargs="?", const="measurement.tsv", default=None,
+                            metavar="PATH",
+                            help="Write one self-describing performance measurement to PATH "
+                                 "(default measurement.tsv). Off by default and free when off: "
+                                 "no sampler thread and no branch on any dispatch path. The file "
+                                 "carries a JSON header (commit, host, CPU model, core count, "
+                                 "GIL state, flags, achieved sampling interval, and what the "
+                                 "instrument itself cost) plus a per-sample series; the total-CPU "
+                                 "figure comes from getrusage read once at start and once at "
+                                 "exit, so it has no sampling error. Rates in the series must be "
+                                 "computed from consecutive timestamps, never from the nominal "
+                                 "period -- doing the latter overstated CPU by 39%%. See "
+                                 "engine/measure.py and tools/measure/.")
     run_parser.add_argument("--serve", action=argparse.BooleanOptionalAction, default=True,
                             help="Serve the browser UI alongside the run (default). The process "
                                  "exits when the run ends if no browser is connected, and keeps "
@@ -835,11 +840,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     # Deprecations are only useful if the person running the command sees them.
-    if getattr(args, "profile", None) is not None:
-        print("[voxlogica] WARNING: --profile is DEPRECATED. cProfile cannot represent this "
-              "engine's concurrent workers and its numbers can be arbitrarily wrong. Use "
-              "/usr/bin/time -v (%CPU) and the run's own saturation/cpu-per-wall figures.",
-              file=sys.stderr)
     if getattr(args, "command", None) == "calibrate":
         print("[voxlogica] WARNING: calibrate is DEPRECATED. On the reference host its winner beat "
               "the shipped heuristic by 0.1% (noise) and it caches no ITK thread count, so it "

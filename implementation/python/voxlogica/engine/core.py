@@ -291,6 +291,10 @@ class ComputationEngine:
         self._recomputes = 0        # evicted values that had to be recomputed, not reloaded
         self._in_flight = 0         # kernels currently executing (watchdog: 0 + no progress = deadlock)
         self._probe: ConcurrencyProbe | None = None  # set for the duration of run()
+        #: Set by the strategy only when --measure was given; None costs nothing
+        #: and is the only state any dispatch path would have to consult, which
+        #: is why it consults none: the object is touched twice, in run().
+        self.measurement: Any = None
 
         # ── Schedule-time fusion (engine/fusion.py) ──
         self._cones_dispatched = 0  # number of cone dispatches (>=2 members each)
@@ -418,6 +422,14 @@ class ComputationEngine:
                                   unit="goal", dynamic_ncols=True,
                                   bar_format=_PROGRESS_FORMAT,
                                   disable=None, file=sys.stderr, leave=True)
+        if self.measurement is not None:
+            # FROM INSIDE THE LOOP: this coroutine is running on the event loop
+            # thread, so this is the one place that can record its native id
+            # without assuming it is the main thread. The loop-versus-workers
+            # split is the decomposition that identified the only real stall we
+            # have found, so it must not rest on an assumption.
+            self.measurement.register_loop_thread()
+            self.measurement.start()
         self._memlog = MemoryLogger(self._memory_snapshot)
         self._memlog.start()
         # Records whether the engine actually kept max_concurrency kernels busy;

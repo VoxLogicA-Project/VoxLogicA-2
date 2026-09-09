@@ -156,19 +156,22 @@ class EngineExecutionStrategy(ExecutionStrategy):
         return PreparedPlan(plan=plan, strategy_name=self.name)
 
     def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None,
-            profile: str | None = None) -> ExecutionResult:
+            measure: str | None = None) -> ExecutionResult:
         """Submit goals, evaluate in parallel, then run their side effects.
 
-        ``profile``: ``None`` (default) profiles nothing. Any other string
-        wraps the whole run in ``cProfile`` — empty string prints top-30
-        cumulative + top-30 tottime to stderr; a non-empty string is a path
-        to dump raw ``.pstats`` to (load with ``pstats.Stats(path)`` or
-        ``snakeviz path``). This is a real profile of a REAL program, not a
-        synthetic benchmark — see ``tests/perf/bench_scheduler.py --profile``
-        for that. Added after profiling a real TACAS'19 BraTS case by hand
-        found the actual bottleneck (percentiles' sort, not fusion/scheduler
-        overhead — see HANDOVER.md §0b/§0c) revealed there was no standard,
-        repeatable way to do this against a real .imgql program.
+        ``measure``: ``None`` (default) measures nothing and costs nothing —
+        no sampler thread is created and no dispatch path gains a branch. A
+        path writes one self-describing measurement file there; see
+        ``engine/measure.py`` for the method and for why the previous
+        approach (a shell loop reading ``/proc`` from outside) produced two
+        contradictory numbers for the same run.
+
+        This replaces ``profile``, which wrapped the run in ``cProfile``.
+        That was removed rather than kept: cProfile has one global call stack
+        and no representation for genuinely concurrent worker threads, so its
+        ncalls/cumtime/tottime could be arbitrarily wrong — cumtime exceeding
+        wall-clock was observed — and a measurement that can be arbitrarily
+        wrong has no place in a repeatable framework (issue #34).
         """
         started = time.time()
         plan = prepared.plan
@@ -259,44 +262,21 @@ class EngineExecutionStrategy(ExecutionStrategy):
                     record_failure(exc, fallback_node_id=goal.id)
             return values, run_error
 
-        if profile is None:
+        if measure is None:
             values, run_error = asyncio.run(evaluate())
         else:
-            print(
-                "[profile] WARNING: cProfile's single global call-stack has no "
-                "representation for the engine's genuinely concurrent worker "
-                "threads (--threads > 1) -- ncalls/cumtime/tottime can be "
-                "arbitrarily wrong (e.g. cumtime exceeding wall-clock time) "
-                "rather than merely imprecise. Treat this profile as a lead to "
-                "investigate, not a measurement to trust. See "
-                "https://github.com/VoxLogicA-Project/VoxLogicA-2/issues/34",
-                file=sys.stderr,
-            )
-            import cProfile
-            import pstats
-            prof = cProfile.Profile()
-            prof.enable()
+            from voxlogica.engine.measure import Measurement
+            meter = Measurement(
+                measure, engine._memory_snapshot,
+                program=getattr(prepared, "source_name", "") or "",
+                flags={"threads": self.threads, "threads_auto": self.threads_auto,
+                       "strategy": self.name, "sparse_cache": self.sparse_cache,
+                       "goals": len(plan.goals)})
+            engine.measurement = meter
             try:
                 values, run_error = asyncio.run(evaluate())
             finally:
-                prof.disable()
-                # Always dump stats (even if interrupted), to a temp path if profile is stdout-mode.
-                dump_path = profile if profile and profile != "" else "/tmp/voxlogica_profile_last.pstats"
-                try:
-                    prof.dump_stats(dump_path)
-                except Exception as e:
-                    print(f"[profile] dump_stats failed: {e}", file=sys.stderr)
-                if profile and profile != "":
-                    print(f"[profile] wrote {profile} — load with pstats.Stats(path) or snakeviz",
-                          file=sys.stderr)
-                else:
-                    stats = pstats.Stats(prof, stream=sys.stderr)
-                    stats.sort_stats("cumulative")
-                    print("\n== profile: cumulative, top 30 ==", file=sys.stderr)
-                    stats.print_stats(30)
-                    stats.sort_stats("tottime")
-                    print("\n== profile: tottime, top 30 ==", file=sys.stderr)
-                    stats.print_stats(30)
+                meter.stop()
 
         # This engine was constructed fresh above and is not shared with any
         # other engine instance (the one supported reuse pattern —
