@@ -334,7 +334,9 @@ def _run_command_inner(args: argparse.Namespace, ui) -> int:
             # when nobody is serving a UI, which is the case that must stay
             # free: an observer that is `None` is not called at all.
             observe=ui.results.observe if ui is not None and ui.results else None,
-        ).execute_workplan(workplan, measure=args.measure)
+        ).execute_workplan(workplan, measure=args.measure,
+                             measure_period=args.measure_period,
+                             measure_series=args.measure_series)
         if not execution_result.success:
             for diagnostic in execution_result.diagnostics:
                 _render_diagnostic(diagnostic, args)
@@ -748,7 +750,7 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Unroll runtime-valued for-loops into parallel nodes (lazy strategy)")
     run_parser.add_argument("--for-expansion-cap", type=int, default=4096, metavar="N",
                             help="Max constant-loop static unroll length (0 disables)")
-    run_parser.add_argument("--measure", nargs="?", const="measurement.tsv", default=None,
+    run_parser.add_argument("--measure", nargs="?", const="measurement.json", default=None,
                             metavar="PATH",
                             help="Write one self-describing performance measurement to PATH "
                                  "(default measurement.tsv). Off by default and free when off: "
@@ -761,6 +763,15 @@ def build_parser() -> argparse.ArgumentParser:
                                  "computed from consecutive timestamps, never from the nominal "
                                  "period -- doing the latter overstated CPU by 39%%. See "
                                  "engine/measure.py and tools/measure/.")
+    run_parser.add_argument("--measure-period", type=float, default=None, metavar="SECONDS",
+                            help="Sampling period for --measure (default 0.25 s). Lower resolves "
+                                 "shorter stalls at a higher instrument cost, which the report "
+                                 "states; the totals are unaffected either way, since they come "
+                                 "from getrusage rather than from the samples.")
+    run_parser.add_argument("--measure-series", action="store_true",
+                            help="Also write the raw per-sample rows beside the report, as "
+                                 "<report>.samples.tsv. For plotting; every figure the report "
+                                 "quotes is already derived in the report itself.")
     run_parser.add_argument("--serve", action=argparse.BooleanOptionalAction, default=True,
                             help="Serve the browser UI alongside the run (default). The process "
                                  "exits when the run ends if no browser is connected, and keeps "

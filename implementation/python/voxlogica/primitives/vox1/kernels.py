@@ -596,6 +596,49 @@ def logical_or(left: object, right: object) -> object:
     return bool(left) or bool(right)
 
 
+# ── ITK's internal width, decided per call from the engine's own load ────────
+#
+# `engine/itk_threads.py` records the measurement that makes a fixed value
+# wrong: ITK=24 wins at 8 workers and ITK=1 wins at 18, a crossover, so the
+# right width depends on how many kernels are in flight -- and in a real sweep
+# that is not a constant. Measured on the 20-case AIIM sweep: in-flight sits at
+# 31-32 for most of the run and collapses to single digits in the export tail
+# and in the loop stalls, which is exactly where the process was measured at
+# 200-900% of 2400% with cores standing idle.
+#
+# So: divide the machine among the kernels actually running. With 31 in flight
+# each filter gets 1 thread, which is the measured optimum at that width; with
+# 2 in flight each gets 12, and the tail stops running on two cores. No
+# environment variable, no global mutation, no formula chosen in advance --
+# the divisor is observed, per call.
+_CONCURRENCY_PROBE: object = None
+_CORES = os.cpu_count() or 1
+
+
+def set_concurrency_probe(probe) -> None:
+    """Install the engine's in-flight counter. Called once, by the engine."""
+    global _CONCURRENCY_PROBE
+    _CONCURRENCY_PROBE = probe
+
+
+def _work_units() -> int:
+    """How many ITK threads THIS filter should use, right now.
+
+    Returns 0 when nothing is installed, which callers read as "leave ITK
+    alone" -- the baseline `itk_threads` documents as never the worst option.
+    """
+    probe = _CONCURRENCY_PROBE
+    if probe is None:
+        return 0
+    try:
+        in_flight = int(probe())
+    except Exception:                                       # noqa: BLE001
+        return 0
+    if in_flight <= 1:
+        return _CORES
+    return max(1, _CORES // in_flight)
+
+
 def dt(image: object) -> sitk.Image:
     """Signed Maurer distance transform."""
     img = _as_image(image, "image")
@@ -605,6 +648,13 @@ def dt(image: object) -> sitk.Image:
     flt.SetSquaredDistance(False)
     flt.SetUseImageSpacing(True)
     flt.SetBackgroundValue(0.0)
+    # dt is 54% of this program's entire kernel time -- 940 calls at 371 ms
+    # each, 348.7 of ~645 CPU-seconds (doc/dev/measurements/2026-09-09-
+    # loop-attribution/) -- so it is the one filter where the width is worth
+    # deciding per call rather than once for the process.
+    units = _work_units()
+    if units:
+        flt.SetNumberOfWorkUnits(units)
     return flt.Execute(_as_bool_image(img))
 
 

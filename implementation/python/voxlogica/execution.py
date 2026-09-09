@@ -189,12 +189,15 @@ class ExecutionEngine:
         strategy: str | None = None,
         goals: list[NodeId] | None = None,
         measure: str | None = None,
+        measure_period: float | None = None,
+        measure_series: bool = False,
     ) -> ExecutionResult:
         """Compile and immediately execute a work plan in one step."""
         del execution_id
         prepared = self.compile_plan(workplan, strategy=strategy)
         return self.run_prepared(prepared, goals=goals, strategy=strategy,
-                                 measure=measure)
+                                 measure=measure, measure_period=measure_period,
+                                 measure_series=measure_series)
 
     def compile_plan(self, workplan, strategy: str | None = None) -> PreparedPlan:
         """Compile reducer output into a prepared execution object."""
@@ -210,6 +213,8 @@ class ExecutionEngine:
         goals: list[NodeId] | None = None,
         strategy: str | None = None,
         measure: str | None = None,
+        measure_period: float | None = None,
+        measure_series: bool = False,
     ) -> ExecutionResult:
         """Execute an already-prepared plan, optionally restricting the goals.
 
@@ -217,7 +222,9 @@ class ExecutionEngine:
         ``run()`` docstring); ``LazyExecutionStrategy`` ignores it.
         """
         self._last_prepared = prepared
-        return self._for(prepared, strategy).run(prepared, goals=goals, measure=measure)
+        return self._for(prepared, strategy).run(prepared, goals=goals, measure=measure,
+                                                 measure_period=measure_period,
+                                                 measure_series=measure_series)
 
     def stream(
         self,

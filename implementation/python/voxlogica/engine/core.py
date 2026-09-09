@@ -305,6 +305,15 @@ class ComputationEngine:
         # unmeasured mechanism that costs recomputes should not be on.
         # doc/dev/measurements/2026-09-09-loop-copy-move/ has the numbers.
         self.executor._should_snapshot = None
+        # NOT INSTALLED, AND MEASURED: sizing each ITK filter's internal width
+        # from the in-flight count (cores // in_flight, so a lone kernel in the
+        # tail gets all 24) made the same sweep run 49.6 s instead of 28.2 s,
+        # while dt's own CPU went from 348.7 to 1024.3 seconds for the identical
+        # 940 calls. SignedMaurer's threaded path burns roughly three times the
+        # CPU for the same work, so handing it idle cores converts them into
+        # waste, not throughput -- and mean CPU rose to 2062%, which is once
+        # again a worse run wearing a better number. The probe stays available
+        # in vox1.kernels for anyone who wants to re-test it; it is not wired.
         self._reload_deferred: set[NodeId] = set()  # deferred once to prefer resident-ready work
 
         # ── Cache-admission policy + metrics ──
@@ -322,6 +331,13 @@ class ComputationEngine:
         self._peak_runnable = 0
         self._kernels_executed = 0  # kernels run this session (cold high; warm ~0 = full reuse)
         self._recomputes = 0        # evicted values that had to be recomputed, not reloaded
+        #: operator -> (kernels run, CPU-ms summed). The arithmetic that made
+        #: this necessary: 28.2 s at 1851% is 522 CPU-seconds over ~15,000
+        #: kernels, so the run is doing kernel work rather than overhead, and
+        #: halving the kernel count is worth 14 s against 6.4 s for perfect
+        #: scheduling. Which kernels, then -- and that had never been recorded.
+        self._op_n: dict[str, int] = {}
+        self._op_ms: dict[str, float] = {}
         self._in_flight = 0         # kernels currently executing (watchdog: 0 + no progress = deadlock)
         self._probe: ConcurrencyProbe | None = None  # set for the duration of run()
         #: Set by the strategy only when --measure was given; None costs nothing
@@ -776,6 +792,13 @@ class ComputationEngine:
             # regression wearing a better number. Every performance comparison
             # must be work-normalised against these, and a wall-clock win with
             # `kernels` and `recomputes` unchanged is the only kind that counts.
+            # One column, `operator=count/ms` joined -- the set of operators is
+            # program-dependent, so it cannot be a column each without making
+            # the file's shape depend on its content.
+            "kernel_by_op": ";".join(
+                f"{op}={self._op_n[op]}/{self._op_ms.get(op, 0.0):.0f}"
+                for op in sorted(self._op_ms, key=self._op_ms.get, reverse=True)[:24]
+            ) if self._op_ms else "",
             "kernels_executed": self._kernels_executed,
             "recomputes": self._recomputes,
             "cones_dispatched": self._cones_dispatched,
@@ -1163,6 +1186,10 @@ class ComputationEngine:
         # in `_eager` then said a value named nothing when it named everything.
         # `_finish` is the one funnel every value goes through.
         _c = self._clock
+        if _c is not None:
+            operator = node.operator or "?"
+            self._op_n[operator] = self._op_n.get(operator, 0) + 1
+            self._op_ms[operator] = self._op_ms.get(operator, 0.0) + compute_ms
         _t = time.perf_counter_ns() if _c is not None else 0
         self.graph.hold_handles(nid, value)
         if _c is not None:

@@ -156,7 +156,8 @@ class EngineExecutionStrategy(ExecutionStrategy):
         return PreparedPlan(plan=plan, strategy_name=self.name)
 
     def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None,
-            measure: str | None = None) -> ExecutionResult:
+            measure: str | None = None, measure_period: float | None = None,
+            measure_series: bool = False) -> ExecutionResult:
         """Submit goals, evaluate in parallel, then run their side effects.
 
         ``measure``: ``None`` (default) measures nothing and costs nothing —
@@ -277,7 +278,9 @@ class EngineExecutionStrategy(ExecutionStrategy):
                 store_path=store_path,
                 flags={"threads": self.threads, "threads_auto": self.threads_auto,
                        "strategy": self.name, "sparse_cache": self.sparse_cache,
-                       "goals": len(plan.goals)})
+                       "goals": len(plan.goals)},
+                period_s=measure_period if measure_period else 0.25,
+                keep_series=measure_series)
             engine.measurement = meter
             try:
                 values, run_error = asyncio.run(evaluate())

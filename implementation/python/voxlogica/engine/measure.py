@@ -346,13 +346,15 @@ class Measurement:
     __slots__ = ("_path", "_period", "_snapshot", "_samples", "_thread", "_stop",
                  "_loop_tid", "_started_ns", "_start_rusage", "_meta",
                  "_sampler_cpu_s", "_program", "_flags", "_outcome",
-                 "_store_path", "_census_every", "_device", "_device_from")
+                 "_store_path", "_census_every", "_device", "_device_from",
+                 "_keep_series")
 
     def __init__(self, path: str | Path, snapshot: Callable[[], dict[str, Any]],
                  *, program: str = "", flags: dict[str, Any] | None = None,
                  period_s: float = DEFAULT_PERIOD_S,
                  store_path: str | Path | None = None,
-                 census_every: int | None = None) -> None:
+                 census_every: int | None = None,
+                 keep_series: bool = False) -> None:
         self._path = Path(path)
         self._period = max(0.01, float(period_s))
         self._snapshot = snapshot
@@ -375,6 +377,8 @@ class Measurement:
         self._flags = dict(flags or {})
         self._meta: dict[str, Any] = {}
         self._outcome: dict[str, Any] = {"recorded": False}
+        self._keep_series = bool(keep_series)
+        self._keep_series = bool(keep_series)
 
     # ── the engine's side of the contract ────────────────────────────────────
 
@@ -552,130 +556,189 @@ class Measurement:
         }
 
     def _write(self) -> None:
+        """Derive the summary here, and write ONE JSON report.
+
+        The derivations used to live in an external script, which meant the
+        numbers a reader saw depended on which script they ran and on whether it
+        applied the interval rule. They are computed here now -- the tool that
+        took the samples is the tool that states what they mean -- and the raw
+        series is written beside the report only when asked for, since its only
+        use is plotting.
+        """
         end_ns = time.perf_counter_ns()
         end = resource.getrusage(resource.RUSAGE_SELF)
         start = self._start_rusage
         wall_s = (end_ns - self._started_ns) / 1e9
         cpu_s = ((end.ru_utime - start.ru_utime) + (end.ru_stime - start.ru_stime))
+        cores = os.cpu_count() or 1
+        ceiling = 100.0 * cores
 
-        intervals = [(b.t_ns - a.t_ns) / 1e9
-                     for a, b in zip(self._samples, self._samples[1:])]
-        header = dict(self._meta)
-        header["outcome"] = self._outcome
-        header["authoritative"] = {
-            # THE number. getrusage is accumulated by the kernel and read once,
-            # so it has no sampling error; every claim about total CPU should
-            # come from here and not from the series below.
-            "wall_s": round(wall_s, 6),
-            "cpu_s": round(cpu_s, 6),
-            "mean_cpu_percent": round(100.0 * cpu_s / wall_s, 1) if wall_s > 0 else None,
-            "cores_available": os.cpu_count(),
-            "user_s": round(end.ru_utime - start.ru_utime, 6),
-            "sys_s": round(end.ru_stime - start.ru_stime, 6),
-            "peak_rss_bytes": end.ru_maxrss * (1024 if sys.platform != "darwin" else 1),
-            "minor_faults": end.ru_minflt - start.ru_minflt,
-            "major_faults": end.ru_majflt - start.ru_majflt,
-            "voluntary_switches": end.ru_nvcsw - start.ru_nvcsw,
-            "involuntary_switches": end.ru_nivcsw - start.ru_nivcsw,
-            "source": "getrusage(RUSAGE_SELF), read once at start and once at exit",
-        }
-        header["instrument"] = {
-            # Non-perturbation as a measurement, not an assertion.
-            "samples": len(self._samples),
-            "period_achieved_mean_s": round(sum(intervals) / len(intervals), 6) if intervals else None,
-            "period_achieved_min_s": round(min(intervals), 6) if intervals else None,
-            "period_achieved_max_s": round(max(intervals), 6) if intervals else None,
-            "sampler_cpu_s": (round(self._sampler_cpu_s, 6)
-                              if self._sampler_cpu_s >= 0 else "unavailable (needs RUSAGE_THREAD, Linux)"),
-            "sampler_share_of_run_cpu": (round(self._sampler_cpu_s / cpu_s, 6)
-                                         if cpu_s > 0 and self._sampler_cpu_s >= 0 else None),
-            "note": ("Rates in the series MUST be computed from consecutive t_ns, "
-                     "never from period_requested_s: dividing by the nominal period "
-                     "overstated CPU by 39% in the measurement this instrument replaced."),
+        intervals: list[float] = []
+        proc_pct: list[float] = []
+        loop_pct: list[float] = []
+        for before, after in zip(self._samples, self._samples[1:]):
+            dt = (after.t_ns - before.t_ns) / 1e9
+            if dt <= 0:
+                continue
+            intervals.append(dt)
+            # THE RULE: divide by the interval that elapsed, never by the one
+            # requested. Dividing by the nominal period overstated CPU by 39%
+            # in the measurement this instrument replaced.
+            if after.proc_ticks >= 0 and before.proc_ticks >= 0:
+                proc_pct.append((after.proc_ticks - before.proc_ticks) / _TICKS / dt * 100.0)
+            if after.loop_ticks >= 0 and before.loop_ticks >= 0:
+                loop_pct.append((after.loop_ticks - before.loop_ticks) / _TICKS / dt * 100.0)
+
+        def _fraction(values: list[float], predicate) -> float | None:
+            return (round(sum(1 for v in values if predicate(v)) / len(values), 4)
+                    if values else None)
+
+        last = self._samples[-1].engine if self._samples else {}
+        # Filtered BEFORE sorting: the snapshot also carries lists and dicts
+        # (the governor, the in-flight census), and sorting the whole mapping by
+        # a numeric key raised "float() argument must be ... not 'list'".
+        timed = [(key[len("loop_"):-3], float(value))
+                 for key, value in last.items()
+                 if key.startswith("loop_") and key.endswith("_ms")
+                 and isinstance(value, (int, float))]
+        timed.sort(key=lambda item: -item[1])
+        phases = {name: {"seconds": round(millis / 1000.0, 3),
+                         "calls": last.get(f"loop_{name}_n")}
+                  for name, millis in timed}
+
+        by_op = []
+        raw = last.get("kernel_by_op") or ""
+        for entry in str(raw).split(";"):
+            if "=" in entry and "/" in entry:
+                name, rest = entry.split("=", 1)
+                count, _, millis = rest.partition("/")
+                try:
+                    by_op.append({"operator": name, "kernels": int(count),
+                                  "cpu_seconds": round(float(millis) / 1000.0, 2)})
+                except ValueError:
+                    pass
+
+        report: dict[str, Any] = {
+            "schema": "voxlogica.measurement/1",
+            "environment": self._meta,
+            "outcome": self._outcome,
+            # THE headline numbers, from the kernel, with no sampling error:
+            # getrusage read once at start and once at exit.
+            "totals": {
+                "wall_seconds": round(wall_s, 3),
+                "cpu_seconds": round(cpu_s, 3),
+                "mean_cpu_percent": round(100.0 * cpu_s / wall_s, 1) if wall_s > 0 else None,
+                "cores_available": cores,
+                "ceiling_percent": ceiling,
+                "user_seconds": round(end.ru_utime - start.ru_utime, 3),
+                "system_seconds": round(end.ru_stime - start.ru_stime, 3),
+                "peak_rss_bytes": end.ru_maxrss * (1024 if sys.platform != "darwin" else 1),
+                "minor_faults": end.ru_minflt - start.ru_minflt,
+                "major_faults": end.ru_majflt - start.ru_majflt,
+                "voluntary_switches": end.ru_nvcsw - start.ru_nvcsw,
+                "involuntary_switches": end.ru_nivcsw - start.ru_nivcsw,
+                "source": "getrusage(RUSAGE_SELF), read once at start and once at exit",
+            },
+            # WORK, so a CPU rise caused by doing more is never read as a win.
+            "work": {key: last.get(key) for key in
+                     ("kernels_executed", "recomputes", "cones_dispatched",
+                      "ops_fused", "interiors_elided", "completed",
+                      "persist_shed", "persist_skipped_dead")},
+            "work_by_operator": by_op,
+            "shape": {
+                "intervals": len(intervals),
+                "process_cpu_mean_percent": (round(sum(proc_pct) / len(proc_pct), 1)
+                                             if proc_pct else None),
+                "process_cpu_max_percent": round(max(proc_pct), 1) if proc_pct else None,
+                "saturated_fraction_90": _fraction(proc_pct, lambda v: v >= 0.90 * ceiling),
+                "saturated_fraction_75": _fraction(proc_pct, lambda v: v >= 0.75 * ceiling),
+                "below_half_fraction": _fraction(proc_pct, lambda v: v < 0.50 * ceiling),
+                "note": ("Sampled, therefore approximate; the exact mean is in "
+                         "totals.mean_cpu_percent. Use these for the SHAPE only."),
+            },
+            "event_loop": {
+                "mean_occupancy_percent": (round(sum(loop_pct) / len(loop_pct), 1)
+                                           if loop_pct else None),
+                "max_occupancy_percent": round(max(loop_pct), 1) if loop_pct else None,
+                "hot_fraction_90": _fraction(loop_pct, lambda v: v >= 90.0),
+                "phases": phases,
+            },
+            "io": {key: last.get(key) for key in
+                   ("io_wchar", "io_write_bytes", "io_read_bytes",
+                    "io_cancelled_write_bytes", "dev_io_ticks_ms",
+                    "dev_sectors_written", "thr_disk", "thr_total")},
+            "instrument": {
+                "samples": len(self._samples),
+                "period_requested_s": self._period,
+                "period_achieved_mean_s": (round(sum(intervals) / len(intervals), 6)
+                                           if intervals else None),
+                "period_achieved_min_s": round(min(intervals), 6) if intervals else None,
+                "period_achieved_max_s": round(max(intervals), 6) if intervals else None,
+                "sampler_cpu_seconds": (round(self._sampler_cpu_s, 6)
+                                        if self._sampler_cpu_s >= 0
+                                        else "unavailable (needs RUSAGE_THREAD, Linux)"),
+                "sampler_share_of_run_cpu": (round(self._sampler_cpu_s / cpu_s, 6)
+                                             if cpu_s > 0 and self._sampler_cpu_s >= 0 else None),
+                "rate_rule": ("Every rate here is computed from consecutive sample "
+                              "timestamps. Dividing by the nominal period overstated "
+                              "CPU by 39% in the method this replaced."),
+            },
         }
 
-        engine_keys: list[str] = []
+        path = self._path
+        if path.suffix != ".json":
+            path = path.with_suffix(".json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+
+        if self._keep_series:
+            self._write_series(path.with_suffix(".samples.tsv"))
+
+        mean = report["totals"]["mean_cpu_percent"]
+        verdict = ("" if not self._outcome.get("recorded")
+                   else " COMPLETE" if self._outcome.get("complete")
+                   else f" INCOMPLETE ({self._outcome.get('goals_resolved')}"
+                        f"/{self._outcome.get('goals_total')} goals)")
+        print(f"[measure]{verdict} {path}: {wall_s:.1f} s wall, {mean}% mean CPU "
+              f"of {ceiling:.0f}% available, {len(self._samples)} samples, "
+              f"instrument {report['instrument']['sampler_cpu_seconds']}",
+              file=sys.stderr, flush=True)
+
+    def _write_series(self, path: Path) -> None:
+        """The raw per-sample rows, for plotting. Only when asked for."""
+        keys: list[str] = []
         for sample in self._samples:
-            for key in sample.engine:
-                if key not in engine_keys and not isinstance(sample.engine[key], (dict, list)):
-                    engine_keys.append(key)
-        io_columns = [f"io_{name}" for name in _IO_KEYS]
-        disk_columns = ["dev_sectors_read", "dev_sectors_written",
-                        "dev_io_ticks_ms", "dev_weighted_io_ms"]
-        census_columns = ["thr_total", "thr_running", "thr_sleeping", "thr_disk"]
+            for key, value in sample.engine.items():
+                if key not in keys and not isinstance(value, (dict, list)):
+                    keys.append(key)
         columns = ["t_ns", "proc_ticks", "loop_ticks", "rss_bytes",
-                   "minflt", "majflt", "nvcsw", "nivcsw",
-                   *io_columns, *disk_columns, *census_columns, *engine_keys]
-        widths = (len(io_columns), len(disk_columns), len(census_columns))
-
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._path, "w", encoding="utf-8") as out:
-            out.write("# voxlogica measurement v1\n")
-            for line in json.dumps(header, indent=2, default=str).splitlines():
-                out.write(f"# {line}\n")
+                   "minflt", "majflt", "nvcsw", "nivcsw", *keys]
+        with open(path, "w", encoding="utf-8") as out:
             out.write("\t".join(columns) + "\n")
             for sample in self._samples:
                 row: list[Any] = [sample.t_ns, sample.proc_ticks, sample.loop_ticks,
                                   sample.rss_bytes, sample.minflt, sample.majflt,
                                   sample.nvcsw, sample.nivcsw]
-                for group, width in zip((sample.io, sample.disk, sample.census), widths):
-                    # Empty cells, not zeros: a census that did not fire and a
-                    # census that found no thread in D are different readings.
-                    row.extend(group if group is not None else ("",) * width)
-                row.extend(sample.engine.get(key, "") for key in engine_keys)
+                row.extend(sample.engine.get(key, "") for key in keys)
                 out.write("\t".join(str(value) for value in row) + "\n")
-        mean = header["authoritative"]["mean_cpu_percent"]
-        disk = self._device_summary()
-        verdict = ("" if not self._outcome.get("recorded")
-                   else " COMPLETE" if self._outcome.get("complete")
-                   else f" INCOMPLETE ({self._outcome.get('goals_resolved')}"
-                        f"/{self._outcome.get('goals_total')} goals)")
-        print(f"[measure]{verdict} {self._path}: {wall_s:.1f} s wall, {mean}% mean CPU "
-              f"of {os.cpu_count() * 100}% available, {len(self._samples)} samples, "
-              f"{disk}, instrument cost "
-              f"{f'{self._sampler_cpu_s:.2f} CPU-s' if self._sampler_cpu_s >= 0 else 'unavailable'}",
-              file=sys.stderr, flush=True)
-
-    def _device_summary(self) -> str:
-        """The disk line of the one-liner, over the first and last samples.
-
-        Endpoints, not a mean of per-interval rates: both are the same quotient
-        of a counter delta by an ELAPSED t_ns delta, and the endpoints need no
-        weighting to stay right when the sampler's own interval jitters.
-        """
-        if self._device is None:
-            return "device not resolved"
-        bounds = [s for s in self._samples if s.disk is not None]
-        if len(bounds) < 2:
-            return f"{self._device}: too few samples"
-        first, last = bounds[0], bounds[-1]
-        span_s = (last.t_ns - first.t_ns) / 1e9
-        if span_s <= 0:
-            return f"{self._device}: no elapsed time"
-        util = (last.disk[2] - first.disk[2]) / 10.0 / span_s
-        written_mb = (last.disk[1] - first.disk[1]) * _SECTOR_BYTES / 1e6
-        return (f"{self._device} {util:.0f}% utilised, "
-                f"{written_mb / span_s:.1f} MB/s written")
 
 
 class LoopClock:
     """Where the event loop's own CPU goes, phase by phase.
 
-    The loop is the measured ceiling: at loop occupancy below 25% the process
-    ran 2250-2369% of 2400%, and at 90% or above it collapsed to 791-1086%,
-    monotonically across twelve runs. But "the loop is busy" is not a defect
-    anyone can fix -- the defect is whichever phase inside it is expensive, and
-    that had never been attributed. Guessing produced three wrong answers in one
-    day (ITK oversubscription, page faults, memory bandwidth), so this measures
-    instead.
+    The loop is measurably the busiest single thread, but "the loop is busy" is
+    not a defect anyone can act on -- the defect is whichever phase inside it is
+    expensive, and that had never been attributed. Guessing produced three wrong
+    answers in one day (ITK oversubscription, page faults, memory bandwidth), so
+    this measures instead. It is what found that `NodeTable.complete` was 65% of
+    the loop's CPU, and one payload copy inside it.
 
-    Deliberately not a context manager: creating one object per phase per node
-    would cost more than the phases it is timing at the dispatch rates involved.
-    The caller takes ``perf_counter_ns()`` itself and hands over the delta.
+    Deliberately not a context manager: one object per phase per node would cost
+    more than the phases it times, at these dispatch rates. The caller reads
+    ``perf_counter_ns()`` itself and hands over the delta.
 
     Held as ``None`` when nothing is measuring, so the cost when off is one
-    ``is not None`` test at each phase boundary -- against phases that are
-    themselves microseconds of dictionary and list work at minimum.
+    ``is not None`` test per phase boundary.
     """
 
     __slots__ = ("ns", "hits")
@@ -689,11 +752,11 @@ class LoopClock:
         self.hits[phase] = self.hits.get(phase, 0) + 1
 
     def snapshot(self) -> dict[str, Any]:
-        """Phase totals in milliseconds, plus the count of times each ran.
+        """Phase totals in milliseconds, plus how many times each ran.
 
-        Milliseconds because the interesting quantity is "how much of a
-        thirty-second run", and counts because a phase that is cheap per call
-        and ruinous in aggregate looks identical to the reverse without them.
+        Milliseconds because the question is "how much of a thirty-second run",
+        and counts because a phase that is cheap per call and ruinous in
+        aggregate is indistinguishable from the reverse without them.
         """
         out: dict[str, Any] = {}
         for phase, total in self.ns.items():
