@@ -137,3 +137,171 @@ def test_report_refuses_to_invent_a_series_from_one_sample(tmp_path: Path) -> No
     points = report.series({"ticks_per_second": 100}, ["t_ns", "proc_ticks", "loop_ticks"],
                            [["0", "0", "0"]])
     assert points == []
+
+
+def _report_module():
+    """The report script, loaded as a module. It is a script, not a package."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("vox_measure_report_io", REPORT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+#: Two synthetic samples 2 s apart, with a header claiming a 1 s period, so
+#: every derivation below is also a test of the 39% rule: a reader that trusts
+#: the header doubles all of it.
+_IO_COLUMNS = ["t_ns", "proc_ticks", "loop_ticks",
+               "io_rchar", "io_wchar", "io_read_bytes", "io_write_bytes",
+               "io_cancelled_write_bytes",
+               "dev_sectors_read", "dev_sectors_written",
+               "dev_io_ticks_ms", "dev_weighted_io_ms",
+               "thr_total", "thr_running", "thr_sleeping", "thr_disk"]
+
+
+@pytest.mark.unit
+def test_device_utilisation_is_io_ticks_over_the_measured_interval() -> None:
+    """io_ticks/elapsed, in percent -- the only honest saturation figure.
+
+    1500 ms of device-busy inside a 2 s interval is 75% utilised. Dividing by
+    the header's nominal 1 s period would report 150%, which is not even a
+    possible value, and that is how the class of error this framework exists to
+    prevent announces itself.
+    """
+    report = _report_module()
+    header = {"ticks_per_second": 100, "period_requested_s": 1.0, "sector_bytes": 512}
+    rows = [
+        ["0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0",
+         "40", "30", "9", "1"],
+        ["2000000000", "400", "100", "0", "0", "0", "0", "0",
+         "4000", "8000", "1500", "3000", "40", "20", "10", "10"],
+    ]
+    points = report.derive(header, _IO_COLUMNS, rows)
+    assert len(points) == 1
+    point = points[0]
+    assert point["dev_util_pct"] == pytest.approx(75.0)
+    # 8000 sectors of 512 bytes in 2 s = 2.048 MB/s written to the device.
+    assert point["dev_write_mb_s"] == pytest.approx(2.048)
+    assert point["dev_read_mb_s"] == pytest.approx(1.024)
+    # 3000 weighted ms in 2000 ms of wall time = 1.5 requests in flight.
+    assert point["dev_queue"] == pytest.approx(1.5)
+    # And the CPU rule still holds in the same row.
+    assert point["proc_cpu_pct"] == pytest.approx(200.0)
+
+
+@pytest.mark.unit
+def test_process_write_rate_comes_from_proc_self_io_deltas() -> None:
+    """write_bytes is what reached storage; wchar is what we asked for.
+
+    Both are reported, because a store that writes to page cache and truncates
+    shows a large wchar and almost no write_bytes, and calling either one "what
+    the run writes" without the other has produced the wrong conclusion.
+    """
+    report = _report_module()
+    header = {"ticks_per_second": 100, "period_requested_s": 1.0}
+    rows = [
+        ["0", "0", "0", "0", "0", "0", "0", "0", "", "", "", "", "", "", "", ""],
+        ["2000000000", "0", "0", "0", "600000000", "0", "200000000", "0",
+         "", "", "", "", "", "", "", ""],
+    ]
+    point = report.derive(header, _IO_COLUMNS, rows)[0]
+    assert point["proc_write_mb_s"] == pytest.approx(100.0)   # 200 MB / 2 s
+    assert point["proc_wchar_mb_s"] == pytest.approx(300.0)   # 600 MB / 2 s
+    # The device columns were empty in these rows, and an empty cell must stay
+    # unmeasured rather than become a zero that averages into the report.
+    assert point["dev_util_pct"] is None
+    assert report.weighted_mean([point], "dev_util_pct") is None
+
+
+@pytest.mark.unit
+def test_thread_census_is_averaged_only_over_the_samples_that_carry_it() -> None:
+    """The census fires on one tick in N; the rest are blank, not zero.
+
+    Averaging blanks as zeros would divide any real D-state count by N and turn
+    "eight threads waiting on the disk" into "two", which is the difference
+    between a finding and a rounding error.
+    """
+    report = _report_module()
+    header = {"ticks_per_second": 100}
+    rows = []
+    for tick in range(5):
+        row = [str(tick * 250_000_000), "0", "0",
+               "0", "0", "0", "0", "0", "0", "0", "0", "0"]
+        # Only the first and last tick carry a census: 8 threads in D on both.
+        row += ["40", "20", "12", "8"] if tick in (0, 4) else ["", "", "", ""]
+        rows.append(row)
+    points = report.derive(header, _IO_COLUMNS, rows)
+    mean, count = report.census_mean(points, "thr_disk")
+    # Four intervals, but only the one ending on tick 4 carries a census.
+    assert len(points) == 4
+    assert count == 1 and mean == pytest.approx(8.0)
+    assert report.census_mean(points, "thr_total")[0] == pytest.approx(40.0)
+
+
+@pytest.mark.unit
+def test_weighted_mean_weights_by_the_measured_interval() -> None:
+    """A jittered sampler must not let short quiet ticks outvote long busy ones.
+
+    Intervals of 0.25 s at 0% and 2.0 s at 100% average to 88.9% by duration
+    and to 50% by sample count. Sampler intervals of up to 2.5 s have actually
+    been observed under load, so the unweighted figure is not a rounding
+    difference: here it is off by a factor of 1.8.
+    """
+    report = _report_module()
+    points = [{"dt_s": 0.25, "dev_util_pct": 0.0},
+              {"dt_s": 2.0, "dev_util_pct": 100.0}]
+    assert report.weighted_mean(points, "dev_util_pct") == pytest.approx(
+        200.0 / 2.25)
+
+
+@pytest.mark.unit
+def test_the_new_readings_degrade_to_unmeasured_without_proc() -> None:
+    """macOS has no /proc, and an absent reading must not be a zero or a crash.
+
+    The distinction is load-bearing: "write_bytes is 0" is the claim that the
+    run wrote nothing, and it must be impossible to make that claim on a host
+    that cannot see write_bytes at all.
+    """
+    from voxlogica.engine import measure
+
+    missing = "/nonexistent-for-tests/proc/self/io"
+    assert measure._proc_io(missing) is None
+    assert measure._diskstats("sda", "/nonexistent-for-tests/proc/diskstats") is None
+    assert measure._thread_census("/nonexistent-for-tests/proc/self/task") is None
+    # A synthetic filesystem has no single backing device, and neither has a
+    # path that does not exist. Both answer "unknown", not an exception.
+    assert measure._resolve_block_device("/nonexistent-for-tests/store.db") is None
+    assert measure._resolve_block_device("/", sys_root="/nonexistent-for-tests/sys") is None
+
+
+@pytest.mark.unit
+def test_the_measurement_file_says_whether_io_was_available(tmp_path: Path) -> None:
+    """End to end: the columns exist everywhere, filled on Linux, empty elsewhere.
+
+    A reader must be able to tell "the device was idle" from "this host cannot
+    see the device", so availability is a recorded field rather than something
+    inferred from blank cells.
+    """
+    program = _program(tmp_path)
+    out = tmp_path / "io.tsv"
+    result = _run(["run", "--no-serve", "--measure", str(out), str(program)], tmp_path)
+    assert result.returncode == 0, result.stderr[-2000:]
+    header = _load_header(out)
+    for key in ("block_device", "device_stats_available", "process_io_available",
+                "census_every_n_ticks", "census_period_s", "sector_bytes"):
+        assert key in header, f"the reader cannot interpret the file without {key}"
+    # N is a parameter, defaulted from the period, and must fire about once a
+    # second rather than on every tick: the census is the one O(threads) read.
+    assert header["census_every_n_ticks"] >= 1
+    assert header["census_period_s"] == pytest.approx(1.0, abs=0.5)
+
+    columns = next(line for line in out.read_text(encoding="utf-8").splitlines()
+                   if not line.startswith("#")).split("\t")
+    for name in ("io_wchar", "io_write_bytes", "io_cancelled_write_bytes",
+                 "dev_io_ticks_ms", "dev_weighted_io_ms", "thr_disk"):
+        assert name in columns, f"column {name} missing"
+
+    report = _report_module()
+    # Whatever the platform, the report must produce a row rather than raise.
+    assert report.main([str(out)]) == 0

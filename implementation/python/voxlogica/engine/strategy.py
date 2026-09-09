@@ -266,9 +266,15 @@ class EngineExecutionStrategy(ExecutionStrategy):
             values, run_error = asyncio.run(evaluate())
         else:
             from voxlogica.engine.measure import Measurement
+            # The store's own path, so the instrument resolves the block device
+            # it actually writes to. Taken from the backend rather than from
+            # the --store-db flag, which is absent on a default run and which
+            # ReadOnlyStorageBackend forwards from the store it wraps.
+            store_path = getattr(self.results_database, "db_path", None)
             meter = Measurement(
                 measure, engine._memory_snapshot,
                 program=getattr(prepared, "source_name", "") or "",
+                store_path=store_path,
                 flags={"threads": self.threads, "threads_auto": self.threads_auto,
                        "strategy": self.name, "sparse_cache": self.sparse_cache,
                        "goals": len(plan.goals)})

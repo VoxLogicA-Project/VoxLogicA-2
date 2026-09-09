@@ -1,0 +1,18 @@
+# The store-write hypothesis, as four configurations of the SAME program.
+#
+# All four fix --threads 32 so that thread count cannot explain a difference,
+# and compare.sh deletes each store before its run, so every one of them starts
+# cold: the only thing that varies is what the run does with the disk.
+#
+#   normal        writes the store, on real disk -- the thing to explain
+#   nowritecache  reads a store, writes nothing. If the disk is the ceiling,
+#                 THIS is the run that recovers the missing CPU. If it does
+#                 not, the write path is not where the CPU went.
+#   nocache       no reads, no writes, recompute everything. Not a clean
+#                 control (it changes three things at once, see
+#                 ReadOnlyStorageBackend) but it bounds the store's total cost.
+#   sparse        the store's own low-write mode, for scale between the two.
+normal	--threads 32
+nowritecache	--threads 32 --no-write-cache
+nocache	--threads 32 --no-cache
+sparse	--threads 32 --sparse-cache

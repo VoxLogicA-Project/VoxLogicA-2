@@ -26,10 +26,15 @@ because breaking it produced a wrong number:
      interval that actually elapsed, never from the interval that was requested.
      The achieved interval statistics are part of the report, so a reader can
      see the sampler's own jitter.
-  3. **Per-sample cost is bounded and constant.** Exactly two ``/proc`` reads and
-     one ``getrusage``, regardless of how many threads the process has. ITK's
-     pools push the thread count past 130; an instrument whose cost grows with
-     that is measuring itself.
+  3. **Per-sample cost is bounded and constant.** A fixed five ``/proc`` reads
+     and one ``getrusage`` on the common tick -- ``self/stat``, the loop
+     thread's ``stat``, ``self/statm``, ``self/io`` and ``diskstats`` -- no
+     matter whether the process has eight threads or a hundred and thirty. ITK's
+     pools push the count past 130; an instrument whose cost grows with that is
+     measuring itself. The one reading that is unavoidably O(threads), the
+     R/S/D census, therefore runs on every Nth tick only (about once a second)
+     and leaves its columns empty on the rest, so a reader can never mistake an
+     interpolation for a sample.
   4. **The instrument measures its own footprint** with ``RUSAGE_THREAD`` and
      reports it. "The measurement does not perturb the run" is then a number in
      the output rather than a claim in a docstring.
@@ -49,6 +54,34 @@ and the whole process is at 200%, the workers are idle waiting for it, and no
 amount of thread tuning or kernel fusion changes that. So the loop thread is
 sampled separately, by the native thread id the engine registers from inside the
 loop -- known, not guessed.
+
+**Why I/O and thread state are in here too.** A sweep on the 24-core reference
+host held a mean of 1675-1934% out of 2400% and stood at >=90% of all cores in
+fewer than half the sampled intervals. Scheduler starvation was ruled out by
+measurement (31-32 kernels in flight with 30-40 more ready), the GIL by the
+re-exec under ``-X gil=0`` on /proc/self/cmdline, and memory bandwidth by a
+~5 GB/s demand against a measured ~63 GB/s ceiling. The loop signature above
+explained one ten-second window and no more. **The disk was never instrumented
+at all**, while ``htop`` showed several threads in D state -- uninterruptible,
+i.e. blocked in the kernel on I/O -- at 13-33 MB/s of writes each. A gap that
+big cannot be closed by a hypothesis, so the three readings that would settle it
+are now part of every run:
+
+  * ``/proc/self/io`` -- what this process asked the kernel for (``rchar``,
+    ``wchar``) against what actually reached storage (``read_bytes``,
+    ``write_bytes``, ``cancelled_write_bytes``). The pair is the check on
+    whether the run writes what we believe it writes: a store mode that claims
+    to write nothing must show ``write_bytes`` flat, and ``--no-write-cache``
+    was added precisely so that claim could be tested rather than argued.
+  * ``/proc/diskstats`` fields 10 and 11 for the device backing the store:
+    ``io_ticks`` (ms during which the device had at least one request in
+    flight) and the weighted ms (queue depth integrated over time).
+    ``io_ticks`` per unit of WALL time is device utilisation, and it is the
+    only honest way to say "the disk is saturated" -- throughput is not, since
+    a device can be pinned at 100% by a trickle of small synchronous writes.
+  * the R/S/D census, because "the disk is busy" and "this process is waiting
+    for the disk" are different claims, and only the count of our own threads
+    in D state supports the second one.
 
 OFF BY DEFAULT, AND FREE WHEN OFF
 
@@ -73,10 +106,28 @@ from typing import Any, Callable
 #: Clock ticks per second, for /proc/<pid>/stat's utime and stime fields.
 _TICKS = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 
-#: Sampling period. Two /proc reads per tick, so 0.25 s costs microseconds of
+#: Sampling period. Five /proc reads per tick, so 0.25 s costs microseconds of
 #: CPU per second while resolving stalls an order of magnitude shorter than the
 #: ten-second one this instrument was written to explain.
 DEFAULT_PERIOD_S = 0.25
+
+#: How often the O(threads) R/S/D census fires, in seconds of wall time. One
+#: second is chosen against the phenomenon: the loop stall that motivated this
+#: instrument lasted ten seconds, so a per-second census resolves it ten times
+#: over while costing one directory scan per second instead of four.
+DEFAULT_CENSUS_PERIOD_S = 1.0
+
+#: Linux reports /proc/diskstats sector counts in 512-byte units regardless of
+#: the device's own logical block size. Not a tunable: a kernel constant.
+_SECTOR_BYTES = 512
+
+#: The /proc/self/io counters this instrument records, in the order they appear
+#: in the sample row. rchar/wchar are what the process asked for; read_bytes /
+#: write_bytes are what reached the block layer; cancelled_write_bytes is what
+#: was written to page cache and then truncated away before it ever got there,
+#: which is how a store that deletes its own temporary files can show a large
+#: wchar and almost no device traffic.
+_IO_KEYS = ("rchar", "wchar", "read_bytes", "write_bytes", "cancelled_write_bytes")
 
 
 def _cpu_ticks(path: str) -> int | None:
@@ -116,9 +167,159 @@ def _rss_bytes() -> int:
         return peak * 1024 if sys.platform != "darwin" else peak
 
 
+def _proc_io(path: str = "/proc/self/io") -> tuple[int, ...] | None:
+    """The five counters of ``_IO_KEYS``, in that order, from one file read.
+
+    Returns ``None`` rather than zeros when the file is absent (macOS, or a
+    kernel built without CONFIG_TASK_IO_ACCOUNTING): a missing reading and a
+    reading of zero are opposite conclusions about whether the run writes.
+    """
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return None
+    found: dict[str, int] = {}
+    for line in raw.splitlines():
+        key, _, value = line.partition(b":")
+        name = key.decode("ascii", "replace")
+        if name in _IO_KEYS:
+            try:
+                found[name] = int(value)
+            except ValueError:
+                return None
+    if len(found) != len(_IO_KEYS):
+        return None
+    return tuple(found[name] for name in _IO_KEYS)
+
+
+def _resolve_block_device(store_path: str | Path,
+                          sys_root: str = "/sys") -> str | None:
+    """The /proc/diskstats name of the whole device backing ``store_path``.
+
+    Resolved ONCE, at start, because it cannot change during a run and because
+    walking /sys on every tick would be exactly the O(n) cost rule 3 forbids.
+
+    A partition is deliberately mapped to its parent (``sda1`` -> ``sda``):
+    ``io_ticks`` on a partition counts only the requests issued through that
+    partition, and "the device is saturated" is a statement about the device.
+    ``st_dev`` with major 0 is a synthetic filesystem (tmpfs, overlay, btrfs's
+    own device numbers) with no single backing device, and returns ``None`` --
+    which is the honest answer, not an error.
+    """
+    try:
+        st = os.stat(store_path)
+    except OSError:
+        return None
+    try:
+        major, minor = os.major(st.st_dev), os.minor(st.st_dev)
+    except (AttributeError, OSError):
+        return None
+    if major == 0:
+        return None
+    try:
+        real = Path(f"{sys_root}/dev/block/{major}:{minor}").resolve(strict=True)
+    except (OSError, RuntimeError):
+        real = None
+    if real is not None:
+        if (real / "partition").is_file() and (real.parent / "stat").is_file():
+            return real.parent.name
+        if (real / "stat").is_file():
+            return real.name
+    # Fallback for hosts without /sys/dev/block: match the major:minor in each
+    # /sys/class/block/*/dev. Flat scan, no recursion.
+    try:
+        names = sorted(os.listdir(f"{sys_root}/class/block"))
+    except OSError:
+        return None
+    want = f"{major}:{minor}"
+    for name in names:
+        base = Path(f"{sys_root}/class/block/{name}")
+        try:
+            if base.joinpath("dev").read_text(encoding="ascii").strip() != want:
+                continue
+        except OSError:
+            continue
+        if (base / "partition").is_file():
+            parent = base.resolve().parent
+            if (parent / "stat").is_file():
+                return parent.name
+        return name
+    return None
+
+
+def _diskstats(device: str, path: str = "/proc/diskstats") -> tuple[int, ...] | None:
+    """``(sectors_read, sectors_written, io_ticks_ms, weighted_io_ms)``.
+
+    One file read, and the device line found by name. Field numbering follows
+    Documentation/admin-guide/iostats.rst: after major/minor/name come reads
+    completed, reads merged, sectors read, ms reading, writes completed, writes
+    merged, sectors written, ms writing, ios in flight, io_ticks, weighted ms.
+    """
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return None
+    needle = device.encode("ascii", "replace")
+    for line in raw.splitlines():
+        fields = line.split()
+        if len(fields) < 14 or fields[2] != needle:
+            continue
+        try:
+            return (int(fields[5]), int(fields[9]), int(fields[12]), int(fields[13]))
+        except ValueError:
+            return None
+    return None
+
+
+def _thread_census(root: str = "/proc/self/task") -> tuple[int, ...] | None:
+    """``(threads, running, sleeping, disk_wait)`` from every thread's state.
+
+    THE ONE O(threads) READING, hence never on the common tick. D means
+    uninterruptible sleep -- in practice blocked in the kernel on I/O -- and a
+    non-zero D count is the only direct evidence that THIS process, rather than
+    some other tenant of the device, is the one waiting for the disk.
+
+    A thread that exits between the listdir and the open is skipped rather than
+    counted, so the total is of threads actually read, never of names seen.
+    """
+    try:
+        tids = os.listdir(root)
+    except OSError:
+        return None
+    total = running = sleeping = disk = 0
+    for tid in tids:
+        try:
+            with open(f"{root}/{tid}/stat", "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            continue
+        cut = raw.rfind(b")")
+        if cut < 0:
+            continue
+        total += 1
+        state = raw[cut + 2:cut + 3]
+        if state == b"R":
+            running += 1
+        elif state == b"S":
+            sleeping += 1
+        elif state == b"D":
+            disk += 1
+    if total == 0:
+        return None
+    return (total, running, sleeping, disk)
+
+
 @dataclass
 class _Sample:
-    """One reading. Stored, not aggregated: aggregation is the reader's job."""
+    """One reading. Stored, not aggregated: aggregation is the reader's job.
+
+    Every optional field is ``None`` when its source was unavailable and is
+    written as an EMPTY cell, never as a zero: the census fires on one tick in
+    four, and a zero there would read as "no threads in D" instead of "not
+    asked".
+    """
 
     t_ns: int
     proc_ticks: int
@@ -128,6 +329,9 @@ class _Sample:
     majflt: int
     nvcsw: int
     nivcsw: int
+    io: tuple[int, ...] | None = None
+    disk: tuple[int, ...] | None = None
+    census: tuple[int, ...] | None = None
     engine: dict[str, Any] = field(default_factory=dict)
 
 
@@ -141,14 +345,25 @@ class Measurement:
 
     __slots__ = ("_path", "_period", "_snapshot", "_samples", "_thread", "_stop",
                  "_loop_tid", "_started_ns", "_start_rusage", "_meta",
-                 "_sampler_cpu_s", "_program", "_flags", "_outcome")
+                 "_sampler_cpu_s", "_program", "_flags", "_outcome",
+                 "_store_path", "_census_every", "_device", "_device_from")
 
     def __init__(self, path: str | Path, snapshot: Callable[[], dict[str, Any]],
                  *, program: str = "", flags: dict[str, Any] | None = None,
-                 period_s: float = DEFAULT_PERIOD_S) -> None:
+                 period_s: float = DEFAULT_PERIOD_S,
+                 store_path: str | Path | None = None,
+                 census_every: int | None = None) -> None:
         self._path = Path(path)
         self._period = max(0.01, float(period_s))
         self._snapshot = snapshot
+        self._store_path = store_path
+        # N as a parameter, defaulted from the period rather than hard-coded,
+        # so changing --measure's resolution does not silently change how often
+        # the expensive census fires.
+        self._census_every = (max(1, int(census_every)) if census_every
+                              else max(1, round(DEFAULT_CENSUS_PERIOD_S / self._period)))
+        self._device: str | None = None
+        self._device_from: str | None = None
         self._samples: list[_Sample] = []
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -198,6 +413,18 @@ class Measurement:
     def start(self) -> None:
         self._started_ns = time.perf_counter_ns()
         self._start_rusage = resource.getrusage(resource.RUSAGE_SELF)
+        # --no-cache installs a backend with no store path at all, and that is
+        # precisely the configuration whose device traffic must be comparable
+        # with the others', so fall back to the directory the measurement
+        # itself is written to. Which one was used is in the header, because a
+        # device number is only evidence if the reader knows what it is of.
+        for candidate in (self._store_path, self._path.parent):
+            if candidate is None:
+                continue
+            self._device = _resolve_block_device(candidate)
+            if self._device is not None:
+                self._device_from = str(candidate)
+                break
         self._meta = self._environment()
         self._thread = threading.Thread(target=self._run, name="voxlogica-measure",
                                         daemon=True)
@@ -227,6 +454,8 @@ class Measurement:
         proc_stat = "/proc/self/stat"
         loop_stat = (f"/proc/self/task/{self._loop_tid}/stat"
                      if self._loop_tid is not None else None)
+        device = self._device
+        census_every = self._census_every
         tick = 0
         base = time.perf_counter()
         while not self._stop.is_set():
@@ -234,6 +463,11 @@ class Measurement:
             proc = _cpu_ticks(proc_stat)
             loop = _cpu_ticks(loop_stat) if loop_stat else None
             usage = resource.getrusage(resource.RUSAGE_SELF)
+            io = _proc_io()
+            disk = _diskstats(device) if device else None
+            # Tick 0 carries a census so that even a run shorter than the
+            # census period reports a thread state instead of nothing.
+            census = _thread_census() if tick % census_every == 0 else None
             try:
                 engine = self._snapshot()
             except Exception:                               # noqa: BLE001
@@ -245,6 +479,7 @@ class Measurement:
                 rss_bytes=_rss_bytes(),
                 minflt=usage.ru_minflt, majflt=usage.ru_majflt,
                 nvcsw=usage.ru_nvcsw, nivcsw=usage.ru_nivcsw,
+                io=io, disk=disk, census=census,
                 engine=engine,
             ))
             tick += 1
@@ -300,6 +535,19 @@ class Measurement:
                                     and Path(f"/proc/self/task/{self._loop_tid}/stat").exists()),
             "period_requested_s": self._period,
             "ticks_per_second": _TICKS,
+            "sector_bytes": _SECTOR_BYTES,
+            "store_path": str(self._store_path) if self._store_path else None,
+            "device_resolved_from": self._device_from,
+            # Named, not guessed: every device rate in the report is about THIS
+            # device, and a null here means the columns are empty because the
+            # device could not be resolved (tmpfs, macOS) rather than because
+            # the device was idle.
+            "block_device": self._device,
+            "device_stats_available": bool(self._device
+                                           and _diskstats(self._device) is not None),
+            "process_io_available": _proc_io() is not None,
+            "census_every_n_ticks": self._census_every,
+            "census_period_s": round(self._census_every * self._period, 6),
             "started_unix": time.time(),
         }
 
@@ -351,8 +599,14 @@ class Measurement:
             for key in sample.engine:
                 if key not in engine_keys and not isinstance(sample.engine[key], (dict, list)):
                     engine_keys.append(key)
+        io_columns = [f"io_{name}" for name in _IO_KEYS]
+        disk_columns = ["dev_sectors_read", "dev_sectors_written",
+                        "dev_io_ticks_ms", "dev_weighted_io_ms"]
+        census_columns = ["thr_total", "thr_running", "thr_sleeping", "thr_disk"]
         columns = ["t_ns", "proc_ticks", "loop_ticks", "rss_bytes",
-                   "minflt", "majflt", "nvcsw", "nivcsw", *engine_keys]
+                   "minflt", "majflt", "nvcsw", "nivcsw",
+                   *io_columns, *disk_columns, *census_columns, *engine_keys]
+        widths = (len(io_columns), len(disk_columns), len(census_columns))
 
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with open(self._path, "w", encoding="utf-8") as out:
@@ -361,18 +615,44 @@ class Measurement:
                 out.write(f"# {line}\n")
             out.write("\t".join(columns) + "\n")
             for sample in self._samples:
-                row = [sample.t_ns, sample.proc_ticks, sample.loop_ticks,
-                       sample.rss_bytes, sample.minflt, sample.majflt,
-                       sample.nvcsw, sample.nivcsw]
+                row: list[Any] = [sample.t_ns, sample.proc_ticks, sample.loop_ticks,
+                                  sample.rss_bytes, sample.minflt, sample.majflt,
+                                  sample.nvcsw, sample.nivcsw]
+                for group, width in zip((sample.io, sample.disk, sample.census), widths):
+                    # Empty cells, not zeros: a census that did not fire and a
+                    # census that found no thread in D are different readings.
+                    row.extend(group if group is not None else ("",) * width)
                 row.extend(sample.engine.get(key, "") for key in engine_keys)
                 out.write("\t".join(str(value) for value in row) + "\n")
         mean = header["authoritative"]["mean_cpu_percent"]
+        disk = self._device_summary()
         verdict = ("" if not self._outcome.get("recorded")
                    else " COMPLETE" if self._outcome.get("complete")
                    else f" INCOMPLETE ({self._outcome.get('goals_resolved')}"
                         f"/{self._outcome.get('goals_total')} goals)")
         print(f"[measure]{verdict} {self._path}: {wall_s:.1f} s wall, {mean}% mean CPU "
               f"of {os.cpu_count() * 100}% available, {len(self._samples)} samples, "
-              f"instrument cost "
+              f"{disk}, instrument cost "
               f"{f'{self._sampler_cpu_s:.2f} CPU-s' if self._sampler_cpu_s >= 0 else 'unavailable'}",
               file=sys.stderr, flush=True)
+
+    def _device_summary(self) -> str:
+        """The disk line of the one-liner, over the first and last samples.
+
+        Endpoints, not a mean of per-interval rates: both are the same quotient
+        of a counter delta by an ELAPSED t_ns delta, and the endpoints need no
+        weighting to stay right when the sampler's own interval jitters.
+        """
+        if self._device is None:
+            return "device not resolved"
+        bounds = [s for s in self._samples if s.disk is not None]
+        if len(bounds) < 2:
+            return f"{self._device}: too few samples"
+        first, last = bounds[0], bounds[-1]
+        span_s = (last.t_ns - first.t_ns) / 1e9
+        if span_s <= 0:
+            return f"{self._device}: no elapsed time"
+        util = (last.disk[2] - first.disk[2]) / 10.0 / span_s
+        written_mb = (last.disk[1] - first.disk[1]) * _SECTOR_BYTES / 1e6
+        return (f"{self._device} {util:.0f}% utilised, "
+                f"{written_mb / span_s:.1f} MB/s written")
