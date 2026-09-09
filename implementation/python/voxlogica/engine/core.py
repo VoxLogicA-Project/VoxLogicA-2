@@ -270,6 +270,18 @@ class ComputationEngine:
         # ── Per-node scheduling extras (pruned at completion) ──
         self._priority: dict[NodeId, int] = {}
         self._alias: dict[NodeId, NodeId] = {}      # a loop node -> its spliced sequence node
+        #: Loop nodes whose forward has already happened. SEPARATE from `_alias`
+        #: because the alias must OUTLIVE the forward: `_resolve_reference`
+        #: follows it to answer for a loop node whose own value is gone, and a
+        #: loop node's value cannot be recomputed -- `default.for_loop` has a
+        #: kernel but it fails on the closure the engine never builds, so the
+        #: alias is the only road back to it. Popping the alias at forward time
+        #: therefore made the results store load-bearing for CORRECTNESS: with a
+        #: store the value was reloaded and nobody noticed, and with
+        #: `--no-cache` the same program lost 7 of 16 goals to
+        #: `NeedsExpansion ... must be expanded, not computed`, raised out of a
+        #: goal's own side effect.
+        self._forwarded: set[NodeId] = set()
         self.executor._handle_resolver = self._resolve_reference
         self.executor._names_handles = self.graph.names_handles
         self._reload_deferred: set[NodeId] = set()  # deferred once to prefer resident-ready work
@@ -1476,7 +1488,21 @@ class ComputationEngine:
             # the engine never builds.
             alias = self._alias.get(nid)
             if alias is not None and alias != nid:
-                return self._resolve_reference(alias)
+                value = self._resolve_reference(alias)
+                # RESIDENT UNDER ITS OWN ID, not merely returned. The caller
+                # that reaches here is a recompute, whose argument lookup is
+                # `table.values[dep_id]` (executor `_compute`), so a value
+                # handed back without being stored raises KeyError on the very
+                # next line -- measured as exactly that, on the same node whose
+                # NeedsExpansion this branch exists to answer, with the same
+                # seven of sixteen goals lost.
+                self.table.set_value(nid, value)
+                self._retrack_resident(nid)
+                # Same reason as the reload path above: a value that did not
+                # pass `_finish` leaves the graph believing it names no nodes,
+                # and the eager adapter then hands a kernel a raw Handle.
+                self.graph.hold_handles(nid, value)
+                return value
             raise NeedsExpansion(nid)
         node = self.table.nodes[nid]
         if node.kind == "constant":
@@ -1571,8 +1597,11 @@ class ComputationEngine:
                     # computation finished and `completed` absorbed it).
                     continue
                 node = self.table.nodes[nid]
-                if nid in self._alias:
-                    seq_id = self._alias.pop(nid)
+                if nid in self._alias and nid not in self._forwarded:
+                    # The alias is KEPT (see `_forwarded`): only the forward is
+                    # once-only, and that is what this set records.
+                    self._forwarded.add(nid)
+                    seq_id = self._alias[nid]
                     # persist=True even though seq_id already holds the same
                     # value durably: the loop id is the *statically known*
                     # pruning point — a warm re-run prunes at it and skips
