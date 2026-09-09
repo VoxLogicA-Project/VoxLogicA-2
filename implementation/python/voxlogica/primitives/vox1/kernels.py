@@ -686,6 +686,40 @@ def dt2(image: object) -> sitk.Image:
     return flt.Execute(_as_bool_image(img))
 
 
+def ball_opening(image: object, radius: object) -> sitk.Image:
+    """Morphological opening by a ball, in ONE filter.
+
+    `smoothen(a,x) = distleq(x, distgeq(x, !(a)))` is an opening written as two
+    distance transforms -- `distgeq` erodes, `distleq` dilates -- so every call
+    costs two, and `segment` calls it twice per (case, threshold). dt is 47% of
+    a threshold sweep's kernel time even after the squared-distance change, so
+    the question is whether one binary opening beats two transforms.
+
+    NOT UNCONDITIONALLY EQUIVALENT, and the difference is worth stating rather
+    than discovering. The radius is physical and a structuring element is in
+    voxels, so this rounds `radius / spacing` per axis: exact only when that
+    division is integral, which for this program (2.0 and 5.0 mm on 1 mm
+    isotropic BraTS) it is. It also differs at the image border, where ITK's
+    distance transform measures to the nearest background voxel INSIDE the
+    image while binary morphology treats the outside as background. Whether
+    either matters is a question for the Dice, not for this docstring.
+    """
+    img = _as_image(image, "image")
+    _remember_base(img)
+    r = float(radius)
+    spacing = img.GetSpacing()
+    voxels = [max(0, int(round(r / (sp or 1.0)))) for sp in spacing]
+    # BY KEYWORD, because the fourth POSITIONAL argument of this filter is
+    # `backgroundValue`, not `foregroundValue`. Passing 1.0 there told the
+    # filter that 1 was background, which inverted the image and produced an
+    # "opening" of 311,499 voxels from an input of 160,167 -- larger than its
+    # own input, which an opening cannot be. That is what caught it.
+    return sitk.BinaryMorphologicalOpening(_as_bool_image(img), voxels,
+                                           sitk.sitkBall,
+                                           backgroundValue=0.0,
+                                           foregroundValue=1.0)
+
+
 def gradient(image: object) -> sitk.Image:
     """Gradient magnitude of an image."""
     img = _as_image(image, "image")

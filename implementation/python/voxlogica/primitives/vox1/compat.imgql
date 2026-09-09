@@ -67,6 +67,19 @@ let pdt(x) = mask(dt(x),dt(x) >. 0)
 let pdt2(x) = mask(dt2(x),dt2(x) >. 0)
 let distgeq(x,y) = (x .* x) .<= pdt2(y)
 let distleq(x,y) = (x .* x) .>= pdt2(y)
+// NOT ball_opening, and the measurement says why. One ITK binary opening by a
+// ball replaces the two distance transforms and runs the 20-case sweep in
+// 16.4 s against 27.1 s -- 42% off the wall clock, half the kernels -- but it
+// is a DIFFERENT opening, not a faster one: the discrete ball of radius r
+// implies `d > r` while this formulation asks `d >= r`, so the ball erodes one
+// shell further. Measured on one case at radius 2: 137,543 voxels against
+// 158,646, a difference of 21,103. The sweep's Dice moves 0.8514 -> 0.8612.
+//
+// That is a change of method and belongs to whoever owns the experiment, not
+// to a performance pass: it would move every published number, and 0.0098 on
+// twenty cases is inside the noise this project has agreed not to treat as a
+// result. `ball_opening` stays available for anyone who wants that convention
+// deliberately. doc/dev/measurements/2026-09-09-ball-opening/ has both.
 let smoothen(a,x) = distleq(x,distgeq(x,!(a)))
 
 let ~ (a,b,rad,bins) = crossCorrelation(rad,a,b,tt,min(b),max(b),bins)
