@@ -65,6 +65,12 @@ def _trace_mmap():
     return _TRACE_MMAP
 
 
+#: "no snapshot was supplied", as distinct from "a snapshot was supplied and it
+#: is None" -- None is the right answer for a value that owns its own memory, and
+#: conflating the two would make every scalar re-walk the snapshot path.
+_NO_SNAPSHOT = object()
+
+
 def _payload_snapshot(value):
     """Copy a volumetric payload's bytes, or None when there is nothing to copy.
 
@@ -171,6 +177,11 @@ class AsyncPersister:
         self._recompute_probe = None
         self.shed_pressure = 0
         self.shed_bytes = 0
+        #: Where each payload copy was taken. The point of moving it is that
+        #: the first of these goes to zero; if it does not, the move is not
+        #: happening on the path that matters and the wall clock will say so.
+        self.snapshots_on_loop = 0
+        self.snapshots_from_worker = 0
         self._queue: "queue.SimpleQueue[tuple[NodeId, Any, dict, int, float, tuple[Any, ...]] | None]" = queue.SimpleQueue()
         self._lock = threading.Lock()
         self._pending_bytes = 0
@@ -198,12 +209,19 @@ class AsyncPersister:
             self._queue.put((self._LINEAGE, rows, {}, 0, 0.0, (), None))
 
     def submit(self, node_id: NodeId, value: Any, metadata: dict, compute_ms: float = 0.0,
-               size: int | None = None) -> None:
+               size: int | None = None, snapshot: Any = _NO_SNAPSHOT) -> None:
         """Hand a value to the writer thread. Never blocks.
 
         ``size`` lets the caller pass an already-computed ``approx_bytes`` so
         the (recursive, per-completion) measurement is not repeated on the
         event loop.
+
+        ``snapshot`` lets the caller supply the payload copy it already made on
+        the WORKER thread. Measured reason: taken here, on the event loop, that
+        copy was 17.55 s of a 26.8 s run -- 1.63 ms x 10,758 completions, 65% of
+        the loop's entire CPU, serialised on the one thread that also dispatches
+        every kernel (doc/dev/measurements/2026-09-09-loop-attribution/). The
+        copy itself is necessary; its location was not.
         """
         if size is None:
             size = approx_bytes(value)
@@ -215,12 +233,22 @@ class AsyncPersister:
             self._pending_bytes += size
             self._drained.clear()
         leases = retain_states(buffer_states(value))
-        # Snapshot HERE, on the event loop. See pod_codec.encode_for_storage:
-        # the payload aliases ITK-owned memory that ITK frees on its own
-        # schedule, so a writer thread compressing the live alias races a
-        # worker's SimpleITK call and reads unmapped pages.
+        # THE COPY MUST PRECEDE ANY LATER SimpleITK CALL THAT COULD FREE THE
+        # BUFFER -- see pod_codec.encode_for_storage: the payload aliases
+        # ITK-owned memory that ITK frees on its own schedule, and a writer
+        # thread compressing the live alias reads unmapped pages. That
+        # requirement is about ORDER, not about which thread: a copy taken on
+        # the worker that just produced the value is ordered strictly earlier
+        # than one taken here, and runs on 32 threads instead of one. When the
+        # producer supplied it, use it; otherwise fall back to copying here,
+        # which is still correct and is what the recompute path does.
+        if snapshot is _NO_SNAPSHOT:
+            snapshot = _payload_snapshot(value)
+            self.snapshots_on_loop += 1
+        else:
+            self.snapshots_from_worker += 1
         self._queue.put((node_id, value, metadata, size, compute_ms, leases,
-                         _payload_snapshot(value)))
+                         snapshot))
 
     def _shed(self, node_id: NodeId) -> bool:
         """IF I WOULD HAVE TO QUEUE, DROP IT.

@@ -49,6 +49,7 @@ from voxlogica.engine.itk_threads import apply_itk_threads
 from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.memlog import MemoryLogger
+from voxlogica.engine.persist import _NO_SNAPSHOT
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.engine.evaluation import (NeedsExpansion, RewriteContext,
                                           grows_the_graph_by_name, modes_of)
@@ -284,6 +285,26 @@ class ComputationEngine:
         self._forwarded: set[NodeId] = set()
         self.executor._handle_resolver = self._resolve_reference
         self.executor._names_handles = self.graph.names_handles
+        # DISABLED, AND THE MEASUREMENT IS WHY. Moving the payload copy off the
+        # event loop onto the worker that produced the value halved the loop's
+        # largest phase -- `NodeTable.complete` went from 19.5 s to 9.9 s of a
+        # 28 s run -- and bought NOTHING: wall clock 28.2 s before, 28.2 s
+        # after, 28.4 s with the copy gated on the persist backlog, all inside
+        # the spread of three repetitions (27.3-29.4 s). What it did buy was
+        # more work: recomputes went from a mean of 409 to 648, because the
+        # copies are live between the worker and `_finish` and that pressure
+        # evicts values that then have to be rebuilt. CPU rose from 1851% to
+        # 1906% for the same 15,000 kernels, which is a regression wearing a
+        # better number.
+        #
+        # So the loop's copy is not the binding constraint at this scale: the
+        # loop had slack, and removing half its work did not make the run
+        # faster. Kept as plumbing rather than deleted -- `submit(snapshot=...)`
+        # and `Executor._snapshots` are the mechanism a fix would need if the
+        # loop ever does become binding -- but switched off, because an
+        # unmeasured mechanism that costs recomputes should not be on.
+        # doc/dev/measurements/2026-09-09-loop-copy-move/ has the numbers.
+        self.executor._should_snapshot = None
         self._reload_deferred: set[NodeId] = set()  # deferred once to prefer resident-ready work
 
         # ── Cache-admission policy + metrics ──
@@ -702,6 +723,26 @@ class ComputationEngine:
             return self._reclaim_memory_timed(*args, **kwargs)
         finally:
             self._clock.add("reclaim", time.perf_counter_ns() - _t)
+
+    def _would_persist(self, nid: NodeId) -> bool:
+        """Whether this value is worth a payload copy, asked on the WORKER.
+
+        The loop's own gate is `critical or compute_ms >= persist_min_compute_ms`,
+        and neither term is available here: the kernel's duration is not known
+        until it returns (this is called after it does, but the executor does
+        not carry it) and `critical` needs graph state that is the loop's to
+        read. What IS available and decides the overwhelming majority of cases
+        is the persister's backlog: while it is over budget the value is shed
+        anyway, so copying it is pure waste.
+
+        Deliberately permissive otherwise. A copy taken and not used costs one
+        memcpy; a copy NOT taken costs the loop 1.6 ms of memcpy on the one
+        thread that dispatches everything, which is the thing being fixed.
+        """
+        persister = self.table._persister
+        if persister is None:
+            return False
+        return not persister.over_budget
 
     def _memory_snapshot(self) -> dict[str, Any]:
         """One reading for the memory-forensics logger (see engine/memlog.py)."""
@@ -1156,8 +1197,14 @@ class ComputationEngine:
             # less -- the persist backlog is byte-budgeted, so the queue rarely
             # holds a value long enough to outlive its consumers -- but it buys
             # it safely.
+            # POPPED UNCONDITIONALLY: a copy the worker took for a value we
+            # then decline to persist must be released at this completion, not
+            # held until the process ends.
+            snapshot = self.executor._snapshots.pop(nid, _NO_SNAPSHOT) \
+                if self.executor._snapshots is not None else _NO_SNAPSHOT
             will_be_durable = self.table.complete(nid, value, compute_ms,
-                                                  critical=critical, persist=worth_it)
+                                                  critical=critical, persist=worth_it,
+                                                  snapshot=snapshot)
             if _c is not None:
                 _c.add("fin_complete", time.perf_counter_ns() - _t)
                 _t = time.perf_counter_ns()
@@ -1168,6 +1215,8 @@ class ComputationEngine:
                     _c.add("fin_items", time.perf_counter_ns() - _t)
                     _t = time.perf_counter_ns()
         else:
+            if self.executor._snapshots is not None:
+                self.executor._snapshots.pop(nid, None)   # not persisted: release it
             self.table.set_value(nid, value)
             self.table.completed.add(nid)
             if _c is not None:

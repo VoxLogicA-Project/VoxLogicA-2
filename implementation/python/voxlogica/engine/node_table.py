@@ -33,7 +33,7 @@ from voxlogica.engine.evaluation import grows_the_graph_by_name
 from voxlogica.handles import iter_handles
 from voxlogica.buffer_pool import (buffer_states, pooled_bytes_approx, release_states,
                                    retain_states)
-from voxlogica.engine.persist import AsyncPersister, approx_bytes
+from voxlogica.engine.persist import _NO_SNAPSHOT, AsyncPersister, approx_bytes
 from voxlogica.lazy.hash import hash_node, hash_sequence_item
 from voxlogica.lazy.ir import NodeId, NodeSpec
 from voxlogica.storage import NoCacheStorageBackend, StorageBackend, dumps_json
@@ -438,7 +438,7 @@ class NodeTable:
         self.completed.add(node_id)
 
     def complete(self, node_id: NodeId, value: Any, compute_ms: float = 0.0, critical: bool = False,
-                 persist: bool = True) -> bool:
+                 persist: bool = True, snapshot: Any = _NO_SNAPSHOT) -> bool:
         """Record a freshly computed value and hand it to the background writer.
 
         ``compute_ms`` is the kernel's measured wall-time; it feeds the cache's
@@ -464,7 +464,7 @@ class NodeTable:
             # to avoid putting a second writer thread on the same payload.
             self._write_queued.add(node_id)
             self._persister.submit(node_id, value, {"source": "runtime", "operator": node.operator},
-                                   compute_ms, size=size)
+                                   compute_ms, size=size, snapshot=snapshot)
             return True
         return False
 

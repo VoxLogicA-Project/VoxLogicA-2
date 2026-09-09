@@ -82,6 +82,14 @@ class Executor:
         # node this run never computed -- a warm store hands back a sequence
         # whose elements are on disk. The engine installs the full hierarchy.
         self._handle_resolver: Callable[[NodeId], Any] | None = None
+        #: node -> payload copy taken on the worker, awaiting `_finish`. A dict
+        #: rather than a return value so that every existing call site of
+        #: `_compute` keeps its shape; set to None to disable the whole path.
+        self._snapshots: dict[NodeId, Any] | None = {}
+        #: (node_id) -> bool: "would the engine persist this?", installed by the
+        #: engine. None means never snapshot here, which is the pre-move
+        #: behaviour and the fallback for anything not wired up.
+        self._should_snapshot: Callable[[NodeId], bool] | None = None
         #: `(NodeId) -> bool`, installed by the engine: does this node's value
         #: name others? Without it every eager argument is walked.
         self._names_handles: Callable[[NodeId], bool] | None = None
@@ -247,7 +255,33 @@ class Executor:
         """Gather already-materialized inputs and invoke the kernel."""
         node = table.nodes[node_id]
         with executing(node_id, node.operator):
-            return _wrap(self._compute_node(node, lambda dep_id: table.values[dep_id]))
+            value = _wrap(self._compute_node(node, lambda dep_id: table.values[dep_id]))
+        # THE PAYLOAD COPY, TAKEN HERE, ON THIS POOL THREAD. It has to happen
+        # before any later SimpleITK call can free the ITK buffer the payload
+        # aliases; taken here it is ordered strictly earlier than the event
+        # loop could take it, and it runs on every worker at once instead of on
+        # the one thread that dispatches everything. Measured on the event
+        # loop, where it used to happen: 17.55 s of a 26.8 s run, 65% of the
+        # loop's CPU (doc/dev/measurements/2026-09-09-loop-attribution/).
+        #
+        # Stashed rather than returned so no call site changes shape; `_finish`
+        # pops it, and pops it whether or not it persists, so an unused copy is
+        # released at the same completion that produced it.
+        # DECIDED BEFORE COPYING, because copying and then discarding is worse
+        # than not moving the copy at all. Measured: snapshotting every value
+        # here halved the loop's copy time (19.5 s -> 9.9 s of a 28 s run) and
+        # bought NOTHING in wall clock, because the extra live copies raised
+        # memory pressure and recomputes went from 409 to 648. So the same
+        # worth-it gate the loop applies is applied here first: a value the
+        # engine would not persist is not copied, and a value it might persist
+        # for the rarer `critical` reason falls back to the loop's own copy.
+        if self._snapshots is not None and self._should_snapshot is not None:
+            if self._should_snapshot(node_id):
+                from voxlogica.engine.persist import _payload_snapshot
+                snap = _payload_snapshot(value)
+                if snap is not None:
+                    self._snapshots[node_id] = snap
+        return value
 
     def _compute_node(self, node, lookup: Callable[[NodeId], Any]) -> Any:
         """Gather one node's inputs via ``lookup`` and invoke its kernel.
