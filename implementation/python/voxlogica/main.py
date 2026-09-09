@@ -97,7 +97,7 @@ from voxlogica.converters.json_converter import WorkPlanJSONEncoder, to_json
 from voxlogica.execution import ExecutionEngine
 from voxlogica.parser import ProgramParseError, parse_program_content
 from voxlogica.reducer import StaticAnalysisError, reduce_program
-from voxlogica.storage import NoCacheStorageBackend, SQLiteResultsDatabase, delete_results_store, results_store_paths
+from voxlogica.storage import NoCacheStorageBackend, ReadOnlyStorageBackend, SQLiteResultsDatabase, delete_results_store, results_store_paths
 from voxlogica.repl import start_repl
 from voxlogica.diagnostics.classify import build_report
 from voxlogica.diagnostics.render import (
@@ -308,9 +308,17 @@ def _run_command_inner(args: argparse.Namespace, ui) -> int:
     if args.execute:
         if args.measure is not None and not args.engine:
             logger.warning("--measure has no effect with --no-engine (only the engine is instrumented)")
-        storage = NoCacheStorageBackend() if args.no_cache else SQLiteResultsDatabase(
-            db_path=args.store_db,
-            max_bytes=int(args.cache_max_gb * 1024 ** 3) if args.cache_max_gb else None)
+        if args.no_cache:
+            storage = NoCacheStorageBackend()
+        else:
+            storage = SQLiteResultsDatabase(
+                db_path=args.store_db,
+                max_bytes=int(args.cache_max_gb * 1024 ** 3) if args.cache_max_gb else None)
+            if args.no_write_cache:
+                # Reads still hit, writes are dropped and counted. The control
+                # for "how much of this run is the write path" -- see
+                # ReadOnlyStorageBackend for why --no-cache cannot answer that.
+                storage = ReadOnlyStorageBackend(storage)
         _publish(ui, {"status": "running", "program": args.filename,
                       "startedAt": time.time(), "summary": None, "elapsed": None})
         execution_result = ExecutionEngine(
@@ -667,6 +675,16 @@ def build_parser() -> argparse.ArgumentParser:
                                  "gradual -- a primitive that declares no type rule constrains "
                                  "nothing -- so it only rejects a mismatch it can prove.")
     run_parser.add_argument("--no-cache", action="store_true", help="Force recomputation without reading or writing the store")
+    run_parser.add_argument("--no-write-cache", action="store_true",
+                            help="Read from the store, write nothing. Payload files, SQLite "
+                                 "inserts, the persist queue, spilling and the byte budget are "
+                                 "bypassed, while a value already in the store is still served, "
+                                 "so a warm run stays warm and the recompute count is unchanged. "
+                                 "The control for 'how much of this run is the write path': "
+                                 "--no-cache cannot answer that, because it also removes every "
+                                 "read hit AND turns every evicted value into a recomputation, "
+                                 "and those three effects move the wall clock in opposite "
+                                 "directions. Ignored with --no-cache.")
     run_parser.add_argument(
         "--delete-cache",
         action="store_true",

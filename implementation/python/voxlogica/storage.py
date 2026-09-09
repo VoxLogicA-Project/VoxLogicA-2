@@ -891,6 +891,94 @@ class SQLiteResultsDatabase:
             self._connection.close()
 
 
+def _approx_bytes_or_none():
+    try:
+        from voxlogica.engine.persist import approx_bytes as _fn
+        return _fn
+    except Exception:                                       # noqa: BLE001
+        return None
+
+
+approx_bytes = _approx_bytes_or_none()
+
+
+class ReadOnlyStorageBackend:
+    """Reads from a real store, writes nothing. The `--no-write-cache` backend.
+
+    WHY THIS EXISTS AS A SEPARATE MODE. `--no-cache` conflates three things:
+    no writes, no reads, AND recompute-instead-of-reload for every evicted
+    value. So it cannot answer the one question a performance investigation
+    actually asks -- *is the write path the bottleneck?* -- because turning it
+    on also removes every read hit and adds recomputation, and the three
+    effects move the wall clock in opposite directions.
+
+    This mode removes exactly one of them. A value already in the store is
+    still served (so a warm run stays warm and the recompute count does not
+    change), and nothing new is ever written: no payload files, no SQLite
+    inserts, no persist queue, no spill, and no byte budget to enforce. It is
+    the "as if the disk were infinitely fast, or the budget were zero" control
+    against which a normal run's write cost can be read off directly.
+
+    Everything not overridden below is forwarded to the wrapped store, so it
+    cannot silently diverge from it as the backend grows methods.
+    """
+
+    #: Writes are dropped, not raised on: the engine is allowed to call these
+    #: freely and must not need to know which backend it has.
+    _DROPPED = frozenset({
+        "put", "put_success", "put_success_batch", "put_definition",
+        "put_plan_definitions", "put_lineage_batch", "delete", "clear",
+        "forget", "flush",
+    })
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.dropped_writes = 0
+        self.dropped_bytes = 0
+
+    def __getattr__(self, name):                # forwarded: reads and the rest
+        return getattr(self._inner, name)
+
+    # ── the writes, counted rather than performed ────────────────────────────
+
+    def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None,
+                    compute_ms: float = 0.0) -> None:
+        self.dropped_writes += 1
+        self.dropped_bytes += approx_bytes(value) if approx_bytes else 0
+
+    def put_success_batch(self, entries) -> None:
+        for entry in entries:
+            self.put_success(*entry[:2])
+
+    def put(self, *args, **kwargs) -> None:
+        self.dropped_writes += 1
+
+    def put_definition(self, node_id: str, node) -> None:
+        return None
+
+    def put_plan_definitions(self, plan) -> None:
+        return None
+
+    def put_lineage_batch(self, rows) -> None:
+        return None
+
+    def delete(self, node_id: str) -> None:
+        return None
+
+    def clear(self) -> None:
+        return None
+
+    def flush(self, timeout_s: float = 0.0) -> None:
+        return None                              # nothing is in flight, ever
+
+    def stats(self) -> dict[str, Any]:
+        base = dict(self._inner.stats()) if hasattr(self._inner, "stats") else {}
+        base["read_only"] = True
+        base["dropped_writes"] = self.dropped_writes
+        base["dropped_bytes"] = self.dropped_bytes
+        return base
+
+
 class NoCacheStorageBackend:
     """Storage backend that records nothing and never returns hits."""
 
