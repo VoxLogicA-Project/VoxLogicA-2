@@ -71,6 +71,12 @@ class Executor:
     def __init__(self, registry: PrimitiveRegistry, max_workers: int):
         self.registry = registry
         self._pool = ThreadPoolExecutor(max_workers=max_workers)
+        #: The kernels run HERE; everything else runs on the event loop. So the
+        #: question "why do the worker CPUs wait" has a direct answer: either
+        #: this pool's queue is empty, in which case the loop is not feeding
+        #: them, or it is not, in which case they are held by something else.
+        #: Nobody had ever looked, and reasoning about it produced a model that
+        #: predicted saturation we do not observe.
         # Signature introspection is stable per kernel; cache it so the hot path
         # doesn't re-parse it on every one of a sweep's thousands of calls.
         self._signatures: dict[Any, tuple[list, bool, bool]] = {}
@@ -250,6 +256,24 @@ class Executor:
         for exit_id, out in zip(binding.exit_ids_topo, outputs):
             results[exit_id] = PolyArray.from_numpy(out.reshape(ref_shape), ref_geometry)
         return results
+
+    def pool_backlog(self) -> int:
+        """Callables queued for the kernel pool but not yet picked up.
+
+        Zero while pool threads are idle means the loop is the constraint --
+        the threads have nothing to take. Non-zero while they are idle would
+        mean something else holds them, and would refute that.
+        """
+        try:
+            return self._pool._work_queue.qsize()       # noqa: SLF001
+        except Exception:                                # noqa: BLE001
+            return -1
+
+    def pool_threads(self) -> int:
+        try:
+            return len(self._pool._threads)              # noqa: SLF001
+        except Exception:                                # noqa: BLE001
+            return -1
 
     def _compute(self, table: NodeTable, node_id: NodeId) -> Any:
         """Gather already-materialized inputs and invoke the kernel."""

@@ -772,6 +772,12 @@ class ComputationEngine:
             "budget_bytes": self.governor.budget,
             "hard_bytes": self.governor.hard,
             "in_flight": self._in_flight,
+            # WHY THE WORKER CPUs WAIT, measured rather than modelled. `in_flight`
+            # counts nodes the scheduler believes are being computed; this counts
+            # callables actually queued for the kernel pool. If the pool is idle
+            # with an empty backlog, the single event loop is not feeding it.
+            "pool_backlog": self.executor.pool_backlog(),
+            "pool_threads": self.executor.pool_threads(),
             "ready": self.ready.qsize(),
             "parked": self.ready.parked_count,
             "evicted_early": self._evicted_early,
