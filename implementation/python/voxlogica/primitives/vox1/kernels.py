@@ -658,6 +658,34 @@ def dt(image: object) -> sitk.Image:
     return flt.Execute(_as_bool_image(img))
 
 
+def dt2(image: object) -> sitk.Image:
+    """Signed Maurer distance transform, SQUARED.
+
+    Exists because `dt` is 54% of a threshold sweep's entire kernel time -- 940
+    calls at 371 ms each, 348.7 of 645 CPU-seconds
+    (doc/dev/measurements/2026-09-09-loop-attribution/) -- and every consumer of
+    it in `compat.imgql` only ever compares the result against a RADIUS:
+
+        let pdt(x)       = mask(dt(x), dt(x) >. 0)
+        let distgeq(x,y) = x .<= pdt(y)
+        let distleq(x,y) = x .>= pdt(y)
+
+    Comparing squared distances against the squared radius is exactly equivalent
+    there, because both sides are non-negative and squaring is monotone on
+    non-negatives; it drops one square root per voxel. Kept as a SEPARATE
+    primitive rather than a flag on `dt`, because `dt`'s value is a distance and
+    programs are entitled to use it as one.
+    """
+    img = _as_image(image, "image")
+    _remember_base(img)
+    flt = sitk.SignedMaurerDistanceMapImageFilter()
+    flt.SetInsideIsPositive(False)
+    flt.SetSquaredDistance(True)
+    flt.SetUseImageSpacing(True)
+    flt.SetBackgroundValue(0.0)
+    return flt.Execute(_as_bool_image(img))
+
+
 def gradient(image: object) -> sitk.Image:
     """Gradient magnitude of an image."""
     img = _as_image(image, "image")

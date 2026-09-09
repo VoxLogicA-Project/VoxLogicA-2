@@ -56,8 +56,17 @@ let .* (a,b) = a * b
 let .+ (a,b) = a + b
 
 let pdt(x) = mask(dt(x),dt(x) >. 0)
-let distgeq(x,y) = x .<= pdt(y)
-let distleq(x,y) = x .>= pdt(y)
+// SQUARED, on both sides. `pdt2` is the squared positive distance and the
+// radius is squared to match: equivalent because both sides are non-negative
+// and squaring is monotone there, and it drops one square root per voxel from
+// the operator that is 54% of a threshold sweep's kernel time. `pdt` itself is
+// left alone -- it is a distance and a program may want it as one.
+//
+// A NEGATIVE radius would flip the comparison, and is not a case these mean
+// anything for: a radius is a length.
+let pdt2(x) = mask(dt2(x),dt2(x) >. 0)
+let distgeq(x,y) = (x .* x) .<= pdt2(y)
+let distleq(x,y) = (x .* x) .>= pdt2(y)
 let smoothen(a,x) = distleq(x,distgeq(x,!(a)))
 
 let ~ (a,b,rad,bins) = crossCorrelation(rad,a,b,tt,min(b),max(b),bins)

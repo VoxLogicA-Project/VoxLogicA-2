@@ -124,6 +124,7 @@ _PRIMITIVES: dict[str, tuple[Callable[..., Any], AritySpec]] = {
     "and": (kernels.logical_and, AritySpec.fixed(2)),
     "or": (kernels.logical_or, AritySpec.fixed(2)),
     "dt": (kernels.dt, AritySpec.fixed(1)),
+    "dt2": (kernels.dt2, AritySpec.fixed(1)),
     "gradient": (kernels.gradient, AritySpec.fixed(1)),
     "constant": (kernels.constant, AritySpec.fixed(1)),
     "eq_sv": (kernels.eq_sv, AritySpec.fixed(2)),
