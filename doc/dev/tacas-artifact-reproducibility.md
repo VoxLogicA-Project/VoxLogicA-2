@@ -25,7 +25,7 @@ lista di partenza — sono venuti fuori facendo il resto.
 | # | Criticità | Gravità | Stato |
 |---|---|---|---|
 | **7a** | Doppio dispatch: `DoubleComputationError` | bloccante | **fatto da Vincenzo** (`a313172`) |
-| **7b** | **Rematerializzazione: `NeedsExpansion` a store caldo** | bloccante | **fatto** (potatura del nodo loop) |
+| **7b** | **Rematerializzazione: `NeedsExpansion` a store caldo** | **bloccante** | **aperto** — una causa chiusa (`29634eb`), il fallimento resta |
 | 1 | Programmi che escono 0 senza calcolare niente | bloccante | fatto (motore) / 6 programmi da sistemare |
 | 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | **fatto per 2 e 3, provvisorio per 4** |
 | 3 | Percorsi dataset assoluti dentro i programmi | alta | mitigato nell'artifact, aperto nel repo |
@@ -139,7 +139,53 @@ arriva più per un duplicato benigno.
 
 ---
 
-## 7b. Rematerializzazione: `NeedsExpansion` a store caldo — CHIUSO il 2026-09-08
+## 7b. Rematerializzazione: `NeedsExpansion` a store caldo — ANCORA APERTO
+
+**Aggiornamento del 2026-09-09.** `29634eb` ha chiuso *una* causa, non il
+fallimento. L'esperimento 4 rilanciato sullo store caldo la notte del 2026-09-08
+muore ancora, sullo stesso nodo:
+
+```
+[stuck] qsize=0 outstanding=59 completed=1017 stuck=0 alias=1 jobs=0
+NeedsExpansion: 9434d297... must be expanded, not computed     exit=70, 21/23 goal
+```
+
+Quello che il fix ha effettivamente prodotto, e che regge: l'AIIM sullo store
+caldo dà exit 0 in 36 s con i sei valori bit-identici all'oracolo, e i tre
+invarianti sono pinnati da `tests/unit/test_warm_loop_node_is_still_expandable.py`.
+Quello che avevo scritto in più — che con la correzione nessuno sarebbe più
+arrivato al percorso dei goal — era un'inferenza dall'esperimento 2, non una
+misura sul 4, ed è falsa.
+
+**La traccia completa, che il 2026-09-08 non avevamo** (`voxlogica errors show
+VLX-AC2EDB94`):
+
+```
+strategy.py:318 run → :410 _side_effect → :435 _materialize
+  → handles.py:95 resolve_deep → :132 _rebuild
+  → core.py:1314 _resolve_reference → :1530 _rematerialize
+     preceduto da CINQUE frame annidati di core.py:1551 _rematerialize(child)
+```
+
+Tre elementi nuovi, che spostano la diagnosi:
+
+1. Il nodo loop **non è il bersaglio dell'handle**: è una dipendenza cinque
+   livelli sotto, raggiunta ricostruendo lo scaffolding di un altro valore. Non
+   è il caso che la mancata potatura di `_available` copre.
+2. Succede a **motore già spento**, dentro `_side_effect`, che sta fuori dal
+   `try/except` che protegge `query.result()`.
+3. Il run **si era già impiantato prima**: `outstanding=59` con `qsize=0`,
+   `jobs=0` e `stuck=0` — cioè il dump della frontiera non nomina nessun nodo in
+   attesa. Lo stallo è il fallimento primo; il `NeedsExpansion` è quello che si
+   vede.
+
+Da qui riparte l'indagine: perché 59 unità restano in sospeso senza che nessun
+nodo risulti in attesa. E, di passaggio, `core.py:1551` mostra che
+`_rematerialize` ricorre sulle dipendenze, cosa che AGENTS.md vieta.
+
+---
+
+### Storia: la prima causa, chiusa il 2026-09-08 in `29634eb`
 
 Non era l'altra faccia del 7a: sopravviveva alla sua correzione. Era un bug
 indipendente, mascherato prima del merge dal doppio dispatch.
@@ -233,11 +279,9 @@ su questo programma.
 
 **Quello che resta.** Il percorso di materializzazione dei goal
 (`strategy.py::_side_effect`) non cattura `NeedsExpansion` e gira a motore
-spento, dove nessuno potrebbe comunque espandere. Con questo fix non ci arriva
-più nulla, ma resta un punto in cui un errore del motore arriva all'utente come
-traceback. Da rivedere separatamente. Va inoltre rifatto un run completo
-dell'esperimento 4, che è quello su cui il bug si manifestava: qui è verificato
-sull'esperimento 2, che è il più rapido ad avere un oracolo esatto.
+spento, dove nessuno potrebbe comunque espandere — ed è esattamente il punto in
+cui l'esperimento 4 muore ancora il 2026-09-09. Vedi l'aggiornamento in testa
+alla sezione.
 
 ## 8. Lavoro costoso perso per un errore a valle — MEDIA
 
