@@ -1,0 +1,289 @@
+{
+  "schema": "voxlogica.measurement/1",
+  "environment": {
+    "argv": [
+      "/home/vincenzo/data/local/repos/VoxLogicA-2/.venv/bin/python",
+      "/tmp/vlx-loop/implementation/python/voxlogica/main.py",
+      "run",
+      "--no-serve",
+      "--threads",
+      "32",
+      "--store-db",
+      "/home/vincenzo/meas/bw/b.db",
+      "--measure",
+      "/home/vincenzo/meas/bw/t32.json",
+      "/tmp/vlx-loop/doc/gallery/programs/simpleitk/brats-threshold-sweep-aiim.imgql"
+    ],
+    "program": "",
+    "flags": {
+      "threads": 32,
+      "threads_auto": "logical",
+      "strategy": "engine",
+      "sparse_cache": false,
+      "goals": 16
+    },
+    "commit": "b27db24a4ca60437a7368f57cb8bf8f95a51fc73",
+    "working_tree_dirty": true,
+    "host": "fmt-5000",
+    "cpu_model": "Intel(R) Core(TM) Ultra 9 285K",
+    "cpu_count": 24,
+    "python": "3.14.6 free-threading build (main, Jun 11 2026, 04:03:14) [Clang 22.1.3 ]",
+    "free_threaded_build": true,
+    "gil_enabled": false,
+    "loop_thread_id": 3920380,
+    "per_thread_sampling": true,
+    "period_requested_s": 0.25,
+    "ticks_per_second": 100,
+    "sector_bytes": 512,
+    "store_path": "/home/vincenzo/meas/bw/b.db",
+    "device_resolved_from": "/home/vincenzo/meas/bw/b.db",
+    "block_device": "nvme0n1",
+    "device_stats_available": true,
+    "process_io_available": true,
+    "census_every_n_ticks": 4,
+    "census_period_s": 1.0,
+    "started_unix": 1788943742.7279425
+  },
+  "outcome": {
+    "recorded": true,
+    "goals_total": 16,
+    "goals_resolved": 16,
+    "complete": true,
+    "error": null
+  },
+  "totals": {
+    "wall_seconds": 16.545,
+    "cpu_seconds": 300.597,
+    "mean_cpu_percent": 1816.9,
+    "cores_available": 24,
+    "ceiling_percent": 2400.0,
+    "user_seconds": 290.581,
+    "system_seconds": 10.016,
+    "peak_rss_bytes": 8135348224,
+    "minor_faults": 5376666,
+    "major_faults": 0,
+    "voluntary_switches": 71309,
+    "involuntary_switches": 160005,
+    "source": "getrusage(RUSAGE_SELF), read once at start and once at exit"
+  },
+  "work": {
+    "kernels_executed": 8254,
+    "recomputes": 42,
+    "cones_dispatched": 1043,
+    "ops_fused": 1223,
+    "interiors_elided": 713,
+    "completed": 8500,
+    "persist_shed": 0,
+    "persist_skipped_dead": 0
+  },
+  "work_by_operator": [
+    {
+      "operator": "vox1.ball_opening",
+      "kernels": 470,
+      "cpu_seconds": 302.82
+    },
+    {
+      "operator": "vox1.volume",
+      "kernels": 1433,
+      "cpu_seconds": 34.65
+    },
+    {
+      "operator": "vox1.and",
+      "kernels": 973,
+      "cpu_seconds": 16.13
+    },
+    {
+      "operator": "vox1.+",
+      "kernels": 692,
+      "cpu_seconds": 14.45
+    },
+    {
+      "operator": "vox1.geq_sv",
+      "kernels": 490,
+      "cpu_seconds": 14.21
+    },
+    {
+      "operator": "vox1.through",
+      "kernels": 470,
+      "cpu_seconds": 9.62
+    },
+    {
+      "operator": "vox1.max",
+      "kernels": 158,
+      "cpu_seconds": 6.37
+    },
+    {
+      "operator": "vox1.intensity",
+      "kernels": 40,
+      "cpu_seconds": 5.92
+    },
+    {
+      "operator": "default.sequence",
+      "kernels": 187,
+      "cpu_seconds": 5.64
+    },
+    {
+      "operator": "vox1./",
+      "kernels": 481,
+      "cpu_seconds": 5.54
+    },
+    {
+      "operator": "vox1.y",
+      "kernels": 70,
+      "cpu_seconds": 5.11
+    },
+    {
+      "operator": "vox1.x",
+      "kernels": 70,
+      "cpu_seconds": 4.99
+    },
+    {
+      "operator": "simpleitk.ReadImage",
+      "kernels": 40,
+      "cpu_seconds": 4.67
+    },
+    {
+      "operator": "strings.concat",
+      "kernels": 140,
+      "cpu_seconds": 4.35
+    },
+    {
+      "operator": "vox1.*",
+      "kernels": 440,
+      "cpu_seconds": 4.3
+    },
+    {
+      "operator": "vox1.or",
+      "kernels": 450,
+      "cpu_seconds": 4.24
+    },
+    {
+      "operator": "vox1.mask",
+      "kernels": 140,
+      "cpu_seconds": 4.08
+    },
+    {
+      "operator": "vox1.percentiles",
+      "kernels": 20,
+      "cpu_seconds": 3.77
+    },
+    {
+      "operator": "simpleitk.WriteImage",
+      "kernels": 76,
+      "cpu_seconds": 2.99
+    },
+    {
+      "operator": "default.index",
+      "kernels": 100,
+      "cpu_seconds": 2.76
+    },
+    {
+      "operator": "arrays.vector_uint32",
+      "kernels": 94,
+      "cpu_seconds": 2.62
+    },
+    {
+      "operator": "simpleitk.Cast",
+      "kernels": 76,
+      "cpu_seconds": 2.61
+    },
+    {
+      "operator": "simpleitk.Extract",
+      "kernels": 84,
+      "cpu_seconds": 2.57
+    },
+    {
+      "operator": "simpleitk.RescaleIntensity",
+      "kernels": 80,
+      "cpu_seconds": 2.53
+    }
+  ],
+  "shape": {
+    "intervals": 66,
+    "process_cpu_mean_percent": 1822.7,
+    "process_cpu_max_percent": 2375.1,
+    "saturated_fraction_90": 0.5758,
+    "saturated_fraction_75": 0.6667,
+    "below_half_fraction": 0.2879,
+    "note": "Sampled, therefore approximate; the exact mean is in totals.mean_cpu_percent. Use these for the SHAPE only."
+  },
+  "event_loop": {
+    "mean_occupancy_percent": 60.9,
+    "max_occupancy_percent": 104.0,
+    "hot_fraction_90": 0.2121,
+    "phases": {
+      "fin_complete": {
+        "seconds": 10.587,
+        "calls": 7584
+      },
+      "finish": {
+        "seconds": 7.017,
+        "calls": 5969
+      },
+      "predispatch": {
+        "seconds": 0.434,
+        "calls": 5988
+      },
+      "fin_oncomplete": {
+        "seconds": 0.361,
+        "calls": 7585
+      },
+      "fin_items": {
+        "seconds": 0.097,
+        "calls": 249
+      },
+      "alias": {
+        "seconds": 0.066,
+        "calls": 62
+      },
+      "fin_bandwidth": {
+        "seconds": 0.054,
+        "calls": 7585
+      },
+      "reclaim": {
+        "seconds": 0.023,
+        "calls": 7249
+      },
+      "dispatch": {
+        "seconds": 0.018,
+        "calls": 5988
+      },
+      "named_deps": {
+        "seconds": 0.012,
+        "calls": 7031
+      },
+      "fin_holdhandles": {
+        "seconds": 0.007,
+        "calls": 7586
+      },
+      "fin_evicttrack": {
+        "seconds": 0.006,
+        "calls": 7585
+      },
+      "fin_setvalue": {
+        "seconds": 0.0,
+        "calls": 1
+      }
+    }
+  },
+  "io": {
+    "io_wchar": null,
+    "io_write_bytes": null,
+    "io_read_bytes": null,
+    "io_cancelled_write_bytes": null,
+    "dev_io_ticks_ms": null,
+    "dev_sectors_written": null,
+    "thr_disk": null,
+    "thr_total": null
+  },
+  "instrument": {
+    "samples": 67,
+    "period_requested_s": 0.25,
+    "period_achieved_mean_s": 0.250001,
+    "period_achieved_min_s": 0.037871,
+    "period_achieved_max_s": 0.415552,
+    "sampler_cpu_seconds": 0.24744,
+    "sampler_share_of_run_cpu": 0.000823,
+    "rate_rule": "Every rate here is computed from consecutive sample timestamps. Dividing by the nominal period overstated CPU by 39% in the method this replaced."
+  }
+}
