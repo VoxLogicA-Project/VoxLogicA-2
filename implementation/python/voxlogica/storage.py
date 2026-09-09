@@ -256,6 +256,24 @@ class SQLiteResultsDatabase:
         # _enforce_budget.
         self._spill_guard = None
         self._lock = threading.RLock()
+        try:
+            from voxlogica.engine.control import register_knob, register_probe
+            register_knob(
+                "store.cache_max_gb",
+                lambda: round(self._max_bytes / (1 << 30), 3),
+                self._set_cache_max_gb,
+                doc="Configured payload-tier budget in GB. Note it is only one "
+                    "of two bounds: `_effective_max_bytes` also caps the tier "
+                    "at current free space minus a reserve, so lowering this "
+                    "tightens the budget while raising it may change nothing.",
+                kind="number")
+            register_probe("store.stats", self.stats,
+                           doc="Payload bytes held, writes, evictions and "
+                               "evicted bytes, plus the budget actually being "
+                               "enforced right now.",
+                           cost="cheap")
+        except Exception:                                       # noqa: BLE001
+            pass                        # observability must never break a run
         self._live_node_ids: set[str] = set()  # legacy push-style live set (see set_live_nodes)
         self._live_probe = None                # preferred: O(1) predicate from the engine
         self._id_index: set[str] | None = None # engine's persisted-id index; kept truthful on evict
@@ -762,6 +780,25 @@ class SQLiteResultsDatabase:
         self._stats["evictions"] += 1
         self._stats[tier] += 1  # evicted_dead | evicted_live
         self._stats["evicted_bytes"] += int(nbytes or 0)
+
+    def _set_cache_max_gb(self, value) -> None:
+        """Retarget the payload budget mid-run.
+
+        The reason this is worth a knob rather than a flag: a sixty-case sweep
+        was observed holding 264.6 GB of payloads against a 250 GB budget while
+        writing 248 GB in twenty-six minutes -- evict, recompute, rewrite --
+        and answering "does a tighter budget stop the thrash or just add
+        recomputes?" required a relaunch that would have discarded the state
+        the question was about. Lowering it does not delete anything by itself;
+        the next `_enforce_budget` walks it down, so the effect is visible in
+        `store.stats` within seconds.
+        """
+        gb = float(value)
+        if not 0.001 <= gb <= 1_000_000.0:
+            raise ValueError(f"store.cache_max_gb must be in [0.001, 1e6], got {gb}")
+        with self._lock:
+            self._max_bytes = int(gb * (1 << 30))
+            self._disk_ceiling = None       # force a fresh free-space probe
 
     def _effective_max_bytes(self) -> int:
         """The budget actually enforced right now: the configured one, capped by

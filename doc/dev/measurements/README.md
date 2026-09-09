@@ -38,6 +38,30 @@ Reports live beside the note that interprets them, one directory per experiment.
 
 ## Experiments, newest first
 
+### 2026-09-10 — the engine serves its own inspector (`--control`)
+
+[2026-09-10-live-control-channel/](2026-09-10-live-control-channel/) — not a
+result but a **method fix**, plus the findings that forced it. Answering "did
+the cache survive?" about a 26-minute-old sweep took nine external `/proc`,
+`du` and SQLite probes, two of which raced the evictor and one of which measured
+the wrong process; the follow-up ("turn persistence off and see") could not be
+answered at all without a relaunch that would have destroyed the state in
+question. So `--control` now serves knobs and probes over a unix socket, and
+`Measure.write` writes a report without ending the run.
+
+Findings recorded there, with what each is worth: the store is intact but covers
+only **22,170 of 107,728** static plan nodes (every prior run died inside goal 2
+of 7); four persister threads hold **~200%** of CPU while the event loop holds
+only **76%**, against 20.6% reuse; the payload tier is **over** its 250 GB cap
+and rewriting itself (248 GB written against 8.3 GB read in 26 min); and
+throughput is *drifting* ~9% inside a 350–580 node/s band, not collapsing.
+
+Two retractions in the same note: an `accessed_at` argument that was void
+because `accessed_at` is written only on insert — **the store records no reads
+at all, so disk-cache pruning cannot use recency** — and an ENOSPC alarm that
+was wrong because `_effective_max_bytes` already re-derives the ceiling from
+current free space.
+
 | date | experiment | commit | verdict | wall | effect |
 |---|---|---|---|---|---|
 | 09-09 | [**RAM share: the main reason**](2026-09-09-ram-share/) | `ddf40f4` | **+74% throughput** | — | On the REAL 60-case sweep, changing `_RSS_SHARE` from 0.75 to 0.40: **304 -> 529 node/s**, CPU 1986% -> 2208%, RSS 30.4 -> 19.6 GB. At 75% of RAM the box is left with 10 GB and kernels enter DIRECT reclaim (6-15k pages/s), doing the OS's page scanning on worker threads instead of computing. Every earlier measurement used the 20-case program, which never exceeds 12 GB and therefore could not see this. |

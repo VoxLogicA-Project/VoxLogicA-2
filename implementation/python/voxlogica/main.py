@@ -348,7 +348,9 @@ def _run_command_inner(args: argparse.Namespace, ui) -> int:
             observe=ui.results.observe if ui is not None and ui.results else None,
         ).execute_workplan(workplan, measure=args.measure,
                              measure_period=args.measure_period,
-                             measure_series=args.measure_series)
+                             measure_series=args.measure_series,
+                             control=args.control,
+                             control_eval=args.control_eval)
         if not execution_result.success:
             for diagnostic in execution_result.diagnostics:
                 _render_diagnostic(diagnostic, args)
@@ -784,6 +786,27 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Also write the raw per-sample rows beside the report, as "
                                  "<report>.samples.tsv. For plotting; every figure the report "
                                  "quotes is already derived in the report itself.")
+    run_parser.add_argument("--control", nargs="?", const="voxlogica.ctl", default=None,
+                            metavar="SOCKET",
+                            help="Serve a live control channel on this unix socket "
+                                 "(default voxlogica.ctl). It answers Domain.method "
+                                 "requests as newline-delimited JSON -- "
+                                 "Runtime.describe, Probe.get, Knob.list/get/set, "
+                                 "Series.start/stop, Measure.write -- so a running "
+                                 "sweep can be interrogated and retuned without "
+                                 "being restarted. Independent of --measure. Costs "
+                                 "nothing while no client is connected (one daemon "
+                                 "thread blocked in accept). Every accepted Knob.set "
+                                 "is stamped into the report, because a run whose "
+                                 "parameters moved while it ran is not comparable "
+                                 "with one whose did not. Client: tools/measure/ctl.py.")
+    run_parser.add_argument("--control-eval", action="store_true",
+                            help="Allow Runtime.eval on the control channel. Off by "
+                                 "default: it executes arbitrary code inside the "
+                                 "measured process, so it perturbs the run and can "
+                                 "wedge it. Every eval is recorded in the report. Use "
+                                 "it to read something no probe exposes, then add the "
+                                 "probe.")
     run_parser.add_argument("--serve", action=argparse.BooleanOptionalAction, default=True,
                             help="Serve the browser UI alongside the run (default). The process "
                                  "exits when the run ends if no browser is connected, and keeps "

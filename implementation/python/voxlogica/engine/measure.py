@@ -347,7 +347,7 @@ class Measurement:
                  "_loop_tid", "_started_ns", "_start_rusage", "_meta",
                  "_sampler_cpu_s", "_program", "_flags", "_outcome",
                  "_store_path", "_census_every", "_device", "_device_from",
-                 "_keep_series")
+                 "_keep_series", "_control", "_series_path")
 
     def __init__(self, path: str | Path, snapshot: Callable[[], dict[str, Any]],
                  *, program: str = "", flags: dict[str, Any] | None = None,
@@ -378,7 +378,12 @@ class Measurement:
         self._meta: dict[str, Any] = {}
         self._outcome: dict[str, Any] = {"recorded": False}
         self._keep_series = bool(keep_series)
-        self._keep_series = bool(keep_series)
+        #: Where the raw series goes when it is written. Settable at runtime so
+        #: a decay noticed at minute twenty can be recorded from minute twenty
+        #: instead of requiring the run to be restarted -- which is exactly the
+        #: iteration this project keeps wasting.
+        self._series_path: Path | None = None
+        self._control: Any = None
 
     # ── the engine's side of the contract ────────────────────────────────────
 
@@ -462,7 +467,14 @@ class Measurement:
         census_every = self._census_every
         tick = 0
         base = time.perf_counter()
+        # The period is re-read every tick (and `base` re-anchored when it
+        # changes) so `Knob.set measure.period_s` takes effect without
+        # restarting the run, while the absolute-deadline property that removes
+        # drift is preserved inside each period regime.
+        period = self._period
         while not self._stop.is_set():
+            if self._period != period:
+                period, base, tick = self._period, time.perf_counter(), 0
             t_ns = time.perf_counter_ns()
             proc = _cpu_ticks(proc_stat)
             loop = _cpu_ticks(loop_stat) if loop_stat else None
@@ -487,7 +499,7 @@ class Measurement:
                 engine=engine,
             ))
             tick += 1
-            self._stop.wait(max(0.0, base + tick * self._period - time.perf_counter()))
+            self._stop.wait(max(0.0, base + tick * period - time.perf_counter()))
         try:                        # what the instrument itself cost, measured
             own = resource.getrusage(resource.RUSAGE_THREAD)
             self._sampler_cpu_s = own.ru_utime + own.ru_stime
@@ -555,7 +567,7 @@ class Measurement:
             "started_unix": time.time(),
         }
 
-    def _write(self) -> None:
+    def _write(self, destination: Path | None = None) -> None:
         """Derive the summary here, and write ONE JSON report.
 
         The derivations used to live in an external script, which meant the
@@ -721,16 +733,26 @@ class Measurement:
                               "timestamps. Dividing by the nominal period overstated "
                               "CPU by 39% in the method this replaced."),
             },
+            # A RUN WHOSE PARAMETERS MOVED WHILE IT RAN IS NOT COMPARABLE WITH
+            # ONE WHOSE DID NOT, and the live control channel makes moving them
+            # a one-line command. So every accepted write and every eval is
+            # stamped here with its wall-clock time, for the same reason
+            # `outcome` is: a number that looks quotable must carry what would
+            # disqualify it. `altered_while_running` is the flag the comparison
+            # tooling reads.
+            "control": _control_provenance(),
         }
 
-        path = self._path
+        path = destination if destination is not None else self._path
         if path.suffix != ".json":
             path = path.with_suffix(".json")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
 
         if self._keep_series:
-            self._write_series(path.with_suffix(".samples.tsv"))
+            self._write_series(self._series_path
+                               if self._series_path is not None
+                               else path.with_suffix(".samples.tsv"))
 
         mean = report["totals"]["mean_cpu_percent"]
         verdict = ("" if not self._outcome.get("recorded")
@@ -741,6 +763,60 @@ class Measurement:
               f"of {ceiling:.0f}% available, {len(self._samples)} samples, "
               f"instrument {report['instrument']['sampler_cpu_seconds']}",
               file=sys.stderr, flush=True)
+
+    # -- what the live control channel calls (engine/control.py) ------------
+    #
+    # These are the only mutating entry points the channel has into the
+    # instrument, and each one exists because a question could not be answered
+    # today without ending the run that raised it.
+
+    def attach_control(self, channel: Any) -> None:
+        self._control = channel
+
+    def series_status(self) -> dict[str, Any]:
+        return {"keeping": self._keep_series,
+                "path": (str(self._series_path) if self._series_path is not None
+                         else str(self._path.with_suffix(".samples.tsv"))),
+                "period_s": self._period,
+                "samples_held": len(self._samples),
+                "note": ("Samples are held in memory for the whole run and "
+                         "written once; the series file appears when the run "
+                         "ends or on Measure.write.")}
+
+    def series_start(self, *, path: str | None = None,
+                     period_s: float | None = None) -> dict[str, Any]:
+        """Turn the raw series on mid-run, optionally at a new resolution."""
+        self._keep_series = True
+        if path:
+            self._series_path = Path(path)
+        if period_s is not None:
+            self.set_period(float(period_s))
+        return self.series_status()
+
+    def series_stop(self) -> dict[str, Any]:
+        self._keep_series = False
+        return self.series_status()
+
+    def set_period(self, period_s: float) -> float:
+        """Change the sampling resolution. Bounded, because the instrument's
+        cost per tick is fixed but not zero: below 10 ms it starts to show up
+        in its own RUSAGE_THREAD line."""
+        self._period = max(0.01, min(60.0, float(period_s)))
+        return self._period
+
+    def write_snapshot(self, path: str | None = None) -> dict[str, Any]:
+        """Write a full report from the samples taken so far, mid-run.
+
+        The samples are NOT cleared: the final report must still cover the
+        whole run, so a mid-run report is a prefix of it rather than a
+        partition of it. `outcome` will say `recorded: false`, which is
+        correct -- the run has not finished, so it has achieved nothing yet.
+        """
+        target = Path(path) if path else self._path.with_name(
+            self._path.stem + f".t{int(time.time())}" + self._path.suffix)
+        self._write(target)
+        return {"path": str(target), "samples": len(self._samples),
+                "final": False}
 
     def _write_series(self, path: Path) -> None:
         """The raw per-sample rows, for plotting. Only when asked for."""
@@ -849,6 +925,21 @@ def _census(samples: list) -> dict[str, Any]:
                  "how much of the machine is working, and the remaining threads "
                  "are blocked rather than starved of cores."),
     }
+
+
+def _control_provenance() -> dict[str, Any]:
+    """Read the control registry without importing it at module scope.
+
+    `control.py` imports nothing from here, and this imports it lazily, so
+    neither module is load-bearing for the other: a build with the channel
+    stripped still writes a report, and a run with no report still has a
+    registry the channel can serve.
+    """
+    try:
+        from voxlogica.engine.control import REGISTRY
+        return REGISTRY.provenance()
+    except Exception as exc:                                    # noqa: BLE001
+        return {"unavailable": f"{type(exc).__name__}: {exc}"}
 
 
 class LoopClock:

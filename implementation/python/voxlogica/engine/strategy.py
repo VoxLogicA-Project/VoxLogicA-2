@@ -157,7 +157,8 @@ class EngineExecutionStrategy(ExecutionStrategy):
 
     def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None,
             measure: str | None = None, measure_period: float | None = None,
-            measure_series: bool = False) -> ExecutionResult:
+            measure_series: bool = False, control: str | None = None,
+            control_eval: bool = False) -> ExecutionResult:
         """Submit goals, evaluate in parallel, then run their side effects.
 
         ``measure``: ``None`` (default) measures nothing and costs nothing —
@@ -263,8 +264,34 @@ class EngineExecutionStrategy(ExecutionStrategy):
                     record_failure(exc, fallback_node_id=goal.id)
             return values, run_error
 
+        # ── the live control channel (engine/control.py) ────────────────────
+        # Independent of --measure on purpose: the channel's own value is the
+        # knobs and probes, which exist whether or not a report is being
+        # written, and a run that is only being interrogated should not be
+        # paying for a sampler. When both are on, the channel is handed the
+        # meter so `Series.*` and `Measure.write` work.
+        channel = None
+        if control is not None:
+            from voxlogica.engine.control import ControlChannel
+            channel = ControlChannel(control, snapshot=engine._memory_snapshot,
+                                     allow_eval=control_eval)
+            if control_eval:
+                # What `Runtime.eval` may see. Named explicitly rather than
+                # handed `globals()`: an inspector that reaches the scheduler by
+                # accident is one expression away from deadlocking the loop it
+                # is measuring, so the wiring decides, not the client.
+                channel.bind_eval_name("engine", engine)
+                channel.bind_eval_name("store", self.results_database)
+                channel.bind_eval_name("plan", plan)
+
         if measure is None:
-            values, run_error = asyncio.run(evaluate())
+            if channel is not None:
+                channel.start()
+            try:
+                values, run_error = asyncio.run(evaluate())
+            finally:
+                if channel is not None:
+                    channel.stop()
         else:
             from voxlogica.engine.measure import Measurement
             # The store's own path, so the instrument resolves the block device
@@ -282,9 +309,16 @@ class EngineExecutionStrategy(ExecutionStrategy):
                 period_s=measure_period if measure_period else 0.25,
                 keep_series=measure_series)
             engine.measurement = meter
+            if channel is not None:
+                channel._measurement = meter
+                meter.attach_control(channel)
+                channel.bind_eval_name("meter", meter)
+                channel.start()
             try:
                 values, run_error = asyncio.run(evaluate())
             finally:
+                if channel is not None:
+                    channel.stop()
                 # Before stop(), so the file says what the run achieved. A fast
                 # run that aborted early must not read as a fast run.
                 meter.set_outcome(goals_total=len(plan.goals),

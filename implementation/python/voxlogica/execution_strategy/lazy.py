@@ -143,8 +143,11 @@ class LazyExecutionStrategy(ExecutionStrategy):
 
     def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None,
             measure: str | None = None, measure_period: float | None = None,
-            measure_series: bool = False) -> ExecutionResult:
-        del measure, measure_period, measure_series  # only the engine is instrumented — see EngineExecutionStrategy.run
+            measure_series: bool = False, control: str | None = None,
+            control_eval: bool = False) -> ExecutionResult:
+        # Only the engine is instrumented, and only the engine has knobs worth
+        # turning — see EngineExecutionStrategy.run.
+        del measure, measure_period, measure_series, control, control_eval
         started = time.time()
         failures: dict[NodeId, str] = {}
         self._cache_summary = {"computed": 0, "cached_local": 0, "cached_store": 0, "failed": 0}

@@ -103,6 +103,23 @@ _GB = 1024 ** 3
 #: is the machine's AVAILABLE memory and pgscan_direct as the signal that we
 #: are over the line. Recorded in doc/dev/measurements/2026-09-09-ram-share/.
 _RSS_SHARE = 0.45
+
+
+def _set_rss_share(value) -> None:
+    """Setter for the live knob. Bounded, and it recomputes nothing itself.
+
+    Deliberately: the ceiling is re-derived on every `observe` from
+    `_RSS_SHARE`, so writing the global is sufficient and there is no second
+    copy to keep in step. The bounds exist because 0 would park every node
+    forever and 1.0 would hand the box to the OOM killer -- neither is a
+    measurement, and a knob that can wedge the run it is measuring is not an
+    instrument.
+    """
+    global _RSS_SHARE
+    share = float(value)
+    if not 0.05 <= share <= 0.95:
+        raise ValueError(f"governor.rss_share must be in [0.05, 0.95], got {share}")
+    _RSS_SHARE = share
 #: Held back for the OS, the page cache and anything else on the machine, so
 #: the ceiling derived from MemAvailable never claims the last free byte.
 _RESERVE = 6 * _GB
@@ -176,6 +193,28 @@ class MemoryGovernor:
         self._last_sample = float("-inf")
         self._trims = 0
         self._last_trim = float("-inf")
+        # The share is the single most consequential number in this file: a
+        # measured sweep of it moved throughput from 238 to 568 node/s, and the
+        # cliff between those two is 0.10 wide. Sweeping it used to cost one
+        # process launch per point -- an hour per point on the real program --
+        # so it is exposed to the live control channel instead, where the same
+        # sweep is one command per point inside a single run. Hot: every
+        # ceiling recomputation reads it (see `observe`).
+        try:
+            from voxlogica.engine.control import register_knob, register_probe
+            register_knob(
+                "governor.rss_share", lambda: _RSS_SHARE, _set_rss_share,
+                doc="Fraction of system RAM this process may occupy. 0.45 is "
+                    "the measured optimum; 0.60 is past a cliff (238 node/s "
+                    "against 536 at 0.50) with CPU essentially unchanged, so "
+                    "the cliff is memory-system cost, not scheduling.",
+                kind="number")
+            register_probe("governor.state", self.describe,
+                           doc="Budget, hard limit, ceiling, RSS, pressure and "
+                               "trim count as the governor currently sees them.",
+                           cost="cheap")
+        except Exception:                                       # noqa: BLE001
+            pass                       # observability must never break a run
 
     # ── what the engine reads ────────────────────────────────────────────
     @property

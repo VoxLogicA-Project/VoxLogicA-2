@@ -50,8 +50,31 @@ from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.memlog import MemoryLogger
 #: Nanoseconds of artificial work per completion, on the loop. 0 in
-#: every shipped configuration; a measurement rewrites this line.
+#: every shipped configuration; a measurement rewrites this line, or the live
+#: control channel writes it through `_set_loop_delay_ns` (knob
+#: `engine.loop_delay_ns`).
 _LOOP_DELAY_NS = 0
+
+
+def _set_loop_delay_ns(value) -> None:
+    """Inject per-completion loop work at runtime.
+
+    This is the intervention that PROVED the loop bounds the export tail:
+    +2.4 ms per completion nearly doubled a 26.8 s run to 52.7 s with identical
+    kernels and flat CPU-seconds, giving a slope of about 5 s of wall per
+    millisecond of per-completion loop cost. Doing that used to need an edit,
+    a redeploy and a fresh run per point; as a knob the whole slope can be
+    measured inside one run, which is also the only way to measure it against a
+    fixed graph state.
+
+    Capped at 10 ms because this burns the loop thread outright: a larger value
+    starves dispatch enough that the watchdog would call it a stall.
+    """
+    global _LOOP_DELAY_NS
+    ns = int(value)
+    if not 0 <= ns <= 10_000_000:
+        raise ValueError(f"engine.loop_delay_ns must be in [0, 10000000], got {ns}")
+    _LOOP_DELAY_NS = ns
 
 from voxlogica.engine.persist import _NO_SNAPSHOT
 from voxlogica.engine.node_table import NodeTable
@@ -118,6 +141,12 @@ class ComputationEngine:
     #: None on an instance that bypassed ``__init__``. NOT a class-level set:
     #: that would be one mirror shared by every engine in the process.
     _spill_member: Any = None
+    #: The two live persistence knobs, for the same reason as `_clock`: an
+    #: engine stub that bypasses ``__init__`` still reaches `_reclaim_memory`,
+    #: which reads the threshold. Immutable defaults, so sharing them at class
+    #: level is safe -- a `Knob.set` writes the instance, not the class.
+    persist_enabled: bool = True
+    _persist_min_ms: float = 1.0
 
 
     def __init__(self, registry: PrimitiveRegistry | None = None,
@@ -363,6 +392,15 @@ class ComputationEngine:
         #: "the loop is busy" is not something anyone can fix, so the phases
         #: inside it are timed instead of guessed at.
         self._clock: Any = None
+        #: Live overrides for the two persistence decisions, exposed as knobs.
+        #: They are read on the completion path rather than captured, so a
+        #: write takes effect on the very next completion -- which is the point:
+        #: "is the persister costing us the throughput?" was unanswerable today
+        #: without relaunching, and a relaunch changes the graph state the
+        #: question was about.
+        self.persist_enabled = True
+        self._persist_min_ms = float(self.config.persist_min_compute_ms)
+        self._register_knobs()
 
         # ── Schedule-time fusion (engine/fusion.py) ──
         self._cones_dispatched = 0  # number of cone dispatches (>=2 members each)
@@ -763,6 +801,91 @@ class ComputationEngine:
         finally:
             self._clock.add("reclaim", time.perf_counter_ns() - _t)
 
+    def _register_knobs(self) -> None:
+        """Expose the scheduler's tunables and readings to `engine/control.py`.
+
+        Registration is unconditional and costs a handful of dict writes, so a
+        run launched without the channel still knows what its knobs are and the
+        report can list them. Nothing here holds a lock: a probe reading
+        scheduler state the loop also writes may return a torn reading, and it
+        says so through its declared cost ("loop"). The alternative -- a lock
+        around dispatch bookkeeping so an inspector can read it atomically --
+        would let the inspector stall the loop, and the loop is the one thing
+        in this engine whose occupancy has explained every real stall.
+        """
+        try:
+            from voxlogica.engine.control import register_knob, register_probe
+        except Exception:                                       # noqa: BLE001
+            return
+        try:
+            register_knob(
+                "persist.enabled", lambda: self.persist_enabled,
+                lambda v: setattr(self, "persist_enabled", bool(v)),
+                doc="Whether completions are written to the disk tier at all. "
+                    "Turning it off mid-run is the direct test of what the "
+                    "persister costs: four persister threads were measured at "
+                    "~50% of a core each (about 200% of the box) while the "
+                    "store's reuse on the static plan was 22,170 of 107,728 "
+                    "nodes. WARNING: with it off, an evicted undurable value "
+                    "must be recomputed, so `recomputes` is the number to read "
+                    "alongside throughput.",
+                kind="boolean")
+            register_knob(
+                "persist.min_compute_ms", lambda: self._persist_min_ms,
+                self._set_persist_min_ms,
+                doc="A completion cheaper than this is not written unless it is "
+                    "critical. Raising it sheds the long tail of cheap values "
+                    "without giving up the expensive ones -- the middle ground "
+                    "between persist.enabled on and off.")
+            register_knob(
+                "engine.loop_delay_ns", lambda: _LOOP_DELAY_NS,
+                _set_loop_delay_ns,
+                doc="Artificial per-completion work on the loop thread, in "
+                    "nanoseconds. The causality probe: injecting 2.4 ms nearly "
+                    "doubled a 26.8 s run with identical kernels.")
+            register_probe("engine.snapshot", self._memory_snapshot,
+                           doc="Exactly what the periodic sampler records, so a "
+                               "live reading and a report row can never "
+                               "disagree.",
+                           cost="loop")
+            register_probe("engine.queues", self._queue_probe,
+                           doc="Ready heap, parked tier, in-flight kernels, "
+                               "admission jobs, spill queue and eviction "
+                               "candidates -- the six counters that identified "
+                               "the 5.9-million-entry spill queue.",
+                           cost="loop")
+        except Exception:                                       # noqa: BLE001
+            pass                        # observability must never break a run
+
+    def _set_persist_min_ms(self, value) -> None:
+        ms = float(value)
+        if not 0.0 <= ms <= 60_000.0:
+            raise ValueError(f"persist.min_compute_ms must be in [0, 60000], got {ms}")
+        self._persist_min_ms = ms
+
+    def _queue_probe(self) -> dict[str, Any]:
+        """O(1) per field. Never materialises a queue.
+
+        `len()` on the spill deque, not a scan of it: a census that walked it
+        was itself the reason the queue's growth stayed invisible for five
+        hours (see tests/unit/test_spill_queue_bounded.py).
+        """
+        try:
+            return {
+                "ready": self.ready.qsize(),
+                "ready_outstanding": self.ready.outstanding,
+                "in_flight": self._in_flight,
+                "admission_jobs": self.admission.active_jobs,
+                "spill_pending": len(self._spill_pending),
+                "completed": len(self.table.completed),
+                "incomplete": len(self.graph.incomplete),
+                "persist_enabled": self.persist_enabled,
+                "persist_min_ms": self._persist_min_ms,
+                "loop_delay_ns": _LOOP_DELAY_NS,
+            }
+        except Exception as exc:                                # noqa: BLE001
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
     def _would_persist(self, nid: NodeId) -> bool:
         """Whether this value is worth a payload copy, asked on the WORKER.
 
@@ -999,8 +1122,7 @@ class ComputationEngine:
         # rises with RSS pressure, because near the ceiling the alternative to
         # sacrificing a 200 ms recompute is not keeping it: it is being killed
         # and losing every undurable byte at once (14.8 GB, measured).
-        sacrifice_ms = max(self.config.persist_min_compute_ms,
-                           self.governor.sacrifice_ms)
+        sacrifice_ms = max(self._persist_min_ms, self.governor.sacrifice_ms)
         # PASS 0 — free garbage first. An ownerless value costs nothing to
         # release: no write, and no future read to satisfy. Every byte taken
         # here is a byte NOT bought by evicting a value that still has a
@@ -1257,7 +1379,8 @@ class ComputationEngine:
             # value is GIL-holding Python work, so writing something cheaper to
             # recompute than to store would tax dispatch for nothing (and the
             # cache's cost-aware eviction would drop it first anyway).
-            worth_it = critical or compute_ms >= self.config.persist_min_compute_ms
+            worth_it = (self.persist_enabled
+                        and (critical or compute_ms >= self._persist_min_ms))
             # --sparse-cache DELIBERATELY DOES NOTHING HERE, and the reason is
             # worth keeping: skipping the write for a value with one PENDING
             # consumer was tried twice and wedged a 369-patient sweep both times.

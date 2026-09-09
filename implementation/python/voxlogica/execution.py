@@ -191,13 +191,16 @@ class ExecutionEngine:
         measure: str | None = None,
         measure_period: float | None = None,
         measure_series: bool = False,
+        control: str | None = None,
+        control_eval: bool = False,
     ) -> ExecutionResult:
         """Compile and immediately execute a work plan in one step."""
         del execution_id
         prepared = self.compile_plan(workplan, strategy=strategy)
         return self.run_prepared(prepared, goals=goals, strategy=strategy,
                                  measure=measure, measure_period=measure_period,
-                                 measure_series=measure_series)
+                                 measure_series=measure_series,
+                                 control=control, control_eval=control_eval)
 
     def compile_plan(self, workplan, strategy: str | None = None) -> PreparedPlan:
         """Compile reducer output into a prepared execution object."""
@@ -215,16 +218,21 @@ class ExecutionEngine:
         measure: str | None = None,
         measure_period: float | None = None,
         measure_series: bool = False,
+        control: str | None = None,
+        control_eval: bool = False,
     ) -> ExecutionResult:
         """Execute an already-prepared plan, optionally restricting the goals.
 
-        ``measure`` is honored by ``EngineExecutionStrategy`` only (see its
-        ``run()`` docstring); ``LazyExecutionStrategy`` ignores it.
+        ``measure`` and ``control`` are honored by ``EngineExecutionStrategy``
+        only (see its ``run()`` docstring); ``LazyExecutionStrategy`` ignores
+        them.
         """
         self._last_prepared = prepared
         return self._for(prepared, strategy).run(prepared, goals=goals, measure=measure,
                                                  measure_period=measure_period,
-                                                 measure_series=measure_series)
+                                                 measure_series=measure_series,
+                                                 control=control,
+                                                 control_eval=control_eval)
 
     def stream(
         self,
