@@ -270,15 +270,18 @@ class ComputationEngine:
         # ── Per-node scheduling extras (pruned at completion) ──
         self._priority: dict[NodeId, int] = {}
         self._alias: dict[NodeId, NodeId] = {}      # a loop node -> its spliced sequence node
-        # The SAME forwarding, kept for the whole run. `_alias` is scheduling
-        # state and is popped the moment the loop node takes its forwarding turn
-        # (`_worker`); after that the loop id no longer knows where its value
-        # came from, so a later rematerialization of it raised NeedsExpansion
-        # even though the spliced sequence still held the identical payload on
-        # disk (measured: for_loop 9434d297 and sequence bcf0c3d3, byte-identical
-        # `sequence-json-v1` rows in the same store). Resolution reads this map,
-        # never `_alias`.
-        self._forward: dict[NodeId, NodeId] = {}
+        #: Loop nodes whose forward has already happened. SEPARATE from `_alias`
+        #: because the alias must OUTLIVE the forward: `_resolve_reference`
+        #: follows it to answer for a loop node whose own value is gone, and a
+        #: loop node's value cannot be recomputed -- `default.for_loop` has a
+        #: kernel but it fails on the closure the engine never builds, so the
+        #: alias is the only road back to it. Popping the alias at forward time
+        #: therefore made the results store load-bearing for CORRECTNESS: with a
+        #: store the value was reloaded and nobody noticed, and with
+        #: `--no-cache` the same program lost 7 of 16 goals to
+        #: `NeedsExpansion ... must be expanded, not computed`, raised out of a
+        #: goal's own side effect.
+        self._forwarded: set[NodeId] = set()
         # (waiter, expansion target) pairs already given a second chance; see
         # _await_expansion.
         self._expansion_retried: set[tuple[NodeId, NodeId]] = set()
@@ -1032,7 +1035,6 @@ class ComputationEngine:
         the forward has happened.
         """
         self._alias[loop_id] = seq_id
-        self._forward[loop_id] = seq_id
         self.graph.pin(seq_id)
         self._priority[seq_id] = max(self._priority.get(seq_id, 0), priority)
         if seq_id in self.graph.incomplete:
@@ -1308,9 +1310,9 @@ class ComputationEngine:
         `_rematerialize` unchanged.
         """
         seen: set[NodeId] = set()
-        while nid in self._forward and nid not in self.table.values and nid not in seen:
+        while nid in self._alias and nid not in self.table.values and nid not in seen:
             seen.add(nid)
-            nid = self._forward[nid]
+            nid = self._alias[nid]
         return self._rematerialize(nid)
 
     def _rewrite_of(self, node) -> NodeId | None:
@@ -1371,13 +1373,6 @@ class ComputationEngine:
         """This node's value is that node's value. Same forwarding a loop uses."""
         self._register_new_subtree(target, priority)
         self._alias[nid] = target
-        if self._grows_the_graph(nid):
-            # Only where a rematerialization could not recompute the node
-            # anyway. An ordinary rewrite (a fold's chain, a conditional) is
-            # rebuilt by its own kernel, and a fold chain is as long as the
-            # sequence: keeping a forwarding entry per link would cost memory
-            # proportional to the program for no gain.
-            self._forward[nid] = target
         self.graph.pin(target)
         self._priority[target] = max(self._priority.get(target, 0), priority)
         if target in self.graph.incomplete:
@@ -1524,9 +1519,23 @@ class ComputationEngine:
             # not guarded against, it is simply not an option: `for_loop` has a
             # kernel, it belongs to the strict runtime, and it fails on a closure
             # the engine never builds.
-            alias = self._forward.get(nid)
+            alias = self._alias.get(nid)
             if alias is not None and alias != nid:
-                return self._resolve_reference(alias)
+                value = self._resolve_reference(alias)
+                # RESIDENT UNDER ITS OWN ID, not merely returned. The caller
+                # that reaches here is a recompute, whose argument lookup is
+                # `table.values[dep_id]` (executor `_compute`), so a value
+                # handed back without being stored raises KeyError on the very
+                # next line -- measured as exactly that, on the same node whose
+                # NeedsExpansion this branch exists to answer, with the same
+                # seven of sixteen goals lost.
+                self.table.set_value(nid, value)
+                self._retrack_resident(nid)
+                # Same reason as the reload path above: a value that did not
+                # pass `_finish` leaves the graph believing it names no nodes,
+                # and the eager adapter then hands a kernel a raw Handle.
+                self.graph.hold_handles(nid, value)
+                return value
             raise NeedsExpansion(nid)
         node = self.table.nodes[nid]
         if node.kind == "constant":
@@ -1621,8 +1630,11 @@ class ComputationEngine:
                     # computation finished and `completed` absorbed it).
                     continue
                 node = self.table.nodes[nid]
-                if nid in self._alias:
-                    seq_id = self._alias.pop(nid)
+                if nid in self._alias and nid not in self._forwarded:
+                    # The alias is KEPT (see `_forwarded`): only the forward is
+                    # once-only, and that is what this set records.
+                    self._forwarded.add(nid)
+                    seq_id = self._alias[nid]
                     # persist=True even though seq_id already holds the same
                     # value durably: the loop id is the statically known name for
                     # this value, and serve/inspect tooling addresses sequence

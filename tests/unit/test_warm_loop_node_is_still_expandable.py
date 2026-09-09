@@ -95,21 +95,23 @@ def test_a_persisted_loop_node_is_not_pruned(tmp_path) -> None:
 
 @pytest.mark.unit
 def test_forwarding_outlives_the_scheduling_alias() -> None:
-    """The worker pops `_alias` on its forwarding turn; resolution must not care.
+    """The forward is once-only; the alias that made it possible is not.
 
-    Before this, the loop id forgot where its value came from the moment it
-    forwarded, so rematerializing it raised NeedsExpansion even while the
-    spliced sequence still held the identical payload.
+    Before this, `_worker` popped `_alias` on its forwarding turn, so the loop
+    id forgot where its value came from and rematerializing it raised
+    NeedsExpansion even while the spliced sequence still held the identical
+    payload. `tests/unit/test_store_not_load_bearing.py` pins the same property
+    from the other side (no store at all); this one states it in the warm-store
+    vocabulary the rest of this file uses.
     """
     engine = ComputationEngine(backend=None)
     engine.adopt_plan(_plan())
     loop = _loop_id(engine)
     seq = next(nid for nid in engine.table.nodes if nid != loop)
     engine._alias[loop] = seq
-    engine._forward[loop] = seq
     engine.table.set_value(seq, [1, 2, 3, 4])
 
-    engine._alias.pop(loop)  # exactly what `_worker` does once it has forwarded
+    engine._forwarded.add(loop)  # what `_worker` records once it has forwarded
 
     assert engine._resolve_reference(loop) == [1, 2, 3, 4]
 
