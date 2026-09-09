@@ -1,5 +1,11 @@
 # VoxLogicA API Usage Guide
 
+> **Status, 2026-09-08.** The `playground` API described below is not present
+> in the current code: `grep -r playground` over `implementation/` finds
+> nothing, so these endpoints document a surface that has been removed or
+> not yet reinstated. Left in place rather than deleted because the decision
+> about that API is not this change's to make; do not rely on it as written.
+
 ## Overview
 
 VoxLogicA features a **unified CLI-API design** where every CLI command has a corresponding API endpoint with identical functionality. This ensures complete feature parity between command-line and programmatic usage. The API is built using FastAPI and provides automatic documentation, request validation, and consistent error handling.
@@ -52,8 +58,6 @@ Once started, the API will be available at:
 ## Serve Policy Defaults
 
 - Serve/API always runs with non-legacy policy (`legacy=false`).
-- Playground execution strategy is forced to `dask` for `/playground/jobs` and `/playground/value`.
-- Playground execution strategy is forced to `dask` for `/playground/jobs`, `/playground/value`, and `/playground/value/page`.
 - Read primitives are restricted to configured roots:
   - `VOXLOGICA_SERVE_DATA_DIR` (primary root)
   - `VOXLOGICA_SERVE_EXTRA_READ_ROOTS` (optional comma-separated roots)

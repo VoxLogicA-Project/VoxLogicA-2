@@ -1,5 +1,11 @@
 # VoxLogicA Serve Studio
 
+> **Status, 2026-09-08.** The `playground` API described below is not present
+> in the current code: `grep -r playground` over `implementation/` finds
+> nothing, so these endpoints document a surface that has been removed or
+> not yet reinstated. Left in place rather than deleted because the decision
+> about that API is not this change's to make; do not rely on it as written.
+
 `./voxlogica serve` now exposes a multi-page studio at `/` with:
 
 - Playground with async execution jobs
@@ -15,7 +21,6 @@
 - Submit programs asynchronously (`POST /api/v1/playground/jobs`)
 - Poll status/results (`GET /api/v1/playground/jobs/{job_id}`)
 - Kill stale/running computations (`DELETE /api/v1/playground/jobs/{job_id}`)
-- Execution strategy is pinned to `dask` in serve mode.
 - Always-on telemetry: wall time, CPU time, CPU utilization, Python heap peak, RSS delta
 - Result lens:
   - selector built from declared variables and explicit goals
