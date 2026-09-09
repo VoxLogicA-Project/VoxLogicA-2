@@ -450,7 +450,14 @@ class LoopAdmission:
         including skip turns) calls this when the queue is below the demand
         threshold, closing that hole. Setting an already-set event is cheap.
         """
-        for paused in self._jobs.values():
+        # A SNAPSHOT, because `_jobs` can change while this runs. Observed as
+        # `RuntimeError: dictionary changed size during iteration` twelve
+        # seconds into a sixty-case sweep, reached through
+        # `_finish` -> `on_complete` -> here: a completion can retire or start
+        # an unroll job, and waking one is exactly the thing that lets that
+        # happen. The dict is one entry per active loop, so the copy is a few
+        # pointers and the alternative is a run that dies at random.
+        for paused in list(self._jobs.values()):
             paused.wake.set()
 
     # ── Captures / failure ────────────────────────────────────────────────────
@@ -471,7 +478,7 @@ class LoopAdmission:
     def abort(self, exc: BaseException) -> None:
         """Fail-fast: unblock every paused job so the run can drain and report."""
         self._aborted = exc
-        for job in self._jobs.values():
+        for job in list(self._jobs.values()):   # same reason as wake_jobs
             job.wake.set()
 
     @property
