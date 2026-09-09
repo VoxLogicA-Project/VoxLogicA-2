@@ -729,6 +729,21 @@ class ComputationEngine:
             # this column is the only record of what was running beside the
             # thread that died. See engine/inflight.py.
             "executing": inflight.render(),
+            # HOW MUCH WORK, not just how much CPU. Without these a change that
+            # raises utilisation by doing MORE work reads as an improvement:
+            # more kernels, more recomputes or more bytes at a higher CPU% is a
+            # regression wearing a better number. Every performance comparison
+            # must be work-normalised against these, and a wall-clock win with
+            # `kernels` and `recomputes` unchanged is the only kind that counts.
+            "kernels_executed": self._kernels_executed,
+            "recomputes": self._recomputes,
+            "cones_dispatched": self._cones_dispatched,
+            "ops_fused": self._ops_fused,
+            "interiors_elided": self._interiors_elided,
+            "persist_shed": getattr(self.table._persister, "shed_pressure", 0)
+                            if self.table._persister else 0,
+            "persist_skipped_dead": getattr(self.table._persister, "skipped_dead", 0)
+                                    if self.table._persister else 0,
             # Cumulative, not per-interval: the reader differences consecutive
             # samples, which is the same rule every other rate in the
             # measurement obeys.

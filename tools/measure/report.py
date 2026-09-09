@@ -140,6 +140,21 @@ def derive(header: dict, columns: list[str], rows: list[list[str]]) -> list[dict
     return out
 
 
+def _last(columns: list[str], rows: list[list[str]], name: str) -> str:
+    """The final value of a cumulative counter, or "-" if it was not recorded.
+
+    Work counters are totals, not rates: the last sample IS the answer, and
+    differencing them would answer a different question.
+    """
+    if name not in columns or not rows:
+        return "-"
+    index = columns.index(name)
+    for row in reversed(rows):
+        if index < len(row) and row[index] not in ("", "-"):
+            return row[index]
+    return "-"
+
+
 def series(header: dict, columns: list[str], rows: list[list[str]]):
     """(seconds_from_start, process CPU%, loop-thread CPU%) per interval.
 
@@ -211,7 +226,7 @@ def main(argv: list[str]) -> int:
     print("        /proc/self/io; thr D is our own threads in uninterruptible")
     print("        sleep, sampled once a second.")
     print()
-    head = ("file", "outcome", "wall s", "mean CPU", "of", "peak RSS",
+    head = ("file", "outcome", "wall s", "mean CPU", "of", "kernels", "recomp", "peak RSS",
             "sat>=90%", "loop>=90%", "dev util", "dev q", "dev MB/s w",
             "proc MB/s w", "thr D", "thr R", "of thr", "device", "instrument",
             "commit")
@@ -250,6 +265,8 @@ def main(argv: list[str]) -> int:
             f"{auth.get('wall_s', 0):.1f}",
             f"{auth.get('mean_cpu_percent')}%",
             f"{ceiling:.0f}%",
+            str(_last(columns, rows, "kernels_executed")),
+            str(_last(columns, rows, "recomputes")),
             f"{(auth.get('peak_rss_bytes') or 0) / 1e9:.1f} GB",
             f"{sat}/{len(pts)}" if pts else "-",
             f"{loop_hot}/{len(pts)}" if pts else "-",
@@ -265,6 +282,9 @@ def main(argv: list[str]) -> int:
             (header.get("commit") or "")[:8] + ("+dirty" if header.get("working_tree_dirty") else ""),
         ]))
     print()
+    print("kernels/recomp: how much WORK was done. A wall-clock or CPU win with")
+    print("           these unchanged is a real win; a win with more kernels or")
+    print("           more recomputes is a regression wearing a better number.")
     print("outcome:   a run that did not resolve every goal is INCOMPLETE, and")
     print("           its timings mean nothing: a sweep that aborts early looks")
     print("           fast. Compare only complete runs.")
