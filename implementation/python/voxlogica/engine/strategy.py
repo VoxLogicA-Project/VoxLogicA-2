@@ -216,6 +216,8 @@ class EngineExecutionStrategy(ExecutionStrategy):
             diagnostics.append(diagnostic)
             failures[node_id or "<engine>"] = diagnostic.message
 
+        resolved_queries: set[int] = set()
+
         async def evaluate() -> tuple[dict[NodeId, Any], BaseException | None]:
             # Goals are submitted in DECLARATION ORDER with strictly decreasing
             # priority, so the scheduler prefers to FINISH an earlier goal over
@@ -255,6 +257,16 @@ class EngineExecutionStrategy(ExecutionStrategy):
             except Exception as exc:  # converted below into a structured result
                 run_error = exc
             values: dict[NodeId, Any] = {}
+            # COUNTED SEPARATELY FROM `values`, because `values` is keyed by NODE
+            # ID and two goals can share one. `print "oracle_gt" for g in cases
+            # do b23_case_score(g)` and `print "oracle" ...` of the same
+            # expression hash-cons to a single node, so a complete run of the
+            # sixty-case sweep -- all seven goals printed, byte-identical output
+            # for the two -- was reported as "INCOMPLETE (6/7 goals)". An
+            # instrument that calls a finished run incomplete is worse than no
+            # instrument: sec 28 of the manuscript exists because a failed run
+            # was once quoted as the fastest of three.
+            resolved = resolved_queries
             for goal, query in queries:
                 # ``ready.wait_idle`` counts admitted work.  A malformed or
                 # prematurely-pruned graph can therefore drain while a goal is
@@ -276,6 +288,7 @@ class EngineExecutionStrategy(ExecutionStrategy):
                     continue
                 try:
                     values[goal.id] = await query.result()
+                    resolved.add(id(query))
                 except Exception as exc:  # noqa: BLE001
                     record_failure(exc, fallback_node_id=goal.id)
             return values, run_error
@@ -338,7 +351,7 @@ class EngineExecutionStrategy(ExecutionStrategy):
                 # Before stop(), so the file says what the run achieved. A fast
                 # run that aborted early must not read as a fast run.
                 meter.set_outcome(goals_total=len(plan.goals),
-                                  goals_resolved=len(values),
+                                  goals_resolved=len(resolved_queries),
                                   error=run_error)
                 meter.stop()
 
