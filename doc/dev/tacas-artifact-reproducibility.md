@@ -25,13 +25,15 @@ lista di partenza — sono venuti fuori facendo il resto.
 | # | Criticità | Gravità | Stato |
 |---|---|---|---|
 | **7a** | Doppio dispatch: `DoubleComputationError` | bloccante | **fatto da Vincenzo** (`a313172`) |
-| **7b** | **Rematerializzazione: `NeedsExpansion` a store caldo** | **bloccante** | **aperto** — una causa chiusa (`29634eb`), il fallimento resta |
+| **7b** | **Rematerializzazione: `NeedsExpansion` a store caldo** | **bloccante** | **aperto**, due cause chiuse (`29634eb`, `7348626`), il run non passa |
+| **9** | **Lo store registra una promessa che non può mantenere** | **alta** | **aperto**, riprodotto da freddo in 5 s |
+| **10** | **Job di espansione orfani: unità mai chiuse, watchdog a 180 s** | **alta** | **aperto**, causa completa, correzione di 3 righe non scritta |
 | 1 | Programmi che escono 0 senza calcolare niente | bloccante | fatto (motore) / 6 programmi da sistemare |
 | 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | **fatto per 2 e 3, provvisorio per 4** |
 | 3 | Percorsi dataset assoluti dentro i programmi | alta | mitigato nell'artifact, aperto nel repo |
 | 4 | L'artifact non si ricostruisce: niente lockfile, pin aperti | alta | fatto (`cbb8cdd`) |
 | 5 | Nessun manifest del dataset | media | **fatto** |
-| 6 | Test il cui esito dipende dallo spazio libero in `/tmp` | alta | fatto (`ad55306`) |
+| 6 | Test il cui esito dipende dallo spazio libero in `/tmp` | alta | fatto (`ad55306`), ma vedi la nota del 2026-09-10 |
 | **8** | **Lavoro costoso perso per un errore a valle** | media | causa immediata fatta (`b0b68a1`), architettura aperta |
 | — | Determinismo dei valori | — | verificato, con una riserva (vedi 7) |
 
@@ -140,6 +142,79 @@ arriva più per un duplicato benigno.
 ---
 
 ## 7b. Rematerializzazione: `NeedsExpansion` a store caldo — ANCORA APERTO
+
+### Aggiornamento del 2026-09-10: un banco che si ripete, e due difetti distinti
+
+**Prima di tutto, un problema di metodo che invalidava le misure precedenti.**
+Ogni run *modifica* lo store, quindi due esecuzioni non sono lo stesso
+esperimento: i sei run della tabella qui sotto sono sei stati di store diversi, e
+l'apparente non determinismo era in buona parte questo. Il rimedio è congelare —
+copia reale, `chmod -R a-w`, copie di lavoro con `cp -al` (i payload sono blob
+immutabili, quindi gli hardlink costano zero) — e ripartire sempre da lì.
+Secondo requisito, imparato sprecando due run: **`PYTHON_GIL=0`**, che è ciò che
+`./voxlogica` esporta prima di `exec`. Senza, SimpleITK riaccende il GIL
+all'import, tutto si serializza e lo stallo non si presenta mai.
+
+**Il banco.** Run a freddo dell'esperimento 4 su store vuoto (exit 0, 23 goal su
+23, 124 s), congelato, rigiocato tre volte:
+
+| | esito | goal | stallo | wall |
+|---|---|---|---|---|
+| freddo | exit 0 | 23/23 | no | 124 s |
+| caldo ×3 | exit 70 | 14/23 | no | ~10 s |
+
+Deterministico: stesso nodo, stesso conteggio, tre volte su tre.
+
+**I due difetti hanno bisogno di condizioni diverse**, ed è per questo che
+sembravano uno solo:
+
+| difetto | serve |
+|---|---|
+| crash `NeedsExpansion` | store caldo **completo** — il banco sopra, 10 s a run |
+| stallo | store caldo **incompleto**, con lavoro vero in volo |
+
+Uno store costruito da un run riuscito non stalla: a caldo non resta abbastanza
+da fare perché la corsa fra worker si presenti.
+
+**Cosa è stato chiuso** (`7348626`): `_references_are_answerable` esigeva che
+ogni handle dentro un valore caricato nominasse un nodo internato *in questo
+run*. Il container che falliva conteneva **tutti e 53** gli elementi che nomina:
+il valore c'era, il motore lo rifiutava. Ora un riferimento che lo **store** sa
+rispondere è risolvibile, perché `_rematerialize` prova `load` prima di guardare
+in `nodes`. Misurato sullo stesso banco: da 14 a 16 goal, e il `NeedsExpansion`
+lascia il posto a `engine finished with an unresolved goal`, che nomina il goal
+e la riga sorgente.
+
+**Non fa passare il run.** Chiude un livello ed espone il successivo: due goal
+(`vi_thr_stdev`, `vi_thr_distribution`) restano irrisolti a fine run.
+
+**Cosa resta, diagnosticato e non scritto:** il punto 10 (job orfani, che è lo
+stallo), il punto 9 (lo store che promette il falso), e la materializzazione dei
+goal a motore vivo — quest'ultima tocca `strategy.py`, dove Vincenzo sta
+lavorando, e va concordata con lui.
+
+### Verifica su `perf-saturation`, 2026-09-10
+
+Testato il suo ramo `7cab8ea` in un worktree separato, con `b0b68a1`
+cherry-pickato perché senza quello l'esperimento 4 non parte affatto (vedi
+punto 8: il suo branch non ha il fix del `numpy.int64`). Store congelato
+costruito **dal suo codice**, perché gli hash sono cambiati: 23 id su 84
+differiscono, e sono tutti di forma-loop — 7 `for_loop`, 6 `closure` e gli
+aggregati che ne dipendono. Uno store costruito da noi è quindi inservibile per
+lui, e viceversa.
+
+| run | esito | goal | stallo |
+|---|---|---|---|
+| freddo | exit 0 | 23/23 | no |
+| caldo 1 | exit 70 | 14/23 | sì |
+| caldo 2 | exit 70 | 21/23 | no |
+| caldo 3 | exit 70 | 21/23 | sì |
+
+**Entrambi i difetti sopravvivono al suo lavoro.** Una differenza a suo favore:
+da noi il dump della frontiera diceva sempre `stuck=0`, da lui `stuck=39` — lo
+stallo è passato da muto a diagnosticabile.
+
+### Storico: l'aggiornamento del 2026-09-09
 
 **Aggiornamento del 2026-09-09.** `29634eb` ha chiuso *una* causa, non il
 fallimento. L'esperimento 4 rilanciato sullo store caldo la notte del 2026-09-08
@@ -295,6 +370,12 @@ ERROR: nnUNet training failed: Object of type int64 is not JSON serializable
 
 Tutto ciò che costava era riuscito. È fallita l'ultima riga di contabilità.
 
+**Nota del 2026-09-10.** `b0b68a1` vive **solo** su `fix/disk-reserve-collapse`:
+non è mai arrivato su `main` né su `perf-saturation`. Sul ramo di Vincenzo
+l'esperimento 4 muore quindi ancora qui, e con i pesi già in posto il training è
+saltato ma il postprocessing gira lo stesso — cioè il difetto si presenta anche
+senza pagare le tredici ore. Da propagare.
+
 **Causa immediata, risolta** (`b0b68a1`). `_decision_from_pickle` restituiva i
 kwargs del postprocessing come `dict(kw)`, e lì dentro gli id delle label sono
 `numpy.int64`; finivano in `materialize.py:48` `json.dumps`. Corretto con
@@ -316,6 +397,100 @@ essere tre nodi invece di uno.
 valori, quindi un `numpy.int64` non è solo non-JSON — non è nemmeno una chiave
 stabile fra versioni di numpy. Serve un audit degli altri confini dove un valore
 di libreria esterna finisce su un handle o nello store.
+
+---
+
+## 9. Lo store registra una promessa che non può mantenere — ALTA
+
+Aperto il 2026-09-10.
+
+Un nodo `for_loop` è **`critical`**, quindi il suo container viene scritto
+sempre. I body che quel container nomina sono **best-effort**: `_finish` li
+scrive solo se costano più di `persist_min_compute_ms` (1 ms). Un loop con corpi
+sotto il millisecondo lascia quindi sul disco un container durevole che nomina
+valori che nello store non ci sono.
+
+Riprodotto da freddo in cinque secondi, senza pressione di memoria, senza
+concorrenza, senza abort — sulla strada ordinaria:
+
+```
+let xs = for i in range(0, 200) do +(i, 1)
+print "first" index(xs, 0)
+```
+```
+for_loop c2f2dfc6: container PERSISTITO, elementi nello store: 0/1     exit 0
+```
+
+Lo stesso si osserva sul ramo `perf-saturation`: non è nostro, è del motore.
+
+**Come si è manifestato.** Sullo store di lavoro un container di 135 elementi ne
+aveva 134; il 135° non aveva **nessuna riga**, e i 134 fratelli erano tutti
+`vox1.volume` con `compute_ms` fra 1,496 e 5,766 ms, cioè appena sopra la soglia
+di 1 ms. Che il mancante fosse sotto il millisecondo resta un'inferenza — senza
+riga non c'è `compute_ms` — ma il meccanismo no: si riproduce a comando.
+
+**Cosa non era.** Lo sfratto su disco è escluso: nelle 73.768 righe di quello
+store non c'è **nessuna** riga `evicted` e `eviction_at` è NULL ovunque, e
+`_evict_row` lascia tombstone permanenti per progetto. Anche il disco pieno è
+escluso: il container avvelenato è scritto alle 10:37:34 e un altro container,
+completo, alle 10:38:05 — trenta secondi dopo, sullo stesso volume.
+
+**Fix.** Un container non deve diventare durevole se ciò che nomina non lo è: o
+i body nominati si scrivono comunque — valgono esattamente quanto il container
+che li nomina — o il container non si scrive.
+
+---
+
+## 10. Job di espansione orfani: unità mai chiuse — ALTA
+
+Aperto il 2026-09-10. È lo **stallo**, e la causa è completa.
+
+```
+[stuck] qsize=0 outstanding=12 completed=157 stuck=0 alias=39 jobs=0
+[probe] push=354 pop=354 park=0              queue_unclosed=0
+[probe] start=99 job_entered=99 job_left=87  jobs_unclosed=12
+[probe] start calls=99  distinct loop ids=39  ids started più di una volta=20
+[probe]   inside f2191c7c x1 started=4 in _jobs=False
+```
+
+La coda è in pari al singolo elemento; a perdere sono i job di espansione.
+
+| # | fatto | dove |
+|---|---|---|
+| 1 | lo stesso nodo loop viene avviato come job fino a **4 volte** — 99 `start` per 39 id distinti | misurato |
+| 2 | `self._jobs[nid] = job` è indicizzato sull'id: il secondo avvio sovrascrive il primo | `admission.py` |
+| 3 | il primo job che finisce fa `pop` della chiave e cancella la registrazione degli altri | `admission.py`, il `finally` di `_run_job` |
+| 4 | i job orfani restano su `await job.wake.wait()` | i due catturati, `in _jobs=False` |
+| 5 | `wake_jobs()` itera `self._jobs.values()`: non li vede | `admission.py` |
+| 6 | `_maintain` la chiama solo `if active_jobs`, che è `len(self._jobs)` = 0 | `core.py` |
+| 7 | le unità restano aperte, `outstanding` non arriva a zero, watchdog a 180 s | `begin − end = outstanding`, misurato |
+
+**È la stessa classe del 7a, una porta più avanti.** Là la decisione fu "un'offerta
+duplicata deve costare un pop sprecato, non il run", e `_worker` si difende con
+`completed` e `is_running`. Ma un nodo loop mandato ad `admission.start` non è né
+completato né in esecuzione — `table.begin` per lui non viene mai chiamata.
+
+**Fix**, prima di prendere l'unità:
+
+```python
+def start(self, nid, node, priority):
+    if nid in self._jobs:      # già in espansione: l'offerta duplicata è benigna
+        return
+    self.ready.begin_unit()
+```
+
+Con questo `_jobs` torna esatto per costruzione, e `active_jobs`/`wake_jobs`
+ridiventano affidabili senza toccarle. Da non confondere con lo snapshot
+`list(self._jobs.values())` di Vincenzo (`25842bd`): quello rende sicura
+l'iterazione, questo la rende completa, e servono entrambi.
+
+**Attenzione all'ordine:** `29634eb` fa sì che i nodi loop non vengano più
+potati, quindi se ne espandono di più (39 loop, 99 avvii) e l'esposizione a
+questo difetto aumenta. Va corretto prima.
+
+**Come riprodurlo.** Serve uno store caldo *incompleto*: uno costruito da un run
+riuscito non stalla, perché non resta abbastanza lavoro perché la corsa si
+presenti.
 
 ---
 
@@ -419,6 +594,15 @@ uguali sullo stack pinnato. Lo zero sul caso 079 è la risposta giusta, non un
 fallimento — il tumore più piccolo del dataset non alza nessun seme — ed è nel
 campione apposta. Nel README dell'artifact quello zero ha la sua spiegazione
 accanto, altrimenti un revisore lo legge come un errore.
+
+**Nota del 2026-09-10, da chiarire.** Sul ramo `perf-saturation` (`7cab8ea`)
+l'esperimento 2 su store nuovo dà `case_079_best = 0,010576287918932064` invece
+di **0,0**, e `average_best = 0,6860058018575016` invece di 0,6838905442737151.
+Gli altri quattro casi sono identici a sedici cifre e i due run coincidono fra
+loro, quindi non è rumore: è un cambiamento di comportamento, e cade proprio sul
+valore che il README dell'artifact spiega come "la risposta giusta". Va deciso
+se è voluto — nel qual caso l'oracolo qui sotto va rifatto — o se è una
+regressione.
 
 **Esperimento 3** (AIIM) — tolleranza **0**, sei run su due giorni: cache calda,
 store vuoto, `--no-cache` a 1, 4 e 16 thread. Bit-identici ogni volta.
@@ -697,6 +881,14 @@ non si manifestava).
 **Verifiche:** suite `unit+contract+integration+regression` 1184 passati, 0
 falliti. AIIM su store nuovo: exit 0, 16/16 goal, 15.356 operazioni, 99,17 s,
 valori **identici** al run di riferimento.
+
+**Nota del 2026-09-10.** `tests/unit/test_runtime_diagnostics.py::test_missing_image_is_compact_and_inspectable`
+è rosso oggi su `fix/disk-reserve-collapse` e lo era stamattina anche nel
+checkout di `perf-saturation`; ieri era verde sullo stesso commit, e fallisce
+anche eseguito da solo. Fra ieri e oggi è cambiato l'ambiente, non il codice:
+`/tmp` ripulito e lo spazio libero su `/` passato da 197 G a 750 G. Se è la
+stessa dipendenza dallo spazio libero, questo punto non è chiuso come credevamo
+— attribuito (non è una nostra patch), non ancora spiegato.
 
 **Sul flag.** `pytest.ini` ha `--maxfail=1`, quindi la suite si ferma al primo
 rosso dopo ~8 test su ~1170. Va tolto o reso opzionale: nasconde esattamente
