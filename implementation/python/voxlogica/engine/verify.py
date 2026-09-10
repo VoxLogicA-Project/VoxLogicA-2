@@ -119,6 +119,26 @@ class Verifier:
         self._next_at = self._every
         self.checks = 0
         self.violations: list[Violation] = []
+        #: (P) CANDIDATES AWAITING CONFIRMATION, and why they must be.
+        #:
+        #: The periodic check samples a frontier that is being mutated by the
+        #: loop thread. A dependency held by a worker between `ready.pop()` and
+        #: `table.begin()` is, for that instant, in no heap, not running, and
+        #: not yet a value -- so it has no visible producer and its waiter looks
+        #: like a (P) violation. Measured on a healthy 243-second sweep: 18 such
+        #: reports on ordinary nodes (`vox1.and`, `vox1.leq_sv`, ...), none of
+        #: them real.
+        #:
+        #: A GENUINE (P) VIOLATION IS PERSISTENT: once a node waits on something
+        #: nobody is producing, nothing in the engine will start producing it.
+        #: So a candidate is reported only if it still violates on a LATER
+        #: check, with completions having advanced in between -- which every
+        #: transient survives by disappearing. This is the standard remedy for
+        #: sampling a concurrent system, and it costs one dict.
+        self._candidates: dict[NodeId, int] = {}
+        #: Nodes legitimately waiting on a splice or a handle reference.
+        self.splice_waits = 0
+        self.transients = 0
         #: Reported once per (clause, node): a persistent violation would
         #: otherwise print on every periodic check for the rest of the run.
         self._seen: set[tuple[str, str]] = set()
@@ -171,15 +191,13 @@ class Verifier:
                     f"and nothing is producing any of them "
                     f"({', '.join(d[:12] for d in list(unmet)[:4])})"))
             elif not unmet and graph.pending.get(nid, 0) > 0:
-                # Waiting with every graph dependency met. Legitimate while a
-                # splice or a handle reference is outstanding, so it is only a
-                # violation when nothing at all is in motion -- which the drain
-                # check establishes separately.
-                out.append(Violation(
-                    "P?", nid,
-                    f"op={getattr(table.nodes.get(nid), 'operator', None)!r} "
-                    f"pending={graph.pending.get(nid)} with all graph deps met "
-                    f"-- waiting on a splice or a handle reference"))
+                # Waiting with every graph dependency met. This is ORDINARY:
+                # `await_one` is also used for loop splicing and for handle
+                # references, neither of which is a graph edge, so a loop node
+                # waiting here is the engine working correctly. Counted, never
+                # reported -- it fired on every periodic check of a healthy
+                # sweep and buried the one line that mattered.
+                self.splice_waits += 1
         return out
 
     def check_termination(self) -> list[Violation]:
@@ -270,20 +288,40 @@ class Verifier:
         if completed < self._next_at:
             return
         self._next_at = completed + self._every
+        ready_set, job_owned = self._sets()
+        # PHASE ONE: re-examine the standing candidates. They were violating at
+        # some earlier check; if they still are, with completions advanced, the
+        # violation is not a sampling artefact.
+        standing = [nid for nid in self._candidates
+                    if nid in self._engine.graph.incomplete]
+        confirmed = self.check_progress(standing, ready_set, job_owned)
+        self.transients += len(self._candidates) - len(standing) - len(confirmed)
+        self._candidates = {nid: completed for nid in
+                            (v.node for v in confirmed) if nid}
+        # PHASE TWO: take a fresh bounded sample and hold whatever it finds for
+        # the next check rather than reporting it now.
         frontier = list(self._engine.graph.incomplete)
         if len(frontier) > self._sample:
             frontier = random.sample(frontier, self._sample)
-        ready_set, job_owned = self._sets()
-        self._report(self.check_progress(frontier, ready_set, job_owned)
-                     + self.check_termination(), where="periodic")
+        for v in self.check_progress(frontier, ready_set, job_owned):
+            if v.node:
+                self._candidates.setdefault(v.node, completed)
+        self._report(confirmed + self.check_termination(), where="periodic")
 
     def at_drain(self) -> list[Violation]:
-        """The full check, when the run believes it is finished."""
+        """The full check, when the run believes it is finished.
+
+        (P) needs no confirmation here IF the engine is quiescent -- nothing in
+        flight means no worker holds a dependency between `pop` and `begin`, so
+        the reading cannot be torn. If something is still executing, (P) is
+        skipped rather than guessed at: a false report at the end of a
+        fourteen-hour run is worse than no report.
+        """
         ready_set, job_owned = self._sets()
-        found = (self.check_termination()
-                 + self.check_progress(list(self._engine.graph.incomplete),
-                                       ready_set, job_owned)
-                 + self.check_answerability())
+        found = self.check_termination() + self.check_answerability()
+        if self._engine._in_flight == 0:
+            found += self.check_progress(list(self._engine.graph.incomplete),
+                                         ready_set, job_owned)
         self._report(found, where="drain")
         return found
 
@@ -301,7 +339,7 @@ class Verifier:
         if len(fresh) > 8:
             print(f"[verify:{where}] ... and {len(fresh) - 8} more",
                   file=sys.stderr, flush=True)
-        hard = [v for v in fresh if v.clause in ("P", "T", "V")]
+        hard = [v for v in fresh if v.clause in ("P", "T", "V")]  # all of them now
         if self._strict and hard:
             raise SchedulerInvariantViolated(hard)
 
@@ -314,6 +352,12 @@ class Verifier:
             "checks": self.checks,
             "violations": len(self.violations),
             "by_clause": by_clause,
+            # Reported so the confirmation rule can be judged rather than
+            # trusted: a large `transients` with zero violations is the checker
+            # correctly discarding sampling artefacts.
+            "transients_discarded": self.transients,
+            "splice_waits_seen": self.splice_waits,
+            "awaiting_confirmation": len(self._candidates),
             "first": [str(v) for v in self.violations[:8]],
             "clauses": {
                 "P": "a frontier node waits only for something being produced",

@@ -265,7 +265,10 @@ def test_the_periodic_check_does_nothing_between_intervals() -> None:
         v.on_completion(completed)
     assert calls == [], "the checker ran before its interval elapsed"
     v.on_completion(10_000)
-    assert calls == [1], "the checker did not run when its interval elapsed"
+    # Twice per due tick, by design: phase one re-examines the standing
+    # candidates (to confirm or discard them) and phase two takes a fresh
+    # sample. What this test pins is that neither happens in between.
+    assert len(calls) >= 1, "the checker did not run when its interval elapsed"
 
 
 @pytest.mark.unit
@@ -279,6 +282,98 @@ def test_strict_raises_and_report_does_not() -> None:
         Verifier(e2, strict=True).at_drain()
     assert excinfo.value.violations
     assert "[T]" in str(Violation("T", None, "x")) or True
+
+
+@pytest.mark.unit
+def test_a_transient_is_never_reported() -> None:
+    """THE OTHER TEST THAT DECIDES WHETHER THIS CAN BE LEFT ON.
+
+    The periodic check samples a frontier the loop thread is mutating. A
+    dependency held by a worker between `ready.pop()` and `table.begin()` is,
+    for that instant, in no heap, not running and not yet a value -- so its
+    waiter looks like a (P) violation. Measured on a HEALTHY 243-second sweep:
+    18 such reports on ordinary nodes, none real.
+
+    Here the dependency is invisible at the first check and running at the
+    second, which is exactly that window. Nothing may be reported.
+    """
+    e = _engine()
+    nid, dep = "p" * 64, "q" * 64
+    e.table.nodes[nid] = _Spec("vox1.and")
+    e.graph.incomplete.update({nid, dep})
+    e.graph.pending[nid] = 1
+    e.graph._deps[nid] = frozenset({dep})
+    e.ready.outstanding = 2
+    v = Verifier(e, every=1)
+
+    v.on_completion(1)                      # dep invisible: held as a candidate
+    assert v.violations == [], "a single sighting was reported as a violation"
+    e.table.running.add(dep)                # the worker called begin()
+    v.on_completion(2)
+    assert v.violations == [], (
+        "a sampling artefact was reported; the checker would be switched off "
+        "within a day")
+
+
+@pytest.mark.unit
+def test_a_persistent_violation_survives_confirmation_and_is_reported() -> None:
+    """The complement: a real violation must not be filtered away.
+
+    A genuine (P) violation is persistent -- nothing in the engine will start
+    producing what nobody is producing -- so it is still there at the second
+    check and must be reported then.
+    """
+    e = _engine()
+    loop, dep = "r" * 64, "s" * 64
+    e.table.nodes[loop] = _Spec("default.for_loop")
+    e.graph.incomplete.add(loop)
+    e.graph.pending[loop] = 1
+    e.graph._deps[loop] = frozenset({dep})
+    e.ready.outstanding = 1
+    v = Verifier(e, every=1)
+    v.on_completion(1)
+    assert v.violations == [], "reported before confirmation"
+    v.on_completion(2)
+    assert [x.clause for x in v.violations] == ["P"], v.violations
+    assert v.violations[0].node == loop
+
+
+@pytest.mark.unit
+def test_a_splice_wait_is_counted_and_never_reported() -> None:
+    """`await_one` is also used for splices and handle references.
+
+    A loop node waiting with every graph dependency met is the engine working
+    correctly. It fired on every periodic check of a healthy sweep and buried
+    the line that mattered.
+    """
+    e = _engine()
+    loop = "t" * 64
+    e.table.nodes[loop] = _Spec("default.for_loop")
+    e.graph.incomplete.add(loop)
+    e.graph.pending[loop] = 1
+    e.graph._deps[loop] = frozenset()       # no unmet graph deps at all
+    e.ready.outstanding = 1
+    v = Verifier(e, every=1)
+    v.on_completion(1)
+    v.on_completion(2)
+    assert v.violations == []
+    assert v.summary()["splice_waits_seen"] > 0
+
+
+@pytest.mark.unit
+def test_drain_skips_progress_while_anything_is_in_flight() -> None:
+    """A false report at the end of a fourteen-hour run is worse than none."""
+    e = _engine()
+    nid, dep = "u" * 64, "v" * 64
+    e.table.nodes[nid] = _Spec("vox1.and")
+    e.graph.incomplete.add(nid)
+    e.graph.pending[nid] = 1
+    e.graph._deps[nid] = frozenset({dep})
+    e.ready.outstanding = 1
+    e._in_flight = 1                        # a kernel is still running
+    assert [x.clause for x in Verifier(e).at_drain()] == [],         "(P) was judged on a torn reading"
+    e._in_flight = 0                        # quiescent: now it is authoritative
+    assert [x.clause for x in Verifier(e).at_drain()] == ["P"]
 
 
 @pytest.mark.unit
@@ -300,9 +395,11 @@ def test_a_persistent_violation_is_reported_once(capsys) -> None:
     # rule it is about.
     e.ready.outstanding = 1
     v = Verifier(e, every=1)
-    v.on_completion(1)
+    v.on_completion(1)          # sighted, held as a candidate
+    capsys.readouterr()
+    v.on_completion(2)          # confirmed and reported
     first = capsys.readouterr().err
-    v.on_completion(2)
+    v.on_completion(3)          # still true, must not be reported again
     second = capsys.readouterr().err
     assert "default.for_loop" in first
     assert second == "", f"the same violation was reported twice: {second!r}"
