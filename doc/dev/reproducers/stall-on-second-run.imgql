@@ -1,0 +1,9 @@
+// Nested loops with bodies deliberately CHEAPER than persist_min_compute_ms,
+// so a successful run cannot help leaving holes in the store: the containers
+// are critical and always written, the bodies are not worth writing.
+inner(i) = for j in range(0, 50) do +(i, j)
+means    = for i in range(0, 60) do mean(inner(i))
+
+print "m" mean(means)
+print "s" stdev(means)
+print "d" tally(means)

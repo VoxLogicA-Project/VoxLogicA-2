@@ -27,7 +27,7 @@ lista di partenza — sono venuti fuori facendo il resto.
 | **7a** | Doppio dispatch: `DoubleComputationError` | bloccante | **fatto da Vincenzo** (`a313172`) |
 | **7b** | **Rematerializzazione: `NeedsExpansion` a store caldo** | **bloccante** | **aperto**, due cause chiuse (`29634eb`, `7348626`), il run non passa |
 | **9** | **Lo store registra una promessa che non può mantenere** | **alta** | **aperto**, riprodotto da freddo in 5 s |
-| **10** | **Job di espansione orfani: unità mai chiuse, watchdog a 180 s** | **alta** | **aperto**, causa completa, correzione di 3 righe non scritta |
+| **10** | **Lanciare lo stesso programma due volte: il secondo non finisce** | **BLOCCANTE** | **aperto**, riproduttore da due comandi, correzione di 3 righe non scritta |
 | 1 | Programmi che escono 0 senza calcolare niente | bloccante | fatto (motore) / 6 programmi da sistemare |
 | 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | **fatto per 2 e 3, provvisorio per 4** |
 | 3 | Percorsi dataset assoluti dentro i programmi | alta | mitigato nell'artifact, aperto nel repo |
@@ -441,9 +441,66 @@ che li nomina — o il container non si scrive.
 
 ---
 
-## 10. Job di espansione orfani: unità mai chiuse — ALTA
+## 10. Lanciare lo stesso programma due volte: il secondo non finisce — BLOCCANTE
 
-Aperto il 2026-09-10. È lo **stallo**, e la causa è completa.
+Aperto il 2026-09-10 come "job di espansione orfani". Promosso a bloccante la
+sera stessa, quando è saltata la premessa su cui ne stimavamo la gravità.
+
+### Il riproduttore: due comandi identici
+
+`nested.imgql`, tre righe, aritmetica pura — niente BraTS, niente GPU, niente
+pressione di memoria:
+
+```
+inner(i) = for j in range(0, 50) do +(i, j)
+means    = for i in range(0, 60) do mean(inner(i))
+
+print "m" mean(means)
+print "s" stdev(means)
+print "d" tally(means)
+```
+
+```
+./voxlogica run nested.imgql --store-db X     →  exit 0, 3 goal, 1,2 s
+./voxlogica run nested.imgql --store-db X     →  exit 1, 0 goal, stallo, 197 s
+```
+
+Il secondo comando è identico al primo. Non consegna **niente**: zero goal, non
+"qualcuno in meno". Sei repliche da uno stato congelato: **6 stalli su 6**.
+
+### Perché "basta un'interruzione" non regge
+
+L'obiezione naturale è che uno store incompleto sia colpa di un run interrotto, e
+che rendere transazionale l'interruzione non sia compito del motore. È
+ragionevole, ed è falsa: **il run che lascia lo store incompleto esce 0.**
+
+| | misura |
+|---|---|
+| esito del run che avvelena | **exit 0**, 1,21 s |
+| container con riferimenti | 122 |
+| di cui **incompleti** | **110** |
+| elementi nominati / mancanti | 6120 / **892** |
+
+I buchi sono sparsi (`35/50`, `14/50`), non è una coda troncata: è il cancello
+per-valore del punto 9 che decide caso per caso. E lo store incompleto non
+arriva solo da lì — `--sparse-cache`, lo sfratto per budget e un writer in
+ritardo lo producono ugualmente. Lo store è una cache: l'incompletezza è il suo
+stato normale, non un'anomalia.
+
+Resta vero che non dobbiamo rendere transazionale l'interruzione. Ma la
+conseguenza di un miss non può essere un hang: `AGENTS.md` dice *"a hang must
+never happen"*, il watchdog stesso stampa *"this is an engine bug"*, e il
+progetto ha già `tests/unit/test_store_not_load_bearing.py` a fissare che lo
+store non è portante per la correttezza.
+
+### Perché non ce ne siamo accorti prima
+
+La scala. `tests/unit/test_warm_loop_node_is_still_expandable.py` fa un giro
+freddo-caldo su un loop di **quattro** elementi e passa. Qui i corpi sono 3000.
+Sotto una certa soglia il difetto non si manifesta, ed è per questo che è
+sopravvissuto a una suite da 1200 test.
+
+### La causa, misurata
 
 ```
 [stuck] qsize=0 outstanding=12 completed=157 stuck=0 alias=39 jobs=0
@@ -488,9 +545,12 @@ l'iterazione, questo la rende completa, e servono entrambi.
 potati, quindi se ne espandono di più (39 loop, 99 avvii) e l'esposizione a
 questo difetto aumenta. Va corretto prima.
 
-**Come riprodurlo.** Serve uno store caldo *incompleto*: uno costruito da un run
-riuscito non stalla, perché non resta abbastanza lavoro perché la corsa si
-presenti.
+**Una precisazione rispetto a quanto scritto prima in questa sezione.** Avevo
+annotato che "uno store costruito da un run riuscito non stalla". È sbagliato, e
+il riproduttore qui sopra lo mostra: quello store *è* costruito da un run
+riuscito. Quel che serve è che resti abbastanza lavoro da fare, e con corpi sotto
+la soglia di persistenza ne resta moltissimo. Sull'esperimento 4 non si vedeva
+perché lì i corpi sono cari e vengono scritti quasi tutti.
 
 ---
 
