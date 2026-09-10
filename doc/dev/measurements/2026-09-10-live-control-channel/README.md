@@ -83,12 +83,25 @@ That is worth more than the argument it killed: **the disk-cache pruning work
 must first add read accounting — and adding it puts a write on the read path,
 which needs measuring before it is built.
 
-**The ENOSPC alarm was wrong.** Free space was falling ~7 GB/min and the volume
-was 80% full, which looked like a run heading for a mid-sweep `ENOSPC`. It is
-not: `_effective_max_bytes` re-derives the ceiling from *current* free space
-minus a reserve on every probe interval, precisely so that a stale
-construction-time budget cannot overrun the disk. The cap is self-limiting; the
-thrash is the problem, not the disk.
+**The ENOSPC alarm was NOT wrong. This retraction is itself retracted.** Free
+space was falling ~7 GB/min and the volume was 80% full, and I recorded here
+that it could not matter because `_effective_max_bytes` re-derives the ceiling
+from *current* free space on every probe interval. That is true and it is beside
+the point: the re-derivation bounds the BUDGET, and nothing bounded the tier's
+growth against the budget.
+
+The next cold run, launched with `--cache-max-gb 300`, wrote **690.5 GB** in
+1 h 54 m -- 709,248 payload files, 2.3x the budget -- and took the shared volume
+from 735 GB free to 42 GB. It died with an empty log, because there was no space
+left to write the failure into. Cause and fix in `0dda880`: `_enforce_budget`
+gave up after a single 128-row pass whenever every candidate was live, which
+under `--sparse-cache` is always.
+
+The lesson is about the retraction, not the cap. I withdrew a correct alarm by
+reading a mechanism (a budget that tracks free space) and inferring an outcome
+(a tier that stays inside it) without measuring the outcome. `du` on the payload
+directory would have settled it in one second, and I had already run `du` twice
+that day.
 
 ## The artefact: `--control`
 
