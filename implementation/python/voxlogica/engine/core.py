@@ -95,6 +95,38 @@ from voxlogica.storage import StorageBackend
 _SEQUENCE_OPERATORS = {"default.sequence", "sequence", "default.map", "map",
                        "default.for_loop", "for_loop", "default.filter", "filter"}
 
+#: The subset of the above whose value is produced by EXPANSION rather than by
+#: their own spec: a `for_loop`/`map`/`filter` node is rewritten into a spliced
+#: sequence, and its elements are interned only while that expansion runs.
+#:
+#: THEY MUST NEVER BE PERSISTED, and the reason is a poisoned cache entry that
+#: outlives the run that wrote it. Measured on the sixty-case oracle sweep's
+#: store: one `default.for_loop` row, `status='materialized'`, `vox_type`
+#: 'sequence', no payload file, and a 19,404-byte `sequence-json-v1` payload
+#: holding 225 handles -- of which 0 had a row in the `node` (spec) table and
+#: only 203 had a materialized value anywhere. `persisted()` answers from the
+#: materialized-id index, so a warm run reported that node available,
+#: `_schedule_subgraph` pruned its whole subtree ("cached: loaded on demand"),
+#: and the expansion that alone can intern those 225 specs never ran. The first
+#: deep resolve that reached one of the 22 missing elements then raised
+#: `NeedsExpansion` from inside `resolve_deep` on a POOL thread, where the
+#: engine cannot register an expansion -- so it surfaced as
+#: `NodeExecutionError: default.argmax failed`, deterministically, 37 seconds
+#: into every run against that store.
+#:
+#: `node_table._references_are_answerable` already states the intended
+#: behaviour -- "a warm run that hits the stored container would SKIP the loop
+#: expansion that defines its elements; refusing the hit makes it expand, which
+#: interns them, and each element then hits the store on its own". The refusal
+#: worked; the expansion never got the chance, because the pruning happened one
+#: level higher. So the row must not exist in the first place: what is worth
+#: caching is the ELEMENTS, and they are persisted on their own, with specs.
+#:
+#: `default.sequence` is deliberately NOT in here. Its args ARE its element
+#: ids, so its spec is self-sufficient and rebuilding it needs no expansion.
+_EXPANDED_OPERATORS = {"default.for_loop", "for_loop", "default.map", "map",
+                       "default.filter", "filter"}
+
 _PROGRESS_BATCH = 64  # completions folded into one progress-bar refresh
 
 #: Span of the sliding throughput window, in seconds (see _flush_progress).
@@ -119,6 +151,11 @@ _ETA_GOAL_JUMP = 8
 
 
 _EVICT_SWEEP = 256      # candidates examined per _reclaim_memory call (bounds the work)
+
+#: Distinguishes "absent" from "present and None". A closure's value IS None,
+#: so `values.get(ref)` alone cannot tell the two apart, and treating a
+#: resident None as absent would schedule a node that is already done.
+_MISSING = object()
 
 # Compact one-line bar: a small FIXED-width bar ({bar:12}) so it never balloons
 # to fill the terminal (which, with the goal count sitting at 0 for a long time,
@@ -1441,6 +1478,7 @@ class ComputationEngine:
             # recompute than to store would tax dispatch for nothing (and the
             # cache's cost-aware eviction would drop it first anyway).
             worth_it = (self.persist_enabled
+                        and (node.operator or "") not in _EXPANDED_OPERATORS
                         and (critical or compute_ms >= self._persist_min_ms))
             # --sparse-cache DELIBERATELY DOES NOTHING HERE, and the reason is
             # worth keeping: skipping the write for a value with one PENDING
@@ -1800,22 +1838,60 @@ class ComputationEngine:
 
         Returns True if this node must wait, in which case the caller requeues.
 
-        THE ANTI-EXPLOSION PROPERTY IS THAT THIS IS ONE LEVEL DEEP. A named
-        node's own value may name more; those are discovered when THAT node is
-        about to be used, never here. So the work added at any turn is bounded by
-        what one value names -- and an edge cannot cycle, because a handle names
-        a node that already completed.
+        THE WALK GOES AS DEEP AS THE RESIDENT VALUES GO, AND NO DEEPER. It used
+        to stop at one level, on the argument that "a named node's own value may
+        name more; those are discovered when THAT node is about to be used" and
+        that "an edge cannot cycle, because a handle names a node that already
+        completed". The second half is false, and the first depends on it: a
+        handle can name a node that has NOT completed, and if it is reached
+        through a container that is already resident then nothing is ever "about
+        to use" it -- `resolve_deep` walks straight into that container on the
+        pool thread and asks for it there.
+
+        Measured: `NodeExecutionError: default.argmax failed while evaluating
+        node 46b90a84c497`, caused by `NeedsExpansion: b28223e8e803...`, with
+        the raise site's own census reading
+
+            operator='default.for_loop' interned=True completed=False
+            alias=False forwarded=False incomplete=False persisted=False
+
+        -- a loop node interned in this run's table, never registered with the
+        graph, never spliced, and therefore reachable by no road at all except
+        an expansion that nothing had asked for. It sat one level below a
+        resident sequence, so the one-level walk never saw it, and the pool
+        thread that did see it cannot register an expansion. Deterministic, 37 s
+        into every run of the sixty-case sweep.
+
+        The explosion the old property guarded against is still guarded against,
+        by a stricter rule: THE WALK ONLY ENTERS VALUES THAT ARE ALREADY
+        RESIDENT. It never loads, never rebuilds, and never touches a node whose
+        value is absent -- so it traverses exactly the graph `resolve_deep`
+        would traverse for free on the pool thread, and every reference it finds
+        with no value becomes a scheduler edge instead of a pool-thread miss.
+        `seen` makes it linear in distinct references and terminating regardless
+        of shape. Explicit stack: this codebase does not recurse.
         """
         modes = modes_of(self.registry, node.operator)
         if modes.lazy or modes.shallow:
             return False           # it is handed the handles; it needs no values
         waiting = False
-        for dep in self.graph.deps(nid):
-            if not self.graph.names_handles(dep):
-                continue           # O(1); the walk below is for the few that do
-            for handle in iter_handles(self.table.values.get(dep)):
+        containers = [self.table.values.get(dep) for dep in self.graph.deps(nid)
+                      if self.graph.names_handles(dep)]   # O(1) per dep
+        seen: set[NodeId] = set()
+        while containers:
+            value = containers.pop()
+            for handle in iter_handles(value):
                 ref = handle.node
-                if ref in self.table.values or ref in self.table.completed:
+                if ref in seen:
+                    continue
+                seen.add(ref)
+                resident = self.table.values.get(ref, _MISSING)
+                if resident is not _MISSING:
+                    # Resident: the pool thread will walk INTO it, so walk into
+                    # it here, where a missing reference can still be scheduled.
+                    containers.append(resident)
+                    continue
+                if ref in self.table.completed and not self._unresolvable_without_expansion(ref):
                     continue
                 if ref not in self.table.nodes:
                     continue       # nothing here can build it; the adapter will report
@@ -1860,6 +1936,42 @@ class ComputationEngine:
             # spin the comment above warns about cannot happen now, because the
             # thing it would spin on has happened.
             self.ready.push(waiting, priority)
+
+    def _unresolvable_without_expansion(self, nid: NodeId) -> bool:
+        """Whether resolving this reference would need an expansion to happen.
+
+        `completed` MEANS COMPUTED, NOT "ITS VALUE IS HERE" -- engine/waiting.py
+        states that separation and says that conflating the two is what forced
+        rebuilds outside the scheduler in the first place. For an ordinary node
+        the distinction is harmless here, because `_rematerialize` can recompute
+        it. For a node whose value comes from EXPANSION there is nothing to
+        recompute: `for_loop` has a kernel, but it belongs to the strict runtime
+        and fails on a closure the engine never builds, so the only roads back
+        are the `_alias` set when it was spliced, or a fresh expansion.
+
+        Skipping such a reference because it was `completed` is what took the
+        resolution off the scheduler and onto a POOL thread, where
+        `_rematerialize` raised `NeedsExpansion` and nothing could answer it:
+        measured as `NodeExecutionError: default.argmax failed while evaluating
+        node 46b90a84c497`, caused by `NeedsExpansion: b28223e8e803...`,
+        deterministically 37 s into every run of the sixty-case sweep against a
+        store holding 2,001 rows for expansion-produced nodes. Refusing those
+        rows was necessary and not sufficient: the reference reaches this path
+        whether or not the store ever claimed it.
+
+        Answering yes makes the caller turn the reference into a real graph
+        edge, which registers the node and lets admission unroll it -- the same
+        recovery `_await_expansion` performs on the loop thread, arranged
+        BEFORE dispatch instead of failing during it.
+        """
+        if not self._grows_the_graph(nid):
+            return False                       # a kernel can rebuild it
+        alias = self._alias.get(nid)
+        if alias is not None and alias != nid:
+            # An alias is a road back only while what it names can be reached.
+            if alias in self.table.values or alias in self.table.completed:
+                return False
+        return not self.table.persisted(nid)
 
     def _grows_the_graph(self, nid: NodeId) -> bool:
         """Whether evaluating this node expands the graph instead of computing.
@@ -1916,7 +2028,18 @@ class ComputationEngine:
                 # and the eager adapter then hands a kernel a raw Handle.
                 self.graph.hold_handles(nid, value)
                 return value
-            raise NeedsExpansion(nid)
+            # THE FACTS, IN THE EXCEPTION. This escaped to a pool thread once
+            # and cost four reproductions to characterise, because the message
+            # named the node and nothing else. Everything here is O(1).
+            spec = self.table.nodes.get(nid)
+            raise NeedsExpansion(nid,
+                f"operator={getattr(spec, 'operator', None)!r} "
+                f"interned={spec is not None} "
+                f"completed={nid in self.table.completed} "
+                f"alias={self._alias.get(nid, None) is not None} "
+                f"forwarded={nid in self._forwarded} "
+                f"incomplete={nid in self.graph.incomplete} "
+                f"persisted={self.table.persisted(nid)}")
         node = self.table.nodes[nid]
         if node.kind == "constant":
             value = node.attrs.get("value")

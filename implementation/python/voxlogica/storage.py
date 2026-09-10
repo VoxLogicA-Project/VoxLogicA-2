@@ -9,10 +9,12 @@ from typing import Any, Union
 from abc import ABC, abstractmethod
 import logging
 import hashlib
+import json
 import os
 import queue
 import shutil
 import sqlite3
+import sys
 import threading
 import time
 
@@ -673,12 +675,58 @@ class SQLiteResultsDatabase:
         """Share the engine's persisted-id set so eviction keeps it truthful."""
         self._id_index = index
 
+    #: Operators whose stored row can never be honoured, so it must not be
+    #: reported as available. See `_EXPANDED_OPERATORS` in engine/core.py for
+    #: the measurement: such a row prunes the expansion that alone can intern
+    #: its elements, and the failure lands on a pool thread 37 seconds later.
+    #: Matched against `metadata_json`, which is where the writer records the
+    #: producing operator (`{"operator":"default.for_loop","source":"runtime"}`).
+    #:
+    #: THIS IS THE READ HALF OF THE FIX, and it is needed as well as the write
+    #: half: every store already written contains these rows, and they poison
+    #: every future run against that store. Filtering them at index-build time
+    #: costs one LIKE over a scan that already happens once per run, and makes
+    #: an existing store merely incomplete instead of actively wrong.
+    _UNHONOURABLE_OPERATORS = ("default.for_loop", "for_loop", "default.map",
+                               "map", "default.filter", "filter")
+
     def materialized_ids(self) -> list[str]:
-        """All materialized node ids — one index-only scan at engine startup."""
-        rows = self._reader().execute(
-            "SELECT node_id FROM results WHERE status = ?", (MATERIALIZED_STATUS,)
-        ).fetchall()
-        return [str(r[0]) for r in rows]
+        """Materialized node ids that can actually be honoured — one scan.
+
+        A row for an expansion-produced node is skipped rather than trusted;
+        `persisted()` is what prunes the scheduler's frontier, so reporting one
+        of those is how a warm store stops a loop from expanding at all.
+        """
+        skipped = 0
+        ids: list[str] = []
+        for node_id, metadata in self._reader().execute(
+                "SELECT node_id, metadata_json FROM results WHERE status = ?",
+                (MATERIALIZED_STATUS,)):
+            if metadata and self._names_unhonourable_operator(metadata):
+                skipped += 1
+                continue
+            ids.append(str(node_id))
+        if skipped:
+            # SAID OUT LOUD, once. A store quietly holding rows the engine
+            # refuses is a fact about that store, and the number is how anyone
+            # knows whether a prune is worth running.
+            print(f"[store] ignoring {skipped:,} cached row(s) for "
+                  f"expansion-produced nodes: their elements are interned only "
+                  f"by the expansion, so the rows cannot be honoured",
+                  file=sys.stderr, flush=True)
+        return ids
+
+    @classmethod
+    def _names_unhonourable_operator(cls, metadata_json: str) -> bool:
+        """Cheap substring test first, exact check only if it might match."""
+        if "for_loop" not in metadata_json and "map" not in metadata_json \
+                and "filter" not in metadata_json:
+            return False
+        try:
+            operator = json.loads(metadata_json).get("operator")
+        except Exception:                                       # noqa: BLE001
+            return False
+        return operator in cls._UNHONOURABLE_OPERATORS
 
     def _is_live(self, node_id: str, snapshot: set[str]) -> bool:
         if self._live_probe is not None:

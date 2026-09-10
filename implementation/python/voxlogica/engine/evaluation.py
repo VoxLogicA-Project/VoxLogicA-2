@@ -161,6 +161,13 @@ class NeedsExpansion(Exception):
     just not by the road the caller took.
     """
 
-    def __init__(self, node_id: str):
-        super().__init__(f"{node_id} must be expanded, not computed")
+    def __init__(self, node_id: str, detail: str = ""):
+        # `node_id` STAYS A NODE ID. Callers recover with
+        # `_await_expansion(waiting, exc.node_id)`, so the id cannot be folded
+        # into the message: an earlier attempt to attach diagnostics did
+        # exactly that and would have handed the scheduler a sentence to
+        # register. The context is a separate argument for that reason.
+        super().__init__(f"{node_id} must be expanded, not computed"
+                         + (f" [{detail}]" if detail else ""))
         self.node_id = node_id
+        self.detail = detail
