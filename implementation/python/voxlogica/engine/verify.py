@@ -226,6 +226,42 @@ class Verifier:
                 f"expanding. ledger={units}"))
         return out
 
+    def arm_handle_audit(self) -> None:
+        """Install clause (H) in the executor: no handle reaches an eager kernel.
+
+        Separate from the other three because it is the only clause that lives
+        on the dispatch path rather than in a frontier walk, and the only one
+        whose cost is O(value size). It is armed by the same flag, and the
+        executor holds `None` for it on every ordinary run.
+        """
+        try:
+            self._engine.executor._handle_audit = self._on_unresolved_handle
+        except Exception:                                       # noqa: BLE001
+            pass
+
+    def _on_unresolved_handle(self, arg_id: NodeId, value: Any) -> None:
+        """Called from the pool thread, so it records and does not raise.
+
+        Raising here would surface as a node failure on a worker -- which is
+        exactly the shape that made the original defect take three sweeps to
+        characterise. The violation is recorded and reported by whichever
+        check runs next, on the loop thread, where it can be attributed.
+        """
+        node = self._engine.table.nodes.get(arg_id)
+        v = Violation(
+            "H", arg_id,
+            f"an eager kernel was handed a value that still contains an "
+            f"unresolved handle (produced by op="
+            f"{getattr(node, 'operator', None)!r}). `names_handles` said this "
+            f"value names nothing, so `_eager` skipped resolution: the O(1) "
+            f"cache and the value disagree.")
+        key = ("H", arg_id)
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        self.violations.append(v)
+        print(f"[verify:dispatch] {v}", file=sys.stderr, flush=True)
+
     def check_answerability(self) -> list[Violation]:
         """(V) every settled goal must resolve to the bottom.
 
@@ -384,6 +420,8 @@ class Verifier:
                 "P": "a frontier node waits only for something being produced",
                 "T": "the frontier is empty exactly when no units remain",
                 "V": "a settled goal resolves to the bottom without scheduling",
+                "H": "no unresolved handle reaches a kernel that declared "
+                     "neither lazy nor shallow",
             },
         }
 

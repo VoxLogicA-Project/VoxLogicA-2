@@ -56,6 +56,9 @@ class DependencyGraph:
         self.consumers: dict[NodeId, int] = {}        # unrun consumers holding a value
         # holder -> nodes its VALUE names by handle (see hold_handles)
         self._handle_refs: dict[NodeId, tuple[NodeId, ...]] = {}
+        # The table tells the graph when a value actually leaves it; see
+        # `_drop_holds`.
+        table._on_dropped = self._drop_holds
         self.protected: set[NodeId] = set()           # goal values: never auto-evicted
         self._dependents: dict[NodeId, list[NodeId]] = defaultdict(list)
         self._deps_memo: dict[NodeId, frozenset[NodeId]] = {}
@@ -319,9 +322,51 @@ class DependencyGraph:
             del self.consumers[nid]  # drop the entry: state is frontier-only
             if nid not in self.protected:
                 self.table.evict(nid)
-            # The holder is gone, so what its value named is no longer held by
-            # it. Popped before releasing: a ref cycle cannot exist (handles
-            # name nodes, nodes form a DAG), but re-entering through the same
-            # entry would double-release.
-            for ref in self._handle_refs.pop(nid, ()):
-                self.release(ref)
+            # THE HOLDS GO WITH THE VALUE, NOT WITH THE LAST CONSUMER, and the
+            # difference is a correctness bug that stood until a runtime check
+            # named it.
+            #
+            # This used to pop and release unconditionally, one line after an
+            # eviction that is skipped for `protected` ids -- which is every
+            # goal. So a goal's value stayed RESIDENT while its registrations
+            # were dropped, and two things followed. `names_handles` began
+            # answering "no" for a value that was full of handles, so `_eager`
+            # skipped resolution and handed an eager kernel raw `Handle`
+            # objects; measured as `default.argmax` comparing two of them,
+            # `TypeError: '>' not supported between instances of 'Handle' and
+            # 'Handle'`, seven frames deep, reported as "Invalid operation
+            # input". And the nodes those handles named were released, so they
+            # could be evicted while a live value still referred to them --
+            # exactly the "reference outliving what it refers to" failure this
+            # docstring warns about, committed by the code under it.
+            #
+            # `evict` can also DECLINE (no disk tier and the value is not
+            # recomputable -- see NodeTable.evict), which leaves it resident
+            # for the same reason and wants the same answer. So the test is
+            # the value's actual absence, not the branch taken to get there:
+            # a residency check, one dict lookup, at a point that already does
+            # several.
+            # If the value survived -- protected, or an eviction this table
+            # declined -- the holds STAY, and `NodeTable._on_dropped` releases
+            # them if and when it really goes. Keeping them conditional on
+            # residency alone was not enough: nothing would ever have released
+            # them afterwards, and a 20-element loop leaked all 20 under
+            # `--no-cache` (measured, `test_values_die_with_their_last_consumer`).
+            if nid in self.table.values:
+                return
+            self._drop_holds(nid)
+
+    def _drop_holds(self, nid: NodeId) -> None:
+        """Release what a value named, now that the value is gone.
+
+        Installed on the table as `_on_dropped`, and also called directly by
+        `release` when the eviction it just requested took effect immediately.
+        Popping first makes it idempotent: whichever of the two arrives second
+        finds nothing and does nothing.
+
+        Popped before releasing for the original reason too: a ref cycle cannot
+        exist (handles name nodes, nodes form a DAG), but re-entering through
+        the same entry would double-release.
+        """
+        for ref in self._handle_refs.pop(nid, ()):
+            self.release(ref)

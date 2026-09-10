@@ -423,3 +423,80 @@ def test_a_persistent_violation_is_reported_once(capsys) -> None:
     assert "default.for_loop" in first
     assert second == "", f"the same violation was reported twice: {second!r}"
     assert len(v.violations) == 1
+
+
+# ── (H): no unresolved handle reaches an eager kernel ───────────────────────
+
+@pytest.mark.unit
+def test_H_names_the_argument_that_still_holds_a_handle() -> None:
+    """The correctness clause, and the one that lives on the dispatch path.
+
+    `_eager` promises an eager kernel fully-resolved values, and the promise
+    rests on the O(1) `names_handles` cache being right. When it is wrong the
+    kernel is handed `Handle` objects: measured as `default.argmax` comparing
+    two of them, seven frames deep, reported as "Invalid operation input".
+
+    `Handle` is a frozen dataclass with no `order=True`, so `<` and arithmetic
+    raise -- but `==`, `hash`, `in`, `len` and `str` all succeed, and a kernel
+    using only those would compute a wrong answer silently. That is why this is
+    checked rather than left to crash.
+    """
+    from voxlogica.engine.executor import Executor
+    from voxlogica.handles import Handle
+
+    e = _engine()
+    arg = "w" * 64
+    e.table.nodes[arg] = _Spec("default.sequence")
+    v = Verifier(e)
+
+    executor = object.__new__(Executor)
+    executor._names_handles = lambda nid: False      # the cache says "nothing"
+    executor._handle_resolver = None
+    executor._handle_audit = None
+    e.executor = executor
+    v.arm_handle_audit()
+    assert executor._handle_audit is not None, "the audit was not installed"
+
+    # The value the cache lied about.
+    executor._audit_eager(arg, [Handle(node="x" * 64), 3.0])
+
+    assert [x.clause for x in v.violations] == ["H"], v.violations
+    assert v.violations[0].node == arg
+    assert "default.sequence" in v.violations[0].detail
+    assert "cache and the value disagree" in v.violations[0].detail
+
+
+@pytest.mark.unit
+def test_H_is_silent_on_a_resolved_value_and_costs_nothing_when_off() -> None:
+    from voxlogica.engine.executor import Executor
+    from voxlogica.handles import Handle
+
+    executor = object.__new__(Executor)
+    executor._handle_audit = None
+    # Off: the audit must not even look at the value.
+    assert executor._audit_eager("y" * 64, [Handle(node="z" * 64)]) is not None
+
+    e = _engine()
+    v = Verifier(e)
+    e.executor = executor
+    v.arm_handle_audit()
+    executor._audit_eager("y" * 64, [1.0, 2.0, 3.0])   # fully resolved
+    assert v.violations == []
+
+
+@pytest.mark.unit
+def test_H_never_raises_into_the_run() -> None:
+    """It runs on a pool thread; raising there is the shape it exists to fix."""
+    from voxlogica.engine.executor import Executor
+
+    class _Explodes:
+        def __iter__(self):
+            raise RuntimeError("a value that cannot be walked")
+
+    executor = object.__new__(Executor)
+    executor._handle_audit = None
+    e = _engine()
+    v = Verifier(e)
+    e.executor = executor
+    v.arm_handle_audit()
+    assert executor._audit_eager("a" * 64, _Explodes()) is not None

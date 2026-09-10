@@ -34,7 +34,8 @@ from voxlogica.buffer_pool import acquire_numpy, buffer_states, recycle_unleased
 from voxlogica.engine.evaluation import modes_of
 from voxlogica.engine.inflight import executing
 from voxlogica.engine.node_table import NodeTable
-from voxlogica.handles import Handle, resolve_deep, resolve_shallow
+from voxlogica.handles import (Handle, contains_handle, resolve_deep,
+                               resolve_shallow)
 from voxlogica.engine.numba_fusion import resolve_out_dtype, shape_of
 from voxlogica.lazy.ir import NodeId
 from voxlogica.primitives.registry import PrimitiveRegistry
@@ -101,6 +102,9 @@ class Executor:
         #: `(NodeId) -> bool`, installed by the engine: does this node's value
         #: name others? Without it every eager argument is walked.
         self._names_handles: Callable[[NodeId], bool] | None = None
+        #: Set by the verifier only (see engine/verify.py clause (H)). None on
+        #: every ordinary run, and then `_audit_eager` is one attribute read.
+        self._handle_audit: Callable[[NodeId, Any], None] | None = None
         #: operator -> Modes, per executor. `modes_of` memoizes too, but on a
         #: `(id(registry), operator)` tuple that has to be built on every
         #: dispatch; a plain string key allocates nothing.
@@ -385,9 +389,46 @@ class Executor:
         value = _unwrap(lookup(arg_id))
         names_handles = self._names_handles
         if names_handles is not None and not names_handles(arg_id):
-            return value
+            return self._audit_eager(arg_id, value)
         resolver = self._handle_resolver or lookup
-        return resolve_deep(value, lambda node_id: _unwrap(resolver(node_id)))
+        return self._audit_eager(
+            arg_id, resolve_deep(value, lambda node_id: _unwrap(resolver(node_id))))
+
+    def _audit_eager(self, arg_id: NodeId, value: Any) -> Any:
+        """(H) an eager kernel must never receive an unresolved handle.
+
+        THE CONTRACT AND WHY IT NEEDS A CHECK. An operator that declares
+        neither `lazy` nor `shallow` has said it deals in values, so `_eager`
+        promises it values. That promise rests on the O(1) `names_handles`
+        cache above being right, and when the cache is wrong the promise is
+        broken silently -- the kernel is handed `Handle` objects and does
+        whatever it does with them.
+
+        Measured: `default.argmax` comparing two of them,
+        `TypeError: '>' not supported between instances of 'Handle' and
+        'Handle'`, seven frames deep, reported as "Invalid operation input" on
+        a node whose real problem was three subsystems away. `Handle` is a
+        frozen dataclass with no `order=True`, so ordering and arithmetic raise
+        -- but `==`, `hash`, `in`, `len` and `str` all SUCCEED on it, and a
+        kernel that only uses those would compute a wrong answer and say
+        nothing. That narrow surface is why this is a correctness check and not
+        merely a nicer traceback.
+
+        Off unless `--verify` armed it, because the check is the O(size) walk
+        that `names_handles` exists to avoid: paying it per argument per
+        dispatch is exactly the cost the cache was introduced to remove. Under
+        `--verify` the soak matrix pays it and gets the violation named at the
+        argument that carries it.
+        """
+        audit = self._handle_audit
+        if audit is None:
+            return value
+        try:
+            if contains_handle(value):
+                audit(arg_id, value)
+        except Exception:                                       # noqa: BLE001
+            pass            # a checker must never be the reason a run fails
+        return value
 
     def _invoke(self, kernel, args: list[Any], kwargs: dict[str, Any], attrs: dict[str, Any] | None = None) -> Any:
         """Adapt engine arguments to the kernel's declared Python signature."""

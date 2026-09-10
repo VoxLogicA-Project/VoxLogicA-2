@@ -2758,6 +2758,21 @@ class ComputationEngine:
         for goal in list(self._goals):
             value = self.table.values.get(goal, _MISSING)
             if value is _MISSING:
+                # NOT RESIDENT: SKIPPED, DELIBERATELY, AND THE ALTERNATIVE WAS
+                # MEASURED. `_materialize` will reload this goal and walk it,
+                # so walking it here too looks obviously right -- and resolving
+                # a goal at drain is not a probe, it MATERIALIZES it:
+                # `_rematerialize` writes the value back, retracks residency
+                # and takes handle holds. Doing that for every non-resident
+                # goal turned `--sparse-cache` from passing to exit 70 on the
+                # AIIM sweep while fixing nothing in `--no-write-cache`. A
+                # check that perturbs the run is not a check.
+                #
+                # The `--no-write-cache` failure it was aimed at is therefore
+                # still open, and is a reload-path defect rather than a
+                # scheduling one: the goal's value comes back from a store that
+                # was never written to, and the loop underneath it was pruned
+                # as `persisted` on the way in.
                 continue
             # A TOLERANT RESOLVER, so one round finds EVERY miss under a goal
             # rather than the first. Letting `NeedsExpansion` propagate meant one

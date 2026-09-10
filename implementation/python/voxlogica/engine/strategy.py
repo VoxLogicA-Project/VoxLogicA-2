@@ -302,6 +302,7 @@ class EngineExecutionStrategy(ExecutionStrategy):
         if verify:
             from voxlogica.engine.verify import Verifier
             engine.verifier = Verifier(engine, strict=(verify == "strict"))
+            engine.verifier.arm_handle_audit()
 
         # ── the live control channel (engine/control.py) ────────────────────
         # Independent of --measure on purpose: the channel's own value is the

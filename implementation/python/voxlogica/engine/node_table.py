@@ -150,6 +150,11 @@ class NodeTable:
         self._object_refs: dict[int, int] = {}
         self._object_sizes: dict[int, int] = {}
         self._buffer_leases: dict[NodeId, tuple[Any, ...]] = {}
+        #: Called with a node id the instant its value leaves this table.
+        #: `DependencyGraph` installs itself here to release what that value
+        #: named; None keeps the table usable on its own (several unit tests
+        #: build one with no graph at all).
+        self._on_dropped: Any = None
         # Ids currently handed to the writer, by ANY path (`complete`'s
         # worth-it write or `spill`'s pressure write). A second submit of the
         # same id would put two writer threads on one payload concurrently and
@@ -607,6 +612,17 @@ class NodeTable:
             self._compute_ms.pop(node_id, None)
             self._account_op(node_id, -self._release_object(value))
             release_states(self._buffer_leases.pop(node_id, ()))
+            # THE VALUE HAS ACTUALLY GONE, which is the only moment at which
+            # what it named stops being held. `DependencyGraph.release` used to
+            # do that on the LAST CONSUMER instead, one line after an eviction
+            # that is skipped for `protected` ids and can also be declined here
+            # -- so a value that stayed resident lost its handle registrations
+            # anyway, `names_handles` began lying about it, and the nodes it
+            # named were released while it still referred to them. Driving it
+            # from the drop is what makes "the holds are released together with
+            # the holder's own value" true rather than approximately true.
+            if self._on_dropped is not None:
+                self._on_dropped(node_id)
 
     def release_held(self) -> None:
         """Drop the values ``evict`` held back, once no rebuild can want them.
