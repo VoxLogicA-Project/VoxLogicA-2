@@ -83,8 +83,20 @@ def test_the_expanded_operators_are_the_rewritten_ones_only() -> None:
 
 
 @pytest.mark.unit
-def test_a_stored_loop_row_is_not_reported_as_available(tmp_path, capsys) -> None:
-    """The read half: an existing poisoned store must go back to merely cold."""
+def test_the_read_side_still_reports_such_a_row(tmp_path) -> None:
+    """THE REVERTED FIX, pinned so it is not reattempted.
+
+    Refusing these rows in `materialized_ids` was the obvious read-half fix and
+    is a regression: reporting the row is what keeps the subtree pruned so the
+    ELEMENTS are served from disk. Filtering it made a warm run recompute them
+    -- `test_engine_caching.test_warm_run_reuses_runtime_expanded_nodes` went
+    from 0 recomputed nodes to 8.
+
+    The row is a problem only when it cannot be honoured, and that is decidable
+    at LOAD time: `node_table._references_are_answerable` refuses such a
+    container, and the engine recovers by expanding (`_await_expansion` from a
+    worker, plus the drain-time goal check in `ComputationEngine.run`).
+    """
     db = SQLiteResultsDatabase(db_path=str(tmp_path / "poisoned.db"))
     loop_id = "b2" + "8" * 62
     seq_id = "c3" + "9" * 62
@@ -92,51 +104,46 @@ def test_a_stored_loop_row_is_not_reported_as_available(tmp_path, capsys) -> Non
     _row(db, seq_id, "default.sequence")
 
     ids = set(db.materialized_ids())
-    assert loop_id not in ids, (
-        "the for_loop row was reported available; a warm run will prune its "
-        "subtree and the expansion that interns its elements will never run")
-    assert seq_id in ids, "a plain sequence row is honourable and must be kept"
-    assert "ignoring 1 cached row" in capsys.readouterr().err
+    assert loop_id in ids, (
+        "filtering these rows costs warm reuse of their elements; the refusal "
+        "belongs at load time, not in the id index")
+    assert seq_id in ids
 
 
 @pytest.mark.unit
-def test_the_id_index_the_engine_builds_agrees(tmp_path) -> None:
-    """`NodeTable.persisted` is the predicate that prunes; check it directly."""
+def test_an_unanswerable_container_is_refused_at_load(tmp_path) -> None:
+    """Where the refusal DOES belong, and what it is keyed on.
+
+    The container names two element nodes this run has never interned, so
+    nothing could rebuild what comes back. `load` must report a miss rather
+    than hand out a value whose handles resolve to nothing.
+    """
     from voxlogica.engine.node_table import NodeTable
 
     db = SQLiteResultsDatabase(db_path=str(tmp_path / "p2.db"))
     loop_id = "d4" + "7" * 62
-    seq_id = "e5" + "6" * 62
     _row(db, loop_id, "for_loop")
-    _row(db, seq_id, "sequence")
 
     table = NodeTable(backend=db)
-    assert not table.persisted(loop_id)
-    assert table.persisted(seq_id)
+    assert table.persisted(loop_id), "the row is still in the index (see above)"
+    assert table.load(loop_id) is None, (
+        "a container whose elements this run cannot reach was handed out; the "
+        "caller then resolves those handles to nothing, on whatever thread it "
+        "happens to be on")
 
 
 @pytest.mark.unit
-def test_a_malformed_metadata_row_is_kept_rather_than_dropped(tmp_path) -> None:
-    """Unreadable metadata must not silently delete a good cache entry.
+def test_an_answerable_container_is_served(tmp_path) -> None:
+    """The refusal must be keyed on reachability, not on being a container."""
+    from voxlogica.engine.node_table import NodeTable
+    from voxlogica.lazy.ir import NodeSpec
 
-    The filter exists to refuse a specific, identified shape. Anything it
-    cannot parse is not that shape as far as it can tell, and dropping it would
-    trade a correctness bug for a performance one.
-    """
     db = SQLiteResultsDatabase(db_path=str(tmp_path / "p3.db"))
-    ok_id = "f6" + "5" * 62
-    _row(db, ok_id, "vox1.dt")
-    with db._lock:
-        db._connection.execute(
-            "UPDATE results SET metadata_json = ? WHERE node_id = ?",
-            ("{not json at all, mentions for_loop", ok_id))
-    assert ok_id in set(db.materialized_ids())
+    seq_id = "e5" + "6" * 62
+    _row(db, seq_id, "default.sequence")
 
-
-@pytest.mark.unit
-def test_the_substring_prefilter_cannot_produce_a_false_refusal(tmp_path) -> None:
-    """An operator merely NAMED like one of these is not one of these."""
-    db = SQLiteResultsDatabase(db_path=str(tmp_path / "p4.db"))
-    keep = "a7" + "4" * 62
-    _row(db, keep, "vox1.mapping_of_filter_for_loops")
-    assert keep in set(db.materialized_ids())
+    table = NodeTable(backend=db)
+    # Both elements the payload names are interned in this run.
+    table.nodes["a" * 64] = NodeSpec(kind="primitive", operator="test.blob")
+    table.nodes["b" * 64] = NodeSpec(kind="primitive", operator="test.blob")
+    assert table.load(seq_id) is not None

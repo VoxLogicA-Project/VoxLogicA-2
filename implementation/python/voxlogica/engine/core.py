@@ -152,6 +152,12 @@ _ETA_GOAL_JUMP = 8
 
 _EVICT_SWEEP = 256      # candidates examined per _reclaim_memory call (bounds the work)
 
+#: How many times the drain may be followed by "the goals still name something
+#: that is not here". One is the expected number: the round schedules the
+#: expansion, the join runs it, and the next walk finds it. The cap exists so a
+#: genuine cycle reports a stall instead of spinning forever.
+_DEEP_SETTLE_ROUNDS = 8
+
 #: Distinguishes "absent" from "present and None". A closure's value IS None,
 #: so `values.get(ref)` alone cannot tell the two apart, and treating a
 #: resident None as absent would schedule a node that is already done.
@@ -184,6 +190,10 @@ class ComputationEngine:
     #: level is safe -- a `Knob.set` writes the instance, not the class.
     persist_enabled: bool = True
     _persist_min_ms: float = 1.0
+    #: Empty on an instance that bypassed ``__init__`` or before ``adopt_plan``:
+    #: with no static plan known, no expansion-produced container can be shown
+    #: recoverable, which is the safe direction.
+    _static_nodes: frozenset = frozenset()
 
 
     def __init__(self, registry: PrimitiveRegistry | None = None,
@@ -531,6 +541,13 @@ class ComputationEngine:
                 self.table.nodes[node_id] = node
                 self.table.record_lineage(node_id)   # static plan nodes
         self.table.flush_lineage()
+        # THE STATIC/RUNTIME LINE, snapshotted once. Every node here will be
+        # interned by ANY run of this program, before anything executes; a node
+        # interned later exists only because some expansion produced it, and a
+        # later run interns it only by performing that expansion again. That
+        # distinction is what decides whether a loop container is safe to cache
+        # -- see `_container_is_recoverable`.
+        self._static_nodes = frozenset(self.table.nodes)
 
     def submit(self, node_id: NodeId, operation: str = "value", name: str = "",
                priority: Priority = Priority.NORMAL) -> Query:
@@ -615,6 +632,35 @@ class ComputationEngine:
             worker.add_done_callback(_worker_died)
         try:
             await self._join_with_watchdog()
+            # THE RUN IS NOT OVER WHILE A GOAL'S VALUE IS NOT DEEPLY AVAILABLE.
+            # A goal whose value is a container of handles settles as soon as
+            # the container exists, and the caller then resolves it deeply --
+            # `strategy._side_effect` -> `_materialize` -> `resolve_deep`, on the
+            # main thread, AFTER this method has returned and the workers have
+            # been cancelled. If that walk reaches a node that must be EXPANDED,
+            # there is no longer anything alive that could expand it, and the
+            # run dies having already reported every goal open:
+            #
+            #   NeedsExpansion: 0483419286... must be expanded, not computed
+            #   [operator='default.for_loop' interned=True completed=False
+            #    alias=False forwarded=False incomplete=False persisted=False]
+            #   strategy._side_effect -> _materialize -> resolve_deep
+            #     -> _resolve_reference -> _rematerialize -> _rematerialize
+            #
+            # -- 7 of 7 goals, 27 s in, on a nested loop interned by an outer
+            # loop's expansion and registered with nothing.
+            #
+            # So the drain is followed by a completeness check that schedules
+            # whatever the goals still name and joins again. Bounded rounds,
+            # because a round that schedules the same work twice is a spin and
+            # must surface as a stall rather than as a hang; in practice one
+            # round settles it, since the second walk sees the expansion.
+            for _round in range(_DEEP_SETTLE_ROUNDS):
+                if self._first_error is not None:
+                    break
+                if not self._schedule_goal_references():
+                    break
+                await self._join_with_watchdog()
             if self._debug and self.graph.incomplete:
                 self._dump_stuck()
         finally:
@@ -971,6 +1017,62 @@ class ComputationEngine:
             }
         except Exception as exc:                                # noqa: BLE001
             return {"error": f"{type(exc).__name__}: {exc}"}
+
+    def _container_is_recoverable(self, node, value) -> bool:
+        """Whether caching THIS value could produce a row nobody can honour.
+
+        Only expansion-produced containers can: a `for_loop`/`map`/`filter`
+        node's value is a container of handles naming element nodes, and its own
+        spec says nothing about them. A later run that hits the cached container
+        does NOT expand -- that is the entire point of the hit -- so the element
+        specs must reach it some other way, and there are exactly two:
+
+          * the element is in the STATIC PLAN, so any run of the program interns
+            it before executing anything. This is the case that makes the cache
+            entry valuable and is why refusing all of them was a regression:
+            a constant-bound loop is unrolled statically, its container hit
+            costs nothing to honour, and filtering it made a warm run recompute
+            eight nodes that had been free
+            (`test_engine_caching.test_warm_run_reuses_runtime_expanded_nodes`);
+          * or the element has a materialized row of its own, so the store can
+            answer for it directly.
+
+        Anything else is a promise the store cannot keep. Measured on the
+        sixty-case sweep's store: one `default.for_loop` row holding 225
+        handles, 0 of them with a spec recorded and only 203 with a value. A
+        warm run reported that node available, pruned its whole subtree, and the
+        first deep resolve that reached one of the 22 missing elements raised
+        `NeedsExpansion` -- deterministically, from whatever thread got there.
+        Loop bounds on that program are COMPUTED values, so the elements are
+        interned only at runtime and the row could never have been honoured.
+
+        Cost: O(handles) on the completion of a loop node only, against a set
+        lookup and an id-index lookup per handle. Loop completions are a tiny
+        fraction of all completions, and the alternative is a store that
+        poisons every later run against it.
+        """
+        if (getattr(node, "operator", "") or "") not in _EXPANDED_OPERATORS:
+            return True
+        static = self._static_nodes
+        queued = getattr(self.table, "_write_queued", ())
+        for handle in iter_handles(value):
+            ref = handle.node
+            if ref in static:
+                continue
+            if self.table.persisted(ref):
+                continue
+            # A WRITE IN FLIGHT COUNTS. The container completes as soon as its
+            # last element does, and the elements' rows are written by the
+            # background persister -- so `persisted` is routinely still false
+            # for elements that are about to have rows. Judging on `persisted`
+            # alone refused containers that were perfectly recoverable and cost
+            # eight cached nodes in
+            # `test_engine_caching.test_warm_run_reuses_runtime_expanded_nodes`
+            # under VOXLOGICA_PERSIST_MIN_MS=0, where every element IS written.
+            if ref in queued:
+                continue
+            return False
+        return True
 
     def _would_persist(self, nid: NodeId) -> bool:
         """Whether this value is worth a payload copy, asked on the WORKER.
@@ -1482,8 +1584,8 @@ class ComputationEngine:
             # recompute than to store would tax dispatch for nothing (and the
             # cache's cost-aware eviction would drop it first anyway).
             worth_it = (self.persist_enabled
-                        and (node.operator or "") not in _EXPANDED_OPERATORS
-                        and (critical or compute_ms >= self._persist_min_ms))
+                        and (critical or compute_ms >= self._persist_min_ms)
+                        and self._container_is_recoverable(node, value))
             # --sparse-cache DELIBERATELY DOES NOTHING HERE, and the reason is
             # worth keeping: skipping the write for a value with one PENDING
             # consumer was tried twice and wedged a 369-patient sweep both times.
@@ -2552,6 +2654,66 @@ class ComputationEngine:
             m["evicted_dead"] = s.get("evicted_dead", 0)
             m["evicted_live"] = s.get("evicted_live", 0)
         return m
+
+    def _schedule_goal_references(self) -> int:
+        """Schedule everything the goals' values still name and cannot answer.
+
+        Same walk as `_await_named_deps`, and for the same reason: a reference
+        reached through a value the engine ALREADY HAS is one the caller will
+        follow, so it has to be a scheduler edge rather than a surprise on
+        whatever thread gets there first. This one runs once per drain instead
+        of once per dispatch, over the goals only, so its cost is paid a handful
+        of times per run.
+
+        Resident-only, exactly as `_await_named_deps`: it never loads and never
+        rebuilds, so it cannot itself be the thing that raises.
+
+        Returns how many nodes it scheduled, which is what tells `run` whether
+        another join is needed.
+        """
+        scheduled = 0
+        seen: set[NodeId] = set()
+        containers = []
+        for goal in self._goals:
+            value = self.table.values.get(goal, _MISSING)
+            if value is not _MISSING:
+                containers.append(value)
+        while containers:
+            value = containers.pop()
+            for handle in iter_handles(value):
+                ref = handle.node
+                if ref in seen:
+                    continue
+                seen.add(ref)
+                resident = self.table.values.get(ref, _MISSING)
+                if resident is not _MISSING:
+                    containers.append(resident)
+                    continue
+                if self._unresolvable_without_expansion(ref):
+                    pass                      # only an expansion can answer
+                elif ref in self.table.completed or self.table.persisted(ref):
+                    # THE STORE COUNTS. Without this the warm run scheduled --
+                    # and therefore recomputed -- every element of a goal's
+                    # loaded container, because none of them was resident or
+                    # completed in a run that had never executed them. Measured
+                    # as 8 recomputed nodes in
+                    # `test_engine_caching.test_warm_run_reuses_runtime_expanded_nodes`,
+                    # which is the whole point of a warm run.
+                    continue
+                if ref not in self.table.nodes:
+                    continue                  # nothing here can build it
+                priority = 0
+                self._priority[ref] = max(self._priority.get(ref, 0), priority)
+                if ref not in self.graph.incomplete:
+                    self.graph.register(ref)
+                if not self.table.is_running(ref):
+                    self.ready.push(ref, priority)
+                scheduled += 1
+        if scheduled:
+            print(f"[engine] {scheduled} node(s) named by a goal's value were "
+                  f"not available at drain; scheduling them and joining again",
+                  file=sys.stderr, flush=True)
+        return scheduled
 
     def _settle_node(self, nid: NodeId) -> None:
         """Resolve any queries whose goal node just materialized."""
