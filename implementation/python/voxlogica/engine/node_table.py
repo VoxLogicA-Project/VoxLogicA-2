@@ -417,6 +417,23 @@ class NodeTable:
             )
         self._running.add(node_id)
 
+    def abandon(self, node_id: NodeId) -> None:
+        """Release a computation claim WITHOUT completing the node.
+
+        The one legitimate caller is a dispatch that turned out to need an
+        expansion first: `NeedsExpansion` reaching a worker from inside
+        `executor.run` means the kernel never produced a value and the node
+        must be dispatched again after the expansion. `begin` enforces single
+        computation, so without a way to give the claim back the retry raises
+        `DoubleComputationError` -- and `complete_without_value` is wrong here
+        because it asserts the value WAS computed, which would let
+        `_schedule_subgraph` prune the node for the rest of the run.
+
+        Deliberately not "cancel": nothing about the node changes except that
+        it is no longer claimed.
+        """
+        self._running.discard(node_id)
+
     def complete_without_value(self, node_id: NodeId) -> None:
         """Mark a claimed node completed with no materialized value.
 

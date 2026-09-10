@@ -1392,15 +1392,19 @@ class ComputationEngine:
         thread that is about to read them actually does); pair with
         ``_unpin_dispatch`` in that dispatch's ``finally``.
         """
+        # `.get` rather than a defaultdict's `+=`: the pin is now also taken by
+        # `_rematerialize`, which several unit tests reach on an engine stub
+        # whose `_dispatch_pins` is a plain dict. A guard that raises KeyError on
+        # a value it exists to protect is not a guard.
         for dep in deps:
-            self._dispatch_pins[dep] += 1
+            self._dispatch_pins[dep] = self._dispatch_pins.get(dep, 0) + 1
 
     def _unpin_dispatch(self, deps) -> None:
         """Release the hold ``_pin_dispatch`` placed, once the dispatch returns."""
         for dep in deps:
-            remaining = self._dispatch_pins[dep] - 1
+            remaining = self._dispatch_pins.get(dep, 1) - 1
             if remaining <= 0:
-                del self._dispatch_pins[dep]
+                self._dispatch_pins.pop(dep, None)
             else:
                 self._dispatch_pins[dep] = remaining
 
@@ -2056,13 +2060,38 @@ class ComputationEngine:
             # dominated by exactly these recompute intermediates (vox1.dt 10 GB,
             # vox1.mask 10 GB). Note the children each hold their own scaffolding
             # transitively, so the deepest recompute frees itself first.
-            scaffolding = [child for child in self.graph.deps(nid)
+            deps = self.graph.deps(nid)
+            scaffolding = [child for child in deps
                            if child not in self.table.values
                            and self.graph.consumers.get(child, 0) <= 0]
-            for child in self.graph.deps(nid):
-                self._rematerialize(child)
-            self._recomputes += 1  # an evicted value we could neither find nor reload
-            value = self.executor._compute(self.table, nid)
+            # PINNED BEFORE THE CHILDREN ARE REBUILT, and for the whole
+            # recompute. A nested `_rematerialize` disposes of ITS OWN
+            # scaffolding as soon as its `_compute` returns, and "scaffolding"
+            # is judged by `graph.consumers <= 0` -- which a value this very
+            # recompute is about to read as an argument can perfectly well
+            # have, because the graph's consumer counts describe the SCHEDULED
+            # frontier, not a recompute in progress. So a deep child dropped a
+            # value its own grandparent still needed:
+            #
+            #     KeyError: 'd8b752accbdab52c0069c1be1f7458a967d0a7bd7ff4fa0c…'
+            #     executor._compute -> _compute_node -> _eager -> lookup
+            #       (table.values[dep_id])
+            #     from _rematerialize -> _rematerialize -> _rematerialize
+            #
+            # `_dispatch_pins` is precisely the "a thread is reading this right
+            # now" guard that every eviction path already honours, and this is
+            # the same claim a dispatch makes; it was simply never made for a
+            # recompute. Nested calls pin their own deps, so the protection is
+            # transitive without either the pin or the disposal knowing about
+            # the other.
+            self._pin_dispatch(deps)
+            try:
+                for child in deps:
+                    self._rematerialize(child)
+                self._recomputes += 1  # evicted, and neither found nor reloaded
+                value = self.executor._compute(self.table, nid)
+            finally:
+                self._unpin_dispatch(deps)
             # Scaffolding disposal is PRESSURE-GATED, and both halves are
             # load-bearing — each was measured by getting it wrong:
             #
@@ -2331,6 +2360,42 @@ class ComputationEngine:
                         self._clock.add("dispatch", time.perf_counter_ns() - _t0)
                     try:
                         value = await self.executor.run(self.table, nid)
+                    except NeedsExpansion as needed:
+                        # RAISED FROM THE POOL THREAD, and recoverable exactly
+                        # where the other two `NeedsExpansion` sites already
+                        # recover: on the loop, by registering the node so
+                        # admission expands it and requeueing this one behind
+                        # it. The kernel's own argument resolution
+                        # (`_eager` -> `resolve_deep` -> `_resolve_reference`)
+                        # can reach a graph-growing node that no scheduled
+                        # dependency named, and there it is a miss, not a
+                        # failure -- `NeedsExpansion`'s docstring says so: "an
+                        # outcome, not a failure: the value is still obtainable,
+                        # just not by the road the caller took". Treating it as
+                        # a node failure killed the sixty-case sweep twice,
+                        # after 4 min 10 s with all seven goals already open, on
+                        #
+                        #   operator='default.for_loop' interned=True
+                        #   completed=False alias=False forwarded=False
+                        #   incomplete=False persisted=False
+                        #
+                        # -- a loop node interned in this run and registered
+                        # with nothing.
+                        #
+                        # The claim `table.begin` took must be given back, or
+                        # the retry raises DoubleComputationError; `abandon` is
+                        # that, and NOT `complete_without_value`, which would
+                        # assert a value was produced and let the pruning skip
+                        # this node for the rest of the run.
+                        #
+                        # `_in_flight` and the dispatch pins are NOT touched
+                        # here: the `finally` below runs on this path too, and
+                        # decrementing twice is how an engine comes to believe
+                        # it has negative kernels in flight -- which `_idle()`
+                        # reads, and the watchdog reads after that.
+                        self.table.abandon(nid)
+                        self._await_expansion(nid, needed.node_id)
+                        continue
                     finally:
                         self._in_flight -= 1
                         self._unpin_dispatch(deps)
