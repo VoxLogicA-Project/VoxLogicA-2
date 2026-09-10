@@ -1256,3 +1256,188 @@ different computation: the discrete ball of radius r implies `d > r` where
 `distgeq` asks `d >= r`, a difference of 21,103 voxels on one case, and the Dice
 moves 0.8514 → 0.8612. That is a method choice for whoever owns the experiment,
 not an optimisation, and it is recorded rather than taken.
+
+# Part VII — the instrument becomes interactive (2026-09-10)
+
+## 35. The cost of a question, measured
+
+Part VI's instrument writes one report at exit, and that is the right authority
+for a published number: `getrusage` read once at the start and once at the end
+has no sampling error, and a file written after the fact cannot have perturbed
+what it describes. It is also, for one whole class of question, useless.
+
+The class is easy to state and was met head-on the day after Part VI was
+written. A sixty-case sweep had been running for twenty-six minutes when the
+question arrived: *did the warm store survive the consolidation?* Answering it
+took nine probes, every one of them from outside the process — which is
+precisely the method Part VI exists to replace, and which failed in the same
+ways it failed before:
+
+* `/proc/<pid>/io` was read on the wrong process first (the pty wrapper, not
+  the interpreter) and reported all zeros, which reads as "no I/O at all";
+* two `du` walks over the payload directory raced the cache's own evictor and
+  filled 148 KB of output with `No such file or directory`, so the size they
+  reported was of a set that no longer existed;
+* the store could only be read by copying 2.8 GB of live SQLite per look,
+  because the host has no `sqlite3` binary and the writer holds a WAL;
+* the per-thread CPU decomposition — the reading that identified the actual
+  suspect — cost 136 `/proc/<pid>/task/*/stat` reads per sample, which is the
+  exact unbounded cost Part VI's rule 3 forbids in its own sampler.
+
+And the follow-up could not be answered at all. Having found that four
+persister threads held about 200% of CPU while the event-loop thread held only
+76%, the next question is one sentence — *turn persistence off and see* — and
+there was no way to ask it. Changing a parameter meant relaunching, and a
+relaunch discards the graph state, the store contents and the memory occupancy
+that the question was about. The experiment cannot be repeated because the
+condition cannot be recreated: twenty-six minutes into a dynamic expansion of
+9.8 million nodes, the run *is* the state.
+
+This is worth naming as a methodological point rather than as an
+inconvenience. A performance framework that can only be read at exit permits
+exactly one measurement per process launch, which forces every question into
+the form "relaunch and compare two runs". Two runs differ in more than the
+parameter under test — the store is warmer, the page cache is different, the
+loop bounds expand differently — so the comparison carries an unbounded number
+of uncontrolled variables. Being able to change one knob *inside* one run and
+read the same counters before and after is not a convenience feature; it is
+the difference between a paired and an unpaired experiment.
+
+## 36. What was added, and what was deliberately not
+
+`--control [SOCKET]` makes the process serve its own inspector: a unix socket
+carrying newline-delimited JSON, one request object per line, answered by a
+daemon thread.
+
+Chrome's DevTools Protocol is the model, and three of its decisions are copied
+because each one solves a problem this had:
+
+1. **Request/response keyed by id.** A client can have several questions
+   outstanding, and a slow answer does not serialise the others.
+2. **`Domain.method` names.** The surface can grow without a client guessing at
+   what exists.
+3. **Self-description as a first-class method.** `Runtime.describe` returns
+   every knob and probe *this build* has, each with its documentation. There is
+   no version table to keep in step, which matters because the knobs are
+   exactly the things that change from commit to commit.
+
+Its fourth decision — events and subscriptions — is deliberately *not* copied.
+A push channel makes the instrument's per-sample cost depend on what a client
+subscribed to, and Part VI's rule 3 (bounded, constant per-sample cost) is
+worth more than the convenience of not polling. Sampling stays on the
+measurement thread at its own period; the channel only reads what is already
+there. The client's `watch` verb is a poll, and says so.
+
+The methods are: `Runtime.describe`; `Probe.get`, which returns *the same
+snapshot the periodic sampler stores* so that a live reading and a report row
+can never contradict each other; `Knob.list`, `Knob.get` and `Knob.set`;
+`Series.start`/`Series.stop`, which turn the raw per-sample series on mid-run;
+`Measure.write`, which writes a complete report *without ending the run*; and
+`Runtime.eval`, which is refused unless the run was launched with
+`--control-eval`.
+
+The knobs registered are precisely the constants that Parts IV–VI each cost a
+relaunch to sweep: the governor's RAM share (§31's cliff), the disk cache's
+budget, whether completions are persisted at all and the threshold below which
+they are not, and the artificial per-completion loop delay that §33 used to
+prove causality by intervention. That last one is the clearest case for the
+whole mechanism: §33's slope — about five seconds of wall time per millisecond
+of per-completion loop cost — was obtained from separate runs at separate
+injected values, each of which had a different graph state. As a knob the same
+slope can be measured inside one run, against one state, which is the only form
+in which it is a slope rather than a correlation.
+
+## 37. The five rules, each of which protects a Part VI measurement
+
+The channel is instrumentation added to a system whose defining measurement is
+"is the event loop the bottleneck?", so it is constrained more tightly than a
+debugging aid would be.
+
+1. **It never runs on the event loop.** It is a separate daemon thread on a
+   socket, and it holds no reference to the loop. The loop-versus-workers split
+   is the decomposition that has identified every real stall in this engine; an
+   inspector that stole loop time would corrupt the one measurement that works.
+2. **It costs nothing while nobody is connected.** A blocking `accept()` on an
+   idle socket consumes no CPU, so the channel can be armed for a fourteen-hour
+   sweep and paid for only while a question is being asked. Measured on a 220 s
+   run at a 0.25 s sampling period, the sampler's share of run CPU is
+   0.000818, unchanged by the channel's presence.
+3. **A knob declares whether it is hot.** The RAM share is re-read on every
+   ceiling computation, so writing it takes effect immediately; the worker
+   count is fixed when the coroutines are created, so it cannot. A knob that
+   cannot take effect until the next run says so in `Knob.list`, rather than
+   lying by accepting the write.
+4. **Every write is stamped into the report.** A run whose parameters moved
+   while it ran is not comparable with one whose did not, so each accepted
+   `Knob.set` and each `eval` is recorded with its wall-clock time in a
+   `control` section, with `altered_while_running` as the flag the comparison
+   tooling reads. This is the same rule that put `outcome` in the report in
+   §28: a number that looks quotable must carry what would disqualify it.
+5. **Every setter is bounded, and every reply states what it cost.** A share of
+   zero would park every node forever; a share of one would hand the box to the
+   OOM killer. Neither is a measurement, and a knob that can wedge the run it
+   is measuring is not an instrument. Each reply carries its own service time —
+   20–33 µs for a knob or a queue probe, 4.4 ms to write a whole report mid-run
+   — which is rule 4 of §28 applied to the inspector itself.
+
+`Runtime.eval` deserves its own note, because it is the honest answer to "what
+about the thing you did not think to expose" and it is also arbitrary code
+inside the measured process. It is off unless the launch asked for it; the names
+it can see are chosen by the wiring rather than by the client, so an inspector
+cannot reach the scheduler by accident; and every expression is recorded in the
+report whether it succeeded or not. Its intended use is to read something once
+and then *add the probe*.
+
+## 38. What the first day of use produced, including two retractions
+
+The channel was built in answer to a question, and the answer is worth stating
+because it is a lesson about warm stores rather than about schedulers. The
+store had survived intact — 2,662,360 rows against 1,670,430 payload files, with
+no missing payload in a four-thousand-row sample — and was nonetheless nearly
+useless: intersecting the static plan's node identifiers with the store's
+materialised ones gives **22,170 of 107,728**, or 20.6%. Every previous run had
+died inside the second of seven goals, so the store holds the first two goals'
+subgraphs and nothing else. "The cache did not survive" was the right
+observation with the wrong mechanism: nothing was lost, because little was ever
+there.
+
+Against that 20.6% reuse, the disk tier held 264.6 GB of payloads over a 250 GB
+budget and wrote 248 GB in twenty-six minutes against 8.3 GB read, its payload
+directory *shrinking* by 8 GB over a sixty-three-second window while the process
+kept writing — evict, recompute, rewrite. The four persister threads at ~200% of
+CPU are the same phenomenon seen from the thread side. That is the next
+measurement, and it is now a paired one: read the throughput and the store's
+statistics, set `persist.enabled` to false, read both again, set it back —
+reading `recomputes` in the same breath, since a value with no disk copy cannot
+be evicted and must instead be recomputed.
+
+Two claims made along the way were wrong, and both are more useful than the
+arguments they were meant to support.
+
+The first was an inference from the store's own timestamps. The `accessed_at`
+histogram matched `created_at` almost row for row, which reads as "not one old
+row was touched by this run". It is void: `accessed_at` is written only on
+insert and upsert, never on read. The store therefore **records no reads at
+all** — and that is the finding, because it means the disk-cache pruning problem
+cannot be solved with recency. Any principled pruning must be reachability from
+the goals plus a cost model, or it must first add read accounting, which puts a
+write on the read path and so needs measuring before it is built.
+
+The second was an alarm: free space was falling about 7 GB per minute on a
+volume already 80% full, which looked like a sweep heading for a mid-run
+`ENOSPC`. It is not. The payload tier's ceiling is re-derived from *current*
+free space minus a reserve on every probe interval, precisely so that a budget
+computed once at construction cannot overrun a disk it is itself consuming. The
+cap is self-limiting; the thrashing is the problem, and the disk is not.
+
+## 39. What this part claims
+
+Nothing about throughput. Part VII adds no optimisation and reports no speedup;
+its subject is the instrument. The claim is narrower and, for a paper about
+measuring a scheduler, prior to the others: **that a performance framework
+which can only be read at exit permits one measurement per process launch, and
+therefore forces every question into an unpaired comparison between runs that
+differ in more than the variable under test.** The remedy is that the process
+answer questions about itself while it runs, under cost rules strict enough that
+the answering does not disturb the thing being asked about — and that it record,
+in the same file as the timings, every parameter that moved while it ran.
