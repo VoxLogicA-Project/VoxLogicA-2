@@ -350,7 +350,8 @@ def _run_command_inner(args: argparse.Namespace, ui) -> int:
                              measure_period=args.measure_period,
                              measure_series=args.measure_series,
                              control=args.control,
-                             control_eval=args.control_eval)
+                             control_eval=args.control_eval,
+                             verify=args.verify)
         if not execution_result.success:
             for diagnostic in execution_result.diagnostics:
                 _render_diagnostic(diagnostic, args)
@@ -786,6 +787,21 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Also write the raw per-sample rows beside the report, as "
                                  "<report>.samples.tsv. For plotting; every figure the report "
                                  "quotes is already derived in the report itself.")
+    run_parser.add_argument("--verify", nargs="?", const="report", default=None,
+                            choices=["report", "strict"],
+                            help="Check the scheduler's progress invariant while the "
+                                 "run proceeds (engine/verify.py). Three clauses: (P) a "
+                                 "frontier node waits only for something that is being "
+                                 "produced; (T) the frontier is empty exactly when no "
+                                 "run-completion units remain; (V) a settled goal "
+                                 "resolves to the bottom without further scheduling. "
+                                 "Ten of the eleven scheduler defects fixed on "
+                                 "2026-09-10 violate (P), and each surfaced hours later "
+                                 "at whichever goal happened to need the node. "
+                                 "'report' (the default when the flag is given) prints "
+                                 "counterexamples and continues; 'strict' raises. Off "
+                                 "entirely by default and free when off: the completion "
+                                 "path costs one `is None` test.")
     run_parser.add_argument("--control", nargs="?", const="voxlogica.ctl", default=None,
                             metavar="SOCKET",
                             help="Serve a live control channel on this unix socket "

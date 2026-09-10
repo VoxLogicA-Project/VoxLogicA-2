@@ -192,6 +192,10 @@ class ComputationEngine:
     #: level is safe -- a `Knob.set` writes the instance, not the class.
     persist_enabled: bool = True
     _persist_min_ms: float = 1.0
+    #: The scheduler invariant checker, or None. See engine/verify.py: off by
+    #: default and free when off -- the completion path's only cost is one
+    #: `is None` test, which is the same shape as `_clock`.
+    verifier: Any = None
     #: Empty on an instance that bypassed ``__init__`` or before ``adopt_plan``:
     #: with no static plan known, no expansion-produced container can be shown
     #: recoverable, which is the safe direction.
@@ -663,6 +667,12 @@ class ComputationEngine:
                 if not self._schedule_goal_references():
                     break
                 await self._join_with_watchdog()
+            if self.verifier is not None:
+                # AT DRAIN, and before the workers are cancelled: this is the
+                # only moment at which (T) and (V) are meaningful, and the only
+                # moment at which the engine is still able to act on what they
+                # find.
+                self.verifier.at_drain()
             if self._debug and self.graph.incomplete:
                 self._dump_stuck()
         finally:
@@ -2528,6 +2538,10 @@ class ComputationEngine:
                     self._finish(nid, value, compute_ms=(time.perf_counter() - started) * 1000.0)
                     if self._clock is not None:
                         self._clock.add("finish", time.perf_counter_ns() - _tf)
+                    if self.verifier is not None:
+                        # One integer compare on the turns in between; see
+                        # Verifier.on_completion.
+                        self.verifier.on_completion(len(self.table.completed))
             except Exception as exc:  # noqa: BLE001
                 self._fail_node(nid, exc)
             finally:

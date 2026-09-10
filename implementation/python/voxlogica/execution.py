@@ -193,6 +193,7 @@ class ExecutionEngine:
         measure_series: bool = False,
         control: str | None = None,
         control_eval: bool = False,
+        verify: str | None = None,
     ) -> ExecutionResult:
         """Compile and immediately execute a work plan in one step."""
         del execution_id
@@ -200,7 +201,8 @@ class ExecutionEngine:
         return self.run_prepared(prepared, goals=goals, strategy=strategy,
                                  measure=measure, measure_period=measure_period,
                                  measure_series=measure_series,
-                                 control=control, control_eval=control_eval)
+                                 control=control, control_eval=control_eval,
+                                 verify=verify)
 
     def compile_plan(self, workplan, strategy: str | None = None) -> PreparedPlan:
         """Compile reducer output into a prepared execution object."""
@@ -220,6 +222,7 @@ class ExecutionEngine:
         measure_series: bool = False,
         control: str | None = None,
         control_eval: bool = False,
+        verify: str | None = None,
     ) -> ExecutionResult:
         """Execute an already-prepared plan, optionally restricting the goals.
 
@@ -232,7 +235,8 @@ class ExecutionEngine:
                                                  measure_period=measure_period,
                                                  measure_series=measure_series,
                                                  control=control,
-                                                 control_eval=control_eval)
+                                                 control_eval=control_eval,
+                                                 verify=verify)
 
     def stream(
         self,

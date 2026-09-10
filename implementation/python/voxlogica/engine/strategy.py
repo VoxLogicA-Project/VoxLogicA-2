@@ -158,7 +158,7 @@ class EngineExecutionStrategy(ExecutionStrategy):
     def run(self, prepared: PreparedPlan, goals: list[NodeId] | None = None,
             measure: str | None = None, measure_period: float | None = None,
             measure_series: bool = False, control: str | None = None,
-            control_eval: bool = False) -> ExecutionResult:
+            control_eval: bool = False, verify: str | None = None) -> ExecutionResult:
         """Submit goals, evaluate in parallel, then run their side effects.
 
         ``measure``: ``None`` (default) measures nothing and costs nothing —
@@ -292,6 +292,16 @@ class EngineExecutionStrategy(ExecutionStrategy):
                 except Exception as exc:  # noqa: BLE001
                     record_failure(exc, fallback_node_id=goal.id)
             return values, run_error
+
+        # ── the scheduler invariant checker (engine/verify.py) ──────────────
+        # Installed before anything is submitted, so the periodic check sees
+        # the whole run. `strict` raises on a violation of P, T or V, which is
+        # what CI and the test suite want; the default reports and continues,
+        # because aborting a fourteen-hour sweep on a violation the run would
+        # have survived costs more than it finds.
+        if verify:
+            from voxlogica.engine.verify import Verifier
+            engine.verifier = Verifier(engine, strict=(verify == "strict"))
 
         # ── the live control channel (engine/control.py) ────────────────────
         # Independent of --measure on purpose: the channel's own value is the
