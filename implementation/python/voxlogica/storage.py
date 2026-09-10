@@ -257,6 +257,8 @@ class SQLiteResultsDatabase:
         # disk copy". Evicting such a payload strands the live value — see
         # _enforce_budget.
         self._spill_guard = None
+        #: Said once per process, not once per enforcement pass.
+        self._over_budget_warned = False
         self._lock = threading.RLock()
         try:
             from voxlogica.engine.control import register_knob, register_probe
@@ -888,19 +890,52 @@ class SQLiteResultsDatabase:
                 rows = self._connection.execute(self._EVICT_SCAN).fetchall()
                 rows = [r for r in rows if not self._spilled_ram_copy(r[0])]
                 dead = [r for r in rows if not self._is_live(r[0], live)]
+                before = self._payload_bytes
                 for node_id, payload_file, nbytes, gd_key in dead:
                     if self._payload_bytes <= low_water:
                         break
                     self._evict_row(node_id, payload_file, nbytes, gd_key, "evicted_dead")
-                if dead or self._payload_bytes <= low_water:
+                if self._payload_bytes <= low_water:
+                    break
+                if self._payload_bytes < before:
                     continue  # made progress on dead values; re-scan
-                # Everything left is live but we are still over budget: evict the
-                # cheapest live values once, then stop (graceful degradation).
+                # Everything left is live and we are still over budget, so live
+                # values have to go. KEEP GOING WHILE THIS FREES BYTES.
+                #
+                # It used to `break` after a single scan of at most
+                # `_EVICT_SCAN` (128) rows, in the name of graceful
+                # degradation. That is not degradation, it is a cap that does
+                # not hold: each call could free 128 payloads while the
+                # persister writes at a measured ~350 MB/s, so growth outran
+                # eviction without bound. Measured on a cold sixty-case sweep
+                # with `--cache-max-gb 300`: 690.5 GB of payloads in 1 h 54 m,
+                # 709,248 files, 2.3x the budget, and it took a SHARED machine
+                # from 735 GB free to 42 GB. The run then died with no error
+                # recorded, because there was no space left to write the log.
+                #
+                # `--sparse-cache` installs the engine's liveness probe, which
+                # answers "live" for anything a running sweep might still read
+                # -- so on the workload this cap exists for, the live branch is
+                # the ONLY branch, and it was the one that gave up first.
                 for node_id, payload_file, nbytes, gd_key in rows:
                     if self._payload_bytes <= low_water:
                         break
                     self._evict_row(node_id, payload_file, nbytes, gd_key, "evicted_live")
-                break
+                if self._payload_bytes >= before:
+                    # A full pass over the cheapest rows freed nothing: every
+                    # candidate is pinned by a RAM copy waiting on its own
+                    # write. Stopping is correct -- evicting those would strand
+                    # a live value -- but it must be SAID, because from outside
+                    # it looks exactly like a cap that is being ignored.
+                    over = self._payload_bytes / budget
+                    if over >= 1.2 and not self._over_budget_warned:
+                        self._over_budget_warned = True
+                        print(f"[store] payload tier is {self._payload_bytes/2**30:.0f} GB "
+                              f"against a {budget/2**30:.0f} GB budget and nothing "
+                              f"evictable remains: every candidate has a RAM copy "
+                              f"awaiting its write. The tier will keep growing "
+                              f"while that is true.", file=sys.stderr, flush=True)
+                    break
 
     def stats(self) -> dict[str, Any]:
         """Cache statistics: live entries/bytes, cumulative work banked, activity."""
