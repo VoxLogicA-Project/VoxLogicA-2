@@ -85,10 +85,10 @@ def test_a_persisted_loop_node_is_not_pruned(tmp_path) -> None:
         stored = [nid for nid in _loop_ids(engine) if engine.table.persisted(nid)]
         assert stored, "the cold run should have stored at least one loop node"
         loop = stored[0]
-        assert engine.table.load(loop) is None, (
-            "and the store cannot serve it: its element ids are not interned in this run"
-        )
-        assert not engine._available(loop), "so it must be scheduled, not pruned"
+        # The store CAN serve it now (see NodeTable._references_are_answerable:
+        # a ref the store can answer is answerable), and it is still not pruned
+        # -- those are two separate facts, and this test is about the second.
+        assert not engine._available(loop), "a node that grows the graph is never pruned"
     finally:
         backend.close()
 

@@ -1537,7 +1537,15 @@ class ComputationEngine:
                 self.graph.hold_handles(nid, value)
                 return value
             raise NeedsExpansion(nid)
-        node = self.table.nodes[nid]
+        node = self.table.nodes.get(nid)
+        if node is None:
+            # Neither resident, nor loadable, nor known to this run's graph.
+            # Reachable only through a handle whose target the store said it
+            # held and then could not produce (another process evicting
+            # mid-run). A named failure beats `KeyError: <64 hex chars>`.
+            raise KeyError(
+                f"node {nid[:12]} is named by a value but is neither resident, "
+                f"loadable from the store, nor part of this run's graph")
         if node.kind == "constant":
             value = node.attrs.get("value")
         elif node.kind == "closure":
