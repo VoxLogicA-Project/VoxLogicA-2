@@ -139,6 +139,8 @@ class Verifier:
         #: Nodes legitimately waiting on a splice or a handle reference.
         self.splice_waits = 0
         self.transients = 0
+        #: Violations not reported because the run was already failing.
+        self.suppressed_after_error = 0
         #: Reported once per (clause, node): a persistent violation would
         #: otherwise print on every periodic check for the rest of the run.
         self._seen: set[tuple[str, str]] = set()
@@ -322,18 +324,35 @@ class Verifier:
         if self._engine._in_flight == 0:
             found += self.check_progress(list(self._engine.graph.incomplete),
                                          ready_set, job_owned)
-        self._report(found, where="drain")
-        return found
+        # What was REPORTED, not what was found: on an already-failing run
+        # nothing is reported, and a caller that acted on `found` would be
+        # acting on the abort rather than on a violation.
+        return self._report(found, where="drain")
 
-    def _report(self, found: list[Violation], *, where: str) -> None:
+    def _report(self, found: list[Violation], *, where: str) -> list[Violation]:
         self.checks += 1
+        # SILENT ONCE THE RUN IS ALREADY DYING. After `_first_error` is set,
+        # admission aborts and the workers consume-and-skip, so nodes waiting
+        # on abandoned work are left stranded BY DESIGN -- the run is being
+        # torn down, not scheduled. Measured: one `default.sequence` failure
+        # under `--no-cache` produced a (T) violation (`outstanding=0` with 492
+        # nodes still on the frontier) and 442 (P) violations, every one of
+        # them a consequence of the abort, and together they buried the single
+        # line that named the cause.
+        #
+        # The invariant is a statement about a run that believes it is healthy.
+        # A run that has already reported a failure has its own diagnostic, and
+        # this one must not compete with it.
+        if getattr(self._engine, "_first_error", None) is not None:
+            self.suppressed_after_error += len(found)
+            return []
         fresh = [v for v in found
                  if (v.clause, v.node or "") not in self._seen]
         for v in fresh:
             self._seen.add((v.clause, v.node or ""))
         self.violations.extend(fresh)
         if not fresh:
-            return
+            return []
         for v in fresh[:8]:
             print(f"[verify:{where}] {v}", file=sys.stderr, flush=True)
         if len(fresh) > 8:
@@ -342,6 +361,7 @@ class Verifier:
         hard = [v for v in fresh if v.clause in ("P", "T", "V")]  # all of them now
         if self._strict and hard:
             raise SchedulerInvariantViolated(hard)
+        return fresh
 
     def summary(self) -> dict[str, Any]:
         """For the measurement report: what was checked and what was found."""
@@ -357,6 +377,7 @@ class Verifier:
             # correctly discarding sampling artefacts.
             "transients_discarded": self.transients,
             "splice_waits_seen": self.splice_waits,
+            "suppressed_after_error": self.suppressed_after_error,
             "awaiting_confirmation": len(self._candidates),
             "first": [str(v) for v in self.violations[:8]],
             "clauses": {

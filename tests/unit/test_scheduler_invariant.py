@@ -377,6 +377,25 @@ def test_drain_skips_progress_while_anything_is_in_flight() -> None:
 
 
 @pytest.mark.unit
+def test_nothing_is_reported_once_the_run_is_already_failing(capsys) -> None:
+    """A dying run strands its frontier BY DESIGN, and must not be scolded.
+
+    Measured: one `default.sequence` failure under `--no-cache` produced a (T)
+    violation -- `outstanding=0` with 492 nodes still on the frontier -- and
+    442 (P) violations, every one a consequence of the abort, together burying
+    the single line that named the cause.
+    """
+    e = _engine()
+    e.ready.outstanding = 0
+    e.graph.incomplete.update({f"{i:064x}" for i in range(5)})
+    e._first_error = RuntimeError("default.sequence failed at a9820c34e91c")
+    v = Verifier(e, strict=True)            # strict must not raise either
+    assert v.at_drain() == []
+    assert capsys.readouterr().err == ""
+    assert v.summary()["suppressed_after_error"] > 0
+
+
+@pytest.mark.unit
 def test_a_persistent_violation_is_reported_once(capsys) -> None:
     """A node waiting on nothing waits on nothing for the rest of the run.
 
