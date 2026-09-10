@@ -52,7 +52,7 @@ from voxlogica.engine.memlog import MemoryLogger
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.engine.evaluation import (NeedsExpansion, RewriteContext,
                                           grows_the_graph_by_name, modes_of)
-from voxlogica.handles import contains_handle, iter_handles
+from voxlogica.handles import contains_handle, iter_handles, resolve_deep
 from voxlogica.engine.numba_fusion import NumbaFusionBackend
 from voxlogica.engine.topology import default_concurrency
 from voxlogica.engine.priority import Priority
@@ -91,6 +91,19 @@ _ETA_GOAL_JUMP = 8
 
 
 _EVICT_SWEEP = 256      # candidates examined per _reclaim_memory call (bounds the work)
+
+#: How many times the drain may be followed by "the goals still name something
+#: that is not here". A round now schedules EVERY miss under every goal, so the
+#: count is the DEPTH of loop nesting a goal's value can have, not the number of
+#: missing nodes -- one or two in practice. The cap is generous because running
+#: out of rounds reports a failure that looks like the bug it was meant to fix,
+#: and cheap because a round that schedules nothing ends the loop immediately.
+_DEEP_SETTLE_ROUNDS = 64
+
+#: Distinguishes "absent" from "present and None". A closure's value IS None,
+#: so `values.get(ref)` alone cannot tell the two apart, and treating a
+#: resident None as absent would schedule a node that is already done.
+_MISSING = object()
 
 # Compact one-line bar: a small FIXED-width bar ({bar:12}) so it never balloons
 # to fill the terminal (which, with the goal count sitting at 0 for a long time,
@@ -1481,6 +1494,62 @@ class ComputationEngine:
             # thing it would spin on has happened.
             self.ready.push(waiting, priority)
 
+    def _unresolvable_without_expansion(self, nid: NodeId) -> bool:
+        """Whether resolving this reference would need an expansion to happen.
+
+        `completed` MEANS COMPUTED, NOT "ITS VALUE IS HERE" -- engine/waiting.py
+        states that separation and says that conflating the two is what forced
+        rebuilds outside the scheduler in the first place. For an ordinary node
+        the distinction is harmless here, because `_rematerialize` can recompute
+        it. For a node whose value comes from EXPANSION there is nothing to
+        recompute: `for_loop` has a kernel, but it belongs to the strict runtime
+        and fails on a closure the engine never builds, so the only roads back
+        are the `_alias` set when it was spliced, or a fresh expansion.
+
+        Skipping such a reference because it was `completed` is what took the
+        resolution off the scheduler and onto a POOL thread, where
+        `_rematerialize` raised `NeedsExpansion` and nothing could answer it:
+        measured as `NodeExecutionError: default.argmax failed while evaluating
+        node 46b90a84c497`, caused by `NeedsExpansion: b28223e8e803...`,
+        deterministically 37 s into every run of the sixty-case sweep against a
+        store holding 2,001 rows for expansion-produced nodes. Refusing those
+        rows was necessary and not sufficient: the reference reaches this path
+        whether or not the store ever claimed it.
+
+        Answering yes makes the caller turn the reference into a real graph
+        edge, which registers the node and lets admission unroll it -- the same
+        recovery `_await_expansion` performs on the loop thread, arranged
+        BEFORE dispatch instead of failing during it.
+        """
+        if not self._grows_the_graph(nid):
+            return False                       # a kernel can rebuild it
+        alias = self._alias.get(nid)
+        if alias is not None and alias != nid:
+            # An alias is a road back only while what it names can be reached.
+            if alias in self.table.values or alias in self.table.completed:
+                return False
+        # A STORE ROW IS NOT A ROAD BACK FOR THESE, and this was tried the other
+        # way round first. `persisted` was treated as sufficient, and the sweep
+        # failed with the census reading `persisted=True`:
+        #
+        #   NeedsExpansion: 0eca6fca7bef... [operator='default.for_loop'
+        #   interned=True completed=False alias=False forwarded=False
+        #   incomplete=False persisted=True]
+        #
+        # because `table.load` is entitled to REFUSE that row --
+        # `_references_are_answerable` does exactly that when the container
+        # names elements this run has never interned -- and by the time it
+        # refuses, `_rematerialize` has no other option left. Deciding it here
+        # would mean loading the container to find out, on whatever thread is
+        # asking.
+        #
+        # So an expansion-produced node is scheduled for expansion whether or
+        # not the store claims it. The cost is re-deriving the element ids in
+        # Python; the elements themselves are still served from disk, because
+        # each one hits the store on its own -- which is precisely what
+        # `_references_are_answerable`'s docstring says the refusal buys.
+        return True
+
     def _grows_the_graph(self, nid: NodeId) -> bool:
         """Whether evaluating this node expands the graph instead of computing.
 
@@ -1960,6 +2029,80 @@ class ComputationEngine:
             m["evicted_dead"] = s.get("evicted_dead", 0)
             m["evicted_live"] = s.get("evicted_live", 0)
         return m
+
+    def _schedule_goal_references(self) -> int:
+        """Do the caller's deep resolve HERE, where a miss can still be answered.
+
+        `strategy._side_effect` -> `_materialize` -> `handles.resolve_deep` runs
+        after `run()` has returned and the workers are gone. If that walk reaches
+        a node whose value only an EXPANSION can produce, nothing is left alive
+        to expand it and the run dies with every goal already reported open:
+
+            NeedsExpansion: 0eca6fca7bef... must be expanded, not computed
+            [operator='default.for_loop' interned=True completed=False
+             alias=False forwarded=False incomplete=False persisted=True]
+            strategy._side_effect -> _materialize -> resolve_deep
+              -> _resolve_reference -> _rematerialize -> _rematerialize
+
+        So the same resolve is performed here, on the loop thread, with the
+        engine still running: a miss becomes a scheduled expansion and `run`
+        joins again.
+
+        A RESIDENT-ONLY WALK WAS TRIED FIRST AND IS NOT ENOUGH. It followed
+        handles only into values already in the live tier, on the argument that
+        it should never load; but `resolve_deep` DOES load, so it goes deeper,
+        and a reference two levels down behind a container that was merely
+        persisted stayed invisible. The failure moved from 4 min 10 s to 3 s and
+        kept the same node. Loading here costs nothing extra overall: these are
+        exactly the values `_materialize` is about to load anyway, one moment
+        later, with no engine behind it.
+
+        Returns how many nodes it scheduled, which is what tells `run` whether
+        another join is needed.
+        """
+        scheduled = 0
+        for goal in list(self._goals):
+            value = self.table.values.get(goal, _MISSING)
+            if value is _MISSING:
+                continue
+            # A TOLERANT RESOLVER, so one round finds EVERY miss under a goal
+            # rather than the first. Letting `NeedsExpansion` propagate meant one
+            # scheduled expansion per goal per round, and a program with nested
+            # loops needs more rounds than a bound can safely allow: measured,
+            # the drain reported "2 expansion(s)" on round after round and still
+            # ran out. Recording the miss and continuing with None costs a
+            # container that is discarded anyway -- the walk is a probe, not a
+            # value.
+            missing: list[NodeId] = []
+
+            def probe(ref: NodeId, _missing=missing) -> Any:
+                try:
+                    return self._resolve_reference(ref)
+                except NeedsExpansion as needed:
+                    _missing.append(needed.node_id)
+                    return None
+            try:
+                resolve_deep(value, probe)
+            except Exception:                                   # noqa: BLE001
+                # Any other failure here is the CALLER's to report, with its own
+                # diagnostics and its own node id. Swallowing it would turn a
+                # named error into a silent one; re-raising it would replace the
+                # run's outcome with a probe's.
+                pass
+            for ref in missing:
+                if ref not in self.table.nodes:
+                    continue
+                self._priority[ref] = max(self._priority.get(ref, 0), 0)
+                if ref not in self.graph.incomplete:
+                    self.graph.register(ref)
+                if not self.table.is_running(ref):
+                    self.ready.push(ref, 0)
+                scheduled += 1
+        if scheduled:
+            print(f"[engine] {scheduled} expansion(s) named by a goal's value "
+                  f"were not available at drain; scheduling and joining again",
+                  file=sys.stderr, flush=True)
+        return scheduled
 
     def _settle_node(self, nid: NodeId) -> None:
         """Resolve any queries whose goal node just materialized."""
