@@ -1871,17 +1871,43 @@ class ComputationEngine:
             nid = self._alias[nid]
         return self._rematerialize(nid)
 
-    def _rewrite_of(self, node) -> NodeId | None:
+    def _rewrite_of(self, node) -> NodeId | NeedsExpansion | None:
         """The node this one rewrites to, or None if it does not rewrite.
 
         None covers both "this operator has no rewriter" and "its rewriter
         declined this shape" -- the caller treats them the same, because they
         mean the same thing: compute it like anything else.
+
+        A REWRITER READS VALUES, so it can meet a node that only an expansion
+        can produce, and it is handed `_resolve_reference` to read them with.
+        `fold`'s rewriter resolves the sequence it folds; against a WARM store
+        that sequence's loop node is `persisted`, so `_schedule_subgraph` prunes
+        it and no expansion is ever scheduled -- and the resolution then raises
+        into `_worker`'s if/elif chain, where nothing caught it:
+
+            NodeExecutionError: default.fold failed while evaluating node
+              ccbe9fbe1def
+            NeedsExpansion: af2ee8d9519e... [operator='default.for_loop'
+              interned=True completed=False alias=False forwarded=False]
+            core.py in _worker: elif (target := self._rewrite_of(node)) ...
+
+        Two seconds, deterministically, on a ten-line program, in six of six
+        warm configurations of the soak matrix. The same class of failure had
+        been costing 84-minute sweeps.
+
+        The miss is returned rather than raised because this is the LOOP
+        THREAD: the caller can register the expansion and requeue, which is
+        what the other three `NeedsExpansion` sites already do. Raising would
+        make it a node failure, which is what it wrongly was.
         """
         rewriter = modes_of(self.registry, node.operator).rewriter
         if rewriter is None:
             return None
-        return rewriter(node, RewriteContext(self._resolve_reference, self.table.intern))
+        try:
+            return rewriter(node, RewriteContext(self._resolve_reference,
+                                                 self.table.intern))
+        except NeedsExpansion as needed:
+            return needed
 
     def _register_new_subtree(self, root: NodeId, priority: int) -> None:
         """Wire nodes a rewriter just made into the graph, deps first.
@@ -2328,6 +2354,13 @@ class ComputationEngine:
                     # spliced sequence completes.
                     self.admission.start(nid, node, self._priority.get(nid, int(Priority.NORMAL)))
                 elif (target := self._rewrite_of(node)) is not None:
+                    if isinstance(target, NeedsExpansion):
+                        # The rewriter needed a value only an expansion can
+                        # produce. Schedule it and requeue this node behind it;
+                        # `table.begin` has not been called on this turn, so
+                        # there is no computation claim to give back.
+                        self._await_expansion(nid, target.node_id)
+                        continue
                     # A rewrite that is not a loop unroll: the operator names the
                     # node it becomes -- an argument it chose, or a shape it
                     # built -- and this node takes that node's value. What it did
