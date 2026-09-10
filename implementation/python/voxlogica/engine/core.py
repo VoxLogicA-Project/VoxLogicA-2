@@ -1329,9 +1329,21 @@ class ComputationEngine:
         self._alias[loop_id] = seq_id
         self.graph.pin(seq_id)
         self._priority[seq_id] = max(self._priority.get(seq_id, 0), priority)
-        if seq_id in self.graph.incomplete:
-            self.graph.await_one(loop_id, seq_id)
-        else:
+        # THE RETURN VALUE IS THE CONTRACT, not a convenience. `await_one`
+        # refuses a wait on a dependency that has already completed, because
+        # its arrival has been announced and will not be announced again --
+        # engine/waiting.py invariant 2, "the caller is told, and can proceed".
+        # Both call sites here previously dropped it and relied on the
+        # `incomplete` test above being equivalent. It is not: `incomplete`
+        # membership is removed by `on_complete`, and a sequence can complete
+        # between the test and the call whenever anything on this turn drives a
+        # completion -- which draining the spill queue every turn (d364ff4) made
+        # ordinary. The node then waits for an announcement that has already
+        # happened, and if it is a goal the run ends with "engine finished with
+        # an unresolved goal": observed on the sixty-case sweep after 1h37m,
+        # two goals of seven, both `for g in cases do ...` loop goals, with an
+        # empty queue and nothing in flight.
+        if seq_id not in self.graph.incomplete or not self.graph.await_one(loop_id, seq_id):
             self.ready.push(loop_id, priority)
 
     # ── Completion ──────────────────────────────────────────────────────────────────────────
@@ -1714,15 +1726,18 @@ class ComputationEngine:
         self._alias[nid] = target
         self.graph.pin(target)
         self._priority[target] = max(self._priority.get(target, 0), priority)
+        # Same contract as `_on_spliced`: a refused wait means the value is
+        # already there, so the waiting node must be pushed rather than parked.
         if target in self.graph.incomplete:
-            self.graph.await_one(nid, target)
-        else:
-            if target not in self.table.completed:
-                self.graph.register(target)
-                self.ready.push(target, priority)
-                self.graph.await_one(nid, target)
-            else:
+            if not self.graph.await_one(nid, target):
                 self.ready.push(nid, priority)
+        elif target not in self.table.completed:
+            self.graph.register(target)
+            self.ready.push(target, priority)
+            if not self.graph.await_one(nid, target):
+                self.ready.push(nid, priority)
+        else:
+            self.ready.push(nid, priority)
 
     def _await_named_deps_timed(self, nid: NodeId, node) -> bool:
         """Make the nodes an EAGER node's arguments name by handle real deps.

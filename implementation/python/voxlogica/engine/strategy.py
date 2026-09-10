@@ -193,10 +193,26 @@ class EngineExecutionStrategy(ExecutionStrategy):
             node_id = getattr(exc, "node_id", None) or fallback_node_id
             locations = plan.provenance.get(node_id, ()) if node_id else ()
             report = build_report(exc, locations=locations, source_text=plan.source_text)
-            diagnostic = replace(report.diagnostic, details_id=store_report(report))
+            # ENRICH BEFORE STORING. The context was previously merged into a
+            # copy made AFTER `store_report`, so the stored file -- the only
+            # thing `voxlogica errors show` can read, and the only thing that
+            # survives the run -- never received it. A sixty-case sweep failed
+            # after 1h37m with "engine finished with an unresolved goal" and the
+            # stored report read `"safe_context": {}`: the cone walk in
+            # `_unresolved_goal_context`, which exists precisely so that a
+            # scheduling failure is actionable without a 1h37m reproduction,
+            # had run and been thrown away. `node_id` was dropped the same way
+            # and for the same reason -- `build_report` can only recover it from
+            # the exception, and the engine's terminal failures carry it in the
+            # caller's `fallback_node_id` instead.
+            diagnostic = report.diagnostic
             if context:
                 diagnostic = replace(diagnostic,
                                      safe_context={**diagnostic.safe_context, **context})
+            if node_id and not diagnostic.node_id:
+                diagnostic = replace(diagnostic, node_id=str(node_id))
+            report = replace(report, diagnostic=diagnostic)
+            diagnostic = replace(diagnostic, details_id=store_report(report))
             diagnostics.append(diagnostic)
             failures[node_id or "<engine>"] = diagnostic.message
 
