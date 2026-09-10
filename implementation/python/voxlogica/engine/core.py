@@ -553,6 +553,29 @@ class ComputationEngine:
         self._probe = ConcurrencyProbe(lambda: self._in_flight)
         self._probe.start()
         workers = [asyncio.create_task(self._worker()) for _ in range(self.max_concurrency)]
+        # A DEAD WORKER MUST BE HEARD. These tasks are never awaited -- the run
+        # is joined on the ready queue's unit count instead -- so an exception
+        # escaping `_worker` was collected by asyncio and reported nowhere,
+        # leaving a run with fewer producers than it thinks and no way to say
+        # so. The callback turns that into the run's first error, which aborts
+        # admission and drains, instead of a hang that has to be diagnosed from
+        # the outside. Cancellation at the end of `run` is the normal exit and
+        # is not an error.
+        def _worker_died(task: "asyncio.Task[None]") -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is None:
+                return
+            print(f"[engine] a worker coroutine died: {type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
+            if self._first_error is None:
+                self._first_error = exc
+                self.admission.abort(exc)
+                self.ready.unpark(over_budget=False, starving=False)
+
+        for worker in workers:
+            worker.add_done_callback(_worker_died)
         try:
             await self._join_with_watchdog()
             if self._debug and self.graph.incomplete:
@@ -675,7 +698,8 @@ class ComputationEngine:
                 raise RuntimeError(
                     f"engine stalled: no node completed for {idle:.0f}s "
                     f"({cur} done, in_flight={self._in_flight}, ready={self.ready.qsize()}, "
-                    f"jobs={self.admission.active_jobs}, outstanding={self.ready.outstanding}). "
+                    f"jobs={self.admission.active_jobs}, outstanding={self.ready.outstanding}, "
+                    f"parked={self.ready.parked_count}, units={getattr(self.ready, 'units', {})}). "
                     f"Stuck frontier dumped above. "
                     f"This is an engine bug (a hang must never happen) — please report; "
                     f"raise VOXLOGICA_STALL_TIMEOUT_S if this was a genuinely slow kernel.")
@@ -871,14 +895,39 @@ class ComputationEngine:
         hours (see tests/unit/test_spill_queue_bounded.py).
         """
         try:
+            # `outstanding` is the run-completion counter: queued nodes, parked
+            # nodes and active expansion jobs each hold one, and the run ends at
+            # zero. So when a stall shows ready=0, in_flight=0 and outstanding>0,
+            # the units are held by something that is neither queued nor
+            # running -- and the only two candidates are the parked tier and the
+            # expansion jobs. Both are here for that reason: a probe that
+            # reported `outstanding` without them left exactly the arithmetic a
+            # reader needs undecidable (observed: ready=0, in_flight=0, jobs=0,
+            # outstanding=26, and no way to say where the 26 were).
+            jobs = getattr(self.admission, "_jobs", {}) or {}
             return {
                 "ready": self.ready.qsize(),
+                "ready_parked": self.ready.parked_count,
                 "ready_outstanding": self.ready.outstanding,
+                "ready_units": dict(getattr(self.ready, "units", {}) or {}),
                 "in_flight": self._in_flight,
                 "admission_jobs": self.admission.active_jobs,
+                "admission_job_ids": [str(k)[:12] for k in list(jobs)[:16]],
+                "admission_staged": sum(len(getattr(j, "staged", ()) or ())
+                                        for j in list(jobs.values())),
+                "admission_waiting": sum(
+                    1 for j in list(jobs.values())
+                    if not getattr(getattr(j, "wake", None), "is_set", bool)()),
+                "admission_reducing": str(getattr(self.admission, "_reducing", None)),
                 "spill_pending": len(self._spill_pending),
+                "evict_candidates": len(self._evict_candidates),
                 "completed": len(self.table.completed),
                 "incomplete": len(self.graph.incomplete),
+                "resident_values": len(self.table.values),
+                "accounted_bytes": self.table.accounted_bytes,
+                "governor_budget": self.governor.budget,
+                "governor_blocking": bool(self.governor.blocking),
+                "idle_by_engine_rule": self._idle(),
                 "persist_enabled": self.persist_enabled,
                 "persist_min_ms": self._persist_min_ms,
                 "loop_delay_ns": _LOOP_DELAY_NS,
@@ -2172,8 +2221,30 @@ class ComputationEngine:
             finally:
                 # Admit held-back work before retiring this unit, so the queue
                 # is never observed empty while admissible work is parked.
-                self._maintain()
-                self.ready.end_unit()
+                #
+                # `_maintain` IS GUARDED, AND `end_unit` IS UNCONDITIONAL. This
+                # was `self._maintain(); self.ready.end_unit()` and the order was
+                # load-bearing in the worst way: anything `_maintain` raised
+                # skipped `end_unit` and then escaped `_worker` itself. The unit
+                # leaked, the worker died, and NOTHING OBSERVED EITHER -- the
+                # worker tasks are never awaited, only cancelled at the end.
+                # Measured through the live control channel at the resulting
+                # stall: ready=0, ready_parked=0, in_flight=0, admission_jobs=0
+                # and `outstanding=8`. Eight units held by nothing at all,
+                # because eight workers had died, and the run hung with 1,157
+                # nodes incomplete and no producer left to push them.
+                #
+                # Maintenance is best-effort by nature (it samples memory, trims
+                # pools and nudges paused unrolls); run-completion accounting is
+                # not. So the two are separated, and a maintenance failure is
+                # now reported as the node's failure rather than silently
+                # subtracting a worker.
+                try:
+                    self._maintain()
+                except Exception as exc:                        # noqa: BLE001
+                    self._fail_node(nid, exc)
+                finally:
+                    self.ready.end_unit("pop")
 
     # ── Failure / diagnostics ───────────────────────────────────────────────────────────────
 

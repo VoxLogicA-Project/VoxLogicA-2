@@ -43,17 +43,35 @@ class ReadyQueue:
         self._idle = asyncio.Event()
         self._idle.set()
         self.outstanding = 0
+        #: PER-SOURCE UNIT LEDGER. `outstanding` is what `wait_idle` joins on,
+        #: and a run has twice hung with every tier empty and `outstanding` at
+        #: 8 and then 49 -- units held by nothing that could be named. The total
+        #: alone cannot say which side of the ledger is short, so each side is
+        #: counted where it happens. Five integers, incremented on paths that
+        #: already do a heap operation or an event set; the arithmetic that must
+        #: hold is
+        #:
+        #:     outstanding == pushed + parked + jobs_started
+        #:                    - popped - jobs_ended
+        #:
+        #: and whichever term is wrong is then a fact rather than a deduction.
+        self.units: dict[str, int] = {"pushed": 0, "parked": 0, "popped": 0,
+                                      "jobs_started": 0, "jobs_ended": 0,
+                                      "unparked": 0}
 
     # ── Units (run-completion accounting) ────────────────────────────────────
 
-    def begin_unit(self) -> None:
+    def begin_unit(self, source: str = "job") -> None:
         """One more admitted-but-unfinished unit (queued node / expansion job)."""
         self.outstanding += 1
+        if source == "job":
+            self.units["jobs_started"] += 1
         self._idle.clear()
 
-    def end_unit(self) -> None:
+    def end_unit(self, source: str = "job") -> None:
         """A unit finished; the run is complete when none remain."""
         self.outstanding -= 1
+        self.units["jobs_ended" if source == "job" else "popped"] += 1
         if self.outstanding <= 0:
             self._idle.set()
 
@@ -65,7 +83,8 @@ class ReadyQueue:
 
     def push(self, nid: NodeId, priority: int) -> None:
         """Offer a ready node to the workers (counts as one unit)."""
-        self.begin_unit()
+        self.begin_unit("push")
+        self.units["pushed"] += 1
         heapq.heappush(self._heap, (-priority, -next(self._seq), nid))
         self._wake.set()
 
@@ -83,7 +102,8 @@ class ReadyQueue:
 
     def park(self, nid: NodeId, priority: int) -> None:
         """Hold a ready node aside while the live tier is over budget."""
-        self.begin_unit()
+        self.begin_unit("park")
+        self.units["parked"] += 1
         heapq.heappush(self._parked, (-priority, -next(self._seq), nid))
 
     def unpark(self, over_budget: bool, starving: bool) -> None:
@@ -96,6 +116,7 @@ class ReadyQueue:
         while self._parked and (not over_budget or starving):
             entry = heapq.heappop(self._parked)
             heapq.heappush(self._heap, entry)
+            self.units["unparked"] += 1
             self._wake.set()
             if starving and over_budget:
                 break  # floor: just enough to keep moving
