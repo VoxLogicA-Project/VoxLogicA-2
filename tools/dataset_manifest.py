@@ -32,6 +32,12 @@ MANIFEST = Path(__file__).resolve().parent / "brats2020-manifest.json"
 #: paths, sorted -- the same three flags, so this reproduces what they index.
 GLOBS = ["*_flair.nii.gz", "*_t1.nii.gz", "*_t1ce.nii.gz", "*_t2.nii.gz", "*_seg.nii.gz"]
 
+#: Files the programs read that are NOT images: the metadata that decides which
+#: cases are in the study at all. The nnU-Net sweep selects the HGG cases from
+#: name_mapping.csv, so a different copy of that file is a different
+#: population, silently. Pinned by hash like everything else.
+METADATA = ["name_mapping.csv"]
+
 #: Read in blocks: the dataset is ~3 GB and a reviewer should not need the RAM.
 _BLOCK = 1 << 20
 
@@ -69,9 +75,31 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def hgg_ids(root: Path) -> list[str]:
+    """The selection the nnU-Net program makes, reproduced: grade first field,
+    2020 id last, rows in file order. So the checker can say not just "the CSV
+    differs" but "and here is the first case it would pick differently"."""
+    path = root / "name_mapping.csv"
+    if not path.is_file():
+        return []
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        fields = line.split(",")
+        if fields and fields[0] == "HGG":
+            out.append(fields[-1])
+    return out
+
+
 def survey(root: Path, *, quick: bool) -> dict:
     order = {pattern: listing(root, pattern) for pattern in GLOBS}
     files: dict[str, dict] = {}
+    for rel in METADATA:
+        full = root / rel
+        if full.is_file():
+            entry = {"size": full.stat().st_size}
+            if not quick:
+                entry["sha256"] = sha256(full)
+            files[rel] = entry
     for paths in order.values():
         for rel in paths:
             if rel in files:
@@ -81,7 +109,7 @@ def survey(root: Path, *, quick: bool) -> dict:
             if not quick:
                 entry["sha256"] = sha256(full)
             files[rel] = entry
-    return {"order": order, "files": files}
+    return {"order": order, "files": files, "hgg_ids": hgg_ids(root)}
 
 
 def write(root: Path, quick: bool) -> int:
@@ -93,6 +121,7 @@ def write(root: Path, quick: bool) -> int:
                 "`dir(root, pattern, true, true)` returns, relative to the root: the "
                 "programs index these by position, so the ORDER is the contract.",
         "case_count": len(data["order"]["*_flair.nii.gz"]),
+        "hgg_count": len(data["hgg_ids"]),
         "counts": counts,
         "hashed": not quick,
         **data,
@@ -102,6 +131,7 @@ def write(root: Path, quick: bool) -> int:
         print(f"  {pattern:18} {n}")
     print(f"  {len(data['files'])} files, "
           f"{'sizes only' if quick else 'sha256 for each'}")
+    print(f"  name_mapping.csv: {len(data['hgg_ids'])} HGG cases")
     return 0
 
 
@@ -115,6 +145,27 @@ def check(root: Path, quick: bool) -> int:
 
     print(f"dataset:  {root}")
     print(f"expected: {want['dataset']}, {want['case_count']} cases\n")
+
+    for rel in METADATA:
+        if not (root / rel).is_file():
+            problems.append(f"missing: {rel} -- the nnU-Net sweep selects its cases "
+                            f"from it and cannot run without it")
+            print(f"  WRONG {rel:18} missing")
+            continue
+        got, exp = hgg_ids(root), want.get("hgg_ids", [])
+        if got == exp:
+            print(f"  OK    {rel:18} {len(got)} HGG cases, in the expected order")
+        else:
+            limit = min(len(got), len(exp))
+            first = next((i for i in range(limit) if got[i] != exp[i]), limit)
+            problems.append(
+                f"{rel}: selects {len(got)} HGG cases, expected {len(exp)}; first "
+                f"difference at HGG INDEX {first} -- expected "
+                f"{exp[first] if first < len(exp) else '(nothing)'}, found "
+                f"{got[first] if first < len(got) else '(nothing)'}. This file "
+                f"decides the population of the nnU-Net experiment.")
+            print(f"  WRONG {rel:18} {len(got)} HGG cases (expected {len(exp)}), "
+                  f"diverges at HGG index {first}")
 
     for pattern in GLOBS:
         expected = want["order"][pattern]

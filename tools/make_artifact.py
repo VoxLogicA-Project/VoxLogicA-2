@@ -578,6 +578,13 @@ So the check does not just count files: it compares the ORDERED listing and, on
 a mismatch, names the index where the two diverge. Everything from that index
 onwards is reading data we did not measure.
 
+It also checks `name_mapping.csv`, the metadata file BraTS ships beside the
+cases. The nnU-Net experiment selects its population from it -- the 293 cases
+whose first field says `HGG` -- so a copy of BraTS without that file cannot run
+experiment 4 at all, and a copy with a DIFFERENT one runs it on a different
+population. The check reproduces the selection and names the first case it
+would pick differently.
+
 One trap it also catches: if you assemble the dataset out of symlinks, `dir`
 orders the files by the path each symlink RESOLVES TO, not by the names in your
 directory. The order you see is then not the order the programs get. Link whole
