@@ -540,8 +540,35 @@ Two things that are not negotiable:
 ## B. Point the programs at your copy of BraTS
 
 The datasets are not here: the BraTS data-use agreement does not let us
-redistribute them, so you have to obtain them from the challenge organisers.
-Experiment 1 needs none of this.
+redistribute them, so you have to obtain them yourself. Experiment 1 needs
+none of this.
+
+**Where to get BraTS 2020.** The training data is mirrored on Kaggle:
+
+    https://www.kaggle.com/datasets/awsaf49/brats2020-training-data
+
+You need a Kaggle account. The official source is the challenge organisers
+(CBICA, University of Pennsylvania), who require a registration; the Kaggle
+mirror is the same 369 cases and is what most people use.
+
+**Two things to check about the copy you download**, because we built our
+manifest on the official release and have not verified the Kaggle mirror's
+layout ourselves:
+
+1. **Compression.** The programs look for `*_flair.nii.gz` etc. Public
+   notebooks on the Kaggle mirror refer to uncompressed `.nii` files; if that
+   is what you have, gzip them in place first:
+   `find <root> -name '*.nii' -exec gzip {{}} +`. A copy with the wrong suffix
+   is not "wrong data" -- `dir` simply finds nothing, and the manifest check
+   below reports 0 files against 369.
+2. **One misnamed file.** The same notebooks mention that case
+   `BraTS20_Training_355` ships its segmentation under a different name
+   (`W39_1998.09.19_Segm.nii`). If so, rename it to
+   `BraTS20_Training_355_seg.nii.gz` after gzipping, or that case is silently
+   missing from `*_seg.nii.gz` and every position after 354 shifts.
+
+Either way, run the manifest check below before anything else: it compares the
+ordered listing and the hashes, and will name exactly what differs.
 
 Each program names its dataset root as a literal near the top. These are the
 lines to edit:
