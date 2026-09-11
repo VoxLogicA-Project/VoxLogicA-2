@@ -237,33 +237,50 @@ ORACLE: dict[str, dict] = {
                 "scheduling noise -- start with your SimpleITK version.",
     },
     "doc/gallery/programs/nnunet/brats-threshold-sweep-nnunet.imgql": {
-        "provenance": "TWO complete runs only, and they do not agree exactly -- see "
-                      "the tolerance. Treat these as provisional.",
+        "provenance": "THREE complete runs (2026-09-08 x2, 2026-09-11), on the same trained "
+                      "weights and the same 20 evaluated cases. The values below are the "
+                      "third, after the program was restricted to HGG by metadata; Dice "
+                      "moved by at most 1.5e-06 from the second, thresholds not at all. "
+                      "Still provisional.",
         "tolerance": 1e-4,
         "values": [
-            ("model_dice_mean", "0.8587639323175942",
+            ("model_dice_mean", "0.8587654381227321",
              "how close the learned reference is to the annotation. Read first"),
-            ("model_dice_median", "0.915215395099846", ""),
-            ("model_dice_stdev", "0.11011126546439001",
+            ("model_dice_median", "0.9152127540638253", ""),
+            ("model_dice_stdev", "0.1101112733588743",
              "large: on some cases the network is weak"),
-            ("dice_fixed_mean", "0.8069294344441907", ""),
-            ("dice_best_mean", "0.8501644032661126", ""),
+            ("model_sensitivity_mean", "0.8213030657937151",
+             "per case 0.38-0.98: where this is low, the reference is weak"),
+            ("model_specificity_mean", "0.9994939855877394", "whole-volume; read differences"),
+            ("dice_fixed_mean", "0.8069295235180464", ""),
+            ("sensitivity_fixed_mean", "0.9164724040507275", ""),
+            ("specificity_fixed_mean", "0.9979484261834999", ""),
+            ("dice_best_mean", "0.8501655344839311", ""),
             ("dice_best_median", "0.9258472009239862", ""),
-            ("dice_best_stdev", "0.18727162374301137", ""),
+            ("dice_best_stdev", "0.18727288008444662", ""),
+            ("sensitivity_best_mean", "0.9431578561623185",
+             "the sweep's gain over fixed is almost all recall"),
+            ("specificity_best_mean", "0.9973265002479786", "and costs almost nothing here"),
             ("vi_thr_mean", "0.8945000000000001", "**exact**, no tolerance"),
             ("vi_thr_median", "0.9", "**exact**"),
             ("vi_thr_stdev", "0.041986840043543486", "**exact**"),
             ("vi_thr_distribution", "[[0.73,1],[0.87,2],[0.89,4],[0.9,4],[0.91,2],[0.92,7]]",
              "**exact**, and the point of the experiment"),
         ],
-        "note": "**The digits move; the thresholds do not.** Across our two runs six of "
-                "twenty per-case Dice values differed, by at most 2.7e-05, and every "
-                "aggregate moved in the sixth decimal or beyond. But `best_vi_thr` and "
-                "`vi_thr_distribution` came back IDENTICAL. That is the claim this "
-                "experiment makes: the case-dependence of the permissive threshold "
-                "survives replacing a human annotation with a learned one, and it "
-                "survives the network being retrained. Compare the distribution "
-                "exactly; compare the Dice values to 1e-4.",
+        "note": "**The digits move; the thresholds do not.** Across three runs the per-case "
+                "Dice values differed by at most 2.7e-05 and every aggregate moved in the "
+                "sixth decimal or beyond -- while `best_vi_thr` and `vi_thr_distribution` "
+                "came back IDENTICAL every time. That is the claim this experiment makes: "
+                "the case-dependence of the permissive threshold survives replacing a human "
+                "annotation with a learned one, and survives the network being retrained. "
+                "Compare the distribution exactly; compare Dice, sensitivity and "
+                "specificity to 1e-4.\n\n"
+                "**Specificity is over the whole volume**, as BraTS scores it, so it is "
+                "dominated by the air around the head and sits near 1 for anything sane. "
+                "Read the differences between rows, not the level.\n\n"
+                "**The population is the 293 HGG cases**, selected by the grade in the "
+                "dataset's own `name_mapping.csv`, not by directory order. The 20 evaluated "
+                "are positions 50-69 of that list, which are BraTS20_Training_051 to _070.",
     },
 }
 

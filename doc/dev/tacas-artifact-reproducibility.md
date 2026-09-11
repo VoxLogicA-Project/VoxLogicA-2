@@ -29,7 +29,7 @@ lista di partenza — sono venuti fuori facendo il resto.
 | **9** | **Lo store registra una promessa che non può mantenere** | **alta** | **aperto**, riprodotto da freddo in 5 s |
 | **10** | **Lanciare lo stesso programma due volte: il secondo non finisce** | **BLOCCANTE** | **aperto**, riproduttore da due comandi, correzione di 3 righe non scritta |
 | 1 | Programmi che escono 0 senza calcolare niente | bloccante | fatto (motore) / 6 programmi da sistemare |
-| 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | **fatto per 2 e 3, provvisorio per 4** |
+| 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | fatto per 2 e 3; 4 provvisorio su **tre** run |
 | 3 | Percorsi dataset assoluti dentro i programmi | alta | mitigato nell'artifact, aperto nel repo |
 | 4 | L'artifact non si ricostruisce: niente lockfile, pin aperti | alta | fatto (`cbb8cdd`) |
 | 5 | Nessun manifest del dataset | media | **fatto** |
@@ -676,8 +676,28 @@ store vuoto, `--no-cache` a 1, 4 e 16 thread. Bit-identici ogni volta.
 | `vi_thr_median` | 0,91 |
 | `vi_thr_distribution` | `[[0.81,2],[0.83,1],[0.85,1],[0.86,1],[0.87,1],[0.88,1],[0.89,1],[0.9,2],[0.92,10]]` |
 
-**Esperimento 4** (nnU-Net) — **provvisorio**, tolleranza **10⁻⁴** sulle Dice,
-**esatta** su soglie e distribuzione. Due soli run completi, e non coincidono.
+**Esperimento 4** (nnU-Net) — **provvisorio**, tolleranza **10⁻⁴** su Dice,
+sensitivity e specificity, **esatta** su soglie e distribuzione. Tre run
+completi (8/9 ×2, 11/9); l'oracolo è il terzo.
+
+**Aggiornato l'11 settembre**, su richiesta di una coautrice: il programma ora
+seleziona i **293 casi HGG** leggendo il grado da `name_mapping.csv` (con due
+primitive nuove, `strings.split` e `strings.equals`), e calcola **sensitivity e
+specificity** per le stesse tre coppie della Dice — 33 goal invece di 23. I 20
+casi valutati sono gli stessi di prima (BraTS 2020 ordina gli HGG per primi), i
+pesi restano validi, Dice entro 1,5·10⁻⁶ e soglie identiche. Il programma però
+**non è più identico al bundle del 4 settembre**: è la modifica richiesta, e
+va detta nella mail.
+
+| | sensitivity | specificity |
+|---|---|---|
+| modello vs annotazione | 0,8213 | 0,99949 |
+| soglia pubblicata | 0,9165 | 0,99795 |
+| miglior soglia per caso | 0,9432 | 0,99733 |
+
+Specificity sul volume intero, come BraTS: dominata dall'aria, vicina a 1 —
+leggere le differenze. Il terzo run è passato **a store caldo e thread di
+default**, la condizione del 7b: un run solo, non lo dichiaro chiuso.
 
 Misurato fra i due:
 
