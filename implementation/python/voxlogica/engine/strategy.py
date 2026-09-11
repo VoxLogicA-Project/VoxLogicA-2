@@ -24,6 +24,7 @@ from voxlogica.diagnostics.classify import build_report
 from voxlogica.diagnostics.store import store_report
 from voxlogica.engine.core import ComputationEngine
 from voxlogica.engine.priority import Priority
+from voxlogica.engine.query import QueryStatus
 from voxlogica.execution_strategy.base import ExecutionStrategy
 from voxlogica.execution_strategy.results import (
     ExecutionResult, PageResult, PreparedPlan, SequenceValue,
@@ -217,6 +218,11 @@ class EngineExecutionStrategy(ExecutionStrategy):
             failures[node_id or "<engine>"] = diagnostic.message
 
         resolved_queries: set[int] = set()
+        #: Goals whose print/save effect has already been applied. The engine
+        #: drives that loop now (see `ComputationEngine.run`'s `at_drain`), so
+        #: it can be entered more than once and must not repeat itself.
+        emitted: set[NodeId] = set()
+        query_by_goal: dict[NodeId, Any] = {}
 
         async def evaluate() -> tuple[dict[NodeId, Any], BaseException | None]:
             # Goals are submitted in DECLARATION ORDER with strictly decreasing
@@ -251,9 +257,29 @@ class EngineExecutionStrategy(ExecutionStrategy):
             queries = [(g, engine.submit(g.id, g.operation, g.name,
                                          int(Priority.NORMAL) * 1000 + (len(ranked) - index)))
                        for index, g in ranked]
+            query_by_goal.update({g.id: q for g, q in queries})
             run_error: BaseException | None = None
+            # RESUMABLE, because `run` re-invokes it after recovering a miss.
+            # Emitting a goal twice would print its results twice.
+            def emit_ready_goals() -> None:
+                if goals is not None:
+                    return              # a goal subset asked for values, not effects
+                resolve = engine._resolve_reference
+                for goal in target:
+                    if goal.id in emitted:
+                        continue
+                    query = query_by_goal.get(goal.id)
+                    if query is None or not query._done.is_set():
+                        continue
+                    if query.status is not QueryStatus.DONE:
+                        emitted.add(goal.id)        # failed: reported elsewhere
+                        continue
+                    self._side_effect(goal.operation, goal.name,
+                                      query._value, resolve)
+                    emitted.add(goal.id)
+
             try:
-                await engine.run()
+                await engine.run(at_drain=emit_ready_goals)
             except Exception as exc:  # converted below into a structured result
                 run_error = exc
             values: dict[NodeId, Any] = {}
@@ -382,8 +408,15 @@ class EngineExecutionStrategy(ExecutionStrategy):
             # resident, else reload, else rebuild from lineage.
             resolve = engine._resolve_reference
             for goal in target:
-                if goal.id in values:
-                    self._side_effect(goal.operation, goal.name, values[goal.id], resolve)
+                # Whatever the engine already emitted at drain is done; this
+                # loop now only covers what it could not reach -- a goal that
+                # settled after the drain check, or a run that raised. It runs
+                # with the engine down, so a miss here is still fatal; that is
+                # the case `at_drain` exists to make rare.
+                if goal.id in values and goal.id not in emitted:
+                    self._side_effect(goal.operation, goal.name,
+                                      values[goal.id], resolve)
+                    emitted.add(goal.id)
 
         if run_error is not None:
             record_failure(run_error)

@@ -581,7 +581,7 @@ class ComputationEngine:
         query.priority = priority
         self._raise_priority(query.node_id, int(priority))
 
-    async def run(self) -> None:
+    async def run(self, at_drain=None) -> None:
         """Drain the ready queue until every admitted unit of work has finished."""
         if self._show_progress:
             # disable=None auto-disables the bar when stderr is not a TTY
@@ -667,6 +667,51 @@ class ComputationEngine:
                 if not self._schedule_goal_references():
                     break
                 await self._join_with_watchdog()
+            if at_drain is not None:
+                # MATERIALIZE THE GOALS WHILE THE ENGINE IS STILL ALIVE.
+                #
+                # Printing and saving used to happen after `run()` returned,
+                # with the workers cancelled and the event loop gone -- so a
+                # goal whose value needed one more thing computed could not get
+                # it, and the run died having already emitted most of its
+                # results:
+                #
+                #   strategy._side_effect -> _materialize -> resolve_deep
+                #     -> _resolve_reference -> _rematerialize -> NeedsExpansion
+                #
+                # Measured on the AIIM sweep's second pass over one store: 14
+                # of 16 results printed, then that. Four attempts were made to
+                # PREDICT what materialization would need and precompute it at
+                # drain; every one was refuted, because predicting it requires
+                # doing it. So it is done here, where a miss is recoverable by
+                # the same schedule-and-rejoin the other five NeedsExpansion
+                # sites use.
+                #
+                # The callback must be RESUMABLE -- it is re-invoked after each
+                # recovery, and re-emitting a goal would print it twice. The
+                # strategy keeps the set of goals it has already emitted.
+                for _round in range(_DEEP_SETTLE_ROUNDS):
+                    if self._first_error is not None:
+                        break
+                    try:
+                        at_drain()
+                        break
+                    except NeedsExpansion as needed:
+                        ref = needed.node_id
+                        if ref not in self.table.nodes:
+                            break       # nothing here can build it; let the
+                                        # caller report it as it always did
+                        self._priority[ref] = max(self._priority.get(ref, 0), 0)
+                        if ref not in self.graph.incomplete:
+                            self.graph.register(ref)
+                        if not self.table.is_running(ref):
+                            self.ready.push(ref, 0)
+                        print(f"[engine] a goal's output needed {ref[:12]} "
+                              f"expanded; scheduling and joining again",
+                              file=sys.stderr, flush=True)
+                        await self._join_with_watchdog()
+                    except Exception:                           # noqa: BLE001
+                        break           # the caller owns its own failures
             if self.verifier is not None:
                 # AT DRAIN, and before the workers are cancelled: this is the
                 # only moment at which (T) and (V) are meaningful, and the only
@@ -686,9 +731,18 @@ class ComputationEngine:
                 self._flush_progress()
                 self._progress.close()
                 self._progress = None
-            # Nothing can ask for a rebuild once the workers are down, whether
-            # the run drained or raised -- so release inside the `finally`,
-            # or a failed run leaves the hold in place for the engine's life.
+            # Safe HERE again, and only because the goals are materialized
+            # above, inside `at_drain`, while the engine is still running.
+            # `release_held`'s docstring assumes exactly that -- "every goal is
+            # materialized, so there is nothing left to rematerialize" -- and
+            # the assumption was false while printing happened after `run()`
+            # returned.
+            #
+            # Deferring it to the caller was tried and reverted: it fixed
+            # nothing (the warm-store failure was unchanged) and leaked for
+            # every caller that is not the strategy, since nobody else knew to
+            # call it -- `test_values_die_with_their_last_consumer` found 22
+            # values and 2 retained sequences held for the process's life.
             self.table.release_held()
         self.table.flush()
         # Say what sparse caching actually bought. A flag whose effect is
@@ -808,6 +862,14 @@ class ComputationEngine:
         (goals excepted: they are always scheduled so their queries settle
         through the normal completion path).
         """
+        # NOT SPECIAL-CASED FOR EXPANSION-PRODUCED NODES, and the attempt is
+        # recorded because it looked compelling. Refusing to prune a `for_loop`
+        # here -- so the expansion always runs and always interns its element
+        # specs -- does NOT fix the warm-store materialization failure
+        # (measured: 7/16 at 8 threads and 9/16 at 24, unchanged), and it costs
+        # a real memory property: the loop's sequence is then retained and
+        # `test_values_die_with_their_last_consumer` finds 20 leaked values.
+        # Paying a known cost for no measured benefit is not a trade.
         return nid in self.table.completed or (nid not in self._goals and self.table.persisted(nid))
 
     def _schedule_subgraph(self, goal: NodeId, priority: int) -> None:
@@ -830,8 +892,8 @@ class ComputationEngine:
                 continue
             if nid in completed:
                 continue
-            if nid not in self._goals and self.table.persisted(nid):
-                continue  # cached: loaded on demand
+            if self._available(nid):
+                continue  # cached: loaded on demand -- see `_available`
             node = self.table.nodes[nid]
             if node.kind == "constant" and nid not in self._goals:
                 self.table.set_value(nid, node.attrs.get("value"))
@@ -2758,22 +2820,43 @@ class ComputationEngine:
         for goal in list(self._goals):
             value = self.table.values.get(goal, _MISSING)
             if value is _MISSING:
-                # NOT RESIDENT: SKIPPED, DELIBERATELY, AND THE ALTERNATIVE WAS
-                # MEASURED. `_materialize` will reload this goal and walk it,
-                # so walking it here too looks obviously right -- and resolving
-                # a goal at drain is not a probe, it MATERIALIZES it:
-                # `_rematerialize` writes the value back, retracks residency
-                # and takes handle holds. Doing that for every non-resident
-                # goal turned `--sparse-cache` from passing to exit 70 on the
-                # AIIM sweep while fixing nothing in `--no-write-cache`. A
-                # check that perturbs the run is not a check.
+                # A GOAL THAT IS NOT RESIDENT STILL HAS TO BE CHECKED, because
+                # `strategy._side_effect` -> `_materialize` will reload it --
+                # AFTER `run()` has returned and the workers are gone. If that
+                # reload reaches a node only an expansion can produce, nothing
+                # is left alive to expand it and the run dies having reported
+                # every goal open:
                 #
-                # The `--no-write-cache` failure it was aimed at is therefore
-                # still open, and is a reload-path defect rather than a
-                # scheduling one: the goal's value comes back from a store that
-                # was never written to, and the loop underneath it was pruned
-                # as `persisted` on the way in.
-                continue
+                #   strategy._side_effect -> _materialize -> resolve_deep
+                #     -> _resolve_reference -> _rematerialize -> NeedsExpansion
+                #
+                # Deterministic on a warm store, 7 of 16 goals, and invisible
+                # to every other clause because the goal never became resident
+                # for one to look at.
+                #
+                # Resolving here is not free -- it MATERIALIZES the goal rather
+                # than probing it -- and an earlier attempt was withdrawn on the
+                # strength of `--sparse-cache` breaking. That measurement was
+                # void: those runs shared one default store and were poisoning
+                # each other. Re-measured with a store per run, all three cache
+                # configurations pass. The cost is real and is paid on purpose:
+                # the value is one `_materialize` is about to build anyway.
+                try:
+                    value = self._resolve_reference(goal)
+                except NeedsExpansion as needed:
+                    ref = needed.node_id
+                    if ref in self.table.nodes:
+                        self._priority[ref] = max(self._priority.get(ref, 0), 0)
+                        if ref not in self.graph.incomplete:
+                            self.graph.register(ref)
+                        if not self.table.is_running(ref):
+                            self.ready.push(ref, 0)
+                        scheduled += 1
+                    continue
+                except Exception:                               # noqa: BLE001
+                    continue
+                if value is None:
+                    continue
             # A TOLERANT RESOLVER, so one round finds EVERY miss under a goal
             # rather than the first. Letting `NeedsExpansion` propagate meant one
             # scheduled expansion per goal per round, and a program with nested
