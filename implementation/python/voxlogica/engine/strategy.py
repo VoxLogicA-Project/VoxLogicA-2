@@ -34,6 +34,51 @@ from voxlogica.primitives.registry import PrimitiveRegistry
 from voxlogica.storage import StorageBackend
 
 
+def _splice_state(engine: Any, graph: Any, table: Any, nid: NodeId) -> str:
+    """What a node with every dependency met is STILL waiting for.
+
+    A loop's residual wait is not a graph edge. `_on_spliced` issues
+    `graph.await_one(loop_id, seq_id)` on the spliced SEQUENCE, and `await_one`
+    exists for exactly that; `find_stalled` computes "unmet" over `graph.deps`,
+    so a spliced loop reports every dependency done while still carrying
+    `pending=1`, and the one thing blocking it is the one thing the report could
+    not name. Observed on the sixty-case sweep, 2026-09-11, `VLX-8D9B9990`:
+    four `default.for_loop` nodes, `deps=2 pending=1 value=True`, and nothing
+    in the report to explain the 1.
+
+    `waiter_registered` is the field that matters: it separates the two causes,
+    which need opposite fixes.
+
+    - registered, sequence still incomplete -> the sequence never completed and
+      the stall is deeper in ITS cone;
+    - registered, sequence complete -> the wakeup was lost on the way back;
+    - not registered, `pending` still positive -> the count was raised by
+      something that never recorded a waiter.
+
+    Wrapped whole: this runs on the failure path and must never replace the
+    failure it is describing with its own.
+    """
+    try:
+        seq = getattr(engine, "_alias", {}).get(nid)
+        if seq is None:
+            return " splice=<none>"
+        dependents = getattr(graph, "_dependents", {})
+        waiting = dependents.get(seq, ()) if hasattr(dependents, "get") else ()
+        try:
+            persisted = table.persisted(seq)
+        except Exception:                                       # noqa: BLE001
+            persisted = "?"
+        return (f" splice={seq[:12]}"
+                f" seq_incomplete={seq in graph.incomplete}"
+                f" seq_value={table.has_value(seq)}"
+                f" seq_completed={seq in table.completed}"
+                f" seq_pending={graph.pending.get(seq)}"
+                f" seq_persisted={persisted}"
+                f" waiter_registered={nid in waiting}")
+    except Exception as exc:                                    # noqa: BLE001
+        return f" splice=<unreadable: {type(exc).__name__}: {exc}>"
+
+
 def _unresolved_goal_context(engine: ComputationEngine, goal: Any) -> dict[str, str]:
     """Everything known about a goal the scheduler left without a value.
 
@@ -102,6 +147,7 @@ def _unresolved_goal_context(engine: ComputationEngine, goal: Any) -> dict[str, 
                     f"{nid[:12]} op={getattr(spec, 'operator', '?')} "
                     f"deps={len(deps)} pending={graph.pending.get(nid)} "
                     f"value={table.has_value(nid)} persisted={table.persisted(nid)}"
+                    f"{_splice_state(engine, graph, table, nid)}"
                 )
                 if len(stalled) >= 5:
                     break
