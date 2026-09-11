@@ -27,7 +27,7 @@ lista di partenza — sono venuti fuori facendo il resto.
 | **7a** | Doppio dispatch: `DoubleComputationError` | bloccante | **fatto da Vincenzo** (`a313172`) |
 | **7b** | **Rematerializzazione: `NeedsExpansion` a store caldo** | **bloccante** | **aperto**, due cause chiuse (`29634eb`, `7348626`), il run non passa |
 | **9** | **Lo store registra una promessa che non può mantenere** | **alta** | **aperto**, riprodotto da freddo in 5 s |
-| **10** | **Lanciare lo stesso programma due volte: il secondo non finisce** | **BLOCCANTE** | **aperto**, riproduttore da due comandi, correzione di 3 righe non scritta |
+| **10** | **Lanciare lo stesso programma due volte: il secondo non finisce** | bloccante | **fatto** — prima 6 stalli su 6, dopo 0 su 6 |
 | 1 | Programmi che escono 0 senza calcolare niente | bloccante | fatto (motore) / 6 programmi da sistemare |
 | 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | fatto per 2 e 3; 4 provvisorio su **tre** run |
 | 3 | Percorsi dataset assoluti dentro i programmi | alta | mitigato nell'artifact, aperto nel repo |
@@ -441,10 +441,50 @@ che li nomina — o il container non si scrive.
 
 ---
 
-## 10. Lanciare lo stesso programma due volte: il secondo non finisce — BLOCCANTE
+## 10. Lanciare lo stesso programma due volte: il secondo non finisce — CHIUSO il 2026-09-11
 
 Aperto il 2026-09-10 come "job di espansione orfani". Promosso a bloccante la
 sera stessa, quando è saltata la premessa su cui ne stimavamo la gravità.
+Chiuso il giorno dopo, in `admission.py`, al secondo tentativo.
+
+**La correzione.** `LoopAdmission.start` è idempotente per id di loop, e
+registra il job **lei stessa**, prima di creare il task:
+
+```python
+if nid in self._jobs:
+    return                              # offerta duplicata: un pop sprecato
+job = _Job(loop_id=nid, priority=priority)
+self._jobs[nid] = job                   # ORA, non al primo step del task
+self.ready.begin_unit()
+create_task(self._run_job(job, node))
+```
+
+**Perché "al secondo tentativo" è la parte da ricordare.** La sola guardia
+`if nid in self._jobs` non bastava — il secondo run stallava ancora, 6 su 6 —
+perché la registrazione avveniva *dentro* `_run_job`, cioè al primo step del
+task, non quando `start()` torna. Fra i due istanti la mappa era vuota e due
+worker passavano entrambi. Il meccanismo era giusto, il punto sbagliato di una
+riga; senza il riproduttore da due minuti sarebbe passato per corretto.
+
+**Misurato**, sullo stesso store congelato e sullo stesso programma:
+
+| | prima | dopo |
+|---|---|---|
+| replay dallo store incompleto | **6 stalli su 6**, 197 s, 0 goal | **6 su 6 verdi**, 2-4 s, 3 goal |
+| valori rispetto al run a freddo | — | identici, sei volte |
+| suite `unit`+`contract` | | 1215 passati; l'unico rosso è un test UI a tempo, instabile anche senza la patch |
+
+Anche il `perf-saturation` di Vincenzo, HEAD `48e0618` del 2026-09-11, stalla
+ancora su questo riproduttore (0 goal, 196 s): i suoi 16 commit chiudono la
+correzione C e aggiungono un checker dell'invariante di progresso che *riporta*
+lo stallo correttamente, ma non lo curano. La sua `list()` in `wake_jobs`
+(`25842bd`) e questa sono complementari: quella rende sicura l'iterazione della
+mappa, questa la rende completa.
+
+**Test:** `tests/unit/test_expansion_started_once.py` — due `start` nello
+stesso turno, un solo job registrato, una sola unità presa. Rosso senza.
+
+**Quello che resta di questa sezione è la diagnosi**, che vale ancora tutta.
 
 ### Il riproduttore: due comandi identici
 

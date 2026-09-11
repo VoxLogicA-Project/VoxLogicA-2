@@ -161,13 +161,44 @@ class LoopAdmission:
         Called from a worker's turn for the loop node; the unit taken here is
         ended by the job itself, so run-completion accounting covers the whole
         expansion even though the worker's own turn ends immediately.
-        """
-        self.ready.begin_unit()
-        asyncio.get_running_loop().create_task(self._run_job(nid, node, priority))
 
-    async def _run_job(self, nid: NodeId, node: NodeSpec, priority: int) -> None:
+        IDEMPOTENT PER LOOP ID, and it has to be. The ready queue is a
+        suggestion, not property: the same loop node can be offered to the
+        workers more than once, and `_worker` cannot tell -- its duplicate
+        guard is `completed` or `is_running`, and a node handed to admission is
+        neither, because `table.begin` is never called for it. Measured: 99
+        starts for 39 distinct loop ids, one id started four times.
+
+        A second job for the same id is not merely wasted. `_jobs` is keyed by
+        the id, so the second `_run_job` overwrites the first's entry, and
+        whichever finishes first pops the key out from under the others. Those
+        others then sleep on `job.wake` with nobody able to reach them:
+        `wake_jobs` iterates `_jobs.values()`, and `_maintain` only calls it
+        when `active_jobs` -- `len(_jobs)` -- is nonzero. Their units are never
+        ended, `outstanding` never reaches zero, and the run sits until the
+        watchdog kills it: run the same program twice against one store and the
+        second run delivers nothing, six replays out of six.
+
+        Refusing here costs the duplicate offer one wasted pop, which is the
+        same answer the compute path gave in a313172. `_defer_for` pops the
+        entry before it requeues the node, so a loop that gave up its turn
+        legitimately starts again.
+
+        THE REGISTRATION IS DONE HERE, SYNCHRONOUSLY, not inside the job. A
+        task created by `create_task` runs at the next loop iteration, and a
+        guard that consults a map the job fills on its first step sees nothing
+        for the whole window in between -- measured: with the check alone the
+        second run still stalled, six replays out of six.
+        """
+        if nid in self._jobs:
+            return
         job = _Job(loop_id=nid, priority=priority)
         self._jobs[nid] = job
+        self.ready.begin_unit()
+        asyncio.get_running_loop().create_task(self._run_job(job, node))
+
+    async def _run_job(self, job: _Job, node: NodeSpec) -> None:
+        nid, priority = job.loop_id, job.priority   # registered by `start`, before any await
         try:
             try:
                 # SHALLOW. The container is resolved; its CONTENTS are not.
@@ -236,7 +267,8 @@ class LoopAdmission:
         finally:
             self.plan_size.close_loop(nid)
             self._release_captures(node)
-            self._jobs.pop(nid, None)
+            if self._jobs.get(nid) is job:   # only our own entry, never another job's
+                del self._jobs[nid]
             self.ready.end_unit()
 
     def _splice(self, nid: NodeId, expansion: Expansion, priority: int) -> None:
