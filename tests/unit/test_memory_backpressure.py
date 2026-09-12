@@ -88,7 +88,7 @@ def test_live_bytes_counts_shared_forwarded_value_once() -> None:
 
 
 def _admission_with(accounted: int, qsize: int, *, workers: int, hard: int,
-                    idle: bool) -> tuple[LoopAdmission, _Job]:
+                    idle: bool, unkept: int = 0) -> tuple[LoopAdmission, _Job]:
     """A LoopAdmission whose _has_room inputs are all stubbed to fixed values."""
     adm = LoopAdmission.__new__(LoopAdmission)  # bypass __init__; set only what _has_room reads
     adm.window = 8
@@ -96,7 +96,8 @@ def _admission_with(accounted: int, qsize: int, *, workers: int, hard: int,
     adm.hard_live_bytes = hard
     adm.soft_live_bytes = hard  # tests that care about the soft stop set it explicitly
     adm.graph = types.SimpleNamespace(
-        table=types.SimpleNamespace(accounted_bytes=accounted, persist_over_budget=False))
+        table=types.SimpleNamespace(accounted_bytes=accounted, persist_over_budget=False,
+                                    unkept=unkept))
     adm.ready = types.SimpleNamespace(qsize=lambda: qsize)
     adm._idle = lambda: idle
     adm._reclaim = lambda: None
@@ -1143,3 +1144,93 @@ def test_payload_writes_are_atomic_so_a_killed_run_cannot_poison_the_cache(tmp_p
         assert (payload_dir / "good.bin").read_bytes() == b"data"
     finally:
         backend.close()
+
+
+# ── What the engine owes, not only what it holds ────────────────────────────
+#
+# Every memory control here reads `accounted_bytes` — what the table is
+# HOLDING. None of them read what it has PROMISED to hold, and eviction drives
+# those apart in the one direction that matters: discarding values something
+# still waits for LOWERS the resident total, so a controller reading it sees
+# room and opens more work. Measured on the sixty-case sweep, 2026-09-11:
+# 47,141 values pinned by unrun consumers against 4.0 GB resident under a
+# 7.3 GB budget, 1,608 loops open at once, and 9,160,188 recomputes against
+# 7,634,831 completions — the run redid more work than it did, at 1345% of a
+# 2400% ceiling.
+#
+# `NodeTable.unkept` is that failure as a LEVEL, and its defining property is
+# that evicting more cannot lower it.
+
+
+@pytest.mark.unit
+def test_unkept_counts_a_value_evicted_while_a_consumer_still_waits() -> None:
+    """Evicting a value something waits for is a broken promise, and counted."""
+    table = NodeTable()
+    consumers: dict[str, int] = {}
+    table._consumer_probe = consumers.get
+
+    table.set_value("v", [1, 2, 3])
+    assert table.unkept == 0
+
+    consumers["v"] = 1           # a consumer registered and has not run
+    table.evict("v")
+    assert table.unkept == 1, "an evicted value a consumer still needs is unkept"
+
+    table.set_value("v", [1, 2, 3])   # provided again, e.g. reloaded or recomputed
+    assert table.unkept == 0, "providing the value again keeps the promise"
+
+
+@pytest.mark.unit
+def test_unkept_ignores_a_value_nobody_is_waiting_for() -> None:
+    """Dropping garbage is not a broken promise; only a pinned value is."""
+    table = NodeTable()
+    table._consumer_probe = {}.get
+    table.set_value("v", [1, 2, 3])
+    table.evict("v")
+    assert table.unkept == 0
+
+
+@pytest.mark.unit
+def test_unkept_cannot_be_lowered_by_evicting_more() -> None:
+    """THE POINT OF THE COUNTER.
+
+    `accounted_bytes` falls as the engine evicts, which is why it reads
+    comfortable exactly when the engine is failing. `unkept` rises instead.
+    """
+    table = NodeTable()
+    consumers = {f"v{i}": 1 for i in range(5)}
+    table._consumer_probe = consumers.get
+    for nid in consumers:
+        table.set_value(nid, [0] * 100)
+    before_bytes = table.accounted_bytes
+
+    for nid in consumers:
+        table.evict(nid)
+
+    assert table.accounted_bytes < before_bytes, "resident bytes fall when evicting"
+    assert table.unkept == 5, "and the debt rises by exactly what was dropped"
+
+
+@pytest.mark.unit
+def test_the_admission_window_does_not_recover_while_a_promise_is_broken() -> None:
+    """The regression this whole mechanism exists for.
+
+    Bytes comfortably under budget and the queue starving: the old rule
+    recovered a window slot and opened another body. But if the engine is
+    already failing to keep values something waits for, the low byte count is
+    a CONSEQUENCE of that failure, and opening more work deepens it.
+    """
+    hard = 1_000_000
+    comfortable = hard // 8          # accounted * 2 < soft, so the old rule grew
+
+    healthy, _ = _admission_with(comfortable, qsize=0, workers=4, hard=hard,
+                                 idle=False, unkept=0)
+    healthy._window_now = 4
+    assert healthy._live_window() == 5, "with nothing owed, concurrency still grows"
+
+    failing, _ = _admission_with(comfortable, qsize=0, workers=4, hard=hard,
+                                 idle=False, unkept=1)
+    failing._window_now = 4
+    assert failing._live_window() == 2, "one broken promise halves the window"
+    assert failing._live_window() == 1, "and it keeps halving while the debt stands"
+    assert failing._live_window() == 1, "bottoming out at one: a loop must progress"

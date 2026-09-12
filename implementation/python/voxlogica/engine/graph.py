@@ -54,6 +54,10 @@ class DependencyGraph:
         self.incomplete: set[NodeId] = set()          # the frontier
         self.pending: dict[NodeId, int] = {}          # unmet deps before ready
         self.consumers: dict[NodeId, int] = {}        # unrun consumers holding a value
+        # The table counts a promise as broken when it evicts a value something
+        # still waits for; it needs this map to know. One bound method, no
+        # closure and no per-eviction cost beyond a dict lookup.
+        table._consumer_probe = self.consumers.get
         # holder -> nodes its VALUE names by handle (see hold_handles)
         self._handle_refs: dict[NodeId, tuple[NodeId, ...]] = {}
         # The table tells the graph when a value actually leaves it; see
@@ -320,6 +324,10 @@ class DependencyGraph:
             self.consumers[nid] = remaining
         else:
             del self.consumers[nid]  # drop the entry: state is frontier-only
+            # Nothing waits for it any more, so its absence is no longer a
+            # broken promise. Discard BEFORE the evict below, which would
+            # otherwise see a consumer count this line has already retired.
+            self.table._unkept.discard(nid)
             if nid not in self.protected:
                 self.table.evict(nid)
             # THE HOLDS GO WITH THE VALUE, NOT WITH THE LAST CONSUMER, and the

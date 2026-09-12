@@ -362,10 +362,22 @@ class LoopAdmission:
         can hold, and the same program adapts to a bigger or smaller machine.
         """
         accounted = self.graph.table.accounted_bytes
-        if accounted > self.soft_live_bytes:
+        # THE SIGNAL MUST INCLUDE WHAT WE OWE, NOT ONLY WHAT WE HOLD. Bytes
+        # alone are read through eviction: discarding values something still
+        # waits for LOWERS `accounted`, so the branch below used to recover a
+        # slot precisely when the engine was failing hardest, and opened more
+        # bodies. Measured on the sixty-case sweep, 2026-09-11: 47,141 values
+        # pinned by unrun consumers, 4.0 GB resident under a 7.3 GB budget,
+        # 1,608 loops open at once, 9.16 million recomputes against 7.63 million
+        # completions -- the run redid more work than it did, at 1345% of a
+        # 2400% ceiling. `unkept` is that failure as a level, and it cannot be
+        # lowered by evicting more (see NodeTable.unkept).
+        unkept = self.graph.table.unkept
+        if accounted > self.soft_live_bytes or unkept:
             self._window_now = max(1, self._window_now // 2)
             self.min_window_seen = min(self.min_window_seen, self._window_now)
-        elif accounted * 2 < self.soft_live_bytes and self._window_now < self.window:
+        elif (not unkept and accounted * 2 < self.soft_live_bytes
+                and self._window_now < self.window):
             self._window_now += 1
         return self._window_now
 

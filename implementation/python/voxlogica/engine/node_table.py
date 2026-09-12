@@ -125,6 +125,12 @@ class NodeTable:
         self._recompute_guard: Any = None
         #: Values held back by that guard, released when the run drains.
         self._held_unrecoverable: set[NodeId] = set()
+        #: Values a registered consumer still needs and that are NOT resident:
+        #: the promises this table is currently failing to keep. See `unkept`.
+        self._unkept: set[NodeId] = set()
+        #: Set by DependencyGraph: "how many unrun consumers does this have?"
+        #: `dict.get` with one argument, so a node nothing waits for reads None.
+        self._consumer_probe: Any = None
         self.completed: set[NodeId] = set()
         self._backend = backend if backend is not None and not isinstance(backend, NoCacheStorageBackend) else None
         # One snapshot query instead of one SELECT per scheduled node. The
@@ -234,7 +240,29 @@ class NodeTable:
         self.values[node_id] = value
         self._buffer_leases[node_id] = new_buffer_leases
         release_states(old_buffer_leases)
+        self._unkept.discard(node_id)   # the promise is kept again
         return size
+
+    @property
+    def unkept(self) -> int:
+        """How many values a registered consumer still needs are not resident.
+
+        THE NUMBER EVERY MEMORY CONTROL IN THIS ENGINE WAS MISSING. `live_bytes`
+        and `accounted_bytes` say what the table is *holding*; they say nothing
+        about what it has *promised to hold*, and eviction drives those two
+        apart in the one direction that matters: under thrash the resident total
+        FALLS, because the engine is discarding values it still owes, so every
+        controller that reads it concludes there is room and opens more work.
+
+        Measured on the sixty-case sweep, 2026-09-11: 47,141 values pinned by
+        unrun consumers against 4.0 GB resident under a 7.3 GB budget — 90% of
+        what the engine owed was absent, while `accounted_bytes` read
+        comfortable and the admission window kept recovering.
+
+        Zero is the set point. Above zero the engine is already failing to keep
+        what it promised, and opening more work can only deepen the failure.
+        """
+        return len(self._unkept)
 
     def _account_op(self, node_id: NodeId, delta: int) -> None:
         """Attribute a live-tier byte delta to the producing operator."""
@@ -599,6 +627,13 @@ class NodeTable:
         self._held_unrecoverable.discard(node_id)
         value = self.values.pop(node_id, _MISSING)
         if value is not _MISSING:
+            # A value that still has unrun consumers has just stopped being
+            # available to them. That is a promise broken, and it is counted
+            # HERE because eviction is the only way it can happen -- see
+            # `unkept`. Dropping the last consumer clears it (graph.release);
+            # so does providing the value again (set_value).
+            if self._consumer_probe is not None and self._consumer_probe(node_id):
+                self._unkept.add(node_id)
             # Forget the id only once its write has LANDED: from then on
             # `persisted` alone answers "already written", so the ledger stays
             # bounded by the live tier instead of growing once per node for the
