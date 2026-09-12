@@ -1441,3 +1441,167 @@ differ in more than the variable under test.** The remedy is that the process
 answer questions about itself while it runs, under cost rules strict enough that
 the answering does not disturb the thing being asked about — and that it record,
 in the same file as the timings, every parameter that moved while it ran.
+
+---
+
+# Part VIII — a controller regulating on a signal that inverts under overload (2026-09-11/12)
+
+## 40. The symptom, reached by three different routes
+
+A sixty-case parameter sweep (`brats027_oracle60.imgql`, 11.6 M runtime nodes
+from a 107,728-node static plan) collapsed from ~570 completions per second to a
+few per second, three times, under three configurations that have nothing
+obvious in common:
+
+1. with `--no-cache`, after fifty minutes: 570 → **3.7** node/s;
+2. with a disk tier that reached its `--cache-max-gb` bound: 512 → **124** node/s
+   within two minutes of touching the cap;
+3. with persistence switched off mid-run over the control channel of Part VII:
+   509 → **19.4** node/s over eleven hours.
+
+In all three the process stayed busy and reported no error. The shared mechanism
+is one sentence: **a value evicted from memory that has no durable copy is a
+recomputation**, and each configuration removes the durable copy by a different
+route. But that is the *cost* of the failure, not its cause. The cause is why the
+engine kept putting itself in that position.
+
+## 41. What the live engine said when asked
+
+Part VII's control channel made the question answerable without a restart.
+Interrogating the running sweep:
+
+| | |
+|---|---:|
+| interned node specs | 10,793,339 |
+| values with unrun consumers (promised) | **47,141** |
+| of those, resident | **4,808** |
+| of those, absent | **42,333 (90%)** |
+| values pinned by exactly **one** unrun consumer | **41,349 (84%)** |
+| loops open simultaneously | **1,608** |
+| live value bytes / governor budget | 4.0 GB / 7.3 GB |
+
+Two facts follow. First, **the engine had promised to retain about ten times what
+it could hold**. Second, **84% of that was a value waiting for a single consumer
+that had not been scheduled** — produce it, run that one consumer, and it dies
+immediately. The store's own eviction records agree: the median lifetime of a
+discarded distance transform, from creation to last use, was **one to three
+hours**.
+
+That is not a caching failure. A cache asked for ten times its size cannot hit,
+whatever its replacement policy, and the policy here is already careful —
+garbage first, then values with a disk copy (a reload), and only then the
+cheapest undurable ones, under a sacrifice bar that rises with pressure.
+
+## 42. The defect: the feedback signal is not monotonic in load
+
+Loop admission already had a controller of the right shape, and its intent was
+right: open more bodies while memory is comfortable, fewer while it is not, so
+that concurrency settles where the working set fits with no constant to choose.
+It was **additive-increase/multiplicative-decrease**: halve the window over the
+soft budget, grow it by one when comfortably under.
+
+Its input was resident bytes — *how full am I*.
+
+**Resident occupancy is not monotonic in load.** It rises with load up to the
+budget and then *falls*, because exceeding the budget is precisely what makes the
+engine start discarding values. Past that peak the controller reads low
+occupancy, concludes there is room, and increases the window. The loop closes the
+wrong way:
+
+> overload → evict → resident bytes fall → open more work → more overload.
+
+That is positive feedback, and 1,608 concurrently open loops with 90% of the
+promised working set absent is its fixed point. The completed run performed
+**9,160,188 recomputations against 7,634,831 completions — it redid more work
+than it did** — at 1345% of a 2400% ceiling and 77.8 ms of CPU per completion,
+against 41.5 ms for the same engine earlier in the same sweep.
+
+## 43. The change: regulate on the promise, not on the occupancy
+
+The controller is unchanged. Only its input is replaced, by a quantity the
+engine could always have computed and never did:
+
+> **`unkept`** — the number of values that a registered consumer still needs and
+> that are not resident. Raised when such a value is evicted; cleared when the
+> value is provided again, or when its last consumer goes away.
+
+Its defining property is the one the old signal lacked: **it cannot be lowered by
+discarding more, because discarding is what raises it.** It is zero while the
+working set fits and rises only once it does not. The window now halves while
+anything is owed and grows only when nothing is, so the loop closes the right
+way:
+
+> overload → a needed value is dropped → debt rises → window shrinks → less work
+> opened → debt falls.
+
+Fifty-seven lines across three files, most of them commentary; the logic is
+about eight. Four unit tests, all failing on the parent commit, one of which is
+the discriminating case: resident bytes fall while the debt rises.
+
+## 44. Result
+
+A cold rerun of the identical sweep, in progress at the time of writing, against
+the two runs it must be compared with:
+
+| | earlier cold run | completed run (old policy) | **new policy, at 1:10** |
+|---|---:|---:|---:|
+| throughput | 451.8 node/s | 173.0 node/s | **419–510 node/s** |
+| mean CPU | 1876.9% | 1345.2% | **2011–2207%** |
+| recomputations / completions | 13.3% | **120%** | **3.5%** |
+| `unkept` | — | (≈42,000 equivalent) | **385, falling** |
+| loops open | — | **1,608** | **307, stable** |
+
+The controller's action is visible in the trace: the window sat at its full 32
+while nothing was owed, dropped to 1 within seconds of the first broken promise,
+held breadth at 307 loops, and the debt then *fell*. **This is a run in progress
+and the claim is provisional**: what is established is that the first seventy
+minutes behave as predicted, in the interval where the old policy had already
+begun to diverge.
+
+## 45. What is standard here, and what we re-derived
+
+Little of this is new, and the honest position is that the engine re-derived
+several results it should have reused. Named so a reader can go to the sources
+rather than to us:
+
+- **Working-set thrashing and load control** (Denning). A process whose working
+  set exceeds its allotment thrashes, and the remedy is to reduce the degree of
+  multiprogramming — *suspend work* — not to page harder. Our conclusion, that
+  admission and not replacement is the lever, is that result.
+- **Page-fault-frequency replacement** (Denning). Regulate on the *fault rate*,
+  not on occupancy. `unkept` is a page-fault-frequency signal in all but name,
+  and had we started from PFF the defect would not have been written.
+- **AIMD congestion control**, and specifically the distinction between
+  **loss-based and occupancy-based** signals. Our controller was already AIMD;
+  its failure — an occupancy signal that stops being informative exactly at
+  saturation — is the same one that makes buffer-occupancy signalling
+  unsatisfactory in networks, and the reason loss (or delay) is preferred.
+- **Memory grants / admission control in database engines.** A query reserves its
+  memory before it begins and waits if the reservation cannot be met. That
+  discipline is strictly stronger than our reactive throttle, because it never
+  over-commits in the first place; we throttle after the first broken promise.
+- **Graph-ordering in task-parallel schedulers.** Dataflow schedulers that
+  materialise many independent branches before consuming any of them exhibit
+  exactly our 84%-waiting-on-one-consumer signature, and the known remedy is to
+  order the graph so a consumer follows its producer (a depth-first, priority-
+  ordered traversal) rather than to enlarge the cache. Our ready queue is already
+  LIFO within a priority band; what is *not* ordered is registration, and that
+  is where our breadth is created.
+- **GreedyDual-Size** (Cao and Irani) is already used for the disk tier, and
+  behaved correctly throughout: it evicted the large, cheap-per-byte distance
+  transforms first and kept the small expensive ones, and never once evicted a
+  value still in use.
+
+The reusable lesson, stated so that it does not need our numbers: **a scheduler
+that regulates admission on memory occupancy is regulating on a quantity that
+stops being monotone in load exactly when regulation starts to matter.** The
+quantity that stays monotone is the one that counts broken promises.
+
+## 46. What this part claims
+
+That a memory-bounding policy can be correct in every component and still fail as
+a system, because the loop connecting them closes on the wrong sign; that the
+failure is invisible to the instrument of Part VI, which reports occupancy
+faithfully while occupancy is the misleading number; and that the repair is not a
+better cache but a different *input* to a controller that was otherwise already
+right.
