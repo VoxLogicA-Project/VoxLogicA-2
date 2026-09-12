@@ -320,15 +320,27 @@ class LoopAdmission:
         """
         if job.in_flight >= self._live_window():
             return False
-        # THE GRANT. Reserve before starting, and refuse when the reservation
-        # cannot be met, rather than admitting and discovering later that a
-        # value something still needs had to be thrown away. `accounted` is what
-        # is held, `_granted_bytes` what is already promised to bodies still
-        # running, and `grant` what this one is expected to cost.
-        grant = self._grant_estimate()
-        if grant and (self.graph.table.accounted_bytes + self._granted_bytes
-                      + grant > self.soft_live_bytes):
-            return self._wedge_escape()
+        # THE GRANT GATE IS OFF, AND THE REFUTATION IS RECORDED HERE.
+        #
+        # Reserving before starting is the right discipline (Mehta and DeWitt
+        # 1993; Davison and Graefe 1995) and the reservation is still tracked
+        # below as a metric. What was wrong is the ESTIMATE: `_grant_estimate`
+        # divides peak RESIDENT bytes by the bodies in flight at that peak,
+        # which attributes the whole live tier -- shared values, loop captures,
+        # the static plan's own values -- to whichever bodies happened to be
+        # open. Early in a run one body is open while resident bytes are already
+        # large, so the estimate takes a fixed cost for a marginal one.
+        #
+        # Measured immediately, 2026-09-12, warm run 6: estimate 13,563 MB PER
+        # BODY against a 15,493 MB soft budget, so a second body could never be
+        # admitted; `_in_flight_total` stuck at 1, ready queue at 0-1, 0-2
+        # kernels running, throughput 214 node/s and falling, against the 536
+        # node/s the same sweep held with `unkept` back-pressure alone.
+        #
+        # A grant needs the MARGINAL cost of one more body -- the slope of
+        # resident bytes against concurrency -- not the average. That is
+        # measurable (this accounting is what measures it) and it is the next
+        # step, but it must be measured before it is enforced.
         if self._blocked():
             # The process is at its RSS ceiling. Opening another body adds
             # resident bytes the engine has no way to release in time, and the

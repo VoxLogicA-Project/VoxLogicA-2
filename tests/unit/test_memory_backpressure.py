@@ -1282,33 +1282,29 @@ def test_a_body_reserves_its_estimated_cost_before_it_runs() -> None:
 
 
 @pytest.mark.unit
-def test_admission_refuses_when_the_reservation_cannot_be_met() -> None:
-    """Held + already promised + this one's cost must fit under the soft budget.
+def test_the_average_estimate_is_not_the_marginal_cost_of_a_body() -> None:
+    """WHY THE GRANT GATE IS OFF. The counterexample that refuted it.
 
-    The queue is starving and the window is open, so every other rule in
-    `_has_room` says admit. The grant is the only thing that refuses — and it
-    refuses BEFORE anything has been thrown away, which is the whole point.
+    `_grant_estimate` divides peak RESIDENT bytes by the bodies in flight at
+    that peak, so it attributes the whole live tier -- shared values, loop
+    captures, the static plan's own values -- to whichever bodies happened to be
+    open. With one body open and a live tier already large, it returns a fixed
+    cost as if it were a marginal one.
+
+    Measured on the warm run of 2026-09-12: 13,563 MB per body against a
+    15,493 MB soft budget, so a second body could never have been admitted.
+    Throughput fell to 214 node/s from the 536 node/s the same sweep held with
+    `unkept` back-pressure alone.
     """
-    soft = 10_000
-    adm, job = _admission_with(6_000, qsize=0, workers=4, hard=1_000_000, idle=False)
-    adm.soft_live_bytes = soft
-    adm._peak_accounted, adm._peak_in_flight = 6_000, 2    # 3,000 per body
+    adm, _ = _admission_with(0, qsize=0, workers=4, hard=1_000_000, idle=False)
+    adm.soft_live_bytes = 15_493
+    adm._in_flight_total = 1                      # one body open, early in a run
+    adm.graph.table.accounted_bytes = 13_563      # and the live tier is already large
 
-    adm._granted_bytes = 0
-    assert adm._has_room(job) is True, "6,000 held + 3,000 fits under 10,000"
-
-    adm._granted_bytes = 2_000
-    assert adm._has_room(job) is False, "6,000 + 2,000 promised + 3,000 does not fit"
-
-
-@pytest.mark.unit
-def test_a_refused_reservation_still_breaks_a_true_wedge() -> None:
-    """A run with nothing running and nothing ready must never deadlock here."""
-    adm, job = _admission_with(6_000, qsize=0, workers=4, hard=1_000_000, idle=True)
-    adm.soft_live_bytes = 10_000
-    adm._peak_accounted, adm._peak_in_flight = 6_000, 2
-    adm._granted_bytes = 5_000                     # reservation cannot be met
-    assert adm._has_room(job) is True, "the wedge escape outranks the grant"
+    estimate = adm._grant_estimate()
+    assert estimate == 13_563, "the average charges one body for the whole tier"
+    assert estimate + estimate > adm.soft_live_bytes, (
+        "so two bodies could never fit, which is what starved the run")
 
 
 @pytest.mark.unit
