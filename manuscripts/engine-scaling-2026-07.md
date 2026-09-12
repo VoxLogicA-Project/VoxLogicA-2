@@ -1605,3 +1605,96 @@ failure is invisible to the instrument of Part VI, which reports occupancy
 faithfully while occupancy is the misleading number; and that the repair is not a
 better cache but a different *input* to a controller that was otherwise already
 right.
+
+## 47. The literature this part stands on
+
+§45 names the results; this section cites them, and states for each what the
+engine should have taken from it. **These citations are from recall and must be
+checked against the sources before the paper goes out** — the claims about what
+each says are the load-bearing part, not the page numbers.
+
+### The problem is classical: evaluating a DAG in bounded memory
+
+- **Hong, J.-W. and Kung, H.T. (1981). "I/O complexity: the red-blue pebble
+  game." STOC '81, 326–333.** The canonical formalisation of exactly our
+  problem: given a DAG and a memory of *S* values, how much traffic to slow
+  storage must any evaluation incur? Our "a value evicted without a durable copy
+  is a recomputation" is the *black* pebble variant, where recomputation
+  replaces I/O. The right frame for the paper: the engine is playing this game
+  badly, not caching badly.
+- **Sethi, R. and Ullman, J.D. (1970). "The generation of optimal code for
+  arithmetic expressions." JACM 17(4), 715–728.** The evaluation order that
+  minimises simultaneously live values, optimally, for trees. This is precisely
+  the depth-first "run a value's consumer before opening new work" intuition,
+  and it has been solved for the tree case for fifty-five years.
+- **Sethi, R. (1975). "Complete register allocation problems." SIAM Journal on
+  Computing 4(3), 226–248.** The same problem on a DAG is NP-complete — which is
+  why a heuristic (ours, or Dask's) is the honest target, and why *bounding*
+  breadth is more defensible than *optimising* order.
+
+### Thrashing and load control: the fix is admission, not replacement
+
+- **Denning, P.J. (1968). "The working set model for program behavior."
+  CACM 11(5), 323–333.**
+- **Denning, P.J. (1968). "Thrashing: its causes and prevention." AFIPS Fall
+  Joint Computer Conference, 915–922.** The result we re-derived: a process
+  whose working set exceeds its allotment thrashes, and the remedy is to reduce
+  the degree of multiprogramming — *suspend work* — not to page harder.
+- **Denning, P.J. (1980). "Working sets past and present." IEEE TSE SE-6(1),
+  64–84.** Load-control criteria (the L=S and 50% rules) for deciding *how much*
+  to suspend.
+- **Chu, W.W. and Opderbeck, H. (1976). "Program behavior and the page-fault-
+  frequency replacement algorithm." IEEE Computer 9(11), 29–38.** Regulate on
+  the *fault rate*, not on occupancy. `unkept` is a page-fault-frequency signal
+  in all but name; had this engine started from PFF, Part VIII's defect could
+  not have been written.
+
+### The control law, and why the signal matters more than the law
+
+- **Chiu, D.-M. and Jain, R. (1989). "Analysis of the increase and decrease
+  algorithms for congestion avoidance in computer networks." Computer Networks
+  and ISDN Systems 17(1), 1–14.** AIMD, which our admission window already was.
+- **Jacobson, V. (1988). "Congestion avoidance and control." SIGCOMM '88,
+  314–329.**
+- **Gettys, J. and Nichols, K. (2011). "Bufferbloat: dark buffers in the
+  internet." ACM Queue 9(11)**, and **Nichols, K. and Jacobson, V. (2012).
+  "Controlling queue delay." ACM Queue 10(5).** The closest analogue to our
+  defect: an occupancy signal that stops being informative exactly at
+  saturation, and the move to a signal (loss, or sojourn delay) that does not.
+
+### Reserve before you start
+
+- **Mehta, M. and DeWitt, D.J. (1993). "Dynamic memory allocation for multiple-
+  query workloads." VLDB, 354–367.**
+- **Davison, D.L. and Graefe, G. (1995). "Dynamic resource brokering for
+  multi-user query execution." SIGMOD, 281–292.** The memory-grant discipline:
+  an operator reserves its working memory before it begins and waits if the
+  reservation cannot be met. Strictly stronger than reacting after the fact,
+  and now implemented here.
+
+### Replacement, where the engine was already right
+
+- **Cao, P. and Irani, S. (1997). "Cost-aware WWW proxy caching algorithms."
+  USENIX Symposium on Internet Technologies and Systems, 193–206.**
+  GreedyDual-Size, already used for the disk tier, and it behaved correctly
+  throughout: it evicted the large, cheap-per-byte distance transforms first,
+  kept the small expensive values, and never once evicted a value still in use.
+
+### Task-graph schedulers with the same symptom
+
+- **Rocklin, M. (2015). "Dask: parallel computation with blocked algorithms and
+  task scheduling." Proc. 14th Python in Science Conference, 130–136**, and
+  Dask's static ordering heuristic (`dask.order`), which exists to make
+  consumers follow their producers rather than materialising many independent
+  branches. The "84% of the retained set waiting on exactly one unscheduled
+  consumer" signature of §41 is that failure mode, and the remedy in the
+  literature is graph ordering, not a larger cache.
+
+**How the paper should be framed, given all of this.** Not as "we invented a
+memory policy". As: *a dataflow engine at production scale reproduced a
+fifty-year-old thrashing failure, because its controller regulated on occupancy,
+which is not monotone in load; the repair is a page-fault-frequency signal and a
+memory grant, both standard, and the contribution is the measurement — a
+complete, instrumented account of the failure mode in a modern task-parallel
+engine, with the mechanism identified live and the repair validated by
+intervention.*
