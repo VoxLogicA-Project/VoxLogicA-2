@@ -134,6 +134,18 @@ class LoopAdmission:
         self.min_window_seen = self.window  # metric: how far memory pushed it down
         self._jobs: dict[NodeId, _Job] = {}
         self._body_owner: dict[NodeId, _Job] = {}
+        # MEMORY GRANTS. Bytes reserved for bodies that have been admitted and
+        # have not completed, so the engine never over-commits and then
+        # discovers it. Database engines have done this for decades under the
+        # name "memory grant": a query reserves before it begins and waits if
+        # the reservation cannot be met. It is strictly stronger than throttling
+        # after the fact, which only reacts once a value something still needs
+        # has already been thrown away. See `_grant_estimate`.
+        self._grants: dict[NodeId, int] = {}
+        self._granted_bytes = 0
+        self._in_flight_total = 0
+        self._peak_accounted = 0
+        self._peak_in_flight = 0
         # Closure-capture holds released when the owning loop finishes expanding.
         self.capture_holds: dict[NodeId, tuple[NodeId, ...]] = {}
         # One thread: reduction is GIL-bound; more threads would only contend.
@@ -308,6 +320,15 @@ class LoopAdmission:
         """
         if job.in_flight >= self._live_window():
             return False
+        # THE GRANT. Reserve before starting, and refuse when the reservation
+        # cannot be met, rather than admitting and discovering later that a
+        # value something still needs had to be thrown away. `accounted` is what
+        # is held, `_granted_bytes` what is already promised to bodies still
+        # running, and `grant` what this one is expected to cost.
+        grant = self._grant_estimate()
+        if grant and (self.graph.table.accounted_bytes + self._granted_bytes
+                      + grant > self.soft_live_bytes):
+            return self._wedge_escape()
         if self._blocked():
             # The process is at its RSS ceiling. Opening another body adds
             # resident bytes the engine has no way to release in time, and the
@@ -342,6 +363,44 @@ class LoopAdmission:
             # turns "OOM" into "slower": production drops to writer speed.
             return self._wedge_escape()
         return self.ready.qsize() < self.workers
+
+    def _grant_estimate(self) -> int:
+        """What one more body is expected to cost, learned from this run.
+
+        MEASURED, NOT CONFIGURED, and deliberately coarse. The engine has no
+        per-body attribution -- a body's subtree is thousands of nodes and its
+        values are shared with its siblings -- so the estimate is the high-water
+        resident total divided by how many bodies were in flight when that peak
+        was reached.
+
+        It errs UPWARD as bodies grow, which is the safe direction: a grant that
+        is too large refuses an admission, and a refusal costs concurrency the
+        workers recover as soon as a slot frees, while an over-commitment costs
+        a recomputation that nothing recovers.
+
+        Zero until a peak has been seen with at least one body in flight, so the
+        first bodies of a run are never blocked by an estimate that does not
+        exist yet.
+        """
+        accounted = self.graph.table.accounted_bytes
+        if accounted > self._peak_accounted and self._in_flight_total > 0:
+            self._peak_accounted = accounted
+            self._peak_in_flight = self._in_flight_total
+        if not self._peak_in_flight:
+            return 0
+        return self._peak_accounted // self._peak_in_flight
+
+    def _reserve(self, body: NodeId) -> None:
+        """Hold the grant this body was admitted against."""
+        grant = self._grant_estimate()
+        self._grants[body] = grant
+        self._granted_bytes += grant
+        self._in_flight_total += 1
+
+    def _release(self, body: NodeId) -> None:
+        """Give the grant back; the body is done and its bytes are accounted."""
+        self._granted_bytes -= self._grants.pop(body, 0)
+        self._in_flight_total = max(0, self._in_flight_total - 1)
 
     def _live_window(self) -> int:
         """How many bodies of ONE loop may be open right now, from live memory.
@@ -402,6 +461,7 @@ class LoopAdmission:
             if body in self.graph.incomplete:      # shared with another goal/loop
                 self._body_owner.setdefault(body, job)
                 job.in_flight += 1
+                self._reserve(body)
             elif self._available(body):            # completed or on disk: no slot
                 # Nothing was scheduled, so no completion is coming to re-arm a
                 # spent wedge escape — give the token back, or an idle run that
@@ -411,6 +471,7 @@ class LoopAdmission:
             else:
                 self._body_owner[body] = job
                 job.in_flight += 1
+                self._reserve(body)
                 self._schedule(body, job.priority)
 
     def on_trivial_complete(self, nid: NodeId) -> None:
@@ -432,6 +493,7 @@ class LoopAdmission:
         if job is None:
             return
         job.in_flight -= 1
+        self._release(nid)
         self._escape_spent = False
         self.wake_jobs()
 
@@ -445,6 +507,7 @@ class LoopAdmission:
         job = self._body_owner.pop(nid, None)
         if job is not None:
             job.in_flight -= 1
+            self._release(nid)
         # A completion is the proof of progress the ceiling escape waits for:
         # re-arm it (see _has_room) so a genuinely wedged run keeps moving,
         # one body per completion, instead of admitting a burst at the ceiling.

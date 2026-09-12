@@ -107,6 +107,11 @@ def _admission_with(accounted: int, qsize: int, *, workers: int, hard: int,
     adm.min_window_seen = adm.window
     adm._body_owner = {}   # on_complete: no owning job for the stubbed node
     adm._jobs = {}         # wake_jobs: nothing paused to nudge
+    adm._grants = {}       # memory grants: nothing reserved unless a test does
+    adm._granted_bytes = 0
+    adm._in_flight_total = 0
+    adm._peak_accounted = 0
+    adm._peak_in_flight = 0
     return adm, _Job(loop_id="loop", priority=0)
 
 
@@ -1234,3 +1239,88 @@ def test_the_admission_window_does_not_recover_while_a_promise_is_broken() -> No
     assert failing._live_window() == 2, "one broken promise halves the window"
     assert failing._live_window() == 1, "and it keeps halving while the debt stands"
     assert failing._live_window() == 1, "bottoming out at one: a loop must progress"
+
+
+# ── Memory grants: reserve before starting, refuse if the reservation fails ──
+#
+# Throttling after a promise is broken is reactive: by the time `unkept` rises,
+# a value something still needs has already been discarded and its recomputation
+# is already owed. Database engines have reserved before starting for decades
+# ("memory grants"): a query waits until its reservation can be met. These pin
+# the same discipline for loop bodies.
+#
+# The estimate is learned from the run, not configured, and errs UPWARD — a
+# grant that is too large refuses an admission, and a refusal costs concurrency
+# the workers recover as soon as a slot frees, while an over-commitment costs a
+# recomputation that nothing recovers.
+
+
+@pytest.mark.unit
+def test_no_estimate_yet_never_blocks_the_first_bodies() -> None:
+    """Before any peak has been seen there is nothing to reserve against."""
+    adm, job = _admission_with(10, qsize=0, workers=4, hard=1_000_000, idle=False)
+    adm.soft_live_bytes = 1_000_000
+    assert adm._grant_estimate() == 0
+    assert adm._has_room(job) is True
+
+
+@pytest.mark.unit
+def test_a_body_reserves_its_estimated_cost_before_it_runs() -> None:
+    """Admitting holds the grant; completing gives it back."""
+    adm, _ = _admission_with(8_000, qsize=0, workers=4, hard=1_000_000, idle=False)
+    adm._peak_accounted, adm._peak_in_flight = 8_000, 4    # 2,000 bytes per body
+
+    adm._reserve("body-1")
+    assert adm._granted_bytes == 2_000
+    adm._reserve("body-2")
+    assert adm._granted_bytes == 4_000
+
+    adm._release("body-1")
+    assert adm._granted_bytes == 2_000
+    adm._release("body-2")
+    assert adm._granted_bytes == 0
+
+
+@pytest.mark.unit
+def test_admission_refuses_when_the_reservation_cannot_be_met() -> None:
+    """Held + already promised + this one's cost must fit under the soft budget.
+
+    The queue is starving and the window is open, so every other rule in
+    `_has_room` says admit. The grant is the only thing that refuses — and it
+    refuses BEFORE anything has been thrown away, which is the whole point.
+    """
+    soft = 10_000
+    adm, job = _admission_with(6_000, qsize=0, workers=4, hard=1_000_000, idle=False)
+    adm.soft_live_bytes = soft
+    adm._peak_accounted, adm._peak_in_flight = 6_000, 2    # 3,000 per body
+
+    adm._granted_bytes = 0
+    assert adm._has_room(job) is True, "6,000 held + 3,000 fits under 10,000"
+
+    adm._granted_bytes = 2_000
+    assert adm._has_room(job) is False, "6,000 + 2,000 promised + 3,000 does not fit"
+
+
+@pytest.mark.unit
+def test_a_refused_reservation_still_breaks_a_true_wedge() -> None:
+    """A run with nothing running and nothing ready must never deadlock here."""
+    adm, job = _admission_with(6_000, qsize=0, workers=4, hard=1_000_000, idle=True)
+    adm.soft_live_bytes = 10_000
+    adm._peak_accounted, adm._peak_in_flight = 6_000, 2
+    adm._granted_bytes = 5_000                     # reservation cannot be met
+    assert adm._has_room(job) is True, "the wedge escape outranks the grant"
+
+
+@pytest.mark.unit
+def test_the_estimate_is_learned_and_errs_upward() -> None:
+    """Peak resident divided by the bodies in flight when that peak was seen."""
+    adm, _ = _admission_with(0, qsize=0, workers=4, hard=1_000_000, idle=False)
+    adm._in_flight_total = 4
+
+    adm.graph.table.accounted_bytes = 40_000
+    assert adm._grant_estimate() == 10_000, "40,000 over 4 bodies"
+
+    # Resident falls (eviction). The estimate must NOT fall with it: the peak is
+    # what a body costs, and a low reading under eviction is the misleading one.
+    adm.graph.table.accounted_bytes = 1_000
+    assert adm._grant_estimate() == 10_000
