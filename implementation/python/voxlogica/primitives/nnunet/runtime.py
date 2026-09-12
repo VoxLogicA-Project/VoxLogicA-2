@@ -61,6 +61,19 @@ def nnunet_command(name: str) -> str:
         candidate = Path(env["VIRTUAL_ENV"]) / "bin" / name
         if candidate.exists():
             return str(candidate)
+    # THE INTERPRETER IS THE ENVIRONMENT, and it is the only one of these three
+    # that cannot be missing. `VIRTUAL_ENV` is set by `activate` and by nothing
+    # else, and `shutil.which` reads a PATH that a venv only joins the same way
+    # -- so a run launched as `/path/to/.venv/bin/python -m voxlogica ...`, which
+    # is how every measured run on the test host and every ssh command is
+    # launched, had neither, fell through to the bare name, and died with
+    # "[Errno 2] No such file or directory: 'nnUNetv2_plan_and_preprocess'"
+    # while the executable sat in the very venv that was running. A console
+    # script installed by pip lives next to the interpreter it was installed
+    # for, so `sys.executable` answers this without an environment at all.
+    candidate = Path(sys.executable).parent / name
+    if candidate.exists():
+        return str(candidate)
     return shutil.which(name) or name
 
 
