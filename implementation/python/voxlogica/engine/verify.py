@@ -148,9 +148,33 @@ class Verifier:
     # ── the clauses ──────────────────────────────────────────────────────────
 
     def _producer_of(self, dep: NodeId, ready_set: set[NodeId],
-                     job_owned: set[NodeId]) -> str | None:
-        """Why `dep` will arrive, or None if nothing is producing it."""
+                     job_owned: set[NodeId], *, transitive: bool = False) -> str | None:
+        """Why `dep` will arrive, or None if nothing is producing it.
+
+        `transitive` decides whether "registered, and waiting for its own
+        dependencies" counts as being produced. It must, while the engine is
+        RUNNING, and it must not at drain.
+
+        WHY, measured. Production is transitive and this test was not: a
+        dependency two or three levels down a chain that is being worked on has
+        no producer by the non-transitive definition, and it stays that way for
+        longer than one check interval, so phase-one confirmation re-confirmed
+        it instead of filtering it. On the sixty-case sweep that printed **~460
+        violations per periodic check for hours while the run was healthy** --
+        32 printed ids across 32 printed lines with zero repeats, a population
+        turning over completely rather than accumulating.
+
+        The cost of that noise is not the lines. It is that BOTH real failures
+        of 2026-09-11/12 -- an unresolved goal at drain and a hard deadlock --
+        were caught by clause (T), never by (P), while (P) was crying wolf. A
+        checker that is always firing cannot report anything.
+
+        At drain the engine is quiescent: nothing is in flight, so "on the
+        frontier" is no longer an excuse and the strict test is the correct
+        one. That is where (P) has teeth, and it keeps them.
+        """
         engine, table = self._engine, self._engine.table
+        graph = engine.graph
         if dep in table.values or dep in table.completed:
             return "already available"
         if table.is_running(dep):
@@ -161,6 +185,11 @@ class Verifier:
             return "expansion job"
         if dep in getattr(engine, "_alias", ()):  # forwarded from its target
             return "aliased"
+        if transitive and dep in graph.incomplete:
+            # Registered and waiting for its own inputs: the scheduler has it,
+            # and it arrives when they do. Only sound while something is
+            # running -- see the docstring.
+            return "on the frontier"
         try:
             if table.persisted(dep):
                 return "on disk"
@@ -169,8 +198,8 @@ class Verifier:
         return None
 
     def check_progress(self, nodes: Iterable[NodeId], ready_set: set[NodeId],
-                       job_owned: set[NodeId]) -> list[Violation]:
-        """(P) on the given frontier nodes."""
+                       job_owned: set[NodeId], *, transitive: bool = False) -> list[Violation]:
+        """(P) on the given frontier nodes; see `_producer_of` for `transitive`."""
         engine, graph, table = self._engine, self._engine.graph, self._engine.table
         out: list[Violation] = []
         for nid in nodes:
@@ -182,7 +211,8 @@ class Verifier:
             # `await_one` is used for loop splicing and for handle references --
             # so an empty `unmet` here is not itself a violation; what matters
             # is whether ANYTHING it could be waiting for has a producer.
-            producers = {d: self._producer_of(d, ready_set, job_owned) for d in unmet}
+            producers = {d: self._producer_of(d, ready_set, job_owned, transitive=transitive)
+                         for d in unmet}
             if unmet and all(v is None for v in producers.values()):
                 node = table.nodes.get(nid)
                 out.append(Violation(
@@ -332,7 +362,7 @@ class Verifier:
         # violation is not a sampling artefact.
         standing = [nid for nid in self._candidates
                     if nid in self._engine.graph.incomplete]
-        confirmed = self.check_progress(standing, ready_set, job_owned)
+        confirmed = self.check_progress(standing, ready_set, job_owned, transitive=True)
         self.transients += len(self._candidates) - len(standing) - len(confirmed)
         self._candidates = {nid: completed for nid in
                             (v.node for v in confirmed) if nid}
@@ -341,7 +371,7 @@ class Verifier:
         frontier = list(self._engine.graph.incomplete)
         if len(frontier) > self._sample:
             frontier = random.sample(frontier, self._sample)
-        for v in self.check_progress(frontier, ready_set, job_owned):
+        for v in self.check_progress(frontier, ready_set, job_owned, transitive=True):
             if v.node:
                 self._candidates.setdefault(v.node, completed)
         self._report(confirmed + self.check_termination(), where="periodic")
