@@ -39,7 +39,7 @@ from voxlogica.engine.concurrency_probe import ConcurrencyProbe
 from voxlogica.engine.config import EngineConfig
 from voxlogica.engine import inflight
 from voxlogica.engine.executor import Executor
-from voxlogica.engine.expander import Expander
+from voxlogica.engine.expander import Expander, EXPANSION_FORMAT
 from voxlogica.engine.calibration import load_cached_itk_threads
 from voxlogica.buffer_pool import pool_stats, set_limit_bytes, trim_pool
 from voxlogica.diagnostics.exceptions import NodeExecutionError
@@ -470,6 +470,9 @@ class ComputationEngine:
         self._persist_min_ms = float(self.config.persist_min_compute_ms)
         self._dev_stop_after = int(getattr(self.config, "dev_stop_after", 0) or 0)
         self._dev_stop = 0      # completions at which the dev guard tripped
+        self._memo_write_failures = 0   # expansions whose memo could not be stored
+        self._memo_hits = 0             # loops answered from the store, not reduced
+        self._memo_misses = 0           # loops with no usable memo, so expanded
         self._register_knobs()
 
         # ── Schedule-time fusion (engine/fusion.py) ──
@@ -1609,6 +1612,37 @@ class ComputationEngine:
             else:
                 self._dispatch_pins[dep] = remaining
 
+    def _memoise_expansion(self, loop_id: NodeId, seq_id: NodeId) -> None:
+        """Record that this loop expands into this sequence -- specs FIRST.
+
+        PUBLICATION ORDER IS THE WHOLE SAFETY ARGUMENT. A later run that finds
+        this memo prunes the loop and never expands it, so a memo whose element
+        specs are not on disk poisons the store for every run after it. That is
+        measured, not feared: on 2026-09-10 one `for_loop` row named 225 handles
+        of which 0 had a spec, and every warm run against that store died 37
+        seconds in with `NeedsExpansion` raised on a pool thread, where the
+        engine cannot register an expansion.
+
+        So the lineage buffer is flushed and the writers drained before the memo
+        row is written. A crash in between leaves specs with no memo, which
+        costs nothing: specs are INSERT OR IGNORE and the loop simply expands.
+        The reverse order is the one that cannot be recovered from.
+
+        Best effort throughout. A memo that fails to write costs a future run
+        one expansion; an exception here would cost this run its loop.
+        """
+        backend = getattr(self.table, "_backend", None)
+        if backend is None or not hasattr(backend, "put_expansion"):
+            return
+        try:
+            self.table.flush_lineage()
+            persister = getattr(self.table, "_persister", None)
+            if persister is not None:
+                persister.flush()
+            backend.put_expansion(loop_id, seq_id, EXPANSION_FORMAT)
+        except Exception:                                       # noqa: BLE001
+            self._memo_write_failures += 1
+
     def _on_spliced(self, loop_id: NodeId, seq_id: NodeId, priority: int) -> None:
         """A loop finished expanding: forward its value from the spliced sequence.
 
@@ -1620,6 +1654,7 @@ class ComputationEngine:
         self._alias[loop_id] = seq_id
         self.graph.pin(seq_id)
         self._priority[seq_id] = max(self._priority.get(seq_id, 0), priority)
+        self._memoise_expansion(loop_id, seq_id)
         # THE RETURN VALUE IS THE CONTRACT, not a convenience. `await_one`
         # refuses a wait on a dependency that has already completed, because
         # its arrival has been announced and will not be announced again --

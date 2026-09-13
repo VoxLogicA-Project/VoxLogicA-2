@@ -32,6 +32,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from voxlogica.engine.node_table import NodeTable
+
+#: Identity of the expansion this engine produces. A memoised expansion is keyed
+#: by it, so a changed expander invalidates every memo instead of silently
+#: reusing specs it would no longer produce. BUMP THIS whenever reduction can
+#: yield different node ids for the same loop -- a changed hash input, a changed
+#: canonical form, a changed body rewrite. Getting it wrong does not corrupt
+#: anything (every spec is re-hashed on read and a mismatch is discarded), it
+#: only makes a warm run quietly re-expand.
+EXPANSION_FORMAT = "1"
 from voxlogica.lazy.ir import NodeId, NodeSpec
 from voxlogica.handles import Handle
 from voxlogica.parser import parse_expression_content
