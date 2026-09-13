@@ -88,8 +88,18 @@ def test_partial_warm_cache_completes(tmp_path: Path, monkeypatch) -> None:
     metrics_warm = engine_warm.metrics()
     backend.close()
     assert value_warm == value_cold == float(sum(range(6)))
-    # The loop re-expanded, but every body was pruned as disk-available.
-    assert metrics_warm["expanded_loops"] == 1
+    # THE LOOP IS NO LONGER RE-EXPANDED, and that is the point of the exercise
+    # rather than a regression. This used to assert `expanded_loops == 1`: the
+    # warm run re-derived every element id by reducing the body again, purely to
+    # discover ids whose VALUES were already on disk, and then pruned all of
+    # them. With the expansion memo the engine reads the spliced sequence and
+    # its spec closure from the store and splices directly, so the reduction
+    # does not happen at all.
+    #
+    # The property the test exists for is untouched and still asserted: a
+    # partially warm store completes, with the same value and less work.
+    assert metrics_warm["expanded_loops"] == 0, (
+        "a memoised expansion must be read, not re-derived")
     assert metrics_warm["kernels_executed"] < kernels_cold
 
 
