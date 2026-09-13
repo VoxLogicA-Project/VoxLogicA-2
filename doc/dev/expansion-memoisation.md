@@ -272,3 +272,175 @@ prune at sixty nodes, which is most of the benefit of §3 without needing the
 expansion memoisation at all — the engine still re-expands, but it expands into
 subtrees it immediately prunes. §3 then removes the remaining cost, which is the
 expansion itself.
+
+---
+
+## 8. Store-guided scheduling: walk the sparse DAG in the store, and expand only into what must be computed
+
+§3 removes the cost of *naming* and §7 removes the cost of *holes*. This section
+puts them together into the scheduling discipline they enable, which is the one
+the engine should have had from the start: **do not build the plan and then prune
+it — consult the store first and build only what is missing.**
+
+### 8.1 What the store actually is
+
+A store is a **sparse clone of the DAG**: a spec table that knows the shape of
+some nodes, a result table that holds values for some of them, and tombstones
+recording that others were produced once and discarded. Today the engine treats
+it as a lookup table consulted *after* the plan exists. It is better understood
+as a partial answer to the question the plan is asking, and the scheduler should
+start from it.
+
+### 8.2 The algorithm
+
+Goal-directed, demand-driven, with an explicit stack. Written out with the
+reasoning attached, because every clause here is load-bearing:
+
+```python
+def must_compute(goals):
+    """The nodes this run has to produce, and nothing else.
+
+    STACK, NOT QUEUE, and it is not a detail. A depth-first walk finishes a
+    node's subtree before opening a sibling, so the number of values that must
+    be simultaneously live is proportional to the DEPTH of the DAG. Breadth-first
+    makes it proportional to the WIDTH -- which on a sixty-case sweep is sixty
+    whole cases at once, and is precisely the shape that produced 47,141 values
+    pinned by unrun consumers against room for 5,000 (stability handover, 28.1).
+    For trees the depth-first order is optimal (Sethi and Ullman 1970); for DAGs
+    the problem is NP-complete (Sethi 1975), so depth-first is a heuristic -- but
+    it is the heuristic every serious scheduler uses, and the measured
+    alternative is thrashing.
+    """
+    work = list(goals)            # the stack; goals are the only roots
+    must = set()                  # what this run will compute
+
+    while work:
+        nid = work.pop()          # LIFO -- see the docstring
+
+        if nid in must:
+            continue              # hash-consing means a node is reached many times
+
+        # THE CUT. This is the single availability rule, the same one every
+        # registration path already uses: a node whose value is in the store
+        # needs neither computing NOR exploring, and its whole subtree is
+        # therefore invisible to this walk. With the critical-cut policy of 7,
+        # this is where a warm run stops -- sixty loop-body roots, and nothing
+        # underneath them is ever named.
+        if available(nid):
+            continue
+
+        # A TOMBSTONE IS NOT AVAILABILITY. `persisted()` answers from the
+        # materialised-id index, and an evicted row is `status='evicted'` with
+        # no payload. The value is gone; only recomputation can produce it. The
+        # tombstone is still worth reading -- it says this node was computed
+        # once and later became garbage, which is evidence that the cut ABOVE
+        # it is the right place to keep values -- but it can never license
+        # skipping the node when the walk has genuinely reached it.
+        must.add(nid)
+
+        for dep in dependencies_of(nid):
+            work.append(dep)
+
+
+def dependencies_of(nid):
+    """A node's inputs, WITHOUT running its kernel and without reducing a loop.
+
+    Three cases, and only the third is new:
+
+    1. An ordinary node: its spec's args and kwargs. Known statically, free.
+
+    2. An expanded node (`for_loop`/`map`/`filter`) WITH a memoised expansion
+       (3.2): read the spliced `default.sequence` id, intern the element specs
+       from the `node` table, and return them. No body reduction happens. This
+       is the step that makes the whole design possible -- without it, finding
+       out whether element i is needed costs exactly the reduction we are trying
+       to avoid.
+
+    3. An expanded node with NO memo (a cold run, or a changed reducer version):
+       expand it as the engine does today, write the specs and then the memo
+       (3.1, 3.2), and return the elements. The cost is paid once, ever, per
+       loop shape.
+
+    THE WALK GROWS AS IT LEARNS, which is why it is a worklist and not a
+    recursion over a plan that must exist first. Case 3 pushes nodes that did
+    not exist when the walk started. That is normal and is the reason the
+    algorithm is written as an explicit stack rather than as a traversal of a
+    finished graph -- and, separately, the reason it must never be written as
+    recursion: the depth here is the depth of the DATA, and this engine builds
+    tens of millions of nodes in one process (see AGENTS.md, "No recursion").
+    """
+```
+
+### 8.3 What changes, concretely
+
+| | today | with this |
+|---|---|---|
+| when the plan is built | eagerly, whole cone from each goal | only along nodes that must be computed |
+| when a loop is expanded | always, in full, then pruned per element | only when the walk must descend through it, and on a warm store not at all |
+| what is registered | every reachable node | only `must` |
+| what is pinned | every registered consumer's inputs — 154,705 measured | the inputs of `must` only |
+| node count known | after hours of expansion | before the first kernel, from the walk |
+
+The last row is a free result worth naming: the walk produces an **exact** node
+count before any computation, which retires the plan-size estimator and the ETA
+that read "12 minutes" for seven hours.
+
+### 8.4 What this does NOT need, and it is worth stating
+
+**Partial expansion of a loop is not required.** It looks necessary — if 59 of
+60 cases are complete, why reduce all 60? — but it is not, and trying would be a
+mistake. A `default.sequence` node's args *are* its element ids, so its identity
+depends on all of them: you cannot name the sequence without naming every
+element. What you can avoid is *computing* them, and the availability check
+already does that.
+
+With 3's memo, naming all sixty costs one indexed read. Without it, naming costs
+sixty body reductions. So the correct order of work is 3 first as the *enabler*,
+7 as the *payoff*, and this section as the discipline that joins them — and
+partial expansion, which is the tempting third idea, is unnecessary in every case
+where the memo exists.
+
+### 8.5 Where it plugs in
+
+`_schedule_subgraph` in `engine/core.py` already is this walk, minus the two
+things that matter: it uses `frontier.pop()` (so it is already depth-first —
+that part is right), and it prunes at `_available` (so the cut is already
+there). What it lacks is case 2 of `dependencies_of` — a loop it meets is
+scheduled and expanded in full by `admission`, rather than being *read*.
+
+So this is not a new scheduler. It is `_schedule_subgraph` plus a memo, and the
+change is: **when the walk meets an expanded operator, ask the store for its
+elements before asking the expander to produce them.**
+
+### 8.6 Invariants, stated so they can be tested
+
+1. **Closure.** A memoised expansion is visible only when every spec it
+   transitively names is durable (3.2). Violating this is exactly the
+   2026-09-10 poisoning.
+2. **Determinism.** Re-interning a spec read from the store must hash to the id
+   it was stored under. Checked on read; a mismatch discards the block rather
+   than trusting it. This is the Merkle property and it is what makes a shared
+   or copied store safe.
+3. **Version.** The memo key includes the reducer/format version, so changing
+   the expander invalidates memoised expansions instead of silently reusing
+   them.
+4. **No recursion.** The walk is a `while` over a list, at every depth, forever.
+5. **Availability is one rule.** `available()` is the single predicate, used by
+   the walk, by admission and by the loop-body check — the engine has already
+   been bitten once by a second, hand-rolled copy that disagreed about
+   persisted-but-pruned bodies and could deadlock a partially warm cache.
+
+### 8.7 The test that must fail first
+
+Two runs of the same program against one store, the second with every value from
+the first still present:
+
+- **the second run reduces zero loop bodies** (a counter on the expander, which
+  does not exist yet and is step 1 of the staging in §6);
+- **the second run registers only the goals' immediate cone**, not millions of
+  nodes;
+- **the goal values are identical**, not merely close — they are
+  content-addressed, so identity is the right test.
+
+On today's engine that test fails on all three counts, and the failure is the
+subject of this document.
