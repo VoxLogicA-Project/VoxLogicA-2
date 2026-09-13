@@ -1523,6 +1523,33 @@ class ComputationEngine:
             if self.table.persisted(nid):
                 self.table.evict(nid)
                 self._evicted_early += 1
+            elif (self.graph.consumers.get(nid, 0) > 0
+                  and self.table.spill(nid)):
+                # THE CUT MUST NOT BREAK. This value has unrun consumers, so it
+                # is ON THE FRONTIER -- the boundary between what this run has
+                # finished and what it has not. Dropping it without a durable
+                # copy puts a hole in that boundary, and a hole cannot be
+                # checkpointed: a later run finds nothing to prune at and
+                # recomputes the whole subtree beneath it.
+                #
+                # Measured. Writing the frontier at a stop lifted a resume's
+                # reuse from the 12-16% that nothing else moved to 38.6%, and it
+                # cost 696 values. The remaining gap is exactly this: the
+                # checkpoint can only write what is still RESIDENT, and anything
+                # dropped earlier by the branch below is already gone.
+                #
+                # So a frontier value is WRITTEN before it is dropped, whenever
+                # the writer can take it. The stored set then only ever moves
+                # toward the leaves and never develops holes -- the pebble-game
+                # cut invariant (Hong and Kung 1981), and the same discipline as
+                # a store closure.
+                #
+                # The cheap-drop below stays as the last resort: when the writer
+                # is saturated there is nothing else to free, and a valve that
+                # cannot open is how this engine met the OOM killer.
+                self._spill_pending.append(nid)
+                if self._spill_member is not None:
+                    self._spill_member.add(nid)
             elif (self.table.compute_ms_of(nid) < sacrifice_ms
                   and self._recomputable(nid)):
                 # Cheap and not durable: DROP IT — this is the design's actual
