@@ -190,6 +190,13 @@ class DevStopRequested(Exception):
 
 
 class ComputationEngine:
+    #: CLASS DEFAULTS, because the memory tests build an engine that bypasses
+    #: __init__ and drive one method directly. A counter that only exists after
+    #: __init__ turns such a test's AttributeError into a failure of the thing
+    #: being tested rather than of the instrument.
+    _cut_would_break = 0
+    _cut_unknown = 0
+
     """A persistent, content-addressed, priority-scheduled evaluator."""
 
     #: CLASS attribute, so an instance that bypasses ``__init__`` -- the engine
