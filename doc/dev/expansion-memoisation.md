@@ -444,3 +444,103 @@ the first still present:
 
 On today's engine that test fails on all three counts, and the failure is the
 subject of this document.
+
+---
+
+## 9. Why the read path is correct by construction, not by measurement
+
+§3 and §8 describe what to build. This section is the correctness argument, and
+it does not depend on the implementation being lucky. The claim is not "this
+should work" but **"the engine cannot tell the two paths apart, and if it ever
+could, it takes the old one."**
+
+### 9.1 What the engine consumes
+
+Expansion produces exactly one thing the rest of the engine can observe: a set of
+interned pairs
+
+    S(L) = { (h₁, s₁), … , (hₙ, sₙ) }        h_i = hash(s_i)
+
+— element ids and their specs, placed in `table.nodes` — plus the spliced
+`default.sequence` node whose args are those ids. Nothing downstream reads
+anything else about how they came to exist. Scheduling, availability, admission
+and eviction all act on ids and specs.
+
+So to prove the read path safe it is enough to prove it produces the same S(L).
+
+### 9.2 The three properties it rests on, each already true or checkable
+
+1. **Expansion is deterministic.** Reducing body *i* is a pure function of the
+   loop's spec and *i*, and hash-consing makes the resulting id a function of
+   the spec alone. The engine already asserts this — "chunk boundaries and
+   admission order cannot change node identity … incremental expansion yields
+   byte-identical ids to monolithic expansion" — and it is the premise the
+   current store already relies on every time a warm run's re-expansion hits a
+   stored value.
+
+2. **Identity is verifiable, not trusted.** A node's id *is* the hash of its
+   spec. So a spec read back from the store can be **re-hashed and compared to
+   the key it was stored under**. This is a check, not an assumption: a spec
+   that does not hash to its own id is not the spec, and is discarded. This is
+   the Merkle property, and it is what makes a store safe to copy between
+   machines or share between users.
+
+3. **Closure is maintained by publication order.** The memo row for L is written
+   **after** every spec it names is durable, in a later transaction. A crash
+   between the two leaves specs with no memo — harmless, since specs are
+   `INSERT OR IGNORE` and the loop simply expands. The reverse order is what
+   poisoned the store on 2026-09-10 and it is the one order the write path must
+   never use.
+
+### 9.3 The argument
+
+**Claim.** For any loop L, the pairs the engine interns via the read path are
+identical to the pairs it would intern by reducing L.
+
+1. The memo for L is written by a run that reduced L, and stores exactly S(L)
+   (§3.1, §3.2).
+2. On read, each stored pair (h, s) is accepted only if `hash(s) == h`.
+3. If every pair verifies, the accepted set is S(L) pair-for-pair, by (1) and
+   (2).
+4. If any pair fails to verify, or any named spec is missing, **the memo is
+   rejected whole and the loop is reduced** — which is today's behaviour
+   exactly.
+5. Therefore the engine either interns S(L) from the store, or interns S(L) by
+   reducing. In both cases it interns S(L). ∎
+
+**Corollary.** The read path cannot change any result, any goal value, or any
+scheduling decision. Its only observable effect is how long the interning took.
+
+**The worst case is today.** Every failure mode — a corrupt block, a missing
+spec, a changed reducer, an absent memo — lands on "reduce the loop", which is
+the code path the engine runs now. There is no state in which the read path is
+worse than not having it.
+
+### 9.4 What this argument does NOT claim
+
+It does not claim the memo will be *present* often enough to be worth having.
+That is a question about coverage, not correctness, and it is the one that needs
+measuring: how many loops a warm run finds memoised, and therefore how much of
+the expansion disappears. **Correctness is argued; the speed-up is measured.**
+Conflating those two is what made the earlier answer in this session sound
+evasive, and the distinction is the whole content of this section.
+
+### 9.5 The invariants, as tests
+
+Each of the three properties above is a test that fails on a violating
+implementation, not a comment:
+
+1. **Determinism** — reduce the same loop twice in one process and assert the
+   interned id sets are equal.
+2. **Verification** — corrupt one stored spec's bytes, read the memo, and assert
+   the loop is reduced rather than the bad spec interned.
+3. **Closure** — delete one element spec from the store, read the memo, and
+   assert the loop is reduced rather than a dangling reference interned.
+4. **Equivalence** — expand a loop by reduction and by memo in the same test and
+   assert the two sets of `(id, spec)` pairs are equal.
+5. **End to end** — two runs against one store: the second reduces **zero** loop
+   bodies and produces **identical** goal values.
+
+(1)–(4) establish the argument above mechanically. (5) is the coverage
+measurement, and it is the only one of the five that can fail for a reason that
+is not a bug in this design.

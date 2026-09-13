@@ -22,7 +22,7 @@ from voxlogica.arrays import PolyArray
 from voxlogica.handles import resolve_deep
 from voxlogica.diagnostics.classify import build_report
 from voxlogica.diagnostics.store import store_report
-from voxlogica.engine.core import ComputationEngine
+from voxlogica.engine.core import ComputationEngine, DevStopRequested
 from voxlogica.engine.priority import Priority
 from voxlogica.engine.query import QueryStatus
 from voxlogica.execution_strategy.base import ExecutionStrategy
@@ -324,8 +324,24 @@ class EngineExecutionStrategy(ExecutionStrategy):
                                       query._value, resolve)
                     emitted.add(goal.id)
 
+            dev_stopped = None
             try:
                 await engine.run(at_drain=emit_ready_goals)
+            except DevStopRequested as stop:
+                # NOT AN ERROR. The dev guard fired; finish exactly as a
+                # completed run does -- flush the lineage buffer and drain the
+                # writers -- so the store left behind is the one a resume is
+                # judged against, rather than one missing its last transaction.
+                dev_stopped = stop
+                try:
+                    engine.table.flush_lineage()
+                    persister = getattr(engine.table, "_persister", None)
+                    if persister is not None:
+                        persister.flush()
+                except Exception as flush_exc:  # noqa: BLE001 -- never mask the stop
+                    print(f"[dev] flush after stop failed: {flush_exc}",
+                          file=sys.stderr, flush=True)
+                print(f"[dev] {stop}", file=sys.stderr, flush=True)
             except Exception as exc:  # converted below into a structured result
                 run_error = exc
             values: dict[NodeId, Any] = {}

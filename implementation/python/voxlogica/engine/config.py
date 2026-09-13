@@ -111,6 +111,14 @@ class EngineConfig:
     #: ever would, and GreedyDual-Size would evict it first anyway. Critical
     #: values (the warm-run reuse cut) are always persisted regardless.
     persist_min_compute_ms: float = 1.0
+    #: DEVELOPMENT ONLY: stop cleanly after this many completions (0 = never).
+    #: Exists to test RESUME: a run that is killed mid-write leaves a store whose
+    #: last transaction may be absent, which is a different experiment from
+    #: "stop, then start again from what is on disk". This stops on the event
+    #: loop, between completions, and then flushes and drains exactly as a
+    #: finished run does -- so the store it leaves is one a resume can be judged
+    #: against. Default 0, so no supported workload can reach it.
+    dev_stop_after: int = 0
     #: Schedule-time kernel fusion (engine/fusion.py, Stage A). Off is a pure
     #: no-op — the planner is never consulted and every node dispatches
     #: exactly as before Phase 1. See doc/specs/semantic-queueing-fusion.md.
@@ -178,6 +186,7 @@ class EngineConfig:
             persist_fanout=_env_int("VOXLOGICA_PERSIST_FANOUT") or 8,
             expansion_chunk=_env_int("VOXLOGICA_EXPANSION_CHUNK") or window,
             persist_min_compute_ms=persist_min,
+            dev_stop_after=_env_int("VOXLOGICA_DEV_STOP_AFTER") or 0,
             fusion_enabled=fusion_enabled,
             fusion_cap=_env_int("VOXLOGICA_FUSION_CAP") or 64,
             numba_fusion_enabled=numba_fusion_enabled,

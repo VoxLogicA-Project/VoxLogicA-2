@@ -174,6 +174,21 @@ _MISSING = object()
 _PROGRESS_FORMAT = "goals: {n:>3}/{total} |{bar:12}| {elapsed} · {desc}"
 
 
+class DevStopRequested(Exception):
+    """DEVELOPMENT ONLY: `VOXLOGICA_DEV_STOP_AFTER` completions have happened.
+
+    Exists to make RESUME testable. Killing a run mid-write leaves a store whose
+    last transaction may be absent, which is a different experiment from "stop,
+    then start again from what is on disk" -- and the difference is exactly the
+    property under test. This is raised on the event loop between completions,
+    and the caller flushes and drains precisely as a finished run does, so the
+    store left behind is one a resume can be judged against.
+
+    Not an error: `strategy.evaluate` catches it and reports a clean partial
+    run. Default 0 means no supported workload can reach it.
+    """
+
+
 class ComputationEngine:
     """A persistent, content-addressed, priority-scheduled evaluator."""
 
@@ -453,6 +468,8 @@ class ComputationEngine:
         #: question was about.
         self.persist_enabled = True
         self._persist_min_ms = float(self.config.persist_min_compute_ms)
+        self._dev_stop_after = int(getattr(self.config, "dev_stop_after", 0) or 0)
+        self._dev_stop = 0      # completions at which the dev guard tripped
         self._register_knobs()
 
         # ── Schedule-time fusion (engine/fusion.py) ──
@@ -820,6 +837,14 @@ class ComputationEngine:
         interval = max(1.0, min(15.0, stall / 4.0))
         last_done, idle = -1, 0.0
         while True:
+            if self._dev_stop:
+                # The dev guard tripped on the loop thread. Raise HERE, outside
+                # every worker, so the exception leaves `run()` by the ordinary
+                # path and the caller can flush and drain as it does for a run
+                # that finished.
+                raise DevStopRequested(
+                    f"stopping after {self._dev_stop} completions "
+                    f"(VOXLOGICA_DEV_STOP_AFTER={self._dev_stop_after})")
             done, _ = await asyncio.wait({join}, timeout=interval)
             if join in done:
                 return
@@ -1706,6 +1731,20 @@ class ComputationEngine:
             if _c is not None:
                 _c.add("fin_setvalue", time.perf_counter_ns() - _t)
                 _t = time.perf_counter_ns()
+        # DEV GUARD. Checked HERE, after the value is recorded and before
+        # dependents fire: the completion that trips it is finished and durable,
+        # so the store reflects exactly `dev_stop_after` completions and nothing
+        # half-done. One integer compare when the knob is 0, which is always
+        # except under test.
+        if self._dev_stop_after and not self._dev_stop \
+                and len(self.table.completed) >= self._dev_stop_after:
+            # A FLAG, NOT A RAISE. Raising here kills the worker coroutine that
+            # happened to make the last completion, one per raise, while the run
+            # itself waits for work those dead workers will never do -- observed
+            # as three dead workers and a run that then sat until the 600 s test
+            # timeout. The watchdog owns termination, so it is the watchdog that
+            # is told.
+            self._dev_stop = len(self.table.completed)
         # Closures never release their captures here — the loop's expansion job
         # owns that hold (see LoopAdmission.hold_captures).
         for child in self.graph.on_complete(nid, release_inputs=node.kind != "closure"):
@@ -2637,6 +2676,11 @@ class ComputationEngine:
                         # One integer compare on the turns in between; see
                         # Verifier.on_completion.
                         self.verifier.on_completion(len(self.table.completed))
+            except DevStopRequested:
+                # NOT a node failure. The guard fired on a completion that has
+                # already been recorded; converting it into one would mark a
+                # healthy node failed and report a clean stop as a crash.
+                raise
             except Exception as exc:  # noqa: BLE001
                 self._fail_node(nid, exc)
             finally:
@@ -2662,6 +2706,8 @@ class ComputationEngine:
                 # subtracting a worker.
                 try:
                     self._maintain()
+                except DevStopRequested:
+                    raise                       # see the sibling handler above
                 except Exception as exc:                        # noqa: BLE001
                     self._fail_node(nid, exc)
                 finally:
