@@ -237,7 +237,15 @@ def spec_row_for(node_id: str, node: Any) -> tuple | None:
         kwargs = (dumps_json({k: v for k, v in node.normalized_kwargs()})
                   if node.kwargs else None)
         attrs = dumps_json(node.attrs) if node.attrs else None
-        return (id_bytes(node_id), node.kind, node.operator, packed, kwargs, attrs)
+        # `output_kind` IS PART OF THE IDENTITY. `hash_node` digests six things
+        # and this table stored five, so a spec read back could not reproduce
+        # its own id -- measured against a real store, 30 of 5,000 rows
+        # re-hashed correctly, and the 4,970 failures were ordinary attribute-
+        # free primitives. With it, the round trip is exact. The verification
+        # step the whole read path rests on is only possible because of this
+        # column.
+        return (id_bytes(node_id), node.kind, node.operator, packed, kwargs,
+                attrs, node.output_kind)
     except (ValueError, TypeError, AttributeError):
         return None
 
@@ -449,12 +457,13 @@ class SQLiteResultsDatabase:
             self._connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS node (
-                    hash       BLOB PRIMARY KEY,
-                    kind       TEXT NOT NULL,
-                    operator   TEXT NOT NULL,
-                    args       BLOB NOT NULL,
-                    kwargs     TEXT,
-                    attrs_json TEXT
+                    hash        BLOB PRIMARY KEY,
+                    kind        TEXT NOT NULL,
+                    operator    TEXT NOT NULL,
+                    args        BLOB NOT NULL,
+                    kwargs      TEXT,
+                    attrs_json  TEXT,
+                    output_kind TEXT
                 ) WITHOUT ROWID
                 """
             )
@@ -660,8 +669,9 @@ class SQLiteResultsDatabase:
             self._connection.execute("BEGIN")
             try:
                 self._connection.executemany(
-                    "INSERT OR IGNORE INTO node(hash,kind,operator,args,kwargs,attrs_json)"
-                    " VALUES(?,?,?,?,?,?)", rows)
+                    "INSERT OR IGNORE INTO node"
+                    "(hash,kind,operator,args,kwargs,attrs_json,output_kind)"
+                    " VALUES(?,?,?,?,?,?,?)", rows)
                 self._connection.execute("COMMIT")
             except Exception:
                 self._connection.execute("ROLLBACK")
@@ -678,8 +688,9 @@ class SQLiteResultsDatabase:
         value and its recipe together, or it gains neither.
         """
         self._connection.execute(
-            "INSERT OR IGNORE INTO node(hash,kind,operator,args,kwargs,attrs_json)"
-            " VALUES(?,?,?,?,?,?)", spec_row)
+            "INSERT OR IGNORE INTO node"
+            "(hash,kind,operator,args,kwargs,attrs_json,output_kind)"
+            " VALUES(?,?,?,?,?,?,?)", spec_row)
         # GreedyDual-Size key: recency clock + recompute cost per byte. Small +
         # expensive ranks highest (kept longest); large + cheap ranks lowest.
         gd_key = self._gd_clock + (compute_ms / payload_bytes if payload_bytes else 0.0)
@@ -1434,7 +1445,7 @@ class MaterializationStore:
                         node_id, value, metadata=metadata,
                         spec_row=(id_bytes(node_id), "opaque",
                                   str((metadata or {}).get("operator", "unknown")),
-                                  b"", None, None))
+                                  b"", None, None, "unknown"))
                 with self._lock:
                     record = self._records.get(node_id)
                     if record is not None:

@@ -377,7 +377,8 @@ class NodeTable:
         from voxlogica.storage import id_bytes
         try:
             return (id_bytes(item_id), "derived", "sequence-item",
-                    id_bytes(parent_id), None, dumps_json({"index": int(index)}))
+                    id_bytes(parent_id), None, dumps_json({"index": int(index)}),
+                    "unknown")
         except (ValueError, TypeError):
             return None
 

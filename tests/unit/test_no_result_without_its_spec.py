@@ -47,7 +47,7 @@ def test_a_result_and_its_spec_land_together(tmp_path) -> None:
     node_id = "b" * 64
     dep_id = "c" * 64
     row = (bytes.fromhex(node_id), "primitive", "vox1.not",
-           bytes.fromhex(dep_id), None, None)
+           bytes.fromhex(dep_id), None, None, "unknown")
 
     backend.put_success_batch([(node_id, 42, {"source": "test"}, 1.0, None, row)])
 
@@ -72,7 +72,7 @@ def test_every_stored_result_has_a_spec(tmp_path) -> None:
     backend = _backend(tmp_path)
     for i in range(8):
         nid = f"{i:064x}"
-        row = (bytes.fromhex(nid), "primitive", "vox1.dt2", b"", None, None)
+        row = (bytes.fromhex(nid), "primitive", "vox1.dt2", b"", None, None, "unknown")
         backend.put_success_batch([(nid, i, {"source": "test"}, 1.0, None, row)])
 
     orphans = backend._reader().execute(

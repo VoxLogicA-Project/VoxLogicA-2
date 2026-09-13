@@ -152,4 +152,4 @@ def sample_image_path() -> Path:
 def spec_row(node_id: str, operator: str = "test.op", args: tuple = ()) -> tuple:
     from voxlogica.storage import id_bytes
     return (id_bytes(node_id), "primitive", operator,
-            b"".join(id_bytes(a) for a in args), None, None)
+            b"".join(id_bytes(a) for a in args), None, None, "unknown")
