@@ -201,6 +201,47 @@ class ResultRecord:
     runtime_version: str = "unknown"
 
 
+def id_bytes(node_id: str) -> bytes:
+    """A node id as the bytes the `node` table keys on.
+
+    A real id is a 64-character sha256 hex string and packs to 32 bytes, which
+    is what makes two stores merge by INSERT OR IGNORE with no id remapping.
+    Anything else -- the plain strings tests use -- is kept verbatim as UTF-8
+    rather than rejected, so "every stored value has an explanation" stays a
+    TOTAL invariant instead of one with a quiet exemption for ids that happen
+    not to be hashes.
+    """
+    text = str(node_id)
+    if len(text) == 64:
+        try:
+            return bytes.fromhex(text)
+        except ValueError:
+            pass
+    return text.encode("utf-8")
+
+
+def spec_row_for(node_id: str, node: Any) -> tuple | None:
+    """Pack one node's DAG row: raw 32-byte hashes in argument order.
+
+    THE ONE ENCODING. `NodeTable.pack_row` delegates here rather than keeping a
+    second copy -- this codebase has already been bitten by a hand-rolled second
+    copy of an availability rule that disagreed with the first and could deadlock
+    a partially warm cache.
+
+    Returns None for an id that is not a real hash (tests use plain strings),
+    which callers must treat as "cannot be explained", not as "no explanation
+    needed".
+    """
+    try:
+        packed = b"".join(id_bytes(a) for a in node.args)
+        kwargs = (dumps_json({k: v for k, v in node.normalized_kwargs()})
+                  if node.kwargs else None)
+        attrs = dumps_json(node.attrs) if node.attrs else None
+        return (id_bytes(node_id), node.kind, node.operator, packed, kwargs, attrs)
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 class StorageBackend(ABC):
     """Storage backend that records nothing and never returns hits."""
 
@@ -530,8 +571,23 @@ class SQLiteResultsDatabase:
         )
 
     def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None,
-                    compute_ms: float = 0.0) -> None:
-        self.put_success_batch([(node_id, value, metadata, compute_ms)])
+                    compute_ms: float = 0.0, *, spec_row: tuple | None = None,
+                    node: Any = None) -> None:
+        """Store one value WITH its recipe.
+
+        Either hand over a packed row (`spec_row`) or the `NodeSpec` itself
+        (`node`) and it is packed here. One of the two is required: see
+        `put_success_batch` for what a value with no recipe cost this project.
+        """
+        if spec_row is None and node is not None:
+            spec_row = spec_row_for(node_id, node)
+        if spec_row is None:
+            raise ValueError(
+                f"refusing to store a result with no spec: {str(node_id)[:12]}. "
+                "Pass `node=` (the NodeSpec) or `spec_row=` (already packed). "
+                "A value whose recipe is not stored cannot be found again "
+                "without recomputing the plan that names it.")
+        self.put_success_batch([(node_id, value, metadata, compute_ms, None, spec_row)])
 
     def put_success_batch(self, entries: list[tuple[str, Any, dict[str, Any] | None, float]]) -> None:
         """Write many results in ONE transaction.
@@ -543,9 +599,34 @@ class SQLiteResultsDatabase:
         (gzip — the expensive, GIL-releasing part) happens before the lock;
         only the inserts serialize.
         """
-        prepared = []  # (node_id, encoded, payload_file, payload_bytes, metadata_json, compute_ms)
-        for node_id, value, metadata, compute_ms, *snap in entries:
-            encoded = encode_for_storage(value, payload_snapshot=snap[0] if snap else None)
+        prepared = []  # (node_id, encoded, payload_file, payload_bytes, metadata_json, compute_ms, spec_row)
+        for node_id, value, metadata, compute_ms, *rest in entries:
+            snap = rest[0] if rest else None
+            spec_row = rest[1] if len(rest) > 1 else None
+            # NO VALUE WITHOUT ITS EXPLANATION. The spec row is a REQUIRED part
+            # of the entry, not a courtesy, and it is written in the same
+            # transaction as the result below -- so a result row cannot exist
+            # without the recipe that produced it, and no caller can forget.
+            #
+            # It was previously possible, and it cost this project a day.
+            # `record_lineage` is called from `NodeTable.intern`, which the
+            # reducer bypasses: it writes into `table.nodes` directly through
+            # the `WorkPlan` it is handed. So only `adopt_plan`'s static nodes
+            # were ever explained. Measured on a sixty-case sweep's store:
+            # 3,252,459 results and 107,728 spec rows -- exactly the static
+            # plan. Three million values whose recipe existed nowhere, so a warm
+            # run could not name one of them without redoing the expansion that
+            # produced it, which is hours of work to rediscover what was already
+            # on disk.
+            if spec_row is None:
+                raise ValueError(
+                    f"refusing to store a result with no spec: {node_id[:12]}. "
+                    "Pass the node's packed DAG row (NodeTable.pack_row, or "
+                    "NodeTable.derived_row for a derived id) as the sixth "
+                    "element of the entry. A value whose recipe is not stored "
+                    "cannot be found again without recomputing the plan that "
+                    "names it.")
+            encoded = encode_for_storage(value, payload_snapshot=snap)
             payload_file = None
             payload_bytes = 0
             if encoded.payload_bin is not None:
@@ -553,7 +634,7 @@ class SQLiteResultsDatabase:
                 self._write_payload_atomically(payload_file, encoded.payload_bin)
                 payload_bytes = len(encoded.payload_bin)
             prepared.append((node_id, encoded, payload_file, payload_bytes,
-                             dumps_json(dict(metadata or {})), compute_ms))
+                             dumps_json(dict(metadata or {})), compute_ms, spec_row))
         now = time.time()
         with self._lock:
             self._connection.execute("BEGIN")
@@ -588,9 +669,17 @@ class SQLiteResultsDatabase:
 
     def _put_encoded_locked(self, node_id: str, encoded, payload_file: str | None,
                             payload_bytes: int, metadata_json: str, compute_ms: float,
-                            now: float) -> None:
-        """Insert/update one already-encoded result row. Caller holds the lock
-        and an open transaction; budget enforcement happens once per batch."""
+                            spec_row: tuple, now: float) -> None:
+        """Insert/update one already-encoded result row, WITH its spec.
+
+        Caller holds the lock and an open transaction; budget enforcement
+        happens once per batch. The spec goes in first and in the SAME
+        transaction, so the two cannot come apart: either the store gains a
+        value and its recipe together, or it gains neither.
+        """
+        self._connection.execute(
+            "INSERT OR IGNORE INTO node(hash,kind,operator,args,kwargs,attrs_json)"
+            " VALUES(?,?,?,?,?,?)", spec_row)
         # GreedyDual-Size key: recency clock + recompute cost per byte. Small +
         # expensive ranks highest (kept longest); large + cheap ranks lowest.
         gd_key = self._gd_clock + (compute_ms / payload_bytes if payload_bytes else 0.0)
@@ -1333,7 +1422,19 @@ class MaterializationStore:
                 continue
             try:
                 if self._backend is not None:
-                    self._backend.put_success(node_id, value, metadata=metadata)
+                    # A WEAKER EXPLANATION, AND IT IS MARKED AS ONE. This path
+                    # (the materialization store's own thread) never sees the
+                    # NodeSpec -- it is handed a value and a metadata dict -- so
+                    # the row it can write names the operator and admits that the
+                    # arguments were not recorded. That is still an explanation
+                    # and still satisfies "no value without one"; it is simply
+                    # not enough to rebuild from, and `kind='opaque'` says so
+                    # rather than pretending otherwise.
+                    self._backend.put_success(
+                        node_id, value, metadata=metadata,
+                        spec_row=(id_bytes(node_id), "opaque",
+                                  str((metadata or {}).get("operator", "unknown")),
+                                  b"", None, None))
                 with self._lock:
                     record = self._records.get(node_id)
                     if record is not None:

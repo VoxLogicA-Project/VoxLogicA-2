@@ -334,17 +334,52 @@ class NodeTable:
         node = self.nodes.get(node_id)
         if node is None:
             return
-        try:
-            packed = b"".join(bytes.fromhex(a) for a in node.args)
-            kwargs = (dumps_json({k: v for k, v in node.normalized_kwargs()})
-                      if node.kwargs else None)
-            attrs = dumps_json(node.attrs) if node.attrs else None
-            self._lineage.append((bytes.fromhex(node_id), node.kind, node.operator,
-                                  packed, kwargs, attrs))
-        except (ValueError, TypeError):
+        row = self.pack_row(node_id, node)
+        if row is None:
             return  # a non-hash id (tests use plain strings): nothing to record
+        self._lineage.append(row)
         if len(self._lineage) >= self._LINEAGE_BATCH:
             self.flush_lineage()
+
+    @staticmethod
+    def pack_row(node_id: NodeId, node) -> tuple | None:
+        """The DAG row for one node, or None if the id is not a real hash.
+
+        THE EXPLANATION OF A RESULT, and it must travel with the result itself.
+        Interning was meant to be the one point every node passes through, but
+        the reducer writes straight into `table.nodes` through the `WorkPlan` it
+        is handed (`reducer.py`, `engine/expander.py`), so `record_lineage` sees
+        only the nodes `adopt_plan` interns -- the STATIC plan. Measured on a
+        sixty-case sweep's store: 3,252,459 result rows and **107,728 spec
+        rows**, exactly the static plan and not one runtime node. Three million
+        values whose recipe was nowhere, so a warm run could not name them
+        without redoing the expansion that produced them.
+
+        Packing is shared with `record_lineage` so there is one encoding, not
+        two that can drift: raw 32-byte hashes in argument order, canonicalized
+        kwargs and attrs.
+        """
+        from voxlogica.storage import spec_row_for
+        return spec_row_for(node_id, node)
+
+    @staticmethod
+    def derived_row(item_id: NodeId, parent_id: NodeId, index: int) -> tuple | None:
+        """The explanation of a value stored under a DERIVED id.
+
+        `complete_item` persists sequence elements under `hash_sequence_item`,
+        which is a function of the parent id and an index rather than of a
+        `NodeSpec` -- so there is no spec to hand over, and demanding one would
+        force the caller to lie. Its explanation is still writable and still
+        true: element `index` of that parent. Recording it keeps the invariant
+        "no stored value without an explanation" total, rather than total except
+        where it was inconvenient.
+        """
+        from voxlogica.storage import id_bytes
+        try:
+            return (id_bytes(item_id), "derived", "sequence-item",
+                    id_bytes(parent_id), None, dumps_json({"index": int(index)}))
+        except (ValueError, TypeError):
+            return None
 
     def flush_lineage(self) -> None:
         """Hand buffered DAG rows to the writer threads."""
@@ -528,7 +563,8 @@ class NodeTable:
             # to avoid putting a second writer thread on the same payload.
             self._write_queued.add(node_id)
             self._persister.submit(node_id, value, {"source": "runtime", "operator": node.operator},
-                                   compute_ms, size=size, snapshot=snapshot)
+                                   compute_ms, size=size, snapshot=snapshot,
+                                   spec_row=self.pack_row(node_id, node))
             if clock is not None:
                 clock.add("tbl_submit", time.perf_counter_ns() - t)
             return True
@@ -538,7 +574,8 @@ class NodeTable:
         """Persist one element of a sequence-valued node under its derived key."""
         if self._persister is not None and not self._persister.over_budget:
             item_id = hash_sequence_item(node_id, index)
-            self._persister.submit(item_id, value, {"source": "runtime", "index": index})
+            self._persister.submit(item_id, value, {"source": "runtime", "index": index},
+                                   spec_row=self.derived_row(item_id, node_id, index))
 
     def spill(self, node_id: NodeId) -> bool:
         """Force a resident value onto the writer queue so it can leave RAM.
@@ -586,7 +623,8 @@ class NodeTable:
         operator = getattr(node, "operator", "unknown")
         self._write_queued.add(node_id)
         self._persister.submit(node_id, value, {"source": "spill", "operator": operator},
-                               0.0, size=self._sizeof.get(node_id))
+                               0.0, size=self._sizeof.get(node_id),
+                               spec_row=self.pack_row(node_id, node))
         return True
 
     def set_recompute_guard(self, predicate: Any) -> None:

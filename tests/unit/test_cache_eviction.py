@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import spec_row
+
 from voxlogica.storage import SQLiteResultsDatabase
 
 
@@ -23,11 +25,13 @@ def test_expensive_small_value_survives_cheap_large_ones(tmp_path: Path) -> None
     try:
         # One small but very expensive result (think: a hard-won model).
         precious = "%064x" % 0xABCDEF
-        db.put_success(precious, rng.random((64, 512)), metadata={}, compute_ms=100_000.0)  # ~256 KB, 100 s
+        db.put_success(precious, rng.random((64, 512)), metadata={}, compute_ms=100_000.0,
+                       spec_row=spec_row(precious))  # ~256 KB, 100 s
         # Many large, cheap intermediates that blow the budget.
         bulk = ["%064x" % i for i in range(12)]
         for nid in bulk:
-            db.put_success(nid, rng.random((256, 1024)), metadata={}, compute_ms=1.0)  # ~1 MB, ~free
+            db.put_success(nid, rng.random((256, 1024)), metadata={}, compute_ms=1.0,
+                           spec_row=spec_row(nid))  # ~1 MB, ~free
         assert db._payload_bytes <= budget
         assert db.has(precious), "the small expensive value must be kept"
         assert sum(1 for nid in bulk if db.has(nid)) < len(bulk), "cheap large values must be evicted"
@@ -43,7 +47,8 @@ def test_total_bytes_stay_under_budget_and_are_tracked(tmp_path: Path) -> None:
     db = SQLiteResultsDatabase(db_path=str(tmp_path / "r.db"), max_bytes=budget)
     try:
         for i in range(12):
-            db.put_success("%064x" % i, rng.random((256, 1024)), metadata={}, compute_ms=float(i))
+            db.put_success("%064x" % i, rng.random((256, 1024)), metadata={}, compute_ms=float(i),
+                           spec_row=spec_row("%064x" % i))
         assert db._payload_bytes <= budget
         on_disk = int(db._connection.execute("SELECT COALESCE(SUM(payload_bytes),0) FROM results").fetchone()[0])
         assert on_disk == db._payload_bytes
@@ -59,7 +64,8 @@ def test_cache_unbounded_when_budget_zero(tmp_path: Path) -> None:
     db = SQLiteResultsDatabase(db_path=str(tmp_path / "r.db"), max_bytes=0)
     try:
         for i in range(6):
-            db.put_success("%064x" % i, rng.random((256, 1024)), metadata={}, compute_ms=1.0)
+            db.put_success("%064x" % i, rng.random((256, 1024)), metadata={}, compute_ms=1.0,
+                           spec_row=spec_row("%064x" % i))
         assert all(db.has("%064x" % i) for i in range(6))  # nothing evicted
     finally:
         db.close()

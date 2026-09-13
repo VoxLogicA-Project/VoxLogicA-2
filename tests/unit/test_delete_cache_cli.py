@@ -6,6 +6,8 @@ import builtins
 
 import pytest
 
+from tests.conftest import spec_row
+
 from voxlogica import main as main_mod
 from voxlogica.storage import SQLiteResultsDatabase, delete_results_store, results_store_paths
 
@@ -51,7 +53,7 @@ def _cli_args(**overrides) -> Namespace:
 def test_delete_results_store_removes_db_and_payload_files(tmp_path: Path) -> None:
     db_path = tmp_path / "results.db"
     store = SQLiteResultsDatabase(db_path=str(db_path))
-    store.put_success("node-a", {"value": 1})
+    store.put_success("node-a", {"value": 1}, spec_row=spec_row("node-a"))
     store.close()
 
     db_file, payload_dir = results_store_paths(db_path)
@@ -84,7 +86,7 @@ def test_delete_cache_prompt_confirmed(tmp_path: Path, monkeypatch: pytest.Monke
     db_path = tmp_path / "results.db"
 
     store = SQLiteResultsDatabase(db_path=str(db_path))
-    store.put_success("node-a", 42)
+    store.put_success("node-a", 42, spec_row=spec_row("node-a"))
     store.close()
     assert db_path.is_file()
 

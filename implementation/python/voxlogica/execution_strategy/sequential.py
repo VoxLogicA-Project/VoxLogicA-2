@@ -122,7 +122,7 @@ class SequentialExecutionStrategy(ExecutionStrategy):
                     value = self._evaluate_node_sequential(prepared, node)
                     if node.kind == "primitive" and self.results_database is not None:
                         #print(node.kind)
-                        self.results_database.put_success(node_id, value, metadata={"source": "runtime", "operator": node.operator})
+                        self.results_database.put_success(node_id, value, metadata={"source": "runtime", "operator": node.operator}, node=node)
                 expression = node.operator if node.kind != "closure" else {"body": node.attrs.get("body"), "parameter": node.attrs.get("parameter"), "capture_names": node.attrs.get("capture_names"), "function_captures": node.attrs.get("function_captures")}
                 dependencies = list(node.args) + [value_id for _, value_id in node.kwargs]
                 prepared.values[node_id] = value

@@ -139,3 +139,17 @@ def sample_image_path() -> Path:
     if not CHRIS_T1.exists():
         raise FileNotFoundError(f"Missing canonical test image: {CHRIS_T1}")
     return CHRIS_T1
+
+
+# ── the spec that must travel with every stored value ─────────────────────────
+#
+# `put_success_batch` requires the node's DAG row as the sixth element of each
+# entry, because a value whose recipe is not stored cannot be found again
+# without recomputing the plan that names it -- measured on a sixty-case sweep
+# as 3,252,459 results against 107,728 spec rows. Tests that only care about
+# eviction or budgets still have to say what they stored, and this builds a
+# truthful minimal row for a synthetic id.
+def spec_row(node_id: str, operator: str = "test.op", args: tuple = ()) -> tuple:
+    from voxlogica.storage import id_bytes
+    return (id_bytes(node_id), "primitive", operator,
+            b"".join(id_bytes(a) for a in args), None, None)

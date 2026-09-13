@@ -23,6 +23,7 @@ import pytest
 
 from voxlogica.engine.persist import AsyncPersister
 from voxlogica.storage import SQLiteResultsDatabase
+from tests.conftest import spec_row
 
 
 class _RejectsBatches(SQLiteResultsDatabase):
@@ -49,8 +50,14 @@ class _RejectsBatches(SQLiteResultsDatabase):
 
 
 def _batch(items):
-    """Build the 7-tuples ``_write_batch`` consumes: id, value, meta, size, ms, leases, snapshot."""
-    return [(node_id, value, {"source": "test"}, 0, 0.0, (), None)
+    """Build the 8-tuples ``_write_batch`` consumes.
+
+    id, value, meta, size, ms, leases, snapshot, **spec row** -- the last one
+    added when the store stopped accepting a value without the recipe that
+    produced it. A test batch must say what it stored for the same reason a run
+    must.
+    """
+    return [(node_id, value, {"source": "test"}, 0, 0.0, (), None, spec_row(node_id))
             for node_id, value in items]
 
 

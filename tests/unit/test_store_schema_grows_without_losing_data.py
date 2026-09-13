@@ -17,6 +17,8 @@ import sqlite3
 
 import pytest
 
+from tests.conftest import spec_row
+
 from voxlogica.storage import (
     MATERIALIZED_STATUS,
     STORE_SCHEMA_VERSION,
@@ -100,7 +102,7 @@ def test_a_fresh_store_has_every_column(tmp_path):
 def test_reopening_a_current_store_changes_nothing(tmp_path):
     path = tmp_path / "store.db"
     first = SQLiteResultsDatabase(path)
-    first.put_success("n1", b"x" * 128, metadata={}, compute_ms=1.0)
+    first.put_success("n1", b"x" * 128, metadata={}, compute_ms=1.0, spec_row=spec_row("n1"))
     del first
 
     second = SQLiteResultsDatabase(path)

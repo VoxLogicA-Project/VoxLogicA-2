@@ -22,6 +22,7 @@ from voxlogica.buffer_pool import (
 )
 from voxlogica.engine.node_table import NodeTable
 from voxlogica.engine.persist import AsyncPersister
+from tests.conftest import spec_row
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +123,7 @@ def test_async_persistence_holds_lease_until_transfer_finishes() -> None:
     live_lease = retain_states(buffer_states(value))
     persister = AsyncPersister(BlockingBackend(), 64 * 1024 * 1024)
     try:
-        persister.submit("node", value, {})
+        persister.submit("node", value, {}, spec_row=spec_row("node"))
         release_states(live_lease)
         assert started.wait(5.0)
         assert pool_stats()["returns"] == 0

@@ -17,6 +17,8 @@ import json
 
 import pytest
 
+from tests.conftest import spec_row
+
 from voxlogica.storage import EVICTED_STATUS, MATERIALIZED_STATUS, SQLiteResultsDatabase
 
 
@@ -26,7 +28,8 @@ def store(tmp_path):
 
 
 def put(store, node_id: str, value, compute_ms: float = 100.0):
-    store.put_success(node_id, value, metadata={"note": "original"}, compute_ms=compute_ms)
+    store.put_success(node_id, value, metadata={"note": "original"}, compute_ms=compute_ms,
+                      spec_row=spec_row(node_id))
 
 
 def evict(store, node_id: str, tier: str = "evicted_dead", reason: str | None = None):

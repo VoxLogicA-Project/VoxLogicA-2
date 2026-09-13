@@ -36,6 +36,8 @@ from collections import deque
 
 import pytest
 
+from tests.conftest import spec_row
+
 from voxlogica.engine.admission import LoopAdmission, _Job
 from voxlogica.engine.core import _EVICT_SWEEP, ComputationEngine
 from voxlogica.engine.node_table import NodeTable, pooled_bytes_approx
@@ -956,9 +958,11 @@ def test_disk_tier_never_evicts_the_payload_a_live_value_waits_on(tmp_path) -> N
     try:
         waited_on = "ram-is-waiting-on-me"
         backend.set_spill_guard(lambda node_id: node_id == waited_on)
-        backend.put_success(waited_on, b"y" * 4000, {"source": "spill"}, 0.0)
+        backend.put_success(waited_on, b"y" * 4000, {"source": "spill"}, 0.0,
+                            spec_row=spec_row(waited_on))
         for index in range(6):                     # push the tier well over budget
-            backend.put_success(f"filler{index}", b"z" * 4000, {"source": "runtime"}, 0.0)
+            backend.put_success(f"filler{index}", b"z" * 4000, {"source": "runtime"}, 0.0,
+                                spec_row=spec_row(f"filler{index}"))
 
         assert backend.has(waited_on), "the guarded payload must survive eviction"
     finally:

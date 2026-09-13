@@ -234,10 +234,11 @@ class AsyncPersister:
     def submit_lineage(self, rows) -> None:
         """Queue DAG rows for the writer threads. Never blocks, never fails a run."""
         if rows:
-            self._queue.put((self._LINEAGE, rows, {}, 0, 0.0, (), None))
+            self._queue.put((self._LINEAGE, rows, {}, 0, 0.0, (), None, None))
 
     def submit(self, node_id: NodeId, value: Any, metadata: dict, compute_ms: float = 0.0,
-               size: int | None = None, snapshot: Any = _NO_SNAPSHOT) -> None:
+               size: int | None = None, snapshot: Any = _NO_SNAPSHOT,
+               *, spec_row: tuple | None) -> None:
         """Hand a value to the writer thread. Never blocks.
 
         ``size`` lets the caller pass an already-computed ``approx_bytes`` so
@@ -284,7 +285,7 @@ class AsyncPersister:
         else:
             self.snapshots_from_worker += 1
         self._queue.put((node_id, value, metadata, size, compute_ms, leases,
-                         snapshot))
+                         snapshot, spec_row))
 
     def _shed(self, node_id: NodeId) -> bool:
         """IF I WOULD HAVE TO QUEUE, DROP IT.
@@ -451,8 +452,9 @@ class AsyncPersister:
                         self.skipped_bytes += b[3] or 0
                 fresh = keep
             if fresh:
-                entries = [(nid, value, metadata, compute_ms, snap)
-                           for nid, value, metadata, _size, compute_ms, _leases, snap in fresh]
+                entries = [(nid, value, metadata, compute_ms, snap, spec_row)
+                           for nid, value, metadata, _size, compute_ms, _leases, snap, spec_row
+                           in fresh]
                 if _TRACE_PATH:
                     # Diagnostic for the SIGSEGV inside gzip (see the note on
                     # submit): record what is about to be serialized, flushed,
@@ -476,7 +478,8 @@ class AsyncPersister:
                             else:
                                 nid, value, metadata, compute_ms = entry[0], entry[1], entry[2], entry[3]
                                 self._backend.put_success(nid, value, metadata=metadata,
-                                                          compute_ms=compute_ms)
+                                                          compute_ms=compute_ms,
+                                                          spec_row=entry[5] if len(entry) > 5 else None)
                         except UnsupportedVoxValueError as exc:
                             # Not a failure: voxpod/1 cannot represent this value
                             # (a sequence holding images, say), so it stays in

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from voxlogica.storage import MaterializationStore, SQLiteResultsDatabase
+from tests.conftest import spec_row
 
 
 @pytest.mark.unit

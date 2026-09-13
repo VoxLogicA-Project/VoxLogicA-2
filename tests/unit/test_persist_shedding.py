@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from voxlogica.engine.persist import AsyncPersister
+from tests.conftest import spec_row
 
 
 class _Backend:
@@ -40,7 +41,7 @@ def test_nothing_is_shed_without_a_recompute_probe(persister) -> None:
     dropped. Shedding a value that cannot be rebuilt loses it outright."""
     persister._queue.put(("filler", None, {}, 0, 0.0, (), None))
     persister._num_writers = 0          # every writer busy: this WOULD queue
-    persister.submit("n1", b"x", {}, compute_ms=1.0, size=10)
+    persister.submit("n1", b"x", {}, compute_ms=1.0, size=10, spec_row=spec_row("n1"))
     assert persister.shed_pressure == 0
 
 
@@ -49,7 +50,7 @@ def test_a_rebuildable_value_is_shed_when_it_would_queue(persister) -> None:
     persister.set_recompute_probe(lambda nid: True)
     persister._queue.put(("filler", None, {}, 0, 0.0, (), None))
     persister._num_writers = 0
-    persister.submit("n1", b"x", {}, compute_ms=1.0, size=1234)
+    persister.submit("n1", b"x", {}, compute_ms=1.0, size=1234, spec_row=spec_row("n1"))
     assert persister.shed_pressure == 1
     assert persister.shed_bytes == 1234
 
@@ -61,7 +62,7 @@ def test_a_value_that_cannot_be_rebuilt_is_never_shed(persister) -> None:
     persister.set_recompute_probe(lambda nid: False)
     persister._queue.put(("filler", None, {}, 0, 0.0, (), None))
     persister._num_writers = 0
-    persister.submit("loop-node", b"x", {}, compute_ms=1.0, size=1234)
+    persister.submit("loop-node", b"x", {}, compute_ms=1.0, size=1234, spec_row=spec_row("loop-node"))
     assert persister.shed_pressure == 0
 
 
@@ -71,7 +72,7 @@ def test_nothing_is_shed_while_a_writer_is_free(persister) -> None:
     not wait, so there is nothing to trade away."""
     persister.set_recompute_probe(lambda nid: True)
     persister._num_writers = 8          # queue is empty, writers idle
-    persister.submit("n1", b"x", {}, compute_ms=1.0, size=10)
+    persister.submit("n1", b"x", {}, compute_ms=1.0, size=10, spec_row=spec_row("n1"))
     assert persister.shed_pressure == 0
 
 
@@ -84,5 +85,5 @@ def test_a_failing_probe_never_sheds(persister) -> None:
     persister.set_recompute_probe(angry)
     persister._queue.put(("filler", None, {}, 0, 0.0, (), None))
     persister._num_writers = 0
-    persister.submit("n1", b"x", {}, compute_ms=1.0, size=10)
+    persister.submit("n1", b"x", {}, compute_ms=1.0, size=10, spec_row=spec_row("n1"))
     assert persister.shed_pressure == 0
