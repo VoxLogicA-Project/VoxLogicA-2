@@ -334,6 +334,13 @@ class EngineExecutionStrategy(ExecutionStrategy):
                 # judged against, rather than one missing its last transaction.
                 dev_stopped = stop
                 try:
+                    # THE FRONTIER FIRST. A stop that keeps only what happened to
+                    # be persisted leaves the next run replanning from the goals;
+                    # writing the frontier is what lets it start from where this
+                    # one got to.
+                    frontier = engine.checkpoint_frontier()
+                    print(f"[dev] frontier checkpoint: {frontier} values written",
+                          file=sys.stderr, flush=True)
                     engine.table.flush_lineage()
                     persister = getattr(engine.table, "_persister", None)
                     if persister is not None:

@@ -99,7 +99,8 @@ class LoopAdmission:
                  on_spliced: Callable[[NodeId, NodeId, int], None],
                  fail_node: Callable[[NodeId, BaseException], None],
                  reclaim: Callable[[], None] | None = None,
-                 blocked: Callable[[], bool] | None = None):
+                 blocked: Callable[[], bool] | None = None,
+                 mark_critical: Callable[[NodeId], None] | None = None):
         self.expander = expander
         self.graph = graph
         self.ready = ready
@@ -118,6 +119,17 @@ class LoopAdmission:
         self._on_spliced = on_spliced
         self._fail_node = fail_node
         self._reclaim = reclaim or (lambda: None)
+        # THE REUSE CUT. A loop body's root is the per-case result, and it is
+        # the node a warm walk should stop at: prune there and the whole case --
+        # thousands of interior nodes -- is never named. The engine already
+        # treats a goal's direct dependencies and structural nodes as critical
+        # for exactly this reason; body roots were the gap.
+        #
+        # Measured before it: a resumed walk met the store 14% of the time --
+        # 68,889 nodes pruned against 489,728 registered, flat at 2, 14, 29 and
+        # 39 minutes -- because the store held a SAMPLE of the DAG rather than a
+        # cut, so the walk fell through the holes and recomputed the interior.
+        self._mark_critical = mark_critical or (lambda nid: None)
         # RSS backpressure (engine/governor.py). The byte budgets above are
         # ACCOUNTED bytes, which on this workload ran at less than half of what
         # the process actually occupied; this asks the governor directly
@@ -472,6 +484,7 @@ class LoopAdmission:
             self.liveness.staged.discard(body)
             if body in self.graph.incomplete:      # shared with another goal/loop
                 self._body_owner.setdefault(body, job)
+                self._mark_critical(body)
                 job.in_flight += 1
                 self._reserve(body)
             elif self._available(body):            # completed or on disk: no slot
@@ -482,6 +495,7 @@ class LoopAdmission:
                 continue
             else:
                 self._body_owner[body] = job
+                self._mark_critical(body)
                 job.in_flight += 1
                 self._reserve(body)
                 self._schedule(body, job.priority)

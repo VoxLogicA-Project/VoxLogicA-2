@@ -356,6 +356,10 @@ class ComputationEngine:
             available=self._available,
             materialize=self._rematerialize,
             idle=self._idle,
+            # A lambda, not `self._critical_nodes.add`: the set is built later
+            # in __init__ than this constructor call, so binding the method here
+            # captured an attribute that did not exist yet.
+            mark_critical=lambda nid: self._critical_nodes.add(nid),
             on_spliced=self._on_spliced,
             fail_node=self._fail_node,
             reclaim=self._reclaim_memory,
@@ -472,6 +476,7 @@ class ComputationEngine:
         self._dev_stop = 0      # completions at which the dev guard tripped
         self._memo_write_failures = 0   # expansions whose memo could not be stored
         self._memo_specs_written: set[NodeId] = set()  # closure already on disk
+        self._pruned_available = 0      # nodes the store answered, never scheduled
         self._memo_hits = 0             # loops answered from the store, not reduced
         self._memo_misses = 0           # loops with no usable memo, so expanded
         self._register_knobs()
@@ -922,6 +927,14 @@ class ComputationEngine:
             if nid in completed:
                 continue
             if self._available(nid):
+                # COUNTED, because "what did the warm store buy?" has been an
+                # argument three times in this branch and never a number. A
+                # pruned node is invisible everywhere else: it is never
+                # scheduled, never completed, never a cache hit unless something
+                # later loads it, so a run that reused everything and one that
+                # reused nothing differ only in how FEW nodes they register.
+                # This is the difference, counted.
+                self._pruned_available += 1
                 continue  # cached: loaded on demand -- see `_available`
             node = self.table.nodes[nid]
             if node.kind == "constant" and nid not in self._goals:
@@ -1244,6 +1257,7 @@ class ComputationEngine:
             ) if self._op_ms else "",
             "kernels_executed": self._kernels_executed,
             "recomputes": self._recomputes,
+            "pruned_available": self._pruned_available,
             "cones_dispatched": self._cones_dispatched,
             "ops_fused": self._ops_fused,
             "interiors_elided": self._interiors_elided,
@@ -1689,6 +1703,38 @@ class ComputationEngine:
         self._schedule_subgraph(seq_id, priority)
         self._on_spliced(loop_id, seq_id, priority, memoise=False)
         return True
+
+    def checkpoint_frontier(self) -> int:
+        """Write the frontier: every value the rest of the run still needs.
+
+        THE FRONTIER IS NOT "everything completed". It is the completed nodes
+        that still have UNRUN CONSUMERS -- exactly `graph.consumers`, which the
+        engine maintains for its own lifetime accounting. That set is the
+        boundary between what is done and what is not, and it is the only thing
+        a restart needs: prune there and nothing below it is ever named again.
+
+        This is what a resume was missing. Replanning from the goals and hoping
+        the store happens to hold the right nodes gave 12-16% reuse no matter
+        what was tuned, because most completions have no stored value -- a third
+        of them are fused-cone interiors that produce none by design. None of
+        that matters to the frontier: an elided interior has no unrun consumer,
+        so it is not in the set and nobody will ever ask for it.
+
+        `spill` is the right verb rather than the worth-it persist gate: the
+        question here is not "is this worth caching" but "can this value leave
+        RAM and come back", which is exactly what spill answers.
+
+        Returns how many values were written.
+        """
+        written = 0
+        for nid in list(self.graph.consumers):
+            if self.table.has_value(nid) and not self.table.persisted(nid):
+                try:
+                    if self.table.spill(nid):
+                        written += 1
+                except Exception:                               # noqa: BLE001
+                    pass
+        return written
 
     def _memoise_expansion(self, loop_id: NodeId, seq_id: NodeId) -> None:
         """Record that this loop expands into this sequence -- specs FIRST.
