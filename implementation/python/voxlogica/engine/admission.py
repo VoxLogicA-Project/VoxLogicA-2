@@ -141,6 +141,7 @@ class LoopAdmission:
         #: two thousand is waste that never finishes.
         self.max_open_loops = max(2, workers)
         self.deferred_starts = 0     # metric: starts refused by the bound
+        self._open_expansions = 0    # incremented in `start`, not in the task
         self._body_owner: dict[NodeId, _Job] = {}
         # MEMORY GRANTS. Bytes reserved for bodies that have been admitted and
         # have not completed, so the engine never over-commits and then
@@ -198,10 +199,21 @@ class LoopAdmission:
         # Refusal is safe: the loop node goes back on the ready queue and is
         # retried when a slot frees. A run with nothing else to do still makes
         # progress, because `_has_room`'s wedge escape outranks every bound.
-        if len(self._jobs) >= self.max_open_loops:
+        if self._open_expansions >= self.max_open_loops:
+            # PARK, DO NOT RE-PUSH. Re-pushing the loop node onto the ready
+            # queue made it pop again immediately, fail the same test, and be
+            # pushed again -- a busy spin that took the run to 28 node/s with
+            # 1,200 refusals in seventy seconds. The parked tier exists for
+            # precisely this: a node that cannot run YET and must not be
+            # reconsidered until something changes. `_job_ended` unparks.
             self.deferred_starts += 1
-            self._schedule(nid, priority)
+            self.ready.park(nid, priority)
             return
+        # COUNTED HERE, SYNCHRONOUSLY, and not by `len(self._jobs)`. The job
+        # registers itself inside `_run_job`, which is a task: every `start`
+        # scheduled before the first task ran saw an empty dict and admitted
+        # itself. Measured with the cap set to 32: 840 jobs open.
+        self._open_expansions += 1
         self.ready.begin_unit()
         asyncio.get_running_loop().create_task(self._run_job(nid, node, priority))
 
@@ -277,6 +289,10 @@ class LoopAdmission:
             self.plan_size.close_loop(nid)
             self._release_captures(node)
             self._jobs.pop(nid, None)
+            self._open_expansions = max(0, self._open_expansions - 1)
+            # A slot freed: let one parked loop through. Without this the cap
+            # is a one-way door and the run stops opening loops for good.
+            self.ready.unpark(over_budget=False, starving=True)
             self.ready.end_unit()
 
     def _splice(self, nid: NodeId, expansion: Expansion, priority: int) -> None:
