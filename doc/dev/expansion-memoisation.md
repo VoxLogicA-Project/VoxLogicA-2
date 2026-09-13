@@ -171,3 +171,104 @@ determinism assumption is wrong.
    harness of the stability handover §7 asserting that a warm run's goal values
    are *identical* to a cold run's — the values are content-addressed, so
    identity is the right test, not tolerance.
+
+---
+
+## 7. The second, larger problem: the store holds a sample, not a cut
+
+§1–§6 are about *naming*: you cannot ask "is this on disk?" until expansion has
+told you the id. There is a second problem underneath it, and it is the bigger
+lever.
+
+### What the engine already does right
+
+`_schedule_subgraph` walks **down from the goal** and prunes at `_available(nid)`
+— `completed or persisted`. So the rule "if a node's result is already
+materialised, do not compute it *or anything below it*" is already implemented,
+and correctly: an available node's inputs are never even visited.
+
+### Why it does not fire
+
+`persisted()` is a membership test against the materialised-id index, and an
+**evicted row is a tombstone with `status='evicted'`** — not materialised, so not
+available. Combine that with how the store chooses what to keep:
+
+- **pressure shedding** drops whatever arrives while the four writer threads are
+  busy — a decision made by arrival timing, not by worth;
+- **GreedyDual-Size** then evicts by cost-per-byte.
+
+Neither looks at where the node sits in the graph. The result is a store that is
+a **sample** of the DAG: three million rows with holes everywhere, 856 K
+materialised ids out of 2.64 M nodes in one measured run — about 32%, chosen
+essentially at random.
+
+**And a hole in the boundary forces the whole interior below it to be recomputed.**
+If a consumer's value was shed, the walk descends into its inputs; those inputs
+were evicted as *dead* — tombstoned, because at the time nothing needed them any
+more — so they are not available either, and the walk continues to the leaves.
+Everything below one missing value is recomputed, all of it work that was
+performed once and correctly discarded.
+
+### The user's rule, corrected
+
+*"A value that was evicted and has a tombstone is very likely unneeded — expand
+but skip."* The instinct is right and the mechanism needs one correction: you
+**cannot** skip a tombstoned node when something genuinely asks for it, because
+the value is gone and only recomputation can produce it. What you can do is
+arrange that **nothing asks** — and that is a property of what you keep, not of
+what you discarded.
+
+### The design: store a cut, not a sample
+
+Choose a **cut set**: a frontier that separates the goals from the leaves, and
+guarantee *that* is complete. Then a warm run prunes at the cut, never descends
+below it, and every tombstone underneath is genuinely never asked for — the
+user's "expand but skip", obtained by construction instead of by guessing.
+
+The cheapest useful cut on this workload is already obvious from the program's
+shape: **the per-case result of each loop body**. Sixty of them, one per case,
+plus the goal values. Persist those unconditionally — never sheddable, never
+evictable — and a warm run prunes sixty subtrees at their roots and does nothing
+else. The interior, which is 99.99% of the nine million nodes, is never named,
+never expanded below the cut, and never recomputed.
+
+Concretely that is a change to the persist gate, not a new mechanism:
+
+1. mark a node **critical** when it is a loop body's root or a goal's direct
+   input (the engine already has a `critical` concept in the persist gate:
+   `critical or compute_ms >= persist_min_compute_ms`);
+2. critical values are exempt from pressure shedding and from eviction while any
+   future run might want them — the same exemption `protected` already gives
+   goals within a run;
+3. everything else stays exactly as it is: shed on pressure, evict by
+   GreedyDual-Size. Interior values are *supposed* to be disposable.
+
+### Why this is the standard answer
+
+Choosing which intermediate values to keep so that the rest can be cheaply
+recomputed is **checkpoint selection**, and it is a solved problem in two
+literatures:
+
+- **Rematerialisation / gradient checkpointing** — Chen, Xu, Zhang and Guestrin,
+  "Training deep nets with sublinear memory cost" (2016): keep a cut of the
+  activation graph, recompute the segments between checkpoints, and the memory
+  falls to O(√n) for a bounded recompute cost.
+- **Checkpointing for adjoint computation** — Griewank and Walther's `revolve`
+  (ACM TOMS, 2000): the optimal placement of checkpoints along a computation to
+  minimise recomputation under a storage bound.
+- And the **red-blue pebble game** (Hong and Kung, 1981) again, which is the
+  formal statement of the whole question: which values to hold in fast storage so
+  that the traffic to slow storage is minimised.
+
+In all of them the checkpoints are **chosen**. Ours are whichever writes won a
+queue race. That is the defect, stated in one line: **the engine checkpoints at
+random, and a random cut of a DAG has holes, and a hole costs its entire
+subtree.**
+
+### Which of the two to do first
+
+§7 is cheaper and pays more. A complete cut at loop-body roots makes a warm run
+prune at sixty nodes, which is most of the benefit of §3 without needing the
+expansion memoisation at all — the engine still re-expands, but it expands into
+subtrees it immediately prunes. §3 then removes the remaining cost, which is the
+expansion itself.
