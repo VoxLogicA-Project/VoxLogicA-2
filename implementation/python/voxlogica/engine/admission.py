@@ -133,15 +133,6 @@ class LoopAdmission:
         self._window_now = self.window
         self.min_window_seen = self.window  # metric: how far memory pushed it down
         self._jobs: dict[NodeId, _Job] = {}
-        #: How many loop expansions may be open at once. Bodies within one loop
-        #: are bounded by `_live_window`; this bounds the loops themselves. Sized
-        #: from the worker count because the question it answers is "are there
-        #: enough open expansions to keep the workers fed", and one loop body's
-        #: subtree is usually thousands of nodes -- so a handful is plenty and
-        #: two thousand is waste that never finishes.
-        self.max_open_loops = max(2, workers)
-        self.deferred_starts = 0     # metric: starts refused by the bound
-        self._open_expansions = 0    # incremented in `start`, not in the task
         self._body_owner: dict[NodeId, _Job] = {}
         # MEMORY GRANTS. Bytes reserved for bodies that have been admitted and
         # have not completed, so the engine never over-commits and then
@@ -183,37 +174,6 @@ class LoopAdmission:
         ended by the job itself, so run-completion accounting covers the whole
         expansion even though the worker's own turn ends immediately.
         """
-        # A GLOBAL BOUND ON OPEN EXPANSIONS, and it is what makes a loop finish.
-        #
-        # `_live_window` bounds bodies within ONE loop. Nothing bounded how many
-        # loops were open, so the engine started expansions far faster than it
-        # finished them. Measured on the sixty-case sweep: **2,018 expansion
-        # jobs open and 10 completed**, 14 spliced, at 295 node/s and 1797% CPU
-        # -- a machine working hard and finishing almost nothing.
-        #
-        # The consequence is not only breadth. A loop is memoised when it
-        # FINISHES expanding, so a run that finishes ten loops leaves ten memos,
-        # and a resume against that store has nothing to reuse. Opening less is
-        # what lets the store fill.
-        #
-        # Refusal is safe: the loop node goes back on the ready queue and is
-        # retried when a slot frees. A run with nothing else to do still makes
-        # progress, because `_has_room`'s wedge escape outranks every bound.
-        if self._open_expansions >= self.max_open_loops:
-            # PARK, DO NOT RE-PUSH. Re-pushing the loop node onto the ready
-            # queue made it pop again immediately, fail the same test, and be
-            # pushed again -- a busy spin that took the run to 28 node/s with
-            # 1,200 refusals in seventy seconds. The parked tier exists for
-            # precisely this: a node that cannot run YET and must not be
-            # reconsidered until something changes. `_job_ended` unparks.
-            self.deferred_starts += 1
-            self.ready.park(nid, priority)
-            return
-        # COUNTED HERE, SYNCHRONOUSLY, and not by `len(self._jobs)`. The job
-        # registers itself inside `_run_job`, which is a task: every `start`
-        # scheduled before the first task ran saw an empty dict and admitted
-        # itself. Measured with the cap set to 32: 840 jobs open.
-        self._open_expansions += 1
         self.ready.begin_unit()
         asyncio.get_running_loop().create_task(self._run_job(nid, node, priority))
 
@@ -289,10 +249,6 @@ class LoopAdmission:
             self.plan_size.close_loop(nid)
             self._release_captures(node)
             self._jobs.pop(nid, None)
-            self._open_expansions = max(0, self._open_expansions - 1)
-            # A slot freed: let one parked loop through. Without this the cap
-            # is a one-way door and the run stops opening loops for good.
-            self.ready.unpark(over_budget=False, starving=True)
             self.ready.end_unit()
 
     def _splice(self, nid: NodeId, expansion: Expansion, priority: int) -> None:
