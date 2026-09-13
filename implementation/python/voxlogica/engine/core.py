@@ -471,6 +471,7 @@ class ComputationEngine:
         self._dev_stop_after = int(getattr(self.config, "dev_stop_after", 0) or 0)
         self._dev_stop = 0      # completions at which the dev guard tripped
         self._memo_write_failures = 0   # expansions whose memo could not be stored
+        self._memo_specs_written: set[NodeId] = set()  # closure already on disk
         self._memo_hits = 0             # loops answered from the store, not reduced
         self._memo_misses = 0           # loops with no usable memo, so expanded
         self._register_knobs()
@@ -1712,6 +1713,39 @@ class ComputationEngine:
         if backend is None or not hasattr(backend, "put_expansion"):
             return
         try:
+            # WRITE THE CLOSURE OURSELVES. Runtime specs reach the `node` table
+            # only as a side effect of PERSISTING A VALUE -- each write carries
+            # its spec row -- and the spliced sequence's value is deliberately
+            # never persisted (`_EXPANDED_OPERATORS`). So its spec was never
+            # written, every memo pointed at a sequence the store could not
+            # describe, and the read path missed 100% of the time: measured on
+            # the resume of rung 1 as 0 hits against 2,039 misses, with all five
+            # memo keys matching loops the run was expanding.
+            #
+            # The coupling was the mistake. A memo's closure is needed whether
+            # or not anybody stored the values, so the memo writes it.
+            rows = []
+            seen: set[NodeId] = set()
+            work = [seq_id]
+            while work:                     # explicit stack: data-shaped depth
+                nid = work.pop()
+                if nid in seen or nid in self._memo_specs_written:
+                    continue
+                seen.add(nid)
+                spec = self.table.nodes.get(nid)
+                if spec is None:
+                    continue
+                row = self.table.pack_row(nid, spec)
+                if row is not None:
+                    rows.append(row)
+                work.extend(spec.args)
+                work.extend(value for _key, value in spec.kwargs)
+            if rows:
+                backend.put_lineage_batch(rows)
+            self._memo_specs_written |= seen
+            # ORDER: specs durable first, memo second. A crash in between leaves
+            # specs with no memo, which costs one expansion; the reverse leaves
+            # a memo with no specs, which is the poisoned store of 2026-09-10.
             self.table.flush_lineage()
             persister = getattr(self.table, "_persister", None)
             if persister is not None:
