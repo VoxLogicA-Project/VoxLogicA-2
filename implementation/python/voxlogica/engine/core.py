@@ -477,6 +477,8 @@ class ComputationEngine:
         self._memo_write_failures = 0   # expansions whose memo could not be stored
         self._memo_specs_written: set[NodeId] = set()  # closure already on disk
         self._pruned_available = 0      # nodes the store answered, never scheduled
+        self._cut_would_break = 0       # evictions whose inputs were NOT stored
+        self._cut_unknown = 0           # evictions whose deps could not be read
         self._memo_hits = 0             # loops answered from the store, not reduced
         self._memo_misses = 0           # loops with no usable memo, so expanded
         self._register_knobs()
@@ -1258,6 +1260,8 @@ class ComputationEngine:
             "kernels_executed": self._kernels_executed,
             "recomputes": self._recomputes,
             "pruned_available": self._pruned_available,
+            "cut_would_break": self._cut_would_break,
+            "cut_unknown": self._cut_unknown,
             "cones_dispatched": self._cones_dispatched,
             "ops_fused": self._ops_fused,
             "interiors_elided": self._interiors_elided,
@@ -1598,8 +1602,13 @@ class ComputationEngine:
         to orphan.
         """
         try:
-            return all(self.table.persisted(d) for d in self.graph.deps(nid))
+            deps = self.graph.deps(nid)
+            stored = all(self.table.persisted(d) for d in deps)
+            if not stored:
+                self._cut_would_break += 1
+            return stored
         except Exception:                                       # noqa: BLE001
+            self._cut_unknown += 1
             # UNKNOWN MEANS "DO NOT SPEND A WRITE". `deps` can raise for a node
             # whose spec the graph cannot walk, and the safe answer is the
             # policy that was measured rather than the one being added: dropping
