@@ -1524,29 +1524,30 @@ class ComputationEngine:
                 self.table.evict(nid)
                 self._evicted_early += 1
             elif (self.graph.consumers.get(nid, 0) > 0
+                  and not self._inputs_are_stored(nid)
                   and self.table.spill(nid)):
-                # THE CUT MUST NOT BREAK. This value has unrun consumers, so it
-                # is ON THE FRONTIER -- the boundary between what this run has
-                # finished and what it has not. Dropping it without a durable
-                # copy puts a hole in that boundary, and a hole cannot be
-                # checkpointed: a later run finds nothing to prune at and
-                # recomputes the whole subtree beneath it.
+                # THE CUT MUST NOT BREAK, and this is the ONLY case where that
+                # costs a write.
                 #
-                # Measured. Writing the frontier at a stop lifted a resume's
-                # reuse from the 12-16% that nothing else moved to 38.6%, and it
-                # cost 696 values. The remaining gap is exactly this: the
-                # checkpoint can only write what is still RESIDENT, and anything
-                # dropped earlier by the branch below is already gone.
+                # The stored set has to separate the goals from the leaves:
+                # every path up from a leaf passes through something on disk.
+                # Dropping a value with unrun consumers is therefore fine
+                # PROVIDED ITS OWN INPUTS ARE STORED -- the boundary simply
+                # moves down to them, and rebuilding this value later is one
+                # kernel over inputs that are already there. That is the common
+                # case and it costs nothing.
                 #
-                # So a frontier value is WRITTEN before it is dropped, whenever
-                # the writer can take it. The stored set then only ever moves
-                # toward the leaves and never develops holes -- the pebble-game
-                # cut invariant (Hong and Kung 1981), and the same discipline as
-                # a store closure.
+                # What breaks the cut is dropping such a value when its inputs
+                # are NOT stored: the boundary then has a hole, and a later run
+                # finds nothing to prune at and recomputes the whole subtree
+                # beneath it. Only there is a write worth its bandwidth.
                 #
-                # The cheap-drop below stays as the last resort: when the writer
-                # is saturated there is nothing else to free, and a valve that
-                # cannot open is how this engine met the OOM killer.
+                # Writes are the resource this workload is short of -- a
+                # pressure spill once wrote 300 GB in forty minutes, and the
+                # disk tier is a pure optimisation ("a miss falls back to
+                # recompute"). So this branch is narrow on purpose, and the
+                # cheap-drop below still catches everything it does not claim,
+                # including the case where the writer is saturated.
                 self._spill_pending.append(nid)
                 if self._spill_member is not None:
                     self._spill_member.add(nid)
@@ -1582,6 +1583,24 @@ class ComputationEngine:
                 # Writer still saturated: nothing can leave RAM this way right
                 # now. Keep the candidate; a later sweep retries.
                 self._evict_candidates.append(nid)
+
+    def _inputs_are_stored(self, nid: NodeId) -> bool:
+        """True iff dropping this value leaves the stored set still a cut.
+
+        A value may be discarded when everything it was computed FROM is on
+        disk: the boundary between stored and not-stored moves down to its
+        inputs, rebuilding it later is one kernel over values already there, and
+        no subtree is orphaned. This is the condition that lets almost every
+        eviction stay free -- only a value whose inputs are missing needs a
+        write to keep the boundary whole.
+
+        Empty deps (a constant, a leaf) count as stored: there is nothing below
+        to orphan.
+        """
+        try:
+            return all(self.table.persisted(d) for d in self.graph.deps(nid))
+        except Exception:                                       # noqa: BLE001
+            return False
 
     def _recomputable(self, nid: NodeId) -> bool:
         """True iff `_rematerialize` can rebuild this value WITHOUT a disk copy.
