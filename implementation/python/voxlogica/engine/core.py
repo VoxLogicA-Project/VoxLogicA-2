@@ -88,7 +88,7 @@ from voxlogica.engine.query import Query, QueryStatus
 from voxlogica.engine.ready import ReadyQueue
 from voxlogica.lazy.ir import NodeId, SymbolicPlan
 from voxlogica.primitives.registry import PrimitiveRegistry
-from voxlogica.storage import StorageBackend
+from voxlogica.storage import StorageBackend, spec_from_row
 
 # Operators whose result is a sequence produced by a (possibly runtime-unrolled)
 # loop. Persisting one of these prunes its whole subtree on a warm re-run.
@@ -1612,6 +1612,66 @@ class ComputationEngine:
             else:
                 self._dispatch_pins[dep] = remaining
 
+    def _splice_from_memo(self, loop_id: NodeId, priority: int) -> bool:
+        """Answer a loop from the store instead of reducing it. False = expand.
+
+        NOTHING IS TRUSTED. The memo names a spliced sequence; the sequence's
+        own spec names its elements; every one of those specs is re-hashed and
+        compared to the id it was stored under before it is interned. A single
+        failure -- a corrupt row, a missing element, a spec from a different
+        format -- rejects the WHOLE memo and returns False, and the loop is
+        expanded exactly as it is today.
+
+        That is what makes this safe to add: every failure mode lands on the
+        current code path. The engine interns the same set of (id, spec) pairs
+        either way, because identity is the hash of the spec and the hash is
+        checked; only the time taken differs.
+
+        The closure check here is deliberate redundancy. `_memoise_expansion`
+        already publishes the memo only after its specs are durable, so a
+        missing element should be impossible -- and a store can be copied,
+        truncated, or written by a version that got this wrong, so the reader
+        verifies rather than assuming the writer was correct.
+        """
+        backend = getattr(self.table, "_backend", None)
+        if backend is None or not hasattr(backend, "get_expansion"):
+            return False
+        try:
+            seq_id = backend.get_expansion(loop_id, EXPANSION_FORMAT)
+            if seq_id is None:
+                self._memo_misses += 1
+                return False
+            seq_spec = self.table.nodes.get(seq_id)
+            if seq_spec is None:
+                seq_spec = spec_from_row(seq_id, backend.get_definition(seq_id))
+            if seq_spec is None:
+                self._memo_misses += 1
+                return False
+            # Every element, verified, BEFORE anything is interned: a partial
+            # intern would leave the table naming specs it could not produce.
+            restored: list[tuple[NodeId, Any]] = []
+            for element in seq_spec.args:
+                if element in self.table.nodes:
+                    continue
+                spec = spec_from_row(element, backend.get_definition(element))
+                if spec is None:
+                    self._memo_misses += 1
+                    return False
+                restored.append((element, spec))
+        except Exception:                                       # noqa: BLE001
+            self._memo_misses += 1
+            return False
+        for element, spec in restored:
+            self.table.nodes[element] = spec
+        self.table.nodes.setdefault(seq_id, seq_spec)
+        self._memo_hits += 1
+        # From here the ordinary machinery takes over: the sequence is scheduled
+        # like any other node,each element is pruned or computed by the SAME
+        # availability rule, and the loop re-fires through its alias.
+        self._schedule_subgraph(seq_id, priority)
+        self._on_spliced(loop_id, seq_id, priority, memoise=False)
+        return True
+
     def _memoise_expansion(self, loop_id: NodeId, seq_id: NodeId) -> None:
         """Record that this loop expands into this sequence -- specs FIRST.
 
@@ -1643,7 +1703,8 @@ class ComputationEngine:
         except Exception:                                       # noqa: BLE001
             self._memo_write_failures += 1
 
-    def _on_spliced(self, loop_id: NodeId, seq_id: NodeId, priority: int) -> None:
+    def _on_spliced(self, loop_id: NodeId, seq_id: NodeId, priority: int,
+                    *, memoise: bool = True) -> None:
         """A loop finished expanding: forward its value from the spliced sequence.
 
         The loop node re-fires once the sequence completes (or immediately, if
@@ -1654,7 +1715,11 @@ class ComputationEngine:
         self._alias[loop_id] = seq_id
         self.graph.pin(seq_id)
         self._priority[seq_id] = max(self._priority.get(seq_id, 0), priority)
-        self._memoise_expansion(loop_id, seq_id)
+        if memoise:
+            # Not when the splice CAME from a memo: rewriting it would be a
+            # flush and a drain per hit, which is the cost this path exists to
+            # avoid.
+            self._memoise_expansion(loop_id, seq_id)
         # THE RETURN VALUE IS THE CONTRACT, not a convenience. `await_one`
         # refuses a wait on a dependency that has already completed, because
         # its arrival has been announced and will not be announced again --
@@ -2484,11 +2549,20 @@ class ComputationEngine:
                     # single-computation guard in begin().
                     self._finish(nid, self.table.values[nid], persist=False)
                 elif self.expander.can_expand(node):
+                    # ASK THE STORE BEFORE ASKING THE EXPANDER. A loop that this
+                    # or an earlier run already expanded has its answer on disk:
+                    # the spliced sequence and every element spec. Reading them
+                    # costs one indexed lookup; reducing them costs one Python
+                    # body reduction per element, which is the hours a warm run
+                    # spends rediscovering ids whose VALUES it already has.
+                    priority = self._priority.get(nid, int(Priority.NORMAL))
+                    if self._splice_from_memo(nid, priority):
+                        continue
                     # Hand the loop to the admission unit: bodies are reduced in
                     # chunks off-loop and admitted under the window. This turn
                     # ends now; the loop node re-fires via its alias once the
                     # spliced sequence completes.
-                    self.admission.start(nid, node, self._priority.get(nid, int(Priority.NORMAL)))
+                    self.admission.start(nid, node, priority)
                 elif (target := self._rewrite_of(node)) is not None:
                     if isinstance(target, NeedsExpansion):
                         # The rewriter needed a value only an expansion can
