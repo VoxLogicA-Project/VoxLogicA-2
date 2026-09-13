@@ -544,3 +544,62 @@ implementation, not a comment:
 (1)–(4) establish the argument above mechanically. (5) is the coverage
 measurement, and it is the only one of the five that can fail for a reason that
 is not a bug in this design.
+
+---
+
+## 10. A precondition §9 assumed and the store does not meet
+
+§9 argues the read path is correct because a spec read back is **re-hashed and
+compared to the key it was stored under**. That check is the whole safety
+argument. It cannot currently pass, and the reason is worth recording before any
+of §3 is built on top of it.
+
+### The gap
+
+`hash_node` feeds six things into the digest:
+
+    kind, operator, args, kwargs, attrs, output_kind
+
+The `node` table stores five:
+
+    hash, kind, operator, args, kwargs, attrs_json
+
+**`output_kind` is not stored.** A spec reconstructed from a row therefore
+cannot reproduce its own id unless every node happens to share one
+`output_kind`, so the verification step of §9.2(2) would reject every block and
+the read path would fall back to reducing, every time — safe, and useless.
+
+There is a second, subtler version of the same problem: `attrs` are stored as
+`dumps_json(node.attrs)`, while the hash consumes `_normalize_value(node.attrs)`.
+Anything the normaliser changes — a tuple becoming a list, a numeric type
+narrowing — round-trips to a spec that is *equal enough to run* and *not equal
+enough to hash the same*.
+
+### The fix, and why it is the stronger one
+
+Store the **canonical payload that the hash consumes**, not a decomposition of
+it: `node_payload(node)` is exactly the dict `hash_node` reads, so a row holding
+it re-hashes to its own id *by construction* rather than by the schema and the
+hasher agreeing about six fields forever. The decomposed columns stay for
+queryability; identity comes from the payload.
+
+This is the same discipline as everything else here: make the invariant
+structural instead of remembering to maintain it.
+
+### What still needs deciding, and it is not mine to assume
+
+Reconstructing a *runnable* `NodeSpec` needs `attrs` in the form the engine
+executes with, and the canonical payload holds the **normalised** form. For the
+element nodes an expansion produces — ordinary primitives over image values —
+these coincide. For a `closure`, whose attrs carry an unreduced AST, they may
+not.
+
+So the open question is whether the memo needs to carry closures at all, or only
+the primitive elements plus the spliced sequence. I believe only the latter, but
+"I believe" is the wrong basis for the one check the correctness argument rests
+on, and this session has four refuted fixes that were all somebody's belief.
+
+**Next step is a measurement, not a patch**: take one expanded loop from run 8's
+store, reconstruct each element spec from its row, re-hash it, and count how many
+reproduce their id. That number decides whether §3 is a schema change or a
+redesign, and it is one query against a store that already exists.
