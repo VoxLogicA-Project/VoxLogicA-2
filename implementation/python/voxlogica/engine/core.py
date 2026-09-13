@@ -1647,17 +1647,34 @@ class ComputationEngine:
             if seq_spec is None:
                 self._memo_misses += 1
                 return False
-            # Every element, verified, BEFORE anything is interned: a partial
-            # intern would leave the table naming specs it could not produce.
+            # THE CLOSURE IS TRANSITIVE, and one level is not enough. An
+            # element's spec names ITS inputs, and those specs were interned by
+            # the same expansion. Restoring only the sequence's direct args left
+            # the table naming nodes it had no spec for, and the first
+            # `graph.deps` of such a node raised `KeyError` out of
+            # `table.nodes[nid]` -- caught immediately by the three warm-store
+            # tests, which is what they are for.
+            #
+            # An explicit stack, never recursion: the depth here is the depth of
+            # the DATA (see AGENTS.md), and this walk runs over the same node
+            # set a full expansion would have produced.
             restored: list[tuple[NodeId, Any]] = []
-            for element in seq_spec.args:
-                if element in self.table.nodes:
+            seen: set[NodeId] = set()
+            work: list[NodeId] = list(seq_spec.args)
+            while work:
+                element = work.pop()
+                if element in seen or element in self.table.nodes:
                     continue
+                seen.add(element)
                 spec = spec_from_row(element, backend.get_definition(element))
                 if spec is None:
+                    # One missing or unverifiable spec rejects the WHOLE memo:
+                    # a partial intern is the poisoned store of 2026-09-10.
                     self._memo_misses += 1
                     return False
                 restored.append((element, spec))
+                work.extend(spec.args)
+                work.extend(value for _key, value in spec.kwargs)
         except Exception:                                       # noqa: BLE001
             self._memo_misses += 1
             return False
