@@ -1740,16 +1740,22 @@ class ComputationEngine:
                     rows.append(row)
                 work.extend(spec.args)
                 work.extend(value for _key, value in spec.kwargs)
+            # ORDER: specs durable first, memo second. A crash in between leaves
+            # specs with no memo, which costs one expansion; the reverse leaves a
+            # memo with no specs, which is the poisoned store of 2026-09-10.
+            #
+            # `put_lineage_batch` IS the ordering guarantee: it opens its own
+            # transaction, writes, and commits before returning, so the specs are
+            # on disk by the time the next line runs. Nothing else is needed.
+            #
+            # It used to flush the lineage buffer and DRAIN THE WRITERS here as
+            # well, to be sure. That cost a full persister drain per loop splice,
+            # and with roughly two thousand loops in the first minute it took the
+            # resume from 517 node/s to 131 -- a 4x loss buying a guarantee the
+            # synchronous write already gave. Measured, removed.
             if rows:
                 backend.put_lineage_batch(rows)
             self._memo_specs_written |= seen
-            # ORDER: specs durable first, memo second. A crash in between leaves
-            # specs with no memo, which costs one expansion; the reverse leaves
-            # a memo with no specs, which is the poisoned store of 2026-09-10.
-            self.table.flush_lineage()
-            persister = getattr(self.table, "_persister", None)
-            if persister is not None:
-                persister.flush()
             backend.put_expansion(loop_id, seq_id, EXPANSION_FORMAT)
         except Exception:                                       # noqa: BLE001
             self._memo_write_failures += 1
