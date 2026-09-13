@@ -250,6 +250,40 @@ def spec_row_for(node_id: str, node: Any) -> tuple | None:
         return None
 
 
+def spec_from_row(node_id: str, row) -> Any | None:
+    """Rebuild a `NodeSpec` from its stored row, or None if it is not genuine.
+
+    THE VERIFICATION STEP, and the reason a stored expansion can be trusted at
+    all. A node's id IS the hash of its spec, so a spec that does not re-hash to
+    the id it was stored under is not that spec -- a corrupted row, a store
+    written by a different format, a collision that never happens with sha256 --
+    and the only safe answer is None, which sends the caller back to expanding.
+    Nothing is trusted; everything is checked.
+
+    This is the exact inverse of `spec_row_for`, and it must stay that way:
+    `output_kind` is here because `hash_node` digests it, and a store that
+    omitted it re-hashed 30 of 5,000 rows correctly. With it, 5,000 of 5,000.
+    """
+    from voxlogica.lazy.hash import hash_node
+    from voxlogica.lazy.ir import NodeSpec
+    if row is None:
+        return None
+    try:
+        kind, operator, args, kwargs, attrs_json, output_kind = row
+        spec = NodeSpec(
+            kind=kind,
+            operator=operator,
+            args=tuple(args[i:i + 32].hex() for i in range(0, len(args), 32)),
+            kwargs=tuple(sorted((k, v) for k, v in
+                                (json.loads(kwargs).items() if kwargs else []))),
+            attrs=json.loads(attrs_json) if attrs_json else {},
+            output_kind=output_kind or "unknown",
+        )
+    except Exception:                                           # noqa: BLE001
+        return None
+    return spec if hash_node(spec) == node_id else None
+
+
 class StorageBackend(ABC):
     """Storage backend that records nothing and never returns hits."""
 
@@ -456,6 +490,15 @@ class SQLiteResultsDatabase:
             # min if whole-DAG analytics ever need it.
             self._connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS expansion (
+                    loop_hash       BLOB PRIMARY KEY,
+                    sequence_hash   BLOB NOT NULL,
+                    reducer_version TEXT NOT NULL
+                ) WITHOUT ROWID
+                """
+            )
+            self._connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS node (
                     hash        BLOB PRIMARY KEY,
                     kind        TEXT NOT NULL,
@@ -655,6 +698,40 @@ class SQLiteResultsDatabase:
                 self._connection.execute("ROLLBACK")
                 raise
         self._enforce_budget()
+
+    def put_expansion(self, loop_id: str, sequence_id: str, version: str) -> None:
+        """Record that this loop expands into this spliced sequence.
+
+        PUBLISHED LAST, ON PURPOSE. The row is written only after every spec it
+        transitively names is already in `node`, because a reader that finds
+        this row will prune the loop and never expand it -- so a row whose
+        referents are missing poisons the store for every later run. That is not
+        hypothetical: on 2026-09-10 a `for_loop` row held 225 handles of which 0
+        had a spec, and every warm run against that store died 37 seconds in,
+        deterministically, with `NeedsExpansion` raised on a pool thread where
+        the engine cannot register an expansion.
+
+        `version` is the reducer/format identity. A changed expander produces
+        different specs from the same loop, so its memos must not be reused;
+        including it here invalidates them instead of silently trusting them.
+        """
+        with self._lock:
+            self._connection.execute(
+                "INSERT OR REPLACE INTO expansion(loop_hash,sequence_hash,reducer_version)"
+                " VALUES(?,?,?)", (id_bytes(loop_id), id_bytes(sequence_id), version))
+
+    def get_expansion(self, loop_id: str, version: str) -> str | None:
+        """The spliced sequence id for this loop, or None to expand it."""
+        row = self._reader().execute(
+            "SELECT sequence_hash FROM expansion WHERE loop_hash = ? AND reducer_version = ?",
+            (id_bytes(loop_id), version)).fetchone()
+        return row[0].hex() if row is not None else None
+
+    def get_definition(self, node_id: str) -> tuple | None:
+        """One stored spec row, or None. The read half of `spec_row_for`."""
+        return self._reader().execute(
+            "SELECT kind,operator,args,kwargs,attrs_json,output_kind FROM node WHERE hash = ?",
+            (id_bytes(node_id),)).fetchone()
 
     def put_lineage_batch(self, rows) -> None:
         """Insert DAG rows; idempotent, so merging two stores is a no-op replay.
