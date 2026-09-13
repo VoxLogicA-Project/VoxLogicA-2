@@ -1600,7 +1600,14 @@ class ComputationEngine:
         try:
             return all(self.table.persisted(d) for d in self.graph.deps(nid))
         except Exception:                                       # noqa: BLE001
-            return False
+            # UNKNOWN MEANS "DO NOT SPEND A WRITE". `deps` can raise for a node
+            # whose spec the graph cannot walk, and the safe answer is the
+            # policy that was measured rather than the one being added: dropping
+            # a cheap value costs a recompute, spilling it costs bandwidth this
+            # workload does not have (a pressure spill once wrote 300 GB in
+            # forty minutes). So an unanswerable question falls back to the
+            # established behaviour.
+            return True
 
     def _recomputable(self, nid: NodeId) -> bool:
         """True iff `_rematerialize` can rebuild this value WITHOUT a disk copy.
