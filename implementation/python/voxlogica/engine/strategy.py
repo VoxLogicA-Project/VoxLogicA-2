@@ -342,6 +342,10 @@ class EngineExecutionStrategy(ExecutionStrategy):
                     print(f"[dev] flush after stop failed: {flush_exc}",
                           file=sys.stderr, flush=True)
                 print(f"[dev] {stop}", file=sys.stderr, flush=True)
+                print("[dev] this run was stopped on purpose: its goals are "
+                      "unresolved BY DESIGN and the store it leaves is the "
+                      "point of the exercise. Not a failure.",
+                      file=sys.stderr, flush=True)
             except Exception as exc:  # converted below into a structured result
                 run_error = exc
             values: dict[NodeId, Any] = {}
@@ -364,6 +368,18 @@ class EngineExecutionStrategy(ExecutionStrategy):
                     if run_error is not None:
                         # The engine failure below is the root cause; the
                         # unresolved query is only its consequence.
+                        continue
+                    if dev_stopped is not None:
+                        # A DELIBERATE STOP IS NOT A SCHEDULING FAILURE. The dev
+                        # guard ended the run before its goals could resolve, so
+                        # unresolved goals are the expected outcome and reporting
+                        # them as "engine finished with an unresolved goal" says
+                        # a crash happened when none did.
+                        #
+                        # It cost an hour: rung 1 of the resume ladder stopped
+                        # exactly where it was told, at 100,000 completions and
+                        # 530 node/s, and was read as a crash because the last
+                        # thing in the log was that message.
                         continue
                     record_failure(
                         RuntimeError(
