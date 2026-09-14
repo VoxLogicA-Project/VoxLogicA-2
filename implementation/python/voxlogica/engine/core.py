@@ -174,6 +174,23 @@ _MISSING = object()
 _PROGRESS_FORMAT = "goals: {n:>3}/{total} |{bar:12}| {elapsed} · {desc}"
 
 
+#: How often the engine writes its frontier to disk while running, in seconds.
+#: THIS IS CRASH INSURANCE, and the number is the answer to "how much of a long
+#: run may a SIGKILL cost?" -- at most this much of the boundary between done
+#: and not-done. It is NOT tunable from the environment on purpose (AGENTS.md:
+#: the engine must work automatically, and an env var is never the fix for a
+#: defect); tests reach it by name.
+FRONTIER_CHECKPOINT_SECONDS = 30.0
+
+#: Values written per periodic checkpoint. Bounded because the FIRST checkpoint
+#: of a big run would otherwise spill the whole resident frontier in one turn --
+#: the failure mode measured in §37b, where an unbounded frontier spill wrote
+#: 300 GB in forty minutes. Already-persisted values are skipped, so successive
+#: ticks make steady progress and the steady-state cost is only the values that
+#: newly joined the frontier.
+FRONTIER_CHECKPOINT_BUDGET = 4096
+
+
 class DevStopRequested(Exception):
     """DEVELOPMENT ONLY: `VOXLOGICA_DEV_STOP_AFTER` completions have happened.
 
@@ -490,6 +507,7 @@ class ComputationEngine:
         # registration interleaved with compute. These three are wall time and
         # pops inside _schedule_subgraph itself, so `visited/seconds` is the
         # traversal rate and nothing else. Cost is one int add per pop.
+        self._checkpoint_deadline = 0.0  # perf_counter at which to checkpoint again
         self._walk_visited = 0          # frontier pops in _schedule_subgraph
         self._walk_seconds = 0.0        # wall time inside it (traversal + register)
         self._walk_calls = 0
@@ -1402,6 +1420,15 @@ class ComputationEngine:
         # that hole (see LoopAdmission.wake_jobs).
         if self.admission.active_jobs and self.ready.qsize() < self.max_concurrency:
             self.admission.wake_jobs()
+        # CRASH INSURANCE, and the reason a kill -9 is survivable at all.
+        # A clean stop checkpoints the frontier on its way out; a SIGKILL gives
+        # the process no way out, so the frontier has to already be on disk when
+        # the signal lands. One clock read per worker turn buys that -- next to
+        # `accounted_bytes` and `_reclaim_memory` above it, it does not register.
+        now = time.perf_counter()
+        if now >= self._checkpoint_deadline:
+            self._checkpoint_deadline = now + FRONTIER_CHECKPOINT_SECONDS
+            self.checkpoint_frontier(limit=FRONTIER_CHECKPOINT_BUDGET)
 
     def _reclaim_memory_timed(self) -> None:
         """Evict durably-persisted-but-still-pending values under memory pressure.
@@ -1795,7 +1822,7 @@ class ComputationEngine:
         self._on_spliced(loop_id, seq_id, priority, memoise=False)
         return True
 
-    def checkpoint_frontier(self) -> int:
+    def checkpoint_frontier(self, limit: int | None = None) -> int:
         """Write the frontier: every value the rest of the run still needs.
 
         THE FRONTIER IS NOT "everything completed". It is the completed nodes
@@ -1825,6 +1852,14 @@ class ComputationEngine:
                         written += 1
                 except Exception:                               # noqa: BLE001
                     pass
+                # A BUDGET, not a deadline: the periodic caller passes one so a
+                # single turn can never spill an entire large frontier, which is
+                # what made §37b's pressure spill write 300 GB. The values it
+                # did not reach this time are still unpersisted, so the next
+                # tick starts where this one gave up. The clean-stop caller
+                # passes None and writes the lot.
+                if limit is not None and written >= limit:
+                    break
         return written
 
     def _memoise_expansion(self, loop_id: NodeId, seq_id: NodeId) -> None:
