@@ -200,7 +200,11 @@ class EngineExecutionStrategy(ExecutionStrategy):
         #: Goals whose print/save effect has already been applied. The engine
         #: drives that loop now (see `ComputationEngine.run`'s `at_drain`), so
         #: it can be entered more than once and must not repeat itself.
-        emitted: set[NodeId] = set()
+        # KEYED BY THE GOAL, NOT BY ITS NODE. Two goals can share one node --
+        # `train_count = 50` and `eval_start = 50` hash-cons to the same constant
+        # -- and a set of node ids printed the first and silently dropped the
+        # second: 32 lines for 33 prints, exit 0, on the nnU-Net sweep.
+        emitted: set[tuple[NodeId, str, str]] = set()
         query_by_goal: dict[NodeId, Any] = {}
 
         async def evaluate() -> tuple[dict[NodeId, Any], BaseException | None]:
@@ -245,17 +249,18 @@ class EngineExecutionStrategy(ExecutionStrategy):
                     return              # a goal subset asked for values, not effects
                 resolve = engine._resolve_reference
                 for goal in target:
-                    if goal.id in emitted:
+                    key = (goal.id, goal.operation, goal.name)
+                    if key in emitted:
                         continue
                     query = query_by_goal.get(goal.id)
                     if query is None or not query._done.is_set():
                         continue
                     if query.status is not QueryStatus.DONE:
-                        emitted.add(goal.id)        # failed: reported elsewhere
+                        emitted.add(key)            # failed: reported elsewhere
                         continue
                     self._side_effect(goal.operation, goal.name,
                                       query._value, resolve)
-                    emitted.add(goal.id)
+                    emitted.add(key)
 
             try:
                 await engine.run(at_drain=emit_ready_goals)
@@ -347,10 +352,11 @@ class EngineExecutionStrategy(ExecutionStrategy):
                 # settled after the drain check, or a run that raised. It runs
                 # with the engine down, so a miss here is still fatal; that is
                 # the case `at_drain` exists to make rare.
-                if goal.id in values and goal.id not in emitted:
+                key = (goal.id, goal.operation, goal.name)
+                if goal.id in values and key not in emitted:
                     self._side_effect(goal.operation, goal.name,
                                       values[goal.id], resolve)
-                    emitted.add(goal.id)
+                    emitted.add(key)
 
         if run_error is not None:
             record_failure(run_error)
