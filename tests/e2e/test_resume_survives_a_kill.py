@@ -21,15 +21,15 @@ Two engine properties make that true, and this test exists to keep them true:
    open. `synchronous=NORMAL` trades only *power loss* for speed, which is a
    different failure and not this one.
 
-The test kills a real subprocess, because that is the only way to get a real kill:
-a clean shutdown path that has been asked politely not to run is not the same
-thing as never getting the chance.
+Everything here runs through the real CLI in a subprocess, including the
+reference run. That is not ceremony: SIGKILL cannot be simulated in-process, and
+once the killed run is a subprocess, measuring the other two the same way is the
+only way the three numbers are comparable.
 """
 
 from __future__ import annotations
 
-import contextlib
-import io
+import json
 import os
 import subprocess
 import sys
@@ -39,21 +39,18 @@ from pathlib import Path
 import pytest
 
 from voxlogica.engine.core import FRONTIER_CHECKPOINT_SECONDS
-from voxlogica.execution import ExecutionEngine
-from voxlogica.parser import parse_program_content
-from voxlogica.reducer import reduce_program
-from voxlogica.storage import SQLiteResultsDatabase
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYTHON_IMPL = REPO_ROOT / "implementation" / "python"
 
-# ~80,000 completions, about a minute of work. Sized so the killed run outlives
-# at least one periodic checkpoint with room to spare -- the point of the test
-# is what the checkpoint left behind, so a program that finishes before the
-# first tick would prove nothing. Same shape as the sibling test's program (ten
-# distinct loops, real images, calibrated ~2.31 completions per element).
+# ~208,000 completions. Sized from measurement, not taste: at 3,500 elements per
+# loop the whole program runs in 23.5 s even throttled to two threads, which is
+# inside the kill deadline -- and a run that exits normally proves nothing about
+# SIGKILL. 9,000 puts the throttled run near a minute, so the kill lands with
+# most of the program still undone. Same shape as the sibling test's program
+# (ten distinct loops, real images, ~2.31 completions per element).
 _LOOP = (
-    "let l{n} = for i in range(0, 3500) do "
+    "let l{n} = for i in range(0, 9000) do "
     "array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, {n}.0)))"
 )
 PROGRAM = (
@@ -65,52 +62,68 @@ PROGRAM = (
     + "\n".join(f'print "l{n}" l{n}' for n in range(10)) + "\n"
 )
 
-#: When to kill. One checkpoint tick plus enough margin that the tick has
-#: certainly happened and written something, while still leaving most of the
-#: program undone.
+#: When to kill: one checkpoint tick plus margin, so a tick has certainly
+#: happened and written something while most of the program is still undone.
 KILL_AFTER_SECONDS = FRONTIER_CHECKPOINT_SECONDS + 12.0
 
+#: Threads for the run that gets killed. Throttling is the honest way to hold it
+#: open past a checkpoint tick; the alternative -- a program big enough to
+#: outlast one at full width -- would make the reference run, which has to do
+#: the whole thing, by far the slowest item in the suite.
+KILLED_RUN_THREADS = "2"
 
-def _run_in_process(db_path: Path) -> dict:
-    backend = SQLiteResultsDatabase(db_path=str(db_path))
-    buffer = io.StringIO()
-    try:
-        with contextlib.redirect_stdout(buffer):
-            result = ExecutionEngine(
-                storage_backend=backend, use_engine=True
-            ).execute_workplan(reduce_program(parse_program_content(PROGRAM)))
-    finally:
-        backend.close()
-    return dict(result.cache_summary or {})
+
+def _env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(PYTHON_IMPL) + os.pathsep + env.get("PYTHONPATH", "")
+    env.pop("VOXLOGICA_DEV_STOP_AFTER", None)   # this test never stops cleanly
+    return env
+
+
+def _command(db_path: Path, program_file: Path, threads: str | None) -> list[str]:
+    command = [sys.executable, "-u", "-m", "voxlogica.main", "run", "--no-serve",
+               "--store-db", str(db_path)]
+    if threads:
+        command += ["--threads", threads]
+    return command + [str(program_file)]
+
+
+def _metrics(stdout: str) -> dict:
+    """The `cache_summary` out of the CLI's JSON report.
+
+    The report is preceded by the program's own `print` output, so the JSON is
+    found by its opening brace at column zero rather than by parsing the lot.
+    """
+    lines = stdout.splitlines()
+    start = next((i for i, line in enumerate(lines) if line == "{"), None)
+    assert start is not None, f"no JSON report in the run's output:\n{stdout[-2000:]}"
+    end = next(i for i in range(len(lines) - 1, start, -1) if lines[i] == "}")
+    report = json.loads("\n".join(lines[start:end + 1]))
+    summary = report.get("cache_summary") or report.get("result", {}).get("cache_summary")
+    assert summary, f"no cache_summary in the report: {sorted(report)}"
+    return summary
+
+
+def _run(db_path: Path, program_file: Path, threads: str | None = None) -> dict:
+    done = subprocess.run(_command(db_path, program_file, threads), env=_env(),
+                          cwd=str(REPO_ROOT), capture_output=True, text=True,
+                          timeout=1800)
+    assert done.returncode == 0, f"the run failed:\n{done.stderr[-2000:]}"
+    return _metrics(done.stdout)
 
 
 def _run_and_kill(db_path: Path, program_file: Path, log: Path) -> int:
-    """Start a real run, SIGKILL it after a checkpoint has fired, and report
-    how many completions it had got through when it died.
+    """Start a run, SIGKILL it after a checkpoint has fired, and report how many
+    completions it had got through when it died.
 
-    `--threads 2` rather than the default: this program finishes inside the kill
-    deadline at full width on a 24-core host, and at eight threads too (both
-    measured), and a run that exits normally proves nothing about SIGKILL.
-    Throttling the killed run is the honest way to hold it open past a
-    checkpoint tick -- the alternative, a program big enough to outlast one at
-    full width, makes the reference run (which has to do the whole thing) by far
-    the slowest item in the suite.
-
-    The count comes from the engine's own memory log, whose path it prints on
-    startup. It is sampled, so it lags the true moment of death slightly -- and
-    that bias makes `remaining` larger and the assertion easier, never the
-    reverse.
+    The count comes from the engine's own memory log, whose path it announces on
+    startup. It is sampled, so it lags the moment of death slightly -- and that
+    bias makes `remaining` larger and the assertion easier, never the reverse.
     """
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(PYTHON_IMPL) + os.pathsep + env.get("PYTHONPATH", "")
-    env.pop("VOXLOGICA_DEV_STOP_AFTER", None)
     with log.open("wb") as stderr:
         proc = subprocess.Popen(
-            [sys.executable, "-u", "-m", "voxlogica.main", "run", "--no-serve",
-             "--threads", "2", "--store-db", str(db_path), str(program_file)],
-            env=env, stdout=subprocess.DEVNULL, stderr=stderr,
-            cwd=str(REPO_ROOT),
-        )
+            _command(db_path, program_file, KILLED_RUN_THREADS), env=_env(),
+            cwd=str(REPO_ROOT), stdout=subprocess.DEVNULL, stderr=stderr)
         try:
             deadline = time.monotonic() + KILL_AFTER_SECONDS
             while time.monotonic() < deadline:
@@ -133,7 +146,7 @@ def _completions_from_memlog(log: Path) -> int:
     marker = "memory log: "
     assert marker in text, f"the run never announced a memory log:\n{text[-2000:]}"
     path = Path(text.split(marker, 1)[1].splitlines()[0].strip())
-    rows = [r for r in path.read_text(errors="replace").splitlines() if r.strip()]
+    rows = [row for row in path.read_text(errors="replace").splitlines() if row.strip()]
     assert len(rows) > 1, "the memory log has no samples: the run died too early"
     header, last = rows[0].split("\t"), rows[-1].split("\t")
     return int(float(last[header.index("completed")]))
@@ -147,15 +160,14 @@ def test_a_killed_run_resumes_from_its_last_checkpoint(tmp_path: Path) -> None:
     program_file = tmp_path / "killed.imgql"
     program_file.write_text(PROGRAM)
 
-    reference = _run_in_process(tmp_path / "reference.db")
-    total = reference["completed"]
+    total = _run(tmp_path / "reference.db", program_file)["completed"]
 
     killed_db = tmp_path / "killed.db"
     killed = _run_and_kill(killed_db, program_file, tmp_path / "killed.stderr")
     assert killed_db.exists(), "the killed run left no store at all"
     assert killed > 0, "the killed run completed nothing, so there is nothing to reuse"
 
-    resumed = _run_in_process(killed_db)
+    resumed = _run(killed_db, program_file)
 
     assert resumed["pruned_available"] > 0, (
         "after a kill the store answered for NO node: either the periodic "
