@@ -48,20 +48,31 @@ from voxlogica.parser import parse_program_content
 from voxlogica.reducer import reduce_program
 from voxlogica.storage import SQLiteResultsDatabase
 
-# ~20,000 nodes: one `blank` and three `Add`s per element plus the stats
-# reduction, over a range whose length is set to land the total near 20k.
-# 32x32 keeps a kernel well under a millisecond of CPU while still producing a
-# real image, so the whole program is seconds, not minutes.
-PROGRAM = """
-import "simpleitk"
-import "geom"
-import "arrays"
-
-let base = blank(32, 32, 1.0)
-let chain = for i in range(0, 4000) do
-    array_stats(Add(Add(Add(blank(32, 32, i), base), base), base))
-print "chain" chain
-"""
+# TEN loops, not one, and that is load-bearing. A program with a single `for`
+# cannot exercise the expansion memo at all: the stopped run either finishes
+# that loop's expansion or it does not, and at half the work it does not, so
+# there is no memo to write and nothing for the resume to hit. Measured that
+# way first -- `expanded_loops=0` and zero rows in `expansion` after the stop.
+# With ten independent loops the stop lands with some fully expanded and some
+# not, which is both the realistic case and the one the memo exists for.
+#
+# Each loop is made distinct by its own constant, or they would hash-cons into
+# one node and this would be the single-loop program again. ~500 elements x ~4
+# nodes x 10 loops puts the total near 20,000; 32x32 keeps a kernel well under
+# a millisecond while still producing a real image, so the whole program is
+# seconds, not minutes.
+_LOOP = (
+    "let l{n} = for i in range(0, 500) do "
+    "array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, {n}.0)))"
+)
+PROGRAM = (
+    'import "simpleitk"\n'
+    'import "geom"\n'
+    'import "arrays"\n'
+    "let base = blank(32, 32, 1.0)\n"
+    + "\n".join(_LOOP.format(n=n) for n in range(10)) + "\n"
+    + "\n".join(f'print "l{n}" l{n}' for n in range(10)) + "\n"
+)
 
 #: Completions after which the half-run stops. Half of the measured total is
 #: the interesting case: a resume that prunes nothing does ~2x this, a resume
