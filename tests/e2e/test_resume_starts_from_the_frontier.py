@@ -57,12 +57,18 @@ from voxlogica.storage import SQLiteResultsDatabase
 # not, which is both the realistic case and the one the memo exists for.
 #
 # Each loop is made distinct by its own constant, or they would hash-cons into
-# one node and this would be the single-loop program again. ~500 elements x ~4
-# nodes x 10 loops puts the total near 20,000; 32x32 keeps a kernel well under
-# a millisecond while still producing a real image, so the whole program is
-# seconds, not minutes.
+# one node and this would be the single-loop program again.
+#
+# 870 elements x 10 loops was CALIBRATED, not guessed: 500 x 10 measured 11,553
+# completions, i.e. ~2.31 per element rather than the ~4 the source suggests,
+# because fusion elides cone interiors and they never complete. Scaling by
+# 20,000/11,553 gives 870, and the reference run asserts the total is really
+# above 1.5x the stop -- so if fusion or the reducer changes this shape, the
+# test says "raise the range" instead of quietly measuring something else.
+# 32x32 keeps a kernel well under a millisecond while still producing a real
+# image, so the whole program is seconds, not minutes.
 _LOOP = (
-    "let l{n} = for i in range(0, 500) do "
+    "let l{n} = for i in range(0, 870) do "
     "array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, {n}.0)))"
 )
 PROGRAM = (
