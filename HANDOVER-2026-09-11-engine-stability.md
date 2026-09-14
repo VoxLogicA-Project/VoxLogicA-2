@@ -2229,3 +2229,44 @@ much larger than the one still resident at any moment.
 
 That points at (2): the checkpoint takes whatever survived rather than
 *choosing* a cut. 794 values is not a chosen cut, it is a census of survivors.
+
+### 37c. All three pieces, measured — and the ceiling is fusion
+
+| | reuse (`pruned/registered`) |
+|---|---:|
+| frontier checkpoint alone (baseline) | **38.6%** |
+| + cut-preserving eviction | 38.1% |
+| + instrumentation, frontier 1,908 values | 37.5% |
+
+**(1) cut-preserving eviction — refuted as a reuse fix, kept as a free
+invariant.** `evicted_early` is **0** at C=100k: nothing is ever dropped at this
+scale, so the rule is never consulted (`cut_would_break` 0, `cut_unknown` 0) and
+there was never a hole for it to prevent. It costs no measurable throughput and
+it removes a way for a checkpoint to be silently incomplete, so it stays — but
+it is not what holds reuse at 38%.
+
+**(2) selected checkpoints — inapplicable for the same reason.** With no
+eviction, the checkpoint already writes the *entire* resident frontier; there
+are no survivors to choose between. "Choose the cut rather than take survivors"
+presumes losses that do not occur here.
+
+**(3) demand-driven evaluation — its stated mechanism is already implemented.**
+`_schedule_subgraph` prunes at any available node and does **not** examine that
+node's inputs: the `continue` skips extending the frontier with its deps. What
+remains of (3) is avoiding the up-front registration of a goal's whole cone,
+which is a startup and memory cost — the O(plan) expansion — and not a reuse
+one.
+
+### The ceiling, stated so it is not re-litigated
+
+**Roughly 24,000 operations are fused per 100,000 completions, and a fused cone
+interior produces no value of its own.** You cannot prune at a node that never
+had a value. Every lever tried against the 38% ceiling — pressure shedding off,
+`persist_min_compute_ms` at 0, a cut at loop-body roots, memoised expansions
+with verified spec closures, cut-preserving eviction, a larger checkpoint — left
+it within noise, because none of them touches a node that was never stored.
+
+Moving past 38% means changing **what fusion materialises**, not the cache, the
+cut, the checkpoint, or the traversal. The honest experiment is a controlled
+comparison with `VOXLOGICA_FUSION=0`: it will cost throughput and should raise
+reuse, and the trade between them is the real design question this work uncovered.
