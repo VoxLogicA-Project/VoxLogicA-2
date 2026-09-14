@@ -2576,3 +2576,19 @@ model — eviction under real memory pressure, persister shedding under a deep
 writer queue, and values below the persist threshold. Those are §37d's three
 holes, still unmeasured, and now the test harness exists to model them one at
 a time.
+
+**Planning rates on this program, for the record.** Two distinct phases, and
+only the second is interesting here. The reducer's STATIC plan is 29 nodes
+(0.02 s on the resume): everything else is inside runtime loops, so unlike the
+BraTS program — where the `planning:` bar builds 107,728 nodes in 4.4 s, about
+24,500 nodes/s — there is almost no static phase to measure. The RUNTIME walk,
+which is what actually builds and schedules the DAG:
+
+| | walk pops | seconds | pops/s | share of run |
+|---|---:|---:|---:|---:|
+| stopped run | 22,990 | 0.159 | 144,591 | 1.1% of 15.1 s |
+| resume | 15,382 | 0.101 | **152,297** | 0.9% of 11.4 s |
+
+Consistent with §37g's 127–183k pops/s on BraTS, and with the same conclusion:
+building the DAG is about one per cent of the work, on a resume as on a cold
+run.
