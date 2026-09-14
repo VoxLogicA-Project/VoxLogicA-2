@@ -1211,9 +1211,35 @@ class ComputationEngine:
             # less -- the persist backlog is byte-budgeted, so the queue rarely
             # holds a value long enough to outlive its consumers -- but it buys
             # it safely.
+            if worth_it and self.graph.names_handles(nid):
+                # A CONTAINER IS WORTH EXACTLY WHAT IT NAMES, so what it names
+                # is made durable FIRST, and if one element cannot be, the
+                # container is not recorded at all. Without this the store held
+                # a durable promise it could not keep: a for_loop container is
+                # critical and always written, its bodies are best-effort and
+                # written only above `persist_min_compute_ms`, so a run that
+                # EXITED 0 left 110 of its 122 containers naming elements that
+                # were never stored (measured on a three-line program). A warm
+                # run then found the container, refused it -- one element
+                # unanswerable -- and, the sequence being spliced at runtime and
+                # never interned by that run, died naming it: the nnU-Net sweep
+                # lost `exported` and `exported_planes` this way, warm, every
+                # time, for six days.
+                #
+                # `spill` is the right tool: it ignores the worth-it gate (the
+                # element's worth is settled by the container's) but not the
+                # writer's backlog budget, and it is idempotent. When it refuses,
+                # the honest answer is to keep the container out of the store
+                # too; the value is still resident and the run is unaffected.
+                for handle in iter_handles(value):
+                    ref = handle.node
+                    if self.table.persisted(ref) or self.table.spill(ref):
+                        continue
+                    critical = worth_it = False
+                    break
             will_be_durable = self.table.complete(nid, value, compute_ms,
                                                   critical=critical, persist=worth_it)
-            if node.operator in _SEQUENCE_OPERATORS:
+            if worth_it and node.operator in _SEQUENCE_OPERATORS:
                 for index, item in enumerate(value):
                     self.table.complete_item(nid, index, item)
         else:
