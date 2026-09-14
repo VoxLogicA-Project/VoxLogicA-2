@@ -2592,3 +2592,41 @@ which is what actually builds and schedules the DAG:
 Consistent with §37g's 127–183k pops/s on BraTS, and with the same conclusion:
 building the DAG is about one per cent of the work, on a resume as on a cold
 run.
+
+### 37i. kill -9 is survivable, and the frontier is checkpointed in production
+
+`tests/e2e/test_resume_survives_a_kill.py`, green. The clean stop was the easy
+half; this is the other one.
+
+**The change.** `_maintain` now calls `checkpoint_frontier()` every
+`FRONTIER_CHECKPOINT_SECONDS` (30), bounded to `FRONTIER_CHECKPOINT_BUDGET`
+(4,096) values per tick. Not an env var — AGENTS.md — and tests reach it by
+name. The budget exists because the first checkpoint of a big run would
+otherwise spill the whole resident frontier in one turn, which is §37b's
+measured failure that wrote 300 GB in forty minutes. Already-persisted values
+are skipped, so ticks make steady progress and the steady state costs only what
+newly joined the frontier.
+
+**Why this is what a SIGKILL needs.** A kill gives the process no way out, so
+nothing can be written *in response* to it: whatever the resume uses must
+already be on disk. Durability of what was written is not in question — the
+store is WAL with `synchronous=NORMAL`, so a committed transaction is in the OS
+page cache and survives the process; SQLite replays the WAL on next open.
+`synchronous=NORMAL` trades only power loss, which is a different failure.
+
+**What the test does.** Three runs through the real CLI, so all three numbers
+are comparable: a reference run of the whole program, a run throttled to two
+threads and SIGKILLed twelve seconds after a checkpoint tick, and a resume. The
+count the dead run reached is read from its own memory log (sampled, so it lags
+the moment of death — a bias that makes the assertion harder to pass, never
+easier). The assertion is the clean-stop one: the resume does what is LEFT.
+
+**Two sizing errors worth recording**, because both made the test fail for
+reasons that had nothing to do with SIGKILL. The program ran to completion
+inside the kill deadline at full width AND at eight threads — 3,500 elements per
+loop is 23.5 s even at two threads. And the reference run was in-process while
+the killed one was a subprocess, so the two were measured differently and the
+in-process one was the slower. Now: 9,000 elements per loop, everything through
+the CLI.
+
+Full suite after the change: **1,306 passed, 4 skipped**.
