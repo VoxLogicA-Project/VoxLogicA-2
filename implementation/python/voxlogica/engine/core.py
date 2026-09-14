@@ -49,7 +49,7 @@ from voxlogica.engine.itk_threads import apply_itk_threads
 from voxlogica.engine.graph import DependencyGraph
 from voxlogica.engine.liveness import LivenessProbe
 from voxlogica.engine.memlog import MemoryLogger
-from voxlogica.engine.node_table import NodeTable
+from voxlogica.engine.node_table import NodeTable, MISSING
 from voxlogica.engine.evaluation import (NeedsExpansion, RewriteContext,
                                           grows_the_graph_by_name, modes_of)
 from voxlogica.handles import contains_handle, iter_handles, resolve_deep
@@ -1669,7 +1669,7 @@ class ComputationEngine:
         if nid in self.table.values:
             return self.table.values[nid]
         loaded = self.table.load(nid)
-        if loaded is not None:
+        if loaded is not MISSING:   # a stored None is a value, and comes back
             self._retrack_resident(nid)
             # A value coming back from disk has never passed `_finish`, so the
             # graph does not know which nodes its handles name -- and the eager

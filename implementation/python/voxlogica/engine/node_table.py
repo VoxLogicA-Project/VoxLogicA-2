@@ -40,6 +40,9 @@ from voxlogica.storage import NoCacheStorageBackend, StorageBackend, dumps_json
 
 
 _MISSING = object()
+#: What `load` returns when the store has NO value for a node. Public, because
+#: the caller must tell it apart from a stored None -- see `load`.
+MISSING = _MISSING
 
 _sitk = None
 
@@ -331,7 +334,16 @@ class NodeTable:
         return self._backend is not None and self._backend.has(node_id)
 
     def load(self, node_id: NodeId) -> Any:
-        """Bring a persisted value back into the live tier, or return None.
+        """Bring a persisted value back into the live tier, or return MISSING.
+
+        MISSING, NOT None. A stored None is a value: `simpleitk.WriteImage`
+        returns one, so does a closure, and both are persisted and legitimately
+        reloaded on a warm run. Returning None for "no row" made a stored None
+        unrecoverable -- the caller took it for a miss, the node was a loop
+        body this run had never interned, and the run died naming it. Measured
+        on the nnU-Net sweep, warm, three runs of three, always the same node,
+        always `WriteImage`: it is why `exported` and `exported_planes` were
+        the two goals missing for six days.
 
         This is the engine's single live-tier seam: a reloaded image is
         wrapped into a ``PolyArray`` here so every volumetric value the
@@ -342,16 +354,16 @@ class NodeTable:
         unaffected — this wrapping is scoped to the scheduler's own tier.
         """
         if self._backend is None:
-            return None
+            return MISSING
         record = self._backend.get_record(node_id)
-        if record is None or record.value is None:
-            return None
+        if record is None:
+            return MISSING
         value = record.value
         if not self._references_are_answerable(value):
             # A stored container names its elements by hash. If this run can
             # answer none of those questions the container is not a usable cache
             # hit, however intact its own bytes are.
-            return None
+            return MISSING
         sitk = _simpleitk()
         if sitk is not None and isinstance(value, sitk.Image):
             value = PolyArray.from_sitk(value)
