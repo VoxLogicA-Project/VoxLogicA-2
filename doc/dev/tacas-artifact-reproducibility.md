@@ -25,8 +25,10 @@ lista di partenza — sono venuti fuori facendo il resto.
 | # | Criticità | Gravità | Stato |
 |---|---|---|---|
 | **7a** | Doppio dispatch: `DoubleComputationError` | bloccante | **fatto da Vincenzo** (`a313172`) |
-| **7b** | **Rematerializzazione: `NeedsExpansion` a store caldo** | **bloccante** | **aperto**, due cause chiuse (`29634eb`, `7348626`), il run non passa |
-| **9** | **Lo store registra una promessa che non può mantenere** | **alta** | **aperto**, riprodotto da freddo in 5 s |
+| **7b** | **Rematerializzazione: `NeedsExpansion` a store caldo** | bloccante | **fatto** il 2026-09-14 — esp. 4 a caldo 33/33, tre volte |
+| **9** | **Lo store registra una promessa che non può mantenere** | alta | **fatto** (`5d60edb`) — 122 container, 0 incompleti |
+| **11** | **Un `None` salvato rilegge come "assente"** | alta | **fatto** (`0789ea6`) — era il vero motivo dei due goal mancanti |
+| **12** | **Due goal sullo stesso nodo: il secondo non viene stampato** | media | **fatto** (`2443cf8`) — regressione del C di Vincenzo |
 | **10** | **Lanciare lo stesso programma due volte: il secondo non finisce** | bloccante | **fatto** — prima 6 stalli su 6, dopo 0 su 6 |
 | 1 | Programmi che escono 0 senza calcolare niente | bloccante | fatto (motore) / 6 programmi da sistemare |
 | 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | fatto per 2 e 3; 4 provvisorio su **tre** run |
@@ -141,7 +143,50 @@ arriva più per un duplicato benigno.
 
 ---
 
-## 7b. Rematerializzazione: `NeedsExpansion` a store caldo — ANCORA APERTO
+## 7b. Rematerializzazione: `NeedsExpansion` a store caldo — CHIUSO il 2026-09-14
+
+### Chiusura: cinque strati, e il numero finale
+
+Sul branch `fix/disk-reserve-collapse` a `f65af21`, esperimento 4 su store
+congelato costruito dallo stesso codice:
+
+| | esito | goal | stallo | wall |
+|---|---|---|---|---|
+| freddo | exit 0 | 33/33 | no | 138 s |
+| caldo ×3 | exit 0 | **33/33** | no | 1 s |
+
+Valori dei tre caldi identici al freddo. Due comandi (§10): verde. Esperimento
+2: oracolo esatto, `case_079_best = 0,0`. Suite unit: 1215 passati, 0 falliti.
+
+**Non era un difetto: erano cinque, uno sotto l'altro**, e ognuno è emerso solo
+quando quello sopra era stato tolto. In ordine di scoperta:
+
+| strato | cosa | dove | chi |
+|---|---|---|---|
+| 1 | l'alias del loop veniva consumato al forward | `_worker` | Vincenzo `34fdf6b`, cherry-pick `8e47fe1` |
+| 2 | un riferimento che lo store sa rispondere veniva rifiutato | `_references_are_answerable` | `7348626` |
+| 3 | i goal si materializzavano a motore spento | `run` / `strategy` | Vincenzo `8243652` + `48e0618`, cherry-pick `4c9bc13` `ba15f79` |
+| 4 | **un `None` salvato rileggeva come "riga assente"** | `NodeTable.load` | `0789ea6` — §11 |
+| 5 | **un container era durevole senza i body che nomina** | `_finish` | `5d60edb` — §9 |
+
+Più lo stallo (§10, `3f916dc`), che è un difetto separato con la stessa
+condizione di innesco, e una regressione introdotta dallo strato 3 (§12,
+`2443cf8`).
+
+**Una correzione ritirata.** `29634eb` impediva di potare i nodi loop in
+`_available`. Vincenzo l'ha provata e misurata: non cambiava l'esito a caldo
+(7/16 a 8 thread, 9/16 a 24, invariati) e tratteneva la sequenza del loop —
+20 valori trapelati nel suo `test_values_die_with_their_last_consumer`. Un costo
+noto per nessun beneficio misurato: ritirata al merge di `48e0618`, e il test
+che la fissava è stato rimosso (`f65af21`). Il resto di `29634eb` — la guardia
+su `_await_expansion` — resta.
+
+**Perché i due goal mancanti erano sempre gli stessi.** `exported` e
+`exported_planes` sono loop di `simpleitk.WriteImage`, il cui valore è `None`.
+Strato 4: a caldo quel `None` non si poteva rileggere. Strato 5: uno dei
+quattro `WriteImage` di un caso non era mai stato scritto, e il container sì.
+Nessun altro goal del programma passa da lì. Dal primo report del 7b in poi era
+sempre 21/23, poi 31/33: le stesse due righe.
 
 ### Aggiornamento del 2026-09-10: un banco che si ripete, e due difetti distinti
 
@@ -400,9 +445,25 @@ di libreria esterna finisce su un handle o nello store.
 
 ---
 
-## 9. Lo store registra una promessa che non può mantenere — ALTA
+## 9. Lo store registra una promessa che non può mantenere — CHIUSO il 2026-09-14
 
-Aperto il 2026-09-10.
+Aperto il 2026-09-10, chiuso in `5d60edb`.
+
+**La correzione**, in `_finish`: prima di sottomettere al writer un valore che
+nomina altri nodi, ogni nodo nominato viene reso durevole con `spill` — che
+ignora il cancello "vale la pena" (il valore dell'elemento lo decide il
+container) ma rispetta il budget del writer. Se anche uno non può esserlo, il
+container **non si scrive**. Il valore resta residente e il run non ne risente.
+
+| stesso programma di tre righe | prima | dopo |
+|---|---|---|
+| container con riferimenti | 122 | 122 |
+| di cui incompleti | **110** | **0** |
+| elementi nominati / mancanti | 6120 / 892 | 6120 / **0** |
+| righe nello store | 8858 | 9304 (+446: i body che prima si perdevano) |
+
+Sull'esperimento 4 era lo strato 5 del 7b: il container `export_case(k)`
+nominava quattro `WriteImage`, tre salvati e uno no.
 
 Un nodo `for_loop` è **`critical`**, quindi il suo container viene scritto
 sempre. I body che quel container nomina sono **best-effort**: `_finish` li
@@ -591,6 +652,48 @@ il riproduttore qui sopra lo mostra: quello store *è* costruito da un run
 riuscito. Quel che serve è che resti abbastanza lavoro da fare, e con corpi sotto
 la soglia di persistenza ne resta moltissimo. Sull'esperimento 4 non si vedeva
 perché lì i corpi sono cari e vengono scritti quasi tutti.
+
+---
+
+## 11. Un `None` salvato rilegge come "assente" — CHIUSO il 2026-09-14
+
+`NodeTable.load` restituiva `None` sia per "nessuna riga" sia per "riga il cui
+valore è `None`". Ma `None` è un valore: `simpleitk.WriteImage` lo restituisce,
+una closure anche, ed entrambi vengono persistiti. A caldo il chiamante prendeva
+il `None` salvato per un miss; il nodo era il corpo di un loop mai internato in
+quel run, e il run moriva nominandolo:
+
+```
+KeyError: node cf8e3635ad88 is named by a value but is neither resident,
+          loadable from the store, nor part of this run's graph
+```
+```
+status = materialized    operator = simpleitk.WriteImage
+payload = {"encoding":"scalar-json-v1","value":null}
+```
+
+Stesso nodo, tre caldi su tre. La riga c'era, corretta. `load` ora restituisce
+`MISSING` per "nessuna riga" e il valore — `None` compreso — per una riga
+(`0789ea6`). Vincenzo aveva introdotto `_MISSING` per la stessa distinzione un
+livello più su (`8243652`, *"a closure's value IS None"*); questa è la stessa
+correzione alla giuntura con lo store. Test:
+`tests/unit/test_a_stored_none_comes_back.py`.
+
+---
+
+## 12. Due goal sullo stesso nodo: il secondo non viene stampato — CHIUSO il 2026-09-14
+
+Regressione di `48e0618`. Il ciclo che materializza i goal a motore vivo ricorda
+cosa ha già emesso, per non stampare due volte — ma ricordava **id di nodo**, e
+due goal possono condividerne uno: `train_count = 50` ed `eval_start = 50` sono
+la stessa costante hash-consed. `eval_start` non veniva mai stampato: 32 righe
+per 33 `print`, exit 0. Per l'artifact è una riga in meno rispetto alla tabella
+dell'oracolo, silenziosa. Ora l'insieme è indicizzato su (nodo, operazione,
+nome) (`2443cf8`). Test: `tests/unit/test_two_goals_one_node_both_print.py`.
+
+Nota di metodo: il conteggio "goal stampati" dello script di banco l'ha
+segnalata — 32 contro 33 con exit 0 — ed è il motivo per cui il banco conta le
+righe invece di fidarsi del codice d'uscita.
 
 ---
 
@@ -1009,6 +1112,11 @@ anche eseguito da solo. Fra ieri e oggi è cambiato l'ambiente, non il codice:
 `/tmp` ripulito e lo spazio libero su `/` passato da 197 G a 750 G. Se è la
 stessa dipendenza dallo spazio libero, questo punto non è chiuso come credevamo
 — attribuito (non è una nostra patch), non ancora spiegato.
+
+**Nota del 2026-09-14.** `tests/contract` **non è tracciata da git**: esiste
+solo nel checkout principale. In un worktree pulito la suite "unit+contract"
+raccoglie zero test di contratto senza avvisare. Da tracciare o da generare in
+modo dichiarato, altrimenti un revisore non li esegue e non lo sa.
 
 **Sul flag.** `pytest.ini` ha `--maxfail=1`, quindi la suite si ferma al primo
 rosso dopo ~8 test su ~1170. Va tolto o reso opzionale: nasconde esattamente
