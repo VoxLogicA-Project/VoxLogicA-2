@@ -4,7 +4,30 @@ Documento di lavoro, aggiornato mano a mano che i punti si chiudono. Le misure
 numeriche (spazio disco, tempi) vengono da fmt-5000 e valgono come ordine di
 grandezza, non come valori attesi: quelli sono il punto 2, ancora aperto.
 
-Aperto il 2026-09-07 sul branch `fix/disk-reserve-collapse`.
+Aperto il 2026-09-07 sul branch `fix/disk-reserve-collapse`; quel branch è
+stato portato su `main` in fast-forward il 2026-09-14 e cancellato. Da allora si
+lavora su `main`, con rami corti.
+
+## La versione da spedire è un tag, non un branch
+
+**`tacas-artifact-rc1`** = `a1e22b6`. È il commit da cui `tools/make_artifact.py`
+costruisce la cartella, ed è quello su cui sono state prese **tutte** le misure
+di chiusura qui sotto (7b, 9, 10, 11, 12): i tre esperimenti spediti a freddo e
+poi a caldo sullo stesso store, valori identici, oracoli esatti, suite 1215/0.
+
+Il motivo è pratico: `main` continua a muoversi, un tag no. Fra tre mesi, se un
+revisore chiede "quale commit?", la risposta è una parola. La regola da qui in
+poi:
+
+| | |
+|---|---|
+| si costruisce l'artifact | da un tag, mai da `HEAD` |
+| si cambia qualcosa che l'artifact contiene | nuovo tag, `rc2`, `rc3`… e le misure si rifanno **su quel commit** |
+| si spedisce | il tag dell'ultimo giro completo si rinomina `tacas-artifact`, senza `rc` |
+
+Il messaggio del tag riporta le misure. `tests/contract` **non è tracciata** e
+non fa parte dell'artifact, per decisione: la suite che il revisore esegue è
+`tests/unit`.
 
 ## Come è stata scritta
 
