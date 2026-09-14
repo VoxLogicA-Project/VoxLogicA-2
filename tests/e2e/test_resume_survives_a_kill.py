@@ -88,12 +88,13 @@ def _run_and_kill(db_path: Path, program_file: Path, log: Path) -> int:
     """Start a real run, SIGKILL it after a checkpoint has fired, and report
     how many completions it had got through when it died.
 
-    `--threads 8` rather than the default: on a 24-core host this program
-    finishes inside the kill deadline at full width, and a run that exits
-    normally proves nothing about SIGKILL. Throttling the killed run is the
-    honest way to hold it open past a checkpoint tick -- the alternative, a
-    program big enough to outlast one at full width, makes the reference run
-    (which has to do the whole thing) the slowest part of the suite.
+    `--threads 2` rather than the default: this program finishes inside the kill
+    deadline at full width on a 24-core host, and at eight threads too (both
+    measured), and a run that exits normally proves nothing about SIGKILL.
+    Throttling the killed run is the honest way to hold it open past a
+    checkpoint tick -- the alternative, a program big enough to outlast one at
+    full width, makes the reference run (which has to do the whole thing) by far
+    the slowest item in the suite.
 
     The count comes from the engine's own memory log, whose path it prints on
     startup. It is sampled, so it lags the true moment of death slightly -- and
@@ -106,7 +107,7 @@ def _run_and_kill(db_path: Path, program_file: Path, log: Path) -> int:
     with log.open("wb") as stderr:
         proc = subprocess.Popen(
             [sys.executable, "-u", "-m", "voxlogica.main", "run", "--no-serve",
-             "--threads", "8", "--store-db", str(db_path), str(program_file)],
+             "--threads", "2", "--store-db", str(db_path), str(program_file)],
             env=env, stdout=subprocess.DEVNULL, stderr=stderr,
             cwd=str(REPO_ROOT),
         )
