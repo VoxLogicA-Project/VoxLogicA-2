@@ -3099,6 +3099,22 @@ class ComputationEngine:
             "loop_window": self.config.loop_window,
             "kernels_executed": self._kernels_executed,
             "recomputes": self._recomputes,
+            # RESUME. These five are what tells a warm run from a cold one,
+            # and until now they lived only in the memlog -- so a test could
+            # not assert on them and every resume claim in this branch was
+            # argued from a progress bar. `completed` is the run's own work;
+            # `pruned_available` is the work the store answered and it never
+            # had to do; the memo pair says whether loop expansion itself was
+            # reused, which is upstream of both (an unexpanded body has no id
+            # to look up).
+            "completed": len(self.table.completed),
+            "pruned_available": self._pruned_available,
+            "registered_total": self.graph.registered_total,
+            "memo_hits": self._memo_hits,
+            "memo_misses": self._memo_misses,
+            "walk_visited": self._walk_visited,
+            "walk_seconds": round(self._walk_seconds, 3),
+            "dev_stopped_at": self._dev_stop,
             "expanded_loops": self.admission.expanded_loops,
             "expanded_bodies": self.admission.expanded_bodies,
             "evicted_early": self._evicted_early,
