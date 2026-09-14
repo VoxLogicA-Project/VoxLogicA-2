@@ -84,29 +84,58 @@ def _run_in_process(db_path: Path) -> dict:
     return dict(result.cache_summary or {})
 
 
-def _run_and_kill(db_path: Path, program_file: Path) -> None:
-    """Start a real run and SIGKILL it once a checkpoint has certainly fired."""
+def _run_and_kill(db_path: Path, program_file: Path, log: Path) -> int:
+    """Start a real run, SIGKILL it after a checkpoint has fired, and report
+    how many completions it had got through when it died.
+
+    `--threads 8` rather than the default: on a 24-core host this program
+    finishes inside the kill deadline at full width, and a run that exits
+    normally proves nothing about SIGKILL. Throttling the killed run is the
+    honest way to hold it open past a checkpoint tick -- the alternative, a
+    program big enough to outlast one at full width, makes the reference run
+    (which has to do the whole thing) the slowest part of the suite.
+
+    The count comes from the engine's own memory log, whose path it prints on
+    startup. It is sampled, so it lags the true moment of death slightly -- and
+    that bias makes `remaining` larger and the assertion easier, never the
+    reverse.
+    """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(PYTHON_IMPL) + os.pathsep + env.get("PYTHONPATH", "")
     env.pop("VOXLOGICA_DEV_STOP_AFTER", None)
-    proc = subprocess.Popen(
-        [sys.executable, "-u", "-m", "voxlogica.main", "run", "--no-serve",
-         "--store-db", str(db_path), str(program_file)],
-        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        cwd=str(REPO_ROOT),
-    )
-    try:
-        deadline = time.monotonic() + KILL_AFTER_SECONDS
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                pytest.fail(
-                    "the run finished before it could be killed: raise the "
-                    "element count in PROGRAM so it outlives a checkpoint tick")
-            time.sleep(0.5)
-        proc.kill()                      # SIGKILL: no handler, no shutdown path
-    finally:
-        proc.wait(timeout=60)
+    with log.open("wb") as stderr:
+        proc = subprocess.Popen(
+            [sys.executable, "-u", "-m", "voxlogica.main", "run", "--no-serve",
+             "--threads", "8", "--store-db", str(db_path), str(program_file)],
+            env=env, stdout=subprocess.DEVNULL, stderr=stderr,
+            cwd=str(REPO_ROOT),
+        )
+        try:
+            deadline = time.monotonic() + KILL_AFTER_SECONDS
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    pytest.fail(
+                        "the run finished before it could be killed: raise the "
+                        "element count in PROGRAM so it outlives a checkpoint "
+                        "tick")
+                time.sleep(0.5)
+            proc.kill()                  # SIGKILL: no handler, no shutdown path
+        finally:
+            proc.wait(timeout=60)
     assert proc.returncode != 0, "the process was not killed"
+    return _completions_from_memlog(log)
+
+
+def _completions_from_memlog(log: Path) -> int:
+    """Last sampled completion count, from the memory log the run announced."""
+    text = log.read_text(errors="replace")
+    marker = "memory log: "
+    assert marker in text, f"the run never announced a memory log:\n{text[-2000:]}"
+    path = Path(text.split(marker, 1)[1].splitlines()[0].strip())
+    rows = [r for r in path.read_text(errors="replace").splitlines() if r.strip()]
+    assert len(rows) > 1, "the memory log has no samples: the run died too early"
+    header, last = rows[0].split("\t"), rows[-1].split("\t")
+    return int(float(last[header.index("completed")]))
 
 
 @pytest.mark.e2e
@@ -121,20 +150,23 @@ def test_a_killed_run_resumes_from_its_last_checkpoint(tmp_path: Path) -> None:
     total = reference["completed"]
 
     killed_db = tmp_path / "killed.db"
-    _run_and_kill(killed_db, program_file)
+    killed = _run_and_kill(killed_db, program_file, tmp_path / "killed.stderr")
     assert killed_db.exists(), "the killed run left no store at all"
+    assert killed > 0, "the killed run completed nothing, so there is nothing to reuse"
 
     resumed = _run_in_process(killed_db)
 
     assert resumed["pruned_available"] > 0, (
         "after a kill the store answered for NO node: either the periodic "
         "frontier checkpoint never ran, or nothing it wrote survived")
-    # A resume that learnt nothing from the killed run does `total`. The killed
-    # run had a minute of a ~1-minute program, so most of the work should be
-    # gone from the resume's bill; 85% is a floor loose enough to survive
-    # machine load deciding how far the killed run got, and still impossible to
-    # pass by replanning from the goals.
-    assert resumed["completed"] < total * 0.85, (
+    # The same statement as the clean-stop test, against a process that was
+    # given no chance to tidy up: the resume must do what is LEFT. Slack is
+    # wider here (1.5x) because the kill lands wherever it lands -- mid-write,
+    # mid-expansion, mid-cone -- and the sampled count of what the dead run
+    # achieved is a lower bound. A resume that learnt nothing does `total`, and
+    # `total` is far outside this budget.
+    remaining = total - killed
+    assert resumed["completed"] <= remaining * 1.5, (
         f"the killed run's work was lost: the resume did {resumed['completed']} "
-        f"completions against a whole-program {total} "
-        f"(pruned={resumed['pruned_available']})")
+        f"completions, but only {remaining} of {total} were left after the kill "
+        f"(which had reached {killed}); pruned={resumed['pruned_available']}")
