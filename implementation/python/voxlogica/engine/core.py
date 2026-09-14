@@ -298,6 +298,11 @@ class ComputationEngine:
         # (waiter, expansion target) pairs already given a second chance; see
         # _await_expansion.
         self._expansion_retried: set[tuple[NodeId, NodeId]] = set()
+        #: The scheduler's progress-invariant checker (perf-saturation e26306b,
+        #: engine/verify.py). Not taken with the goal-materialization fix it
+        #: guards -- every use is behind `is not None` by its own design, and
+        #: this branch ships the engine, not the instrument.
+        self.verifier = None
         self.executor._handle_resolver = self._resolve_reference
         self.executor._names_handles = self.graph.names_handles
         self._reload_deferred: set[NodeId] = set()  # deferred once to prefer resident-ready work
