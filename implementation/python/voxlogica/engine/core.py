@@ -1231,12 +1231,8 @@ class ComputationEngine:
                 # writer's backlog budget, and it is idempotent. When it refuses,
                 # the honest answer is to keep the container out of the store
                 # too; the value is still resident and the run is unaffected.
-                for handle in iter_handles(value):
-                    ref = handle.node
-                    if self.table.persisted(ref) or self.table.spill(ref):
-                        continue
+                if not self._make_named_durable(value):
                     critical = worth_it = False
-                    break
             will_be_durable = self.table.complete(nid, value, compute_ms,
                                                   critical=critical, persist=worth_it)
             if worth_it and node.operator in _SEQUENCE_OPERATORS:
@@ -1794,6 +1790,41 @@ class ComputationEngine:
         # graph what its handles name, or the eager adapter will skip them.
         self.graph.hold_handles(nid, value)
         return value
+
+    def _make_named_durable(self, value: Any) -> bool:
+        """Make every node reachable from ``value`` through handles durable.
+
+        TRANSITIVE, and children first. A container names an `index` node whose
+        own value is a handle to a third node; spilling the `index` alone wrote
+        a row that named something the store did not have, and the warm run of
+        the AIIM sweep died on it one step later (`default.index c1e74254`,
+        handle to `60560560`, absent) -- the same failure as §9, one hop down.
+        So the walk follows handles through resident values, and each node is
+        spilled only after everything it names has been; on the first refusal
+        it stops, so no parent is ever queued ahead of a child that will not be.
+
+        Iterative on purpose: the depth is the nesting of the data, which is the
+        program's to choose, and this file may not recurse on it.
+
+        Returns False if something reachable cannot be made durable; the caller
+        then keeps its own value out of the store too.
+        """
+        stack: list[tuple[NodeId, bool]] = [(h.node, False) for h in iter_handles(value)]
+        seen: set[NodeId] = set()
+        while stack:
+            ref, expanded = stack.pop()
+            if expanded:
+                if not (self.table.persisted(ref) or self.table.spill(ref)):
+                    return False
+                continue
+            if ref in seen:
+                continue
+            seen.add(ref)
+            stack.append((ref, True))                 # visited again after its children
+            inner = self.table.values.get(ref, _MISSING)
+            if inner is not _MISSING:
+                stack.extend((h.node, False) for h in iter_handles(inner))
+        return True
 
     def _retrack_resident(self, nid: NodeId) -> None:
         """Re-arm reclaim for a value just brought BACK into the live tier.

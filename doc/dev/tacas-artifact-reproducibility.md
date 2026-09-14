@@ -156,7 +156,10 @@ congelato costruito dallo stesso codice:
 | caldo ×3 | exit 0 | **33/33** | no | 1 s |
 
 Valori dei tre caldi identici al freddo. Due comandi (§10): verde. Esperimento
-2: oracolo esatto, `case_079_best = 0,0`. Suite unit: 1215 passati, 0 falliti.
+2: oracolo esatto, `case_079_best = 0,0`. **Esperimento 3**: 17/17 a freddo
+(28 s: il programma legge 20 casi) e a caldo (1 s), valori identici, i sei
+dell'oracolo del §2 cifra per cifra. Suite unit+contract: 1215 passati, 0
+falliti. Tutto misurato sullo stesso commit, dopo l'ultima modifica.
 
 **Non era un difetto: erano cinque, uno sotto l'altro**, e ognuno è emerso solo
 quando quello sopra era stato tolto. In ordine di scoperta:
@@ -464,6 +467,20 @@ container **non si scrive**. Il valore resta residente e il run non ne risente.
 
 Sull'esperimento 4 era lo strato 5 del 7b: il container `export_case(k)`
 nominava quattro `WriteImage`, tre salvati e uno no.
+
+**Una prima versione non era transitiva, e l'AIIM l'ha smentita in un'ora.**
+Rendeva durevoli i body nominati dal container, ma se un body era a sua volta
+un handle il secondo salto restava scoperto: il primo caldo dell'esperimento 3
+è morto su `default.index c1e74254`, il cui valore è un handle a `60560560`,
+assente. `_make_named_durable` ora segue gli handle attraverso i valori
+residenti, figli prima dei padri, e si ferma al primo rifiuto — così nessun
+padre viene messo in coda prima di un figlio che non ci arriverà. Iterativa.
+Controllo esteso a **qualunque** valore con handle, non solo ai container:
+0 incompleti, 0 mancanti.
+
+Lezione da tenere: **un banco nuovo trova un difetto nuovo.** L'esperimento 4
+non esercita `index → handle`; l'AIIM sì. Prima di `make_artifact.py` tutti e
+tre gli esperimenti spediti vanno eseguiti freddo-e-caldo sul commit finale.
 
 Un nodo `for_loop` è **`critical`**, quindi il suo container viene scritto
 sempre. I body che quel container nomina sono **best-effort**: `_finish` li
