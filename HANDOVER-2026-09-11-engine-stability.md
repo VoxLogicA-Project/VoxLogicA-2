@@ -2453,3 +2453,65 @@ the only ones left: a truthful startup message, which is impossible to emit
 today at any price, and "recorded N, found M" as the hole measurement §37d
 asks for. The checkpoint record is an *observability and honesty* change, not a
 performance one, and it should be argued for on those terms or not at all.
+
+### 37g. The walk, measured: 127–183k nodes/s, ~1% of wall — and the real defect
+
+Two runs at C=100,000 on the new `_walk_*` counters (`/tmp/walk.sh`, sequential
+on 24 cores): `walkcold` on a fresh store, `walkwarm` resuming off `ladder.db`.
+
+| | walkcold | walkwarm (resume) |
+|---|---:|---:|
+| walk pops | 354,580 | 341,287 |
+| walk wall time | 1.935 s | 2.692 s |
+| **pops per second** | **183,245** | **126,778** |
+| walk share of run wall | 0.62% | 1.08% |
+| `pruned_available` | 0 | **77,805** |
+| `registered_total` | 211,584 | 206,675 |
+| completions / s | 344.5 | **405.8** |
+| run wall to C=100k | 310.0 s | **249.5 s** |
+| `ops_fused` | 44,206 | 29,273 |
+| recomputes | 1,396 | 1,083 |
+
+**The walk is not a cost.** Under three seconds out of four minutes, ~1% of
+wall. The resume's walk is 31% slower *per pop* (126.8k vs 183.2k/s) and that
+difference is the store probe — the exact cost §37e proposed to remove with an
+in-memory anchor set. Removing it would save about 0.8 seconds. §37f already
+withdrew the performance case for the checkpoint record; this closes it
+numerically. The record is worth building for the startup message and the
+"recorded N, found M" leak count, and for nothing else.
+
+**Per-node memory: NOT measured, and the obvious arithmetic is wrong.**
+`(rss - accounted - baseline) / registered` gives 49.6 KB/node cold and
+47.3 KB/node warm — consistent, and meaningless as a structural figure. The
+residual is dominated by value memory that `accounted_bytes` does not count
+(pooled buffers, SimpleITK images), plus allocator fragmentation, torch and
+thread stacks. It is an upper bound on index cost and nothing more. The direct
+measurement — `sys.getsizeof` over `graph._dependents`, `graph.consumers`,
+`table.nodes`, `_priority`, `incomplete`, `completed` — was attempted through
+the control socket and lost the race with `DEV_STOP`; it needs a probe taken
+while a run is mid-flight, and should be taken next time one is up.
+
+**The resume is NOT computing from scratch.** 77,805 nodes were answered by the
+store and never scheduled (0 on the cold run), the same C=100,000 took 249.5 s
+instead of 310.0 s, and fused ops nearly halved — 29,273 against 44,206 —
+because a large part of the fusable work was already on disk.
+
+**But it reuses far less than the store can support, and there is now a named
+mechanism.** Probed live at completed=100,244:
+
+    memo_hits = 1        memo_misses = 1,989
+    expanded_loops = 17  expanded_bodies = 925
+
+The expansion memo — `put_expansion`/`get_expansion`, built in §37 precisely so
+that a resume does not re-derive loop structure — **hits once in 1,990
+attempts**. Every loop is being re-expanded from scratch. That matters far more
+than any traversal question, because expansion is what *produces the node ids*:
+a body root that is never named can never be looked up, never pruned, and never
+reused, no matter what the store holds. `ladder.db` carries 500,000+
+completions and this resume pruned 77,805 nodes.
+
+Next: find why `get_expansion` misses. It is a lookup keyed by a loop node id,
+so either the ids differ between runs (an expansion that is not a pure function
+of the loop spec) or the memo rows were never written (the §37 write path, which
+`_memoise_expansion` was rebuilt to guarantee). One SELECT against `ladder.db`
+separates those two, and they have nothing in common as fixes.
