@@ -2232,6 +2232,16 @@ That points at (2): the checkpoint takes whatever survived rather than
 
 ### 37c. All three pieces, measured — and the ceiling is fusion
 
+**What `pruned/registered` means.** The two counters are *disjoint*:
+`_schedule_subgraph` increments `_pruned_available` and `continue`s BEFORE
+`graph.register`, so a node is either served by the store and skipped, or
+registered and scheduled — never both. So 38.6% is *pruned against scheduled*,
+not a share of a whole: as a fraction of every node the walk reached it is
+38.6/138.6 = **27.8%**. Neither number is "how much of the store got reused" —
+the store's size is in no denominator here. And both UNDERSTATE the work
+avoided, because a pruned node ends the walk: it stands for an entire subtree
+that was never visited and therefore never counted.
+
 | | reuse (`pruned/registered`) |
 |---|---:|
 | frontier checkpoint alone (baseline) | **38.6%** |
@@ -2270,3 +2280,176 @@ Moving past 38% means changing **what fusion materialises**, not the cache, the
 cut, the checkpoint, or the traversal. The honest experiment is a controlled
 comparison with `VOXLOGICA_FUSION=0`: it will cost throughput and should raise
 reuse, and the trade between them is the real design question this work uncovered.
+
+### 37d. Correction: fusion is NOT the ceiling — cones are already atomic
+
+§37c named fusion as the thing holding resume reuse at 38%. Reading
+`engine/fusion.py` back, that is wrong, and the correction matters because it
+changes the decision: **fusion does not have to be given up.**
+
+A cone already splits its members into `exits` and `interiors`
+(`fusion.py:167-189`). An `interior` is a member with *no consumer outside the
+cone* — by construction. Exits (goals, members with an outside dependent, and
+any member carrying an extra `graph.consumers` hold the planning snapshot
+cannot explain) take the normal `set_value` → persist path
+(`core.py:2893`, `executor.py:153`); only interiors are elided
+(`core.py:2868-2881`).
+
+So a fused interior is a value **nothing outside the cone can ever ask for**.
+A resume walk reaches a node only through a consumer; an interior has none
+outside, so the walk can only arrive at it *after* descending through its own
+exit — and if that exit is stored, the walk prunes there and never sees the
+interior at all. Fusion therefore makes restart points **coarser** (mean cone
+3.24 members, so ~1 anchor where there might have been ~3), not **absent**.
+It cannot force a recompute of work that is already on disk.
+
+This also retires the proposed `VOXLOGICA_FUSION=0` comparison as the next
+experiment. It would trade throughput for a denser anchor set, but density is
+not what is missing.
+
+**What is actually left.** Resume reuse is a property of the STORE, not of the
+traversal (`_schedule_subgraph` is already optimal: it stops at the first
+available node and never looks at that node's inputs). Clean reuse needs one
+invariant: *for every sweep element that finished, its body root is on disk.*
+Three things can punch a hole in that, and they are not equally likely:
+
+1. **persister shedding** — writes dropped when the writer queue is deep. This
+   is pressure-dependent, so it bites hardest exactly on the long runs where
+   resume matters most. Prime suspect.
+2. **`persist_min_compute_ms = 1.0`** — a body root cheap enough to fall under
+   the threshold is skipped. Cheap to recompute, but it still removes an
+   anchor, and the subtree below it is not necessarily cheap.
+3. **disk eviction** — measured `evicted_early = 0` at C=100k, so not binding
+   at that scale. Kept on the list because it returns at 5M/10M.
+
+And one cost that is NOT recompute but looks like "starting from scratch" to
+anyone watching: on resume the engine must still rebuild the DAG down to the
+frontier before it can prune. At 12M nodes that is minutes of walking with the
+CPU busy and nothing being computed — indistinguishable, from the outside,
+from a cold start.
+
+**The measurement that decides it, not yet run.** On a resume, of the nodes
+the engine *registers*, how many were `completed` in the previous run? Split
+that count by the three causes above. That converts "is there a path" into
+"which hole, and how big" — and each of the three has a different, known fix
+(shed policy must exempt critical anchors; threshold must exempt body roots;
+eviction already has the cut-preserving rule from §37b).
+
+### 37e. The resumer cannot know, and that is why there is no resume message
+
+*What "checkpoint" names here.* A row, not a copy of any value:
+
+    checkpoint(goal_id PK, anchor_ids BLOB, n INTEGER, ts)
+
+`goal_id` is the id of the node the query asks for (sha256 over its spec
+closure, as every id is). `anchor_ids` is the serialised set of ids that were
+in `graph.consumers` at stop time — completed, with at least one unrun
+consumer — restricted to those whose value the final spill actually landed.
+Written by `checkpoint_frontier()` after its spill loop; read once at startup,
+before the first `_schedule_subgraph(goal)`.
+
+Two consequences. **Reachability comes free from hash-consing**: identical
+`goal_id` means an identical DAG, so every recorded anchor is reachable from
+the goal by construction, with no validating walk. And **`_available` stops
+being a per-node store probe**: the walk tests the in-memory anchor set first
+and only touches the store on a hit, to load. Misses become free.
+
+The row asserts *reachability*, never *availability* — an anchor's value may
+have been evicted since. Availability stays a check at the anchor, so a stale
+row degrades to exactly today's behaviour and never to incorrectness.
+
+Two complaints with one root: (a) a resume looks identical to a cold start from
+the outside, and (b) nothing tells the engine, up front, whether a usable
+frontier is reachable at all.
+
+**Today it is discovered, never known.** `_schedule_subgraph` walks down from
+the goal and asks the store once per node (`_available`). Reachability is a
+by-product of the walk: the engine learns an anchor exists at the moment it
+arrives at it, and not one step sooner. So there is nothing to announce at
+startup, because at startup the engine genuinely does not know.
+
+`checkpoint_frontier()` (core.py:1776) does not close this. It spills the
+*values* of `graph.consumers` and returns a count — it records **no id set and
+no goal**. Nothing survives the process that a later run could read before
+walking. The frontier is written; the *fact of* the frontier is not.
+
+**Fix: make the checkpoint a first-class record keyed by the goal's hash.**
+At stop: write `(goal_id → {anchor ids}, counts, run metadata)`. At start: one
+lookup on the goal id.
+
+The soundness argument is hash-consing, and it is exact. Node ids are Merkle
+hashes over the spec closure, so *the same goal id means the same DAG*. An
+anchor recorded under goal G is therefore reachable from G by construction —
+no verification walk needed to establish reachability. An edited `.imgql`
+hashes to a different goal id, finds no record, and honestly reports a cold
+start. This is the correct behaviour, not a gap.
+
+What it buys, in order of importance:
+
+1. **A truthful startup message**, before a single node is scheduled:
+   "resuming <goal>: checkpoint with N anchors" versus "no checkpoint for this
+   goal — cold start". Currently impossible to emit at any price.
+2. **The walk stops hitting sqlite.** Membership becomes an in-memory set test
+   instead of one store probe per node — which is the direct attack on §37d's
+   "minutes of busy CPU computing nothing", the thing that makes a resume
+   *look* like a cold start even when it is reusing properly.
+3. **A number to hold the store to.** "N anchors recorded, M found at resume"
+   is the hole measurement §37d asks for, obtained for free rather than by
+   instrumenting three subsystems.
+
+The one caveat, stated so it is not discovered later: the record is a *claim
+about reachability*, not about *availability*. A recorded anchor's value can
+have been evicted since. So the walk still verifies laziliy at each anchor —
+the record removes the search, not the check.
+
+### 37f. Measured at last: the backward walk is NOT slow, and §37d was wrong
+
+§37d asserted that a resume spends "minutes of walking with the CPU busy and
+nothing being computed". That was an inference stated as a fact, and it is
+**false**. The data to check it already existed — the ladder runs' own
+`--measure-series` samples — and nobody had read it.
+
+From `rung1.report.samples.tsv` (cold, stopped at C=100k) and
+`rung2.report.samples.tsv` (resume off rung1's store, stopped at C=500k),
+elapsed from each file's first sample:
+
+| completions reached | rung1 (cold) | rung2 (resume) |
+|---|---:|---:|
+| first completion | — | **0.8 s** wall, 3.9 s cpu |
+| 1,000 | (already past) | 26.3 s |
+| 10,000 | 131.0 s | **47.9 s** |
+| 50,000 | 208.8 s | **142.3 s** |
+| 100,000 | 299.0 s | **244.3 s** |
+
+Two things follow, and they point opposite ways to what this document has been
+assuming since §37c.
+
+**1. The walk costs under a second.** The resume completes its first node 0.8 s
+in. There is no multi-minute traversal phase to optimise, and therefore no case
+for caching the traversal — see below.
+
+**2. The resume is FASTER than the cold run to every mark**, 2.7x at 10k. So it
+is reusing, and the "it restarted from scratch" reading of these runs is not
+what the instrument says. Whatever is disappointing about resume, it is not
+that the walk redoes the work.
+
+*Reading caveats, both of which make the resume look worse than it was, not
+better.* rung1's first sample already shows `completed=1901`, so its clock
+starts late and its cold times are UNDERSTATED; rung2's starts at
+`completed=0`. And rung2 ran on to 500k, so only the marks at or below 100k are
+a like-for-like comparison.
+
+**Why the walk is cheap, structurally.** It stops at the first stored node and
+never looks below it, so it only ever descends through work that has NOT been
+done — which has to be registered anyway in order to be computed. Its cost is
+proportional to *what is left*, not to the size of the DAG. Caching it would be
+caching a function of the store's current state, which is both unsound to reuse
+and, per the table above, worth nothing.
+
+**What this does to §37e.** Point 2 of that section — "the walk stops hitting
+sqlite", offered as the direct attack on startup cost — is now unsupported: it
+is optimising something that takes 0.8 s. The other two reasons stand and are
+the only ones left: a truthful startup message, which is impossible to emit
+today at any price, and "recorded N, found M" as the hole measurement §37d
+asks for. The checkpoint record is an *observability and honesty* change, not a
+performance one, and it should be argued for on those terms or not at all.

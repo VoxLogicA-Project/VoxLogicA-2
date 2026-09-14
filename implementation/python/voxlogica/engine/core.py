@@ -484,6 +484,15 @@ class ComputationEngine:
         self._memo_write_failures = 0   # expansions whose memo could not be stored
         self._memo_specs_written: set[NodeId] = set()  # closure already on disk
         self._pruned_available = 0      # nodes the store answered, never scheduled
+        # THE WALK, measured rather than argued about. §37d asserted the
+        # backward walk costs "minutes" and §37f refuted it from run samples,
+        # but neither had the walk's own rate: the sample series can only show
+        # registration interleaved with compute. These three are wall time and
+        # pops inside _schedule_subgraph itself, so `visited/seconds` is the
+        # traversal rate and nothing else. Cost is one int add per pop.
+        self._walk_visited = 0          # frontier pops in _schedule_subgraph
+        self._walk_seconds = 0.0        # wall time inside it (traversal + register)
+        self._walk_calls = 0
         self._cut_would_break = 0       # evictions whose inputs were NOT stored
         self._cut_unknown = 0           # evictions whose deps could not be read
         self._memo_hits = 0             # loops answered from the store, not reduced
@@ -924,12 +933,15 @@ class ComputationEngine:
         early. Constants and closures complete eagerly right here: they need no
         worker, and in loop-heavy plans they are roughly half of all nodes.
         """
+        walk_started = time.perf_counter()
+        visited = 0
         frontier = [goal]
         discovered: list[NodeId] = []
         incomplete = self.graph.incomplete
         completed = self.table.completed
         while frontier:
             nid = frontier.pop()
+            visited += 1
             if nid in incomplete:
                 self._priority[nid] = max(self._priority.get(nid, 0), priority)
                 continue
@@ -969,6 +981,12 @@ class ComputationEngine:
         for nid in discovered:
             if self.graph.register(nid):
                 self._enqueue(nid)
+        # Registration and enqueue are counted IN, deliberately: the question
+        # is what a resume pays before it can compute, and that bill includes
+        # wiring the nodes the walk kept, not just visiting them.
+        self._walk_visited += visited
+        self._walk_calls += 1
+        self._walk_seconds += time.perf_counter() - walk_started
 
     def _report(self, nid: NodeId, state: str, **fields: Any) -> None:
         """Tell the observer, if there is one, and never fail because of it.
@@ -1267,6 +1285,10 @@ class ComputationEngine:
             "kernels_executed": self._kernels_executed,
             "recomputes": self._recomputes,
             "pruned_available": self._pruned_available,
+            "registered_total": self.graph.registered_total,
+            "walk_visited": self._walk_visited,
+            "walk_seconds": round(self._walk_seconds, 3),
+            "walk_calls": self._walk_calls,
             "cut_would_break": self._cut_would_break,
             "cut_unknown": self._cut_unknown,
             "cones_dispatched": self._cones_dispatched,
