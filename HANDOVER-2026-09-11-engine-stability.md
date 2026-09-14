@@ -2630,3 +2630,30 @@ in-process one was the slower. Now: 9,000 elements per loop, everything through
 the CLI.
 
 Full suite after the change: **1,306 passed, 4 skipped**.
+
+### 37j. Caching is per element; DEMAND through an index is not
+
+Two different granularities, easy to conflate.
+
+**Caching and pruning are per element.** Each loop body is its own
+content-hashed node, the store answers per node, and `_schedule_subgraph`
+prunes per node — so "x[i] is in the store, x[i+1] is not" is the ordinary
+state, not an edge case. Measured in §37h: a resume pruned 3,996 nodes while
+computing the rest.
+
+**Demand is not.** `y = x[i] * 2` reduces to `default.index(x, i)`, and
+`index.execute` takes the sequence VALUE as its first argument
+(`primitives/default/index.py`) — so the sequence node must complete, and the
+sequence node depends on every element. Asking for one element therefore forces
+the whole `for`. Nothing propagates element-level demand backwards through an
+index: `SequenceValue` is lazily *iterable*, but by the time `index` holds one,
+the elements have already been computed.
+
+That is a real limit on programs that index a big sweep for a few elements, and
+it is orthogonal to everything in §37a–§37i: the cache would happily serve one
+element, but nobody asks it to.
+
+`for` itself IS parallel — bodies are admitted through `LoopAdmission`'s window
+(`loop_window`, defaulting to the worker count) and run concurrently on the
+pool. That window is what bounds the live frontier, and it is the subject of
+most of this document.
