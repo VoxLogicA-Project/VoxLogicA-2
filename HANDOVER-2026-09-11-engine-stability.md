@@ -2515,3 +2515,64 @@ so either the ids differ between runs (an expansion that is not a pure function
 of the loop spec) or the memo rows were never written (the §37 write path, which
 `_memoise_expansion` was rebuilt to guarantee). One SELECT against `ladder.db`
 separates those two, and they have nothing in common as fixes.
+
+### 37h. The resume test exists, it passes, and §37g's diagnosis was wrong
+
+`tests/e2e/test_resume_starts_from_the_frontier.py`. The claim this branch has
+argued from progress bars since §37c is now a test that can fail: *run half a
+computation, stop, start it again, and the second run must do the OTHER half.*
+
+**The program.** Ten independent `for` loops of 870 elements over 32x32
+`blank` images, ~20,000 completions. Three properties are load-bearing and each
+was measured into place, not guessed:
+
+- *Ten loops, not one.* With a single `for`, a stop at half the work always
+  lands mid-expansion, so no memo is ever written and there is nothing for the
+  resume to hit. Measured on the first draft: `expanded_loops=0`, zero rows in
+  `expansion`. The test was asserting on a case the program could not produce.
+- *Distinct constants per loop*, or they hash-cons into one node and it is the
+  single-loop program again.
+- *870, calibrated.* 500 elements x 10 measured 11,553 completions — ~2.31 per
+  element, not the ~4 the source suggests, because fusion elides cone interiors
+  and those never complete. Scaling gives 870 → 20,063 measured.
+- *Images, not scalars*, so a node is worth persisting; a scalar program would
+  measure `persist_min_compute_ms`'s correct refusal to store values cheaper to
+  recompute, and prove nothing about resume.
+
+**Result — the resume is very nearly exact.**
+
+| | completions |
+|---|---:|
+| reference run (whole program) | 20,063 |
+| stopped run (guard at 10,000) | 11,963 |
+| **left to do** | **8,137** |
+| **the resume actually did** | **8,101** (99.6%) |
+
+with `pruned_available = 3,996`. A resume that replanned from the goals would
+have done ~20,000. **The frontier resume works.**
+
+**And the memo is not the defect §37g named it.** A finished run writes its
+memos and a rerun uses them — measured directly: 10 loops expanded, 10 rows in
+`expansion`, and the rerun hits 10, misses 0, expands nothing and completes 20
+of 20,063 nodes. The mechanism is sound.
+
+What is true is narrower: **a memo is written when a loop's expansion COMPLETES**
+(`_memoise_expansion` from `_on_spliced`), so a run stopped mid-expansion writes
+none. On BraTS the loops are large enough that stopping at 100,000 completions
+leaves every one of them partly expanded — and that, not a broken write path or
+mismatched ids, is the whole of §37g's "1 hit against 1,989 misses".
+
+The cost of that gap is a DAG rebuild, which §37f/§37g measured at ~1% of wall,
+and **no recomputation at all** — which is why the other-half test passes with
+the memo missing every time. §37g called this "the real defect" and ranked it
+above everything else; that was wrong, and the table above is why. Partial-
+expansion memoisation would buy about one per cent. It is not worth building
+until something measures larger.
+
+**What this leaves open.** The test proves the mechanism on a 20,000-node
+program whose values are all worth persisting and where nothing is evicted.
+The BraTS ladder differs in three ways that the test deliberately does not
+model — eviction under real memory pressure, persister shedding under a deep
+writer queue, and values below the persist threshold. Those are §37d's three
+holes, still unmeasured, and now the test harness exists to model them one at
+a time.
