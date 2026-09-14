@@ -99,9 +99,17 @@ def _metrics(stdout: str) -> dict:
     assert start is not None, f"no JSON report in the run's output:\n{stdout[-2000:]}"
     end = next(i for i in range(len(lines) - 1, start, -1) if lines[i] == "}")
     report = json.loads("\n".join(lines[start:end + 1]))
-    summary = report.get("cache_summary") or report.get("result", {}).get("cache_summary")
-    assert summary, f"no cache_summary in the report: {sorted(report)}"
-    return summary
+    # Nested under "execution" today. Searched for by name rather than by path
+    # so a report reshuffle does not silently turn this test into one that
+    # asserts nothing -- an explicit stack, per AGENTS.md, never recursion.
+    stack = [report]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if isinstance(node.get("cache_summary"), dict):
+                return node["cache_summary"]
+            stack.extend(node.values())
+    raise AssertionError(f"no cache_summary anywhere in the report: {sorted(report)}")
 
 
 def _run(db_path: Path, program_file: Path, threads: str | None = None) -> dict:
