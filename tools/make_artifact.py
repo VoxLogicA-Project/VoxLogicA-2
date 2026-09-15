@@ -45,6 +45,7 @@ MARKER = ".voxlogica-artifact"
 #: What makes the tool run. Paths are repo-relative and keep their layout in
 #: the artifact, so a program's relative imports and paths still resolve.
 ENGINE: list[str] = [
+    "LICENSE",                                # GPL-3.0; the AEC needs one to evaluate at all
     "voxlogica",                              # the launcher
     "bootstrap.py",                           # builds .venv, fetches uv
     ".python-version",                        # 3.14t -- free-threaded, required
@@ -511,6 +512,41 @@ the exact commit.
 Read sections 0, A and B once, then run the experiments in order.
 **Experiment 1 needs nothing but this directory** -- start there.
 
+License: GPL-3.0, see `LICENSE`. Source: https://github.com/VoxLogicA-Project/VoxLogicA-2
+(the commit is in `PROVENANCE.json`).
+
+## Early light review -- 5 minutes, no dataset
+
+Everything here runs without BraTS and proves the artifact builds and the
+programs are well-formed against the engine it ships.
+
+```bash
+sha256sum -c SHA256SUMS | grep -vc ': OK$'      # 0
+./voxlogica --help                              # bootstraps: uv, Python 3.14t, 137 pinned packages
+for p in doc/gallery/programs/*/*.imgql; do ./voxlogica run --no-serve --no-execute "$p" && echo "ok $p"; done
+```
+
+Expected: `0`, then a usage message after a few minutes of downloads (network
+needed once), then `ok` four times -- each program parsed, reduced and
+type-checked by the shipped engine. Nothing is computed yet. For a first real
+computation with no dataset, start experiment 1 in the background; it is
+~45 minutes on 24 cores and proportionally longer on fewer.
+
+## Resources
+
+| | |
+|---|---|
+| Disk | 25 GB free, dataset excluded (venv 8 GB, ~5 GB of results store per sweep) |
+| RAM, measured peak | experiment 2: 8.8 GB; experiment 3: 4.5 GB; **experiment 4: 20 GB** |
+| CPU | any; the engine uses every core it finds. Times in this README are from a 24-core machine |
+| GPU | **experiment 4 only** (`nnunet_device = "cuda"`). Without one it can run on CPU -- set the device to `"cpu"` -- but we have not timed that |
+| Network | once, during bootstrap; every download is version-pinned and hash-checked |
+| OS | Linux x86-64 is what we measured on. `bootstrap.py` fetches its own interpreter, so the host Python does not matter |
+
+In a virtual machine: experiments 1, 2 and 3 fit; experiment 4 needs the RAM
+and, in practice, a GPU. We have asked the chairs for the hardware exemption
+the call provides for it.
+
 ---
 
 ## 0. Check the shipped files -- before you touch anything
@@ -692,6 +728,8 @@ def main() -> int:
     ap.add_argument("--with-model", action="store_true",
                     help="include the trained nnU-Net weights (~240 MB)")
     ap.add_argument("--tar", action="store_true", help="also write a .tar.gz beside it")
+    ap.add_argument("--zip", action="store_true",
+                    help="also write a .zip beside it (EasyChair wants a ZIP)")
     ap.add_argument("--force", action="store_true",
                     help="overwrite --out even if this script did not build it")
     args = ap.parse_args()
@@ -852,6 +890,17 @@ def main() -> int:
             tf.add(out, arcname=out.name)
         print(f"    {tarball}  ({human(tarball.stat().st_size)})")
 
+    zipball = None
+    if args.zip:
+        step(10 if args.tar else 9, "Writing the zip")
+        import zipfile
+        zipball = out.with_suffix(".zip")
+        with zipfile.ZipFile(zipball, "w", zipfile.ZIP_DEFLATED) as zf:
+            for item in sorted(out.rglob("*")):
+                if item.is_file():
+                    zf.write(item, (out.name / item.relative_to(out)).as_posix())
+        print(f"    {zipball}  ({human(zipball.stat().st_size)})")
+
     total = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
     count = sum(1 for f in out.rglob("*") if f.is_file())
     print(f"\n{'=' * 62}\n"
@@ -861,6 +910,7 @@ def main() -> int:
           f"  model      {'included' if args.with_model else 'not included'}\n"
           f"  dataset    never included (BraTS policy)\n"
           + (f"  tarball    {tarball}\n" if tarball else "")
+          + (f"  zip        {zipball}\n" if zipball else "")
           + f"  built in   {time.time() - started:.1f} s\n"
           f"{'=' * 62}")
     return 0
