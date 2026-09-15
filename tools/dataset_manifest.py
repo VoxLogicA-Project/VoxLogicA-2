@@ -21,8 +21,10 @@ Stdlib only, and plain `python3`: a reviewer runs this BEFORE building anything.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -42,6 +44,20 @@ METADATA = ["name_mapping.csv"]
 _BLOCK = 1 << 20
 
 
+def _walk(root: Path, pattern: str):
+    """Every file under root matching pattern, symlinked directories included.
+
+    os.walk, not Path.rglob: rglob only learned to follow symlinked directories
+    in Python 3.13 (`recurse_symlinks=`), and this tool runs on the SYSTEM
+    python3 -- before bootstrap has built anything -- which on the TACAS VM is
+    3.10. It crashed there, on the very first thing the README asks for.
+    """
+    for dirpath, _dirs, files in os.walk(root, followlinks=True):
+        for name in files:
+            if fnmatch.fnmatch(name, pattern):
+                yield Path(dirpath) / name
+
+
 def listing(root: Path, pattern: str) -> list[str]:
     """The order `dir(root, pattern, true, true)` produces, named relative to root.
 
@@ -57,14 +73,14 @@ def listing(root: Path, pattern: str) -> list[str]:
     Names are reported relative to the root so two different roots compare.
     """
     pairs = [(str(item.resolve()), item.relative_to(root).as_posix())
-             for item in root.rglob(pattern, recurse_symlinks=True)]
+             for item in _walk(root, pattern)]
     pairs.sort(key=lambda pair: pair[0])          # exactly what dir does
     return [rel for _resolved, rel in pairs]
 
 
 def naive_listing(root: Path, pattern: str) -> list[str]:
     """The order the directory names suggest, for comparison with the real one."""
-    return sorted(item.relative_to(root).as_posix() for item in root.rglob(pattern, recurse_symlinks=True))
+    return sorted(item.relative_to(root).as_posix() for item in _walk(root, pattern))
 
 
 def sha256(path: Path) -> str:
