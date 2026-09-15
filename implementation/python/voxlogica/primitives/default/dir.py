@@ -49,7 +49,15 @@ def execute(**kwargs) -> list[str]:
     recursive = _to_bool(kwargs.get("2", False), name="recursive")
     full_paths = _to_bool(kwargs.get("3", False), name="full_paths")
 
-    iterator = root.rglob(pattern) if recursive else root.glob(pattern)
+    # FOLLOW SYMLINKED DIRECTORIES. pathlib's rglob does not, by default, and a
+    # dataset assembled as `ln -s /data/BraTS/BraTS20_Training_002 data/` --
+    # the most natural thing a reviewer does -- was therefore invisible: `dir`
+    # returned nothing, the program indexed an empty list, and the five-case
+    # sampler died with "list index out of range" on a directory that plainly
+    # held five cases. The README even recommended linking whole case
+    # directories. Cyclic links are the caller's problem, as with any rglob.
+    iterator = (root.rglob(pattern, recurse_symlinks=True) if recursive
+                else root.glob(pattern, recurse_symlinks=True))
     out: list[str] = []
     for entry in iterator:
         if full_paths:

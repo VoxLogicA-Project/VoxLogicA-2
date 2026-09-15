@@ -415,8 +415,16 @@ def _sync_requirements(
 ) -> None:
     if not RUNTIME_REQ.exists():
         raise SystemExit(f"Missing requirements file: {RUNTIME_REQ}")
-    if include_test and not TEST_REQ.exists():
-        raise SystemExit(f"Missing requirements file: {TEST_REQ}")
+    # THE ARTIFACT SHIPS THE LOCK, NOT THE .TXT. Requiring requirements-test.txt
+    # here killed the reviewer's very first command -- `./voxlogica --help` --
+    # on a pristine checkout, after uv and Python had downloaded fine: the lock
+    # was there, the .txt was not, and this check ran before the lock was ever
+    # looked at. A lock is a complete source on its own. And a checkout that
+    # ships NO test requirements at all is asking for the runtime only, not
+    # for an error.
+    if include_test and not (TEST_REQ.exists() or TEST_LOCK.exists()):
+        print("No test requirements shipped; installing the runtime only.", file=sys.stderr)
+        include_test = False
 
     # The lock wins when it is there. The test lock is compiled from BOTH .txt
     # files, so it is a superset and installing it alone is the whole

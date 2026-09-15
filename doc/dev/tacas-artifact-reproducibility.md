@@ -8,6 +8,40 @@ Aperto il 2026-09-07 sul branch `fix/disk-reserve-collapse`; quel branch è
 stato portato su `main` in fast-forward il 2026-09-14 e cancellato. Da allora si
 lavora su `main`, con rami corti.
 
+## Il giro del revisore, 2026-09-15: quello che il tag non aveva visto
+
+`rc1` era stato misurato **sulla nostra macchina**, dal repo. Il 15/9 l'artifact
+è stato costruito dal tag, aperto dal tarball in una directory vuota, e usato
+come lo userebbe un revisore. Ha trovato quattro cose che nessun controllo
+precedente poteva vedere, tutte corrette in `rc2`:
+
+| cosa vedeva il revisore | causa | fix |
+|---|---|---|
+| `./voxlogica --help` **muore** al primo comando, dopo che uv e Python si sono scaricati bene | `bootstrap.py` pretendeva `requirements-test.txt` prima di guardare il lock | il lock basta; senza fonte per i test, solo runtime |
+| esperimento 4 "riesce", 33/33, ma **ogni numero fuori di 10⁻²** e distribuzione diversa | la decisione di postprocessing stava con le predizioni di validazione, non spedite | `postprocessing.pkl`, 260 byte, in `MODEL["keep"]` |
+| esperimento 2: `list index out of range` su una directory con cinque casi | `dir` non entrava nelle directory **symlinkate** — e il README consigliava proprio di linkarle | `dir` segue i symlink; test |
+| tempi nel README sbagliati, l'AIIM di **60×** | secondi letti come minuti il primo giorno | tutti dalle misure di oggi, macchina dichiarata |
+
+Il secondo è il più istruttivo: **non falliva**. Exit 0, 33 goal, valori plausibili.
+Il messaggio di `rc1` diceva "33/33 a freddo, valori identici" ed era vero — sul
+nostro `work_root`, dove il pkl c'è. Su una macchina vuota, no. Un revisore
+avrebbe confrontato con la tabella e concluso che i numeri non si riproducono.
+
+Poi, con i fix copiati a mano nell'artifact aperto: smoke test **14/14 file**
+in 45 min (le segmentazioni predette a 614 e 253 voxel contro i 616 e 254 della
+geometria); esperimento 2 esatto in 6 s; esperimento 3 esatto in 32 s;
+esperimento 4 a 3,8·10⁻⁶ dall'oracolo con i pesi spediti. Il "provvisorio"
+sull'esperimento 4 cade su questa misura, la quarta indipendente.
+
+Due cose collaterali. Il disco è arrivato al **100%** durante il giro — 40 GB
+erano miei, il resto no — e il `WARNING: cache budget cut from 32.0 GB to
+4.2 GB` del punto 6 ha detto subito perché: la prima verifica in produzione di
+quel fix. E il motore del tag fa l'AIIM in 32 s dove una settimana fa ne
+servivano 72-99.
+
+**`rc2` non è misurato finché il giro non passa da capo sul tarball di `rc2`,
+senza file copiati a mano.** Quello è il passo dopo.
+
 ## La versione da spedire è un tag, non un branch
 
 **`tacas-artifact-rc1`** = `a1e22b6`. È il commit da cui `tools/make_artifact.py`
@@ -25,9 +59,10 @@ poi:
 | si cambia qualcosa che l'artifact contiene | nuovo tag, `rc2`, `rc3`… e le misure si rifanno **su quel commit** |
 | si spedisce | il tag dell'ultimo giro completo si rinomina `tacas-artifact`, senza `rc` |
 
-Il messaggio del tag riporta le misure. `tests/contract` **non è tracciata** e
-non fa parte dell'artifact, per decisione: la suite che il revisore esegue è
-`tests/unit`.
+Il messaggio del tag riporta le misure. **Nessuna suite di test viaggia
+nell'artifact**, per decisione del 2026-09-15: il revisore ha i quattro
+esperimenti, che sono la sua suite. `requirements-test.lock` quindi non si
+spedisce e il venv del revisore è solo runtime.
 
 ## Come è stata scritta
 
@@ -54,7 +89,7 @@ lista di partenza — sono venuti fuori facendo il resto.
 | **12** | **Due goal sullo stesso nodo: il secondo non viene stampato** | media | **fatto** (`2443cf8`) — regressione del C di Vincenzo |
 | **10** | **Lanciare lo stesso programma due volte: il secondo non finisce** | bloccante | **fatto** — prima 6 stalli su 6, dopo 0 su 6 |
 | 1 | Programmi che escono 0 senza calcolare niente | bloccante | fatto (motore) / 6 programmi da sistemare |
-| 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | fatto per 2 e 3; 4 provvisorio su **tre** run |
+| 2 | Nessun oracolo: nessun valore atteso tracciato | bloccante | **fatto per tutti**: 2 e 3 esatti, 4 a 10⁻⁴ su quattro run |
 | 3 | Percorsi dataset assoluti dentro i programmi | alta | mitigato nell'artifact, aperto nel repo |
 | 4 | L'artifact non si ricostruisce: niente lockfile, pin aperti | alta | fatto (`cbb8cdd`) |
 | 5 | Nessun manifest del dataset | media | **fatto** |

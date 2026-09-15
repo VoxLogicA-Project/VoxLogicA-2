@@ -57,14 +57,14 @@ def listing(root: Path, pattern: str) -> list[str]:
     Names are reported relative to the root so two different roots compare.
     """
     pairs = [(str(item.resolve()), item.relative_to(root).as_posix())
-             for item in root.rglob(pattern)]
+             for item in root.rglob(pattern, recurse_symlinks=True)]
     pairs.sort(key=lambda pair: pair[0])          # exactly what dir does
     return [rel for _resolved, rel in pairs]
 
 
 def naive_listing(root: Path, pattern: str) -> list[str]:
     """The order the directory names suggest, for comparison with the real one."""
-    return sorted(item.relative_to(root).as_posix() for item in root.rglob(pattern))
+    return sorted(item.relative_to(root).as_posix() for item in root.rglob(pattern, recurse_symlinks=True))
 
 
 def sha256(path: Path) -> str:
