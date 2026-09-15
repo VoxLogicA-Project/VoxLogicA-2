@@ -508,10 +508,21 @@ the exact commit.
 |---|---|---|---|---|---|---|
 {index_rows}
 
-Read sections A and B once, then run the experiments in order. **Experiment 1
-needs nothing but this directory** -- start there.
+Read sections 0, A and B once, then run the experiments in order.
+**Experiment 1 needs nothing but this directory** -- start there.
 
 ---
+
+## 0. Check the shipped files -- before you touch anything
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
+Every line must end in `OK`. Do this FIRST: section B has you edit two
+program files, and running experiment 4 rewrites `model/voxlogica_manifest.json`,
+so a check made afterwards reports exactly those files as changed. That is
+expected then, and meaningless now.
 
 ## A. Build the tool
 
@@ -520,8 +531,16 @@ needs nothing but this directory** -- start there.
 ```
 
 The first call runs `bootstrap.py`, which downloads a pinned `uv`, reads
-`.python-version` and creates `.venv` here. Expect a few minutes and a few GB.
-It is idempotent: re-run it freely.
+`.python-version` and creates `.venv` here. Measured: 137 packages in 44 s on
+a fast connection. It is idempotent: re-run it freely.
+
+**Disk: have 25 GB free before you start**, dataset excluded. The venv is
+8 GB (torch and its CUDA libraries are most of it), each of the two sweeps
+writes a ~5 GB results store, and the nnU-Net experiment preprocesses ~2 GB
+under `model/`. We filled a disk twice running this; when that happens the
+engine warns once -- `cache budget cut from ... by free space` -- and the run
+eventually fails with `image must be a SimpleITK Image, got NoneType`, which
+is a full disk wearing a disguise. If you see either, free space and rerun.
 
 Every version is pinned. `implementation/python/requirements.lock` resolves the
 whole transitive graph -- {n_locked} packages, each with its sha256 -- and that
@@ -663,11 +682,6 @@ shipped weights rather than retraining.
 ## F. The trained model
 
 {model_section}
-## G. Check the shipped files
-
-```bash
-sha256sum -c SHA256SUMS
-```
 """, encoding="utf-8")
 
 

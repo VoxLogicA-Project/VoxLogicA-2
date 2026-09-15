@@ -39,8 +39,31 @@ erano miei, il resto no — e il `WARNING: cache budget cut from 32.0 GB to
 quel fix. E il motore del tag fa l'AIIM in 32 s dove una settimana fa ne
 servivano 72-99.
 
-**`rc2` non è misurato finché il giro non passa da capo sul tarball di `rc2`,
-senza file copiati a mano.** Quello è il passo dopo.
+**`rc2`, misurato come pacchetto** — tarball aperto in una directory vuota,
+nessun file copiato dopo il build, solo le tre modifiche che il README
+prescrive (`work_root`, i cinque casi linkati, il percorso del dataset):
+
+| passo | esito |
+|---|---|
+| B manifest | OK |
+| A bootstrap da zero | OK — "installing the runtime only", 137 pacchetti, 44 s |
+| C.1 smoke | **14/14**, 40 min |
+| C.2 cinque casi | esatto, tolleranza 0 |
+| C.3 AIIM | esatto, tolleranza 0 |
+| C.4 nnU-Net | 17/17, 3,8·10⁻⁶, distribuzione identica, 149 s (al secondo tentativo: il primo è morto di disco pieno, 15/17 già giusti) |
+| G checksum | **2 file diversi** — i due che il README stesso fa cambiare |
+
+L'ultima riga è il difetto di `rc2`, ed è nel README, non nel pacchetto: il
+checksum era l'ultima sezione, ma §B fa editare un programma e l'esperimento 4
+riscrive `model/voxlogica_manifest.json`. Un revisore che segue l'ordine trova
+due `FAILED` sui file che ha appena toccato come gli è stato detto. E il
+README non diceva quanto disco serve: il giro ne scrive 20 GB.
+
+**`rc3`** = `rc2` + README: il checksum diventa il passo 0, prima di toccare
+qualsiasi cosa; e una riga dichiara i 25 GB. Motore, programmi e pesi sono
+byte-identici a `rc2`. Per decisione del 15/9 si rimisura tutto **tranne lo
+smoke test** — 45 min che non toccano nulla che un testo possa cambiare. È uno
+strappo dichiarato alla regola "nuovo tag, tutte le misure".
 
 ## La versione da spedire è un tag, non un branch
 
