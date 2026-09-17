@@ -2955,25 +2955,47 @@ scheduled 318 nodes, so it never came near the conditions under which the wedge
 appeared, and the two earlier failures are not reproduced by it. The fix stands
 on the invariant it restores and on clause (R), not on this run.
 
-### 37q. What the finished sweep actually says (60 cases)
+### 37q. What the finished sweep actually says (60 cases) — CORRECTED
 
-The scores, computed from the run's own printed goals
-(`_scratch/doublesweep2.log`, 2026-09-17):
+The first version of this section omitted the one goal that answers the
+question anybody would ask, because the regex that pulled the printed goals out
+of the log required lowercase names and `b25t100` has digits in it. The table
+that resulted invited exactly the wrong reading: that a mean of 0.9177 is a
+segmentation result. **It is not.** Corrected below.
 
-| goal | what it measures | n | mean | median | min | max |
+| goal | what it actually is | n | mean | median | min | max |
 |---|---|---:|---:|---:|---:|---:|
-| `agreement` | oracle scored against **nnU-Net as pseudo-GT** | 60 | **0.9177** | 0.9306 | 0.7016 | 0.9786 |
-| `nn_dice` | nnU-Net against real ground truth | 60 | 0.9293 | 0.9403 | 0.7938 | 0.9815 |
-| `oracle_gt` | oracle against real ground truth | 60 | 0.8991 | 0.9097 | 0.6747 | 0.9749 |
+| `nn_dice` | nnU-Net vs real ground truth | 60 | 0.9293 | 0.9403 | 0.7938 | 0.9815 |
+| `agreement` | best achievable AGREEMENT with nnU-Net | 60 | 0.9177 | 0.9306 | 0.7016 | 0.9786 |
+| `oracle_gt` | branch chosen BY ground truth, scored vs GT | 60 | 0.8991 | 0.9097 | 0.6747 | 0.9749 |
+| **`b25t100`** | **branch chosen by nnU-Net, scored vs GT** | 60 | **0.8859** | 0.9051 | 0.6102 | 0.9749 |
 
-`oracle_gt − nn_dice` is **−0.0302** on the mean, and the oracle beats nnU-Net
-on **13 of 60** cases. `branch` selects **14 distinct** formulas across the 60.
+Read from the source (`brats027_oracle60.imgql`), not from the names:
 
-`agreement` (0.9177) sits above `oracle_gt` (0.8991), which is what it should
-do and not a result on its own: agreement is scored against the very target the
-per-case argmax optimised, so it measures how well the vocabulary can be
-STEERED toward nnU-Net, not how well it segments.
+- line 184, `b25t100_case_score(g) = index(gt_at(g), argmax(nn_scores(g)))` —
+  pick the branch by agreement with nnU-Net, then score THAT branch against
+  real ground truth. **This is the hybrid automatic pipeline**: no ground truth
+  enters the choice, and the number is a genuine Dice.
+- line 197, `agreement = best_score(nn_scores(g))` — the best agreement
+  attainable with nnU-Net. It is scored against the same target the argmax
+  optimised, so it measures how far the vocabulary can be STEERED toward
+  nnU-Net. It is not a Dice against ground truth and must never be quoted as
+  one.
+- line 195, `oracle_gt = b23_case_score(g)` — the GT-selecting oracle, the
+  ceiling the selection could reach if it were allowed to cheat.
 
-NOT compared here: the 0.9240 agreement recorded in the earlier imitation study,
-whose parameter grid was later found clipped. Whether this run's grid is the
-same has not been checked, so the two numbers are not put side by side.
+**What the three numbers say together.**
+
+    b25t100 - nn_dice   = -0.0434,  better on  2 / 60 cases
+    b25t100 - oracle_gt = -0.0132
+
+The selector is nearly free: choosing with nnU-Net instead of with ground truth
+costs only **0.0132**, so nnU-Net is almost as good a selector as the truth is.
+The remaining **0.0434** to nnU-Net itself is not the selector's fault — it is
+what the formula vocabulary can express at all. That is the same conclusion the
+threshold-family work reached from the other direction, and it says where to
+push: the vocabulary, not the calibration.
+
+NOT compared here: the 0.9240 agreement of the earlier imitation study, whose
+grid was later found clipped. Whether this run's grid matches has not been
+checked.
