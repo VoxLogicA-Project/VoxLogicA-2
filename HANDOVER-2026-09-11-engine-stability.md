@@ -2700,3 +2700,48 @@ suite. It cannot start until the filesystem has room: the four large stores in
 `_scratch` are `doublesweep.db.files` 759 GB (this run's, needed), and
 `o60_run8.db.files` 467 GB, `ladder.db.files` 417 GB, `walkcold.db.files` 56 GB
 (all from finished experiments). Deleting is the user's call.
+
+### 37l. The cap overrun, fixed: the store had eviction and no admission
+
+§37k's determinable defect, traced and closed.
+
+**The mechanism.** `_enforce_budget` governs EVICTION only. It trims the tier
+when over budget, it cannot trim what is live, and it says so before giving up
+— *"the tier will keep growing while that is true"*. Nothing anywhere asked
+whether a payload should be written in the first place. So the budget was
+advisory in precisely the case it was written for, and on a `--sparse-cache`-less
+sweep, where the engine's liveness probe answers "live" for anything a running
+sweep might still read, the live branch is the ONLY branch.
+
+Two further reasons it was silent: the over-budget warning fires at 1.2x, and
+the overrun sat at 1.08x of the configured cap (759 against 700 GB); and an
+`ENOSPC` from `_write_payload_atomically` propagated out of a persister thread
+rather than degrading.
+
+**The fix, in `storage.py`.** `_payload_write_allowed(nbytes)` asks, before
+each payload, whether writing it would eat into the reserve
+(`min(max(50 GB, 5% of volume), half the volume)` — 180 GB on this 3.6 TB
+host). `_note_disk_shed` counts the refusal, charges it against the cached
+free-space probe so a burst of sheds between probes cannot all measure the same
+free space and let the tail through, and says so once, at the FIRST shed rather
+than at some multiple of budget. `_write_payload_atomically` now returns False
+on `OSError` instead of raising.
+
+A refused write costs a recompute — every value in this tier is regenerable
+from its lineage — while a full disk costs the run, and everyone else's.
+
+**Two details that are not incidental.** The spec row is still written when the
+value is shed: a few hundred bytes in SQLite, no payload file, and without it
+the node can never be named again — which is the §37 defect from the other
+direction. And a shed drops the whole ENTRY rather than storing a materialized
+row pointing at no payload, which would make the store lie to the next reader.
+
+Tests: `tests/unit/test_the_store_stops_writing_before_the_disk_fills.py`, four
+cases — a roomy disk still writes, a volume inside its reserve takes nothing, a
+shed value keeps its recipe, and an `ENOSPC` that arrives anyway is shed rather
+than raised. Full suite **1,310 passed, 4 skipped**.
+
+**The running sweep was restarted onto the fix**, with the user's agreement.
+It had grown the store 759 GB → 1.1 TB in twenty-three minutes and taken free
+space to 693 GB, falling ~15 GB/min — about half an hour from repeating §37k.
+Resume made the restart cheap: only that run's own scheduling was redone.
