@@ -958,45 +958,61 @@ class ComputationEngine:
         discovered: list[NodeId] = []
         incomplete = self.graph.incomplete
         completed = self.table.completed
-        while frontier:
-            nid = frontier.pop()
-            visited += 1
-            if nid in incomplete:
+        try:
+            while frontier:
+                nid = frontier.pop()
+                visited += 1
+                if nid in incomplete:
+                    self._priority[nid] = max(self._priority.get(nid, 0), priority)
+                    continue
+                if nid in completed:
+                    continue
+                if self._available(nid):
+                    # COUNTED, because "what did the warm store buy?" has been an
+                    # argument three times in this branch and never a number. A
+                    # pruned node is invisible everywhere else: it is never
+                    # scheduled, never completed, never a cache hit unless something
+                    # later loads it, so a run that reused everything and one that
+                    # reused nothing differ only in how FEW nodes they register.
+                    # This is the difference, counted.
+                    self._pruned_available += 1
+                    continue  # cached: loaded on demand -- see `_available`
+                node = self.table.nodes[nid]
+                if node.kind == "constant" and nid not in self._goals:
+                    self.table.set_value(nid, node.attrs.get("value"))
+                    self.graph.complete_trivial(nid)
+                    self.admission.on_trivial_complete(nid)
+                    continue
+                if node.kind == "closure":
+                    # Trivial value, but its captures must stay resident until the
+                    # loop it gates has fully expanded — per-element bodies read
+                    # them. The hold is released by the loop's expansion job.
+                    self.table.set_value(nid, None)
+                    self.graph.complete_trivial(nid)
+                    self.admission.on_trivial_complete(nid)
+                    captures = tuple(Expander.closure_capture_ids(node))
+                    self.admission.hold_captures(nid, captures)
+                    frontier.extend(captures)
+                    continue
+                incomplete.add(nid)  # mark now; wired below once discovery is complete
                 self._priority[nid] = max(self._priority.get(nid, 0), priority)
-                continue
-            if nid in completed:
-                continue
-            if self._available(nid):
-                # COUNTED, because "what did the warm store buy?" has been an
-                # argument three times in this branch and never a number. A
-                # pruned node is invisible everywhere else: it is never
-                # scheduled, never completed, never a cache hit unless something
-                # later loads it, so a run that reused everything and one that
-                # reused nothing differ only in how FEW nodes they register.
-                # This is the difference, counted.
-                self._pruned_available += 1
-                continue  # cached: loaded on demand -- see `_available`
-            node = self.table.nodes[nid]
-            if node.kind == "constant" and nid not in self._goals:
-                self.table.set_value(nid, node.attrs.get("value"))
-                self.graph.complete_trivial(nid)
-                self.admission.on_trivial_complete(nid)
-                continue
-            if node.kind == "closure":
-                # Trivial value, but its captures must stay resident until the
-                # loop it gates has fully expanded — per-element bodies read
-                # them. The hold is released by the loop's expansion job.
-                self.table.set_value(nid, None)
-                self.graph.complete_trivial(nid)
-                self.admission.on_trivial_complete(nid)
-                captures = tuple(Expander.closure_capture_ids(node))
-                self.admission.hold_captures(nid, captures)
-                frontier.extend(captures)
-                continue
-            incomplete.add(nid)  # mark now; wired below once discovery is complete
-            self._priority[nid] = max(self._priority.get(nid, 0), priority)
-            discovered.append(nid)
-            frontier.extend(self.graph.deps(nid))
+                discovered.append(nid)
+                frontier.extend(self.graph.deps(nid))
+
+        except BaseException:
+            # ROLL BACK THE HALF-MARKED FRONTIER, then let the error out.
+            # Discovery marks a node `incomplete` the moment it is reached and
+            # registers it only in the pass below, so ANY raise in between --
+            # `graph.deps` hitting a node whose spec is not interned is the one
+            # that has actually happened -- leaves those nodes on the frontier
+            # with no `pending` count. Nothing can then fire them, and a clean
+            # failure becomes a silent wedge that surfaces hours later as an
+            # unresolved goal. Every id in `discovered` was added to
+            # `incomplete` by THIS call (the loop skips nodes already there),
+            # so discarding them is exact, not approximate.
+            for nid in discovered:
+                incomplete.discard(nid)
+            raise
         # TWO PASSES, AND THE ORDER IS THE INVARIANT. `incomplete.add` above
         # marks a node as on the frontier; `graph.register` is what gives it a
         # `pending` count. Between the two the node is in a state nothing can
