@@ -2657,3 +2657,46 @@ element, but nobody asks it to.
 (`loop_window`, defaulting to the worker count) and run concurrently on the
 pool. That window is what bounds the live frontier, and it is the subject of
 most of this document.
+
+### 37k. The double sweep died at 6.4M nodes, silently — and the disk cap was overrun
+
+Launched 2026-09-14 20:49 on a fresh store with production defaults
+(`/tmp/doublesweep.sh`, 32 threads, `--cache-max-gb 700`, no `--sparse-cache`,
+no `PERSIST_MIN_MS` override). Last progress line 2026-09-15 01:21:
+
+    goals: 2/7 · 6,398,588/6,464,645 nodes · 461 node/s · 4:31:40 elapsed
+
+**It did not run out of memory.** Its own memory log ends at
+`completed=6,399,700`, `rss=24,037 MB`, peak `26,549 MB` over 3,212 samples —
+on a 61 GB host. The governor was never near the ceiling.
+
+**Nothing was logged.** `doublesweep.out` is zero bytes: no traceback, no
+`[dev]` line, no shell message. No kernel `oom-kill` record names the process,
+and `journalctl` has no entries at all in 00:50–01:40.
+
+**The box was under someone else's memory pressure that night**, which is
+context and not a verdict: four global OOM kills on 2026-09-14 at 22:47, 22:57,
+23:19 and 23:52, every one of them killing `anymatix-comfyui` (55.8 GB anon RSS
+at the last one). None is ours, and none is at 01:21.
+
+**Cause: not determined.** Healthy RSS, no Python error, no OOM record naming
+it, empty stdout/stderr — consistent with an external signal or a native-level
+fault, and the evidence does not separate those. What follows is the fact that
+matters more anyway.
+
+**The disk cap was overrun.** `doublesweep.db.files` measures **759 GB**
+against `--cache-max-gb 700`, and the filesystem went from 805 GB free at
+launch to 44 GB at the moment of death and 33 GB (100%) now. The effective
+ceiling is supposed to be `min(configured, payload + free − reserve)`, which can
+only be LOWER than the configured value, never higher. An 8% overrun is an
+enforcement defect, and it is independent of whatever killed the process --
+though a filesystem at 99% is a strong candidate for causing a native write
+fault that never reached Python.
+
+**Where this leaves the experiment.** The store holds 6.4M completions and the
+resume machinery of §37h/§37i now exists, so restarting the same command is the
+first real test of resume at scale — 6.4M nodes rather than the 20k of the test
+suite. It cannot start until the filesystem has room: the four large stores in
+`_scratch` are `doublesweep.db.files` 759 GB (this run's, needed), and
+`o60_run8.db.files` 467 GB, `ladder.db.files` 417 GB, `walkcold.db.files` 56 GB
+(all from finished experiments). Deleting is the user's call.
