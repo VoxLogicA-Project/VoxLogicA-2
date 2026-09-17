@@ -2745,3 +2745,39 @@ than raised. Full suite **1,310 passed, 4 skipped**.
 It had grown the store 759 GB → 1.1 TB in twenty-three minutes and taken free
 space to 693 GB, falling ~15 GB/min — about half an hour from repeating §37k.
 Resume made the restart cheap: only that run's own scheduling was redone.
+
+### 37m. 540 node/s was never a sustained rate, and the new code is faster
+
+Asked whether the run's ~380–435 node/s is machine load, a regression from the
+recent changes, or unexplained. It is none of the three: the premise is wrong.
+Measured live off the running sweep's control socket (`ctl.py … report`) against
+`rung1.report.json`, the comparable earlier cold run from before the periodic
+checkpoint and the disk-admission change:
+
+| | rung1 (cold, pre-change) | live resume (post-change) |
+|---|---:|---:|
+| completions | 104,700 | 896,063 |
+| **mean completions/s** | **339.4** | **418.9** |
+| **CPU ms per completion** | **54.748** | **45.307** |
+| mean process CPU | 1857.4% | 1890.3% |
+
+The new code is faster on wall clock (+23%) AND cheaper per unit of work
+(−17% CPU per completion), which is the only comparison AGENTS.md accepts: a
+wall-clock win bought with more CPU-seconds is a heater, not an optimisation.
+So neither the frontier checkpoint nor the admission check costs throughput.
+
+**Not machine load either.** 24 cores, load average 36.5 — and the process list
+shows our run at 1867% with the next-largest consumer at 17.3%. The load IS us.
+
+**Where 540 came from.** The progress bar's rate is a sliding window over the
+last `_RATE_WINDOW_S` seconds (deliberately, so a slow warm-up cannot drag the
+figure down for the rest of the run — see `_flush_progress`). It therefore shows
+the *best current* stretch, not the run's mean. 519–560 were window peaks; the
+authoritative mean of that very run was 339.4. This document has made the same
+mistake before (§37a) and should stop: quote `throughput.completions_per_second`
+from a report, never the bar.
+
+**What DOES limit it**, and it is not new: `saturated_fraction_90 = 0.565`.
+Only 57% of samples reach 90% of the CPU ceiling, and mean utilisation is
+1890% of a possible 2400% — 79%. The engine still leaves a fifth of the machine
+idle, which is the scaling question this whole branch started from.
