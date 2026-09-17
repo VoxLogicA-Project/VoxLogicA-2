@@ -31,6 +31,12 @@ for. Precisely:
         what `wait_idle` joins on, and therefore what makes `run()` return --
         the frontier must be empty.
 
+    (R) WIRING. Every node on the frontier has a `pending` count. A node in
+    `incomplete` with no entry in `pending` waits on a counter that does not
+    exist, so no completion can fire it and the run drains around it -- which
+    is what an "unresolved goal" at the end of a fourteen-hour run looks like
+    from the outside. See `check_registration`.
+
     (V) ANSWERABILITY. Every goal that has settled must have a value that can
         be resolved to the bottom without further scheduling: no handle inside
         it may name a node that is neither resident, nor recomputable by a
@@ -351,6 +357,35 @@ class Verifier:
             pass
         return ready_set, job_owned
 
+    def check_registration(self) -> list[Violation]:
+        """(R) WIRING. Every node on the frontier has a `pending` entry.
+
+        `graph.register` is what gives a node its count of unmet dependencies.
+        `_schedule_subgraph` puts a node into `incomplete` during discovery and
+        registers it afterwards, so between the two there is a window in which
+        a node is on the frontier waiting on a counter that does not exist --
+        and nothing can ever fire it, because every wakeup path decrements
+        `pending`. The run then drains around it and reports an unresolved
+        goal, hours later and nowhere near the cause.
+
+        That is not hypothetical. On 2026-09-17 the BraTS double sweep drained
+        after 2 h 04 m with `in_flight=0 ready=0 parked=0` and 458 frontier
+        nodes, every sampled one showing `pending=None`; the same ending is in
+        `o60_cold2.log` of 2026-09-11 and two runs before it.
+
+        `_schedule_subgraph` no longer has that window. This clause is here so
+        that if anything ever reopens it -- another caller, another path into
+        `incomplete` -- it is reported AT the node, when it happens, instead of
+        as a drained run with no explanation. A set difference over the
+        frontier, which is what (P) already costs.
+        """
+        graph = self._engine.graph
+        stranded = graph.incomplete - graph.pending.keys()
+        return [Violation("R", nid,
+                          "on the frontier with no pending count: nothing can "
+                          "ever fire it (registered in name only)")
+                for nid in sorted(stranded)[:8]]
+
     def on_completion(self, completed: int) -> None:
         """Called from the completion path. One integer compare when not due."""
         if completed < self._next_at:
@@ -386,7 +421,8 @@ class Verifier:
         fourteen-hour run is worse than no report.
         """
         ready_set, job_owned = self._sets()
-        found = self.check_termination() + self.check_answerability()
+        found = (self.check_termination() + self.check_answerability()
+                 + self.check_registration())
         if self._engine._in_flight == 0:
             found += self.check_progress(list(self._engine.graph.incomplete),
                                          ready_set, job_owned)

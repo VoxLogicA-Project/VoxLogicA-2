@@ -508,6 +508,7 @@ class ComputationEngine:
         # pops inside _schedule_subgraph itself, so `visited/seconds` is the
         # traversal rate and nothing else. Cost is one int add per pop.
         self._checkpoint_deadline = 0.0  # perf_counter at which to checkpoint again
+        self._enqueue_failures = 0  # nodes registered but not offered to the workers
         self._walk_visited = 0          # frontier pops in _schedule_subgraph
         self._walk_seconds = 0.0        # wall time inside it (traversal + register)
         self._walk_calls = 0
@@ -996,9 +997,39 @@ class ComputationEngine:
             self._priority[nid] = max(self._priority.get(nid, 0), priority)
             discovered.append(nid)
             frontier.extend(self.graph.deps(nid))
+        # TWO PASSES, AND THE ORDER IS THE INVARIANT. `incomplete.add` above
+        # marks a node as on the frontier; `graph.register` is what gives it a
+        # `pending` count. Between the two the node is in a state nothing can
+        # rescue it from: a node in `incomplete` with no entry in `pending`
+        # waits on a counter that does not exist, so no completion can ever
+        # fire it, and the run drains around it.
+        #
+        # This used to be ONE loop -- register a node, enqueue it, register the
+        # next -- so anything raised by `_enqueue` stranded every node the loop
+        # had not reached yet. Measured on the BraTS double sweep 2026-09-17:
+        # the engine drained after 2 h 04 m with `in_flight=0 ready=0 parked=0`
+        # and 458 nodes on the frontier, of which every one the diagnostic
+        # sampled reported `pending=None` -- registered in name only. The same
+        # failure is in `o60_cold2.log` (2026-09-11), `oracle60.prev.log` and
+        # `trainprobe.log`, so it long predates the resume work.
+        #
+        # Registering everything FIRST closes the window: `register` touches
+        # only dicts and counters and has no failure mode, so after this pass
+        # the invariant "in `incomplete` => has a `pending` entry" holds for
+        # every discovered node, whatever happens next.
+        ready_now: list[NodeId] = []
         for nid in discovered:
             if self.graph.register(nid):
+                ready_now.append(nid)
+        # Enqueue second, and per node: a node that cannot be offered to the
+        # workers is a problem for that node, and must not take the rest of the
+        # frontier down with it. It stays registered and on the frontier, so a
+        # later completion can still fire it and the verifier can still see it.
+        for nid in ready_now:
+            try:
                 self._enqueue(nid)
+            except Exception:                                   # noqa: BLE001
+                self._enqueue_failures += 1
         # Registration and enqueue are counted IN, deliberately: the question
         # is what a resume pays before it can compute, and that bill includes
         # wiring the nodes the walk kept, not just visiting them.
@@ -1304,6 +1335,11 @@ class ComputationEngine:
             "recomputes": self._recomputes,
             "pruned_available": self._pruned_available,
             "registered_total": self.graph.registered_total,
+            # THE INVARIANT, COUNTED. A node on the frontier with no
+            # `pending` entry waits on a counter that does not exist and
+            # can never be fired; this must be 0 on every healthy run.
+            "unregistered_frontier": len(self.graph.incomplete - self.graph.pending.keys()),
+            "enqueue_failures": self._enqueue_failures,
             "walk_visited": self._walk_visited,
             "walk_seconds": round(self._walk_seconds, 3),
             "walk_calls": self._walk_calls,
@@ -3145,6 +3181,11 @@ class ComputationEngine:
             "completed": len(self.table.completed),
             "pruned_available": self._pruned_available,
             "registered_total": self.graph.registered_total,
+            # THE INVARIANT, COUNTED. A node on the frontier with no
+            # `pending` entry waits on a counter that does not exist and
+            # can never be fired; this must be 0 on every healthy run.
+            "unregistered_frontier": len(self.graph.incomplete - self.graph.pending.keys()),
+            "enqueue_failures": self._enqueue_failures,
             "memo_hits": self._memo_hits,
             "memo_misses": self._memo_misses,
             "walk_visited": self._walk_visited,
