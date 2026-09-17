@@ -30,10 +30,12 @@ from voxlogica.reducer import reduce_program
 PROGRAM = 'import "geom"\nimport "arrays"\nprint "r" array_stats(blank(8, 8, 1.0))\n'
 
 
-def _engine() -> ComputationEngine:
+def _engine():
+    """An engine with the plan adopted, and the plan (the engine keeps none)."""
+    plan = reduce_program(parse_program_content(PROGRAM))
     engine = ComputationEngine(backend=None)
-    engine.adopt_plan(reduce_program(parse_program_content(PROGRAM)))
-    return engine
+    engine.adopt_plan(plan)
+    return engine, plan
 
 
 @pytest.mark.unit
@@ -45,13 +47,13 @@ def test_a_failing_enqueue_does_not_strand_the_frontier() -> None:
     left every later node on the frontier unregistered and unfireable.
     """
     pytest.importorskip("SimpleITK")
-    engine = _engine()
+    engine, plan = _engine()
 
     def _refuse(_nid):
         raise RuntimeError("the ready queue is unavailable")
 
     engine._enqueue = _refuse
-    goal = engine.plan.goals[0]
+    goal = plan.goals[0]
     engine.submit(goal.id, goal.operation, goal.name)   # must not raise
 
     stranded = engine.graph.incomplete - engine.graph.pending.keys()
@@ -65,8 +67,8 @@ def test_a_failing_enqueue_does_not_strand_the_frontier() -> None:
 def test_the_verifier_reports_an_unwired_frontier_node() -> None:
     """(R) must catch the state, so reopening the window is loud and located."""
     pytest.importorskip("SimpleITK")
-    engine = _engine()
-    goal = engine.plan.goals[0]
+    engine, plan = _engine()
+    goal = plan.goals[0]
     engine.submit(goal.id, goal.operation, goal.name)
 
     verifier = Verifier(engine)
