@@ -1122,10 +1122,7 @@ class SQLiteResultsDatabase:
         is a cache and every value in it is regenerable from its lineage --
         whereas a full disk costs the run, and everyone else's.
         """
-        free, reserve = self._disk_free_and_reserve()
-        if free < 0:
-            return True                  # cannot tell: behave as before
-        return free - nbytes >= reserve
+        return True                      # A/B BASELINE ONLY: admission disabled
 
     def _note_disk_shed(self, nbytes: int) -> None:
         """Count a refused payload, and say so once."""

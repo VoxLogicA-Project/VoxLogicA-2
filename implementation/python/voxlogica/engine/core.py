@@ -180,7 +180,7 @@ _PROGRESS_FORMAT = "goals: {n:>3}/{total} |{bar:12}| {elapsed} · {desc}"
 #: and not-done. It is NOT tunable from the environment on purpose (AGENTS.md:
 #: the engine must work automatically, and an env var is never the fix for a
 #: defect); tests reach it by name.
-FRONTIER_CHECKPOINT_SECONDS = 30.0
+FRONTIER_CHECKPOINT_SECONDS = 10.0 ** 9   # A/B BASELINE ONLY: never fires
 
 #: Values written per periodic checkpoint. Bounded because the FIRST checkpoint
 #: of a big run would otherwise spill the whole resident frontier in one turn --
