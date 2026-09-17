@@ -23,7 +23,7 @@ from __future__ import annotations
 import pytest
 
 from voxlogica.engine.core import ComputationEngine
-from voxlogica.engine.verify import EngineVerifier
+from voxlogica.engine.verify import Verifier
 from voxlogica.parser import parse_program_content
 from voxlogica.reducer import reduce_program
 
@@ -69,7 +69,7 @@ def test_the_verifier_reports_an_unwired_frontier_node() -> None:
     goal = engine.plan.goals[0]
     engine.submit(goal.id, goal.operation, goal.name)
 
-    verifier = EngineVerifier(engine)
+    verifier = Verifier(engine)
     assert verifier.check_registration() == [], "a healthy frontier must be quiet"
 
     # Reopen the window by hand: on the frontier, never registered.
