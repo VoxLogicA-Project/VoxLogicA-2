@@ -2908,3 +2908,49 @@ Full suite **1,312 passed, 4 skipped**.
 routes are the only ways to violate it, but nothing in the record says which,
 and the run is gone. Both are now closed, and (R) will name the node if a third
 route exists.
+
+### 37p. The double sweep is finished, and it finished as a resume
+
+`brats027_oracle60.imgql`, the run this document has been chasing since §11,
+completed on 2026-09-17 at 16:00 in **28.25 seconds**: `"success": true`,
+`"goals": 7`, `failed_operations: {}`, `diagnostics: []`. All four printed goals
+carry values — `oracle_gt`, `nn_dice`, `agreement`, `branch`.
+
+It finished because it RESUMED. The final metrics are the clearest statement of
+the whole arc that any run has produced:
+
+| | |
+|---|---:|
+| `pruned_available` | **825** |
+| `registered_total` | 318 |
+| `memo_hits` / `memo_misses` | **150 / 0** |
+| `expanded_loops` | **0** |
+| `walk_visited` / `walk_seconds` | 998 / **0.001** |
+| `unregistered_frontier` | **0** |
+| `enqueue_failures` | **0** |
+| `cache_hits` | 1,839 |
+| store payload | 1,311,826 MB |
+| evictions (dead / live / early) | 0 / 0 / 0 |
+
+Three things in that table were open questions earlier in this document.
+
+**The expansion memo hit 150 times and missed none.** §37g measured 1 hit
+against 1,989 misses and called it the reuse defect; §37h narrowed that to "a
+memo is written when a loop's expansion COMPLETES, so a run stopped
+mid-expansion writes none". This run is the confirmation: the earlier runs had
+by now finished those expansions, so every loop was answered from the store and
+`expanded_loops` is zero. The narrowing was right and the original diagnosis
+was wrong.
+
+**The walk cost a millisecond.** §37d claimed a resume spends "minutes of
+walking with nothing computed"; §37f refuted it at ~1% of wall; here it is
+0.001 s out of 28.
+
+**The wiring invariant held.** `unregistered_frontier` and `enqueue_failures`
+are both zero, on the first run after §37o closed the two routes into a
+half-wired frontier.
+
+What is NOT claimed: that §37o's fix is what let this run finish. This run
+scheduled 318 nodes, so it never came near the conditions under which the wedge
+appeared, and the two earlier failures are not reproduced by it. The fix stands
+on the invariant it restores and on clause (R), not on this run.
