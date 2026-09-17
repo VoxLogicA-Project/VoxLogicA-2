@@ -2954,3 +2954,26 @@ What is NOT claimed: that §37o's fix is what let this run finish. This run
 scheduled 318 nodes, so it never came near the conditions under which the wedge
 appeared, and the two earlier failures are not reproduced by it. The fix stands
 on the invariant it restores and on clause (R), not on this run.
+
+### 37q. What the finished sweep actually says (60 cases)
+
+The scores, computed from the run's own printed goals
+(`_scratch/doublesweep2.log`, 2026-09-17):
+
+| goal | what it measures | n | mean | median | min | max |
+|---|---|---:|---:|---:|---:|---:|
+| `agreement` | oracle scored against **nnU-Net as pseudo-GT** | 60 | **0.9177** | 0.9306 | 0.7016 | 0.9786 |
+| `nn_dice` | nnU-Net against real ground truth | 60 | 0.9293 | 0.9403 | 0.7938 | 0.9815 |
+| `oracle_gt` | oracle against real ground truth | 60 | 0.8991 | 0.9097 | 0.6747 | 0.9749 |
+
+`oracle_gt − nn_dice` is **−0.0302** on the mean, and the oracle beats nnU-Net
+on **13 of 60** cases. `branch` selects **14 distinct** formulas across the 60.
+
+`agreement` (0.9177) sits above `oracle_gt` (0.8991), which is what it should
+do and not a result on its own: agreement is scored against the very target the
+per-case argmax optimised, so it measures how well the vocabulary can be
+STEERED toward nnU-Net, not how well it segments.
+
+NOT compared here: the 0.9240 agreement recorded in the earlier imitation study,
+whose parameter grid was later found clipped. Whether this run's grid is the
+same has not been checked, so the two numbers are not put side by side.
