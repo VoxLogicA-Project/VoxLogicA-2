@@ -2807,3 +2807,42 @@ below every candidate explanation.
 same store state, with and without the two new changes, compared on
 `cpu_seconds_per_completion` and best-15-minute rate — not on the progress bar,
 and not against a differently-shaped run.
+
+### 37n. The A/B: the new code is not the cost, it is a 20% GAIN
+
+Same program, same fresh store, `--cache-max-gb 120`, stop at 500,000
+completions, 32 threads, run sequentially with each store deleted before the
+next arm so neither could meet the disk reserve the other did not. The two
+checkouts differ by exactly the two behaviours of §37i and §37l — 2 files,
+2 insertions, 5 deletions. Arm A `070c442` (`resume-from-frontier`), arm B
+`7add21f` (`ab-baseline`, a throwaway branch, NOT for merge).
+
+| | A: with checkpoint + admission | B: without |
+|---|---:|---:|
+| completions | 503,400 | 500,614 |
+| **mean completions/s** | **435.7** | 363.3 |
+| **best 15-minute rate** | **495.0** | 420.7 |
+| best 5-minute rate | 554.7 | 448.1 |
+| CPU ms per completion | 45.889 | 45.337 |
+| mean process CPU | **1994%** | 1643% |
+| saturated fraction (90%) | **0.727** | 0.509 |
+| **recomputes** | **15,004** | **50,159** |
+
+**The suspicion was backwards.** The periodic frontier checkpoint makes the run
+20% faster on the mean and 18% faster over its best quarter-hour, and the
+mechanism is visible in the same table: **3.3x fewer recomputes**. Writing the
+frontier while running means a value the memory governor evicts can be RELOADED
+instead of rebuilt; without it, every evicted frontier value is recomputed. CPU
+per completion is unchanged (45.9 against 45.3, ~1%), so this is not a
+wall-clock win bought with CPU-seconds — it is the same work, less of it wasted.
+
+Arm A's saturated fraction, 0.727, is the highest recorded in this document.
+
+**What this does NOT settle.** The A/B ran at `--cache-max-gb 120`, far below
+the 300–3000 of the runs that reached 563–579 over fifteen minutes, so neither
+arm is comparable to those numbers and arm A's 495 is not evidence about them.
+The shortfall of §37m stands unexplained, with the remaining candidates now:
+the cache budget and eviction regime, the resume against a 1.1 TB store
+(per-node probes, payload loads, recomputes the cold comparators never paid),
+and whatever else the record does not yet distinguish. The one thing now ruled
+out by measurement rather than argument is the code added this week.
