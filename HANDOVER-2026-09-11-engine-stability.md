@@ -2999,3 +2999,29 @@ push: the vocabulary, not the calibration.
 NOT compared here: the 0.9240 agreement of the earlier imitation study, whose
 grid was later found clipped. Whether this run's grid matches has not been
 checked.
+
+**Is the sweep really complete? Five checks, and one thing not shown.**
+
+1. **Every series has exactly 60 entries** — `cases`, `oracle_gt`, `nn_dice`,
+   `agreement`, `b25t100`, `branch`. Cases 130–189, as the header states.
+2. **`b25t100` never exceeds `oracle_gt`, on any of the 60 cases.** It cannot
+   if both maxima range over the same seventeen branches, and it would be very
+   unlikely to hold across sixty cases if the branch lists were ragged.
+3. **`nn_dice` mean is 0.9293, which is the figure the program's own header
+   documents** for this teacher on these cases ("the 309-case four-modality
+   teacher (0.9293 mean on these cases)"). An independent cross-check that the
+   recomputed values are the expected ones, not something the store invented.
+4. **Structural, and the strongest of the five**: `argmax` consumes the whole
+   seventeen-element `nn_scores(g)` list, and a `default.sequence` completes
+   only when EVERY element completes. A branch that had never been computed
+   could not have produced a short list — it would have left the run with an
+   unresolved goal, which is exactly the failure of §37o and is precisely what
+   this run does not have.
+5. `success: true`, `goals: 7`, `failed_operations: {}`, `diagnostics: []`,
+   and `branch` takes values across 0–16 (14 of the 17 branches are selected by
+   at least one case; 10, 11 and 12 never win).
+
+**Not shown:** the run was launched with `--verify=report`, and the report JSON
+contains no verification section at all — so there is no positive "the clauses
+were checked and passed" line to point at. Absence of a violation is not the
+same as a confirmed check, and it is recorded here as the gap it is.
