@@ -342,6 +342,14 @@ class SQLiteResultsDatabase:
         self._spill_guard = None
         #: Said once per process, not once per enforcement pass.
         self._over_budget_warned = False
+        #: Free-space probe for ADMISSION (see _payload_write_allowed), cached
+        #: separately from `_disk_ceiling` because it answers a different
+        #: question -- "may this write happen at all" rather than "how big may
+        #: the tier be" -- and because the two must not share a staleness clock.
+        self._disk_free: int | None = None
+        self._disk_reserve = 0
+        self._disk_free_at = 0.0
+        self._disk_shed_warned = False
         self._lock = threading.RLock()
         try:
             from voxlogica.engine.control import register_knob, register_probe
@@ -386,7 +394,10 @@ class SQLiteResultsDatabase:
             (self._connection.execute("SELECT COALESCE(MIN(gd_key), 0.0) FROM results WHERE payload_bytes > 0").fetchone() or [0.0])[0]
         )
         self._stats = {"writes": 0, "evictions": 0, "evicted_bytes": 0, "hits": 0,
-                       "evicted_dead": 0, "evicted_live": 0}
+                       "evicted_dead": 0, "evicted_live": 0,
+                       # Payloads refused because writing them would eat into
+                       # the disk reserve, and the bytes they would have cost.
+                       "shed_disk_full": 0, "shed_disk_full_bytes": 0}
 
     def _results_columns(self) -> set[str]:
         rows = self._connection.execute("PRAGMA table_info(results)").fetchall()
@@ -652,6 +663,10 @@ class SQLiteResultsDatabase:
         only the inserts serialize.
         """
         prepared = []  # (node_id, encoded, payload_file, payload_bytes, metadata_json, compute_ms, spec_row)
+        # THE RECIPE SURVIVES EVEN WHEN THE VALUE CANNOT. A spec is a few
+        # hundred bytes in SQLite with no payload file, so shedding it with the
+        # value would trade nothing for the ability to name the node again.
+        shed_specs: list[tuple] = []
         for node_id, value, metadata, compute_ms, *rest in entries:
             snap = rest[0] if rest else None
             spec_row = rest[1] if len(rest) > 1 else None
@@ -682,9 +697,21 @@ class SQLiteResultsDatabase:
             payload_file = None
             payload_bytes = 0
             if encoded.payload_bin is not None:
+                nbytes = len(encoded.payload_bin)
+                # SHED, do not half-write. A row is inserted only once its
+                # payload is on disk, so a refused write drops the ENTRY --
+                # storing a materialized row that points at no payload would
+                # make the store lie to the next reader.
+                if not self._payload_write_allowed(nbytes):
+                    self._note_disk_shed(nbytes)
+                    shed_specs.append(spec_row)
+                    continue
                 payload_file = f"{node_id}.bin"
-                self._write_payload_atomically(payload_file, encoded.payload_bin)
-                payload_bytes = len(encoded.payload_bin)
+                if not self._write_payload_atomically(payload_file, encoded.payload_bin):
+                    self._note_disk_shed(nbytes)
+                    shed_specs.append(spec_row)
+                    continue
+                payload_bytes = nbytes
             prepared.append((node_id, encoded, payload_file, payload_bytes,
                              dumps_json(dict(metadata or {})), compute_ms, spec_row))
         now = time.time()
@@ -697,6 +724,8 @@ class SQLiteResultsDatabase:
             except Exception:
                 self._connection.execute("ROLLBACK")
                 raise
+        if shed_specs:
+            self.put_lineage_batch(shed_specs)
         self._enforce_budget()
 
     def put_expansion(self, loop_id: str, sequence_id: str, version: str) -> None:
@@ -893,7 +922,7 @@ class SQLiteResultsDatabase:
     _EVICT_SCAN = ("SELECT node_id, payload_file, payload_bytes, gd_key FROM results "
                    "WHERE payload_bytes > 0 ORDER BY gd_key ASC LIMIT 128")
 
-    def _write_payload_atomically(self, payload_file: str, payload_bin: bytes) -> None:
+    def _write_payload_atomically(self, payload_file: str, payload_bin: bytes) -> bool:
         """Write a payload so it is either wholly there or not there at all.
 
         A plain write leaves a TRUNCATED file behind if the process dies partway
@@ -912,9 +941,18 @@ class SQLiteResultsDatabase:
         try:
             tmp.write_bytes(payload_bin)
             os.replace(tmp, target)
+        except OSError:
+            # ENOSPC/EDQUOT is the case `_payload_write_allowed` exists to
+            # prevent, and it can still arrive: the free-space probe is cached,
+            # and the volume is shared with everything else on the host. It is
+            # NOT fatal -- the tier is a cache -- so it degrades to a shed. It
+            # used to propagate, out of a persister thread, mid-run.
+            tmp.unlink(missing_ok=True)
+            return False
         except BaseException:
             tmp.unlink(missing_ok=True)   # never leave debris to be mistaken for data
             raise
+        return True
 
     def _purge_partial_payloads(self) -> int:
         """Delete `.part` files stranded by a killed writer. Returns how many."""
@@ -1044,6 +1082,67 @@ class SQLiteResultsDatabase:
             # is not even that.
             return self._disk_ceiling if self._disk_ceiling is not None else _UNBOUNDED
         return min(self._max_bytes, self._disk_ceiling)
+
+    def _disk_free_and_reserve(self) -> tuple[int, int]:
+        """Current free bytes and the reserve that must stay free; (-1, 0) if
+        the volume cannot be probed.
+
+        Cached for `_DISK_PROBE_INTERVAL_S`: free space only moves as fast as
+        this cache fills it, so probing per write would burn syscalls for
+        nothing.
+        """
+        now = time.time()
+        if self._disk_free is None or (now - self._disk_free_at) >= _DISK_PROBE_INTERVAL_S:
+            try:
+                usage = shutil.disk_usage(self.payload_dir)
+            except OSError:
+                self._disk_free_at = now
+                return -1, 0
+            self._disk_reserve = min(max(_DISK_RESERVE_MIN_BYTES,
+                                         int(usage.total * _DISK_RESERVE_FRACTION)),
+                                     usage.total // 2)
+            self._disk_free = usage.free
+            self._disk_free_at = now
+        return (self._disk_free if self._disk_free is not None else -1,
+                self._disk_reserve)
+
+    def _payload_write_allowed(self, nbytes: int) -> bool:
+        """Whether this payload may be written without eating the reserve.
+
+        ADMISSION, which the store did not have. `_effective_max_bytes` and
+        `_enforce_budget` govern only EVICTION, and eviction cannot help when
+        every candidate is live -- `_enforce_budget` says so itself and then
+        lets the tier keep growing. So the budget was advisory exactly when it
+        mattered, and the tier overran it: measured 2026-09-15, a BraTS double
+        sweep wrote 759 GB against `--cache-max-gb 700`, took a shared 3.6 TB
+        volume from 805 GB free to 33 GB, and died at 6.4M completions with
+        nothing in any log.
+
+        A refused write costs a recompute and nothing else -- the payload tier
+        is a cache and every value in it is regenerable from its lineage --
+        whereas a full disk costs the run, and everyone else's.
+        """
+        free, reserve = self._disk_free_and_reserve()
+        if free < 0:
+            return True                  # cannot tell: behave as before
+        return free - nbytes >= reserve
+
+    def _note_disk_shed(self, nbytes: int) -> None:
+        """Count a refused payload, and say so once."""
+        self._stats["shed_disk_full"] += 1
+        self._stats["shed_disk_full_bytes"] += int(nbytes)
+        # Charged against the cached probe so a burst of sheds between probes
+        # does not all measure the same free space and let the tail through.
+        if self._disk_free is not None:
+            self._disk_free = max(0, self._disk_free - int(nbytes))
+        if not self._disk_shed_warned:
+            self._disk_shed_warned = True
+            free, reserve = self._disk_free_and_reserve()
+            print(f"[store] disk reserve reached: {free / 2**30:.0f} GB free "
+                  f"against a {reserve / 2**30:.0f} GB reserve. New payloads are "
+                  f"no longer written; values stay regenerable from lineage and "
+                  f"the run continues. Free space or raise the volume to cache "
+                  f"again.", file=sys.stderr, flush=True)
 
     def _enforce_budget(self) -> None:
         """Evict payloads to stay under budget: dead values first, live only if forced.
