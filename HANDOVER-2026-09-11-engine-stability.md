@@ -2846,3 +2846,65 @@ the cache budget and eviction regime, the resume against a 1.1 TB store
 (per-node probes, payload loads, recomputes the cold comparators never paid),
 and whatever else the record does not yet distinguish. The one thing now ruled
 out by measurement rather than argument is the code added this week.
+
+### 37o. The unresolved-goal wedge: a node on the frontier that was never wired
+
+The resumed sweep drained at 2 h 04 m, 2,742,122 of 2,742,792 nodes, and
+reported `RuntimeError: engine finished with an unresolved goal` against
+`print "oracle_gt" for g in cases do b23_case_score(g)`.
+
+**It is not this week's work.** The same ending is in `o60_cold2.log` of
+2026-09-11, in `oracle60.prev.log` and in `trainprobe.log`. And
+`persist_shed = 0` in the drain snapshot, so §37l's disk admission never fired
+even once.
+
+**The state at the drain.** `in_flight=0 ready=0 parked=0 pool_backlog=0` with
+`frontier_size=458` — and `registered_total − completed` is exactly 458. The
+stalled-node dump is the diagnosis:
+
+    2834452e5c56 op=default.argmax deps=1 pending=None value=True persisted=True
+    370d81adafa7 op=constant       deps=0 pending=None value=False persisted=True
+    42ca3fec361c op=vox1.border    deps=1 pending=None value=False persisted=False
+
+**`pending=None` on every one.** `graph.register` is what creates a node's
+entry in `graph.pending`, and every wakeup path in the engine works by
+DECREMENTING that entry. A node in `incomplete` with no entry is waiting on a
+counter that does not exist: no completion can ever fire it, admission sees
+nothing runnable, the workers go idle, and the run drains around it. Two hours
+of work, and the report names a goal rather than the node that stranded it.
+
+**Where the state comes from.** Only two places write `incomplete`:
+`graph.register` (which always sets `pending` in the same breath) and
+`_schedule_subgraph`, which marks a node at DISCOVERY and registers it in a
+later pass. Everything between those two points is a window in which the
+invariant does not hold, and there were two ways through it:
+
+1. the register pass was one loop that also enqueued, so anything `_enqueue`
+   raised stranded every node the loop had not yet reached;
+2. any raise during discovery itself — `graph.deps` on a node whose spec is not
+   interned is one that has actually happened on this workload — left every
+   node already marked on the frontier, unregistered, forever.
+
+**The fix, structural rather than symptomatic.** Register every discovered node
+first (`register` touches only dicts and counters and has no failure mode),
+then enqueue in a separate pass with failures isolated and counted per node —
+a node that cannot be offered to the workers stays registered and on the
+frontier, so a later completion can still fire it. And if discovery raises,
+roll the half-marked frontier back before letting the error out: every id in
+`discovered` was added by that call, so the rollback is exact.
+
+**And make it checkable.** Verifier clause **(R) WIRING** — every node on the
+frontier has a `pending` count — runs at drain, and both snapshots now carry
+`unregistered_frontier` and `enqueue_failures`. If anything reopens the window
+it is reported AT the node when it happens, instead of as a drained run with no
+explanation.
+
+Tests: `tests/unit/test_the_frontier_is_always_wired.py` — a failing `_enqueue`
+must not strand the frontier, and (R) must see a node that is on it unwired.
+Full suite **1,312 passed, 4 skipped**.
+
+**What is NOT established.** Which of the two routes actually fired on
+2026-09-17. The drain snapshot proves the invariant was violated and the two
+routes are the only ways to violate it, but nothing in the record says which,
+and the run is gone. Both are now closed, and (R) will name the node if a third
+route exists.
