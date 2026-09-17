@@ -2746,38 +2746,64 @@ It had grown the store 759 GB → 1.1 TB in twenty-three minutes and taken free
 space to 693 GB, falling ~15 GB/min — about half an hour from repeating §37k.
 Resume made the restart cheap: only that run's own scheduling was redone.
 
-### 37m. 540 node/s was never a sustained rate, and the new code is faster
+### 37m. WITHDRAWN AND CORRECTED: 540 node/s sustained is real
 
-Asked whether the run's ~380–435 node/s is machine load, a regression from the
-recent changes, or unexplained. It is none of the three: the premise is wrong.
-Measured live off the running sweep's control socket (`ctl.py … report`) against
-`rung1.report.json`, the comparable earlier cold run from before the periodic
-checkpoint and the disk-admission change:
+The first version of this section claimed "540 node/s was never a sustained
+rate". **That was false, and it was false for a reason worth naming: it
+generalised from a single report** — `rung1`, a 308-second run whose mean is
+dominated by the cold warm-up plateau — **to a universal negative.** One biased
+sample is not evidence for "never". The user said he had watched it sustain 540
+and he was right.
 
-| | rung1 (cold, pre-change) | live resume (post-change) |
-|---|---:|---:|
-| completions | 104,700 | 896,063 |
-| **mean completions/s** | **339.4** | **418.9** |
-| **CPU ms per completion** | **54.748** | **45.307** |
-| mean process CPU | 1857.4% | 1890.3% |
+Measured properly: for every `--measure-series` file on the host, the best rate
+over sliding 5- and 15-MINUTE windows, which is what "sustained" means.
 
-The new code is faster on wall clock (+23%) AND cheaper per unit of work
-(−17% CPU per completion), which is the only comparison AGENTS.md accepts: a
-wall-clock win bought with more CPU-seconds is a heater, not an optimisation.
-So neither the frontier checkpoint nor the admission check costs throughput.
+| run | span | mean | best 5 min | best 15 min |
+|---|---:|---:|---:|---:|
+| trainprobe | 5,038 s | 461.3 | 586.2 | **579.4** |
+| o60_cold2 | 25,667 s | 451.8 | 591.7 | **575.5** |
+| o60_run7 | 24,730 s | 364.7 | 582.2 | **563.9** |
+| o60_warm4 | 44,135 s | 173.0 | 632.1 | 534.5 |
+| rung3 | 2,040 s | 491.1 | 515.0 | 505.5 |
+| rung4 | 2,355 s | 467.9 | 512.6 | 493.7 |
+| rung2 | 1,096 s | 461.1 | 495.1 | 479.1 |
+| rung1 | 308 s | 333.5 | 342.8 | — |
+| **doublesweep2 (resume, live)** | 2,284 s | **418.3** | **450.2** | **431.2** |
 
-**Not machine load either.** 24 cores, load average 36.5 — and the process list
-shows our run at 1867% with the next-largest consumer at 17.3%. The load IS us.
+So 540+ over a quarter of an hour has happened on three separate runs, and the
+current run's best quarter-hour is 431. **The shortfall is real — about 25%
+below the best sustained figure on record — and this document previously
+explained it away instead of measuring it.**
 
-**Where 540 came from.** The progress bar's rate is a sliding window over the
-last `_RATE_WINDOW_S` seconds (deliberately, so a slow warm-up cannot drag the
-figure down for the rest of the run — see `_flush_progress`). It therefore shows
-the *best current* stretch, not the run's mean. 519–560 were window peaks; the
-authoritative mean of that very run was 339.4. This document has made the same
-mistake before (§37a) and should stop: quote `throughput.completions_per_second`
-from a report, never the bar.
+**What the cause is NOT.** Other users' load: the host shows load average 36.5
+on 24 cores, and the process list has our run at 1867% with the next-largest
+consumer at 17.3%. The load is us.
 
-**What DOES limit it**, and it is not new: `saturated_fraction_90 = 0.565`.
-Only 57% of samples reach 90% of the CPU ceiling, and mean utilisation is
-1890% of a possible 2400% — 79%. The engine still leaves a fifth of the machine
-idle, which is the scaling question this whole branch started from.
+**What the numbers say, work-normalised** (`throughput` and `shape` from each
+report; only runs above 50,000 completions):
+
+| run | cpl/s | CPU ms per completion | mean CPU | sat90 | recomputes |
+|---|---:|---:|---:|---:|---:|
+| trainprobe | 461.4 | 41.55 | 1913% | 0.645 | 312,488 |
+| o60_cold2 | 451.8 | 41.54 | 1873% | 0.618 | 1,539,129 |
+| rung3 | 492.0 | 43.29 | 2125% | 0.636 | 18,476 |
+| rung4 | 468.6 | 43.34 | 2025% | 0.648 | 33,288 |
+| **live2 (now)** | **418.3** | **45.27** | **1886%** | **0.567** | **44,888** |
+
+Two differences, both modest and neither established as the cause: about 9%
+more CPU per completion than the best runs, and a lower saturated fraction
+(0.567 against 0.618–0.648) with mean CPU well under the 2,025–2,125% the
+`rung` runs reached. The engine is filling less of the machine than it has.
+
+**What has NOT been established: why.** The candidates are (a) the periodic
+frontier checkpoint and the disk-admission check added in §37i/§37l, (b) this
+being a RESUME against a 1.1 TB store — per-node store probes, payload loads
+and 44,888 recomputes, which the cold comparators did not pay, and (c)
+something else. The earlier comparison in this section against `rung1` was
+worthless for separating these: `rung1` is short, cold, and its own mean sits
+below every candidate explanation.
+
+**The experiment that would settle it** is an A/B on the same program and the
+same store state, with and without the two new changes, compared on
+`cpu_seconds_per_completion` and best-15-minute rate — not on the progress bar,
+and not against a differently-shaped run.
