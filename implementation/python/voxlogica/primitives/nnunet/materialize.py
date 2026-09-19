@@ -43,9 +43,33 @@ def load_state(work_root: Path) -> dict[str, Any] | None:
     return payload
 
 
+def _native(value: Any) -> Any:
+    """A value `json` cannot encode, as the Python value it stands for."""
+    for attribute in ("item", "tolist"):
+        method = getattr(value, attribute, None)
+        if callable(method):
+            try:
+                return method()
+            except Exception:                                   # noqa: BLE001
+                pass
+    return str(value)
+
+
 def save_state(work_root: Path, payload: dict[str, Any]) -> None:
+    """Write the work root's state file.
+
+    THE `default=` IS A BELT, and it is here because the brace failed. This
+    state carries whatever nnU-Net's own artefacts say -- on 2026-09-18 a
+    numpy int64 inside a postprocessing decision reached this line and raised
+    `Object of type int64 is not JSON serializable`, after a 1000-epoch fold
+    had finished, and the run reported it as a training failure. The decision
+    is now normalised where it is read (`runtime._decision_from_pickle`), which
+    is the fix; this makes sure the NEXT field to arrive from a third-party
+    artefact cannot cost a run the same way.
+    """
     work_root.mkdir(parents=True, exist_ok=True)
-    state_path(work_root).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    state_path(work_root).write_text(
+        json.dumps(payload, indent=2, default=_native), encoding="utf-8")
 
 
 def allocate_dataset_id(work_root: Path) -> int:
