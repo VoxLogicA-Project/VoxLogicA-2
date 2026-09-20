@@ -3025,3 +3025,68 @@ checked.
 contains no verification section at all — so there is no positive "the clauses
 were checked and passed" line to point at. Absence of a violation is not the
 same as a confirmed check, and it is recorded here as the gap it is.
+
+### 37r. The throughput fall, diagnosed as far as the evidence goes
+
+§37m recorded a shortfall and named no cause. This is how far it can honestly be
+taken. The comparison that matters is **the same program on the same machine**:
+`brats027_oracle60.imgql` cold (`o60_cold2`) against the same program resumed
+(`live2`), best rate over a sliding fifteen-minute window.
+
+**1. The gap is real: 575.5 -> 431.2 node/s.**
+
+**2. It factors exactly into two, and they multiply to the whole of it.**
+Rate is cores-used divided by CPU-per-completion, and both moved:
+
+| | o60_cold2 | live2 | ratio |
+|---|---:|---:|---:|
+| best 15-min rate | 575.5 | 431.2 | 1.33 |
+| CPU ms per completion (same window) | 39.38 | 44.92 | **1.14** |
+| cores in use (rate x cpu/completion) | 22.7 | 19.4 | **1.17** |
+
+1.14 x 1.17 = 1.33. Nothing else needs to be invoked to account for the fall;
+the question is only what drives those two.
+
+**3. Five candidates, ruled out by measurement rather than argument.**
+
+- *Other users.* Load average 36.5 on 24 cores with our process at 1867% and
+  the next consumer at 17.3%. The load is us.
+- *This week's code.* The A/B of §37n has the two arms at 42.37 and 42.38 CPU
+  ms per completion — identical — so the changes cost nothing per unit of work,
+  and the 18% rate difference between the arms is entirely concurrency and
+  fewer recomputes.
+- *Recompute thrash inflating the old peaks.* Tested, because a recompute
+  counts as a completion and a thrashing run would look fast. In the best
+  windows the recompute share is 2.3–5.0%; the peaks are real work.
+- *A different operator mix.* Refuted decisively: `live2`'s MEAN kernel time is
+  LOWER (91.40 ms against 101.77), the top operators are the same
+  (`vox1.dt2` 25–29% of kernel time, `vox1.dt` 17–19%), and per-call costs are
+  comparable (dt2 240 vs 253 ms). The costlier completions are not costlier
+  kernels — the extra CPU is outside the kernels.
+- *Event-loop saturation.* `live2` runs at 58.1% loop occupancy with the LOWEST
+  hot-fraction of any run on record (0.0336). Loop occupancy does not order
+  with rate at all: `trainprobe` at 579 node/s sits at 49.1%, `rung3` at 505
+  sits at 72.5%.
+
+**4. What survives, as a hypothesis and labelled as one.** A serial cost that
+grows with store interaction. Two pieces of support, neither conclusive: §37g
+measured the backward walk at 183k pops/s cold against 127k warm — 31% slower
+per pop against a ~1 TB store; and `b28`, whose work is almost entirely
+store-served and trivially cheap (4.07 CPU ms per completion), plateaus at
+**6.5 cores** and 688% CPU. A run that cannot fill the machine while doing
+almost no work per node is bound by something other than the work.
+
+**5. And one thing the A/B did NOT test, which may matter more.** `abA` is this
+program run COLD on current code: 495.0 node/s at 42.37 ms per completion, 21.0
+cores. `o60_cold2` is the same program run COLD on 2026-09-11 code: 575.5 at
+39.38 ms, 22.7 cores. Both cold, and 14% apart. The A/B compared current code
+against current-code-minus-two-changes; it never compared current code against
+SEPTEMBER's. The caps differ too (120 GB against 300 GB), so this is not yet a
+finding — it is the experiment that should be run next, and it is cheap:
+the same program, cold, same cap, at `o60_cold2`'s commit and at HEAD.
+
+**Stated plainly:** the fall is 14% more CPU per completion and 15% less of the
+machine in use. It is not the kernels, not the mix, not the event loop, not
+other users, and not the two changes of §37i/§37l. Beyond that the record does
+not yet say, and the next measurement is a cold A/B across the September
+commit rather than more analysis of these logs.
