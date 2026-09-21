@@ -3090,3 +3090,45 @@ machine in use. It is not the kernels, not the mix, not the event loop, not
 other users, and not the two changes of §37i/§37l. Beyond that the record does
 not yet say, and the next measurement is a cold A/B across the September
 commit rather than more analysis of these logs.
+
+### 37s. The cold A/B settles it: the fall is the RESUME, not the code
+
+Three arms, same program, same machine, same `--cache-max-gb 200`, same 35
+minutes of wall clock, fresh store each, run one after another. Measured from
+the engine's own memory log so all three are read the same way.
+
+| arm | code | mean node/s | best 15-min | completions in the 35 min |
+|---|---|---:|---:|---:|
+| `coldold` | `48e0618`, 2026-09-11 | 451.6 | 489.5 | 833,826 |
+| `coldnew` | `f80d9d6`, HEAD | 481.3 | **540.2** | **965,051** |
+| `coldspare` | HEAD + `--sparse-cache` | 499.2 | 532.3 | 1,014,098 |
+
+**§37r's suspicion is refuted. Current code is FASTER than September's**, by
+10% on the best window and 16% on completions in the same wall clock. The last
+figure is worth trusting above the others: it depends on no sampling and no
+window, only on a clock and a counter, and the sampling cadence does differ
+between the two versions (365 memlog rows against 61).
+
+**`--sparse-cache` is not the explanation either.** It helps the mean a little
+(499.2 against 481.3) and the best window not at all (532.3 against 540.2), so
+the flag `o60_cold2` carried does not account for its 575.5.
+
+**What this leaves is a clean, isolated statement, on ONE code version:**
+
+    same code, cold                        540.2 node/s
+    same code, resumed off a 1.1 TB store  431.2 node/s
+    ------------------------------------------------- -20%
+
+That is the fall, all of it, and it is the resume. Everything else that was
+ever proposed for it has now been measured and excluded: other users, the
+operator mix, event-loop saturation, recompute thrash, `--sparse-cache`, the
+two changes of §37i/§37l, and a regression since September.
+
+**The mechanism remains a hypothesis, and it is the only one still standing**:
+a serial cost that grows with store interaction. Its support is unchanged and
+still circumstantial — the backward walk runs at 183k pops/s cold against 127k
+warm (§37g), and `b28`, whose nodes are almost all store-served and cost 4 CPU
+ms each, cannot fill more than 6.5 of 24 cores. What would settle it is a
+profile of a resumed run's non-kernel CPU, or the same resume against stores of
+deliberately different sizes. Until one of those is done, "resuming a big store
+costs 20%" is the finding, and the reason for it is not.
