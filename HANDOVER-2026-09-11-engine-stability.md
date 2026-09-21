@@ -3132,3 +3132,62 @@ ms each, cannot fill more than 6.5 of 24 cores. What would settle it is a
 profile of a resumed run's non-kernel CPU, or the same resume against stores of
 deliberately different sizes. Until one of those is done, "resuming a big store
 costs 20%" is the finding, and the reason for it is not.
+
+### 37t. Where we diverge from main, and what merging costs
+
+`tacas-artifact-rc5` is a TAG, not a branch, and `main` sits exactly on it
+(`6bfc398`, laurab1, 2026-09-15). Merge base with this branch is `fd44a55`
+(2026-09-08). Divergence: **39 commits theirs, 113 ours** — 36 of theirs by
+laurab1, 3 by Vincenzo.
+
+**Their side is two workstreams.** About twenty commits are TACAS artifact
+packaging — LICENSE, hash-pinned `requirements.lock`, a dataset manifest and
+contract, `tools/make_artifact.py`, README expected values, fixes found by
+walking a reviewer's path — and touch no engine behaviour. The other dozen are
+engine and store fixes, and those are the reason to merge rather than a reason
+to be careful:
+
+| commit | what it fixes |
+|---|---|
+| `b0b68a1` | nnU-Net: numpy must not reach the model handle |
+| `ad55306` | storage: the disk reserve must fit what is FREE, not the volume |
+| `0789ea6` | store: a stored `None` is a value and comes back as one |
+| `5d60edb`, `a1e22b6` | a container is durable only with what it names, transitively, children first |
+| `7348626` | a reference the store can answer is answerable |
+| `29634eb` | a loop node in the store is not a value the store can serve |
+| `3f916dc` | a loop offered twice starts ONE expansion job |
+| `2443cf8` | two goals sharing a node are two lines of output |
+| `81f001e` | a run with no goals is a refusal, not a success |
+
+**`b0b68a1` is the expensive one, and it is worth stating plainly.** Laura fixed
+the numpy-in-the-model-handle bug on 8 September, in
+`_decision_from_pickle`, with a `_plain()` walk over the postprocessing kwargs.
+Her commit message names the same failure this branch met on 18 September:
+a completed 1000-epoch training ended by `Object of type int64 is not JSON
+serializable` after the weights were on disk. We paid twenty-one hours of GPU
+for a bug that had been fixed upstream for ten days. That is the cost of the
+divergence, measured.
+
+**The merge itself is small.** Nine files are touched by both sides; six
+auto-merge; three conflict — `core.py` (6 hunks), `strategy.py` (4),
+`nnunet/runtime.py` (2). The `strategy.py` hunks are all one change of hers
+(goal emission keyed by `(id, operation, name)` rather than `id`) meeting the
+dev-stop and checkpoint code of §37i.
+
+**The dangerous part is NOT a conflict.** `ad55306` changes the reserve clamp
+from `usage.total // 2` to `headroom // 2`, because on a volume less than half
+empty the old form swallows the headroom and collapses the ceiling to zero —
+measured by her at 15.3 GB reserved out of 15.4 GB free, a ceiling of 0, and a
+store that "kept working and kept nothing". **§37l's `_disk_free_and_reserve`
+copied the old formula**, so this branch now contains that bug twice
+(`storage.py:1073` and `:1103`) and the merge resolves it CLEANLY, keeping
+both copies. A silent semantic conflict behind a clean auto-merge is exactly
+the kind that ships.
+
+**Order of work when we do it:** merge `main` into this branch (not the
+reverse); resolve the three files, taking HER `_plain` over the duplicate
+`_native`/`_json_safe` but KEEPING §37l's `save_state` belt, which she has no
+equivalent of; hand-fix both reserve sites to her `headroom // 2`; run the full
+suite; then re-run the cold A/B of §37s, because her durable-transitively and
+answerable-reference changes touch precisely the store and resume paths every
+measurement in §37m–§37s depends on.
