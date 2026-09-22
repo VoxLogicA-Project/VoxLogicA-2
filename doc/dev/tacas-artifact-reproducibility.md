@@ -65,6 +65,43 @@ byte-identici a `rc2`. Per decisione del 15/9 si rimisura tutto **tranne lo
 smoke test** — 45 min che non toccano nulla che un testo possa cambiare. È uno
 strappo dichiarato alla regola "nuovo tag, tutte le misure".
 
+## Kick-the-tires e review sono due fasi, e lo erano solo a metà
+
+Osservazione di Laura, 2026-09-22: un'artifact evaluation si fa in due tempi —
+un *kick-the-tires* breve, in cui il revisore verifica che l'artifact parta e
+segnala i problemi bloccanti, e la review vera e propria. L'esperimento 1 si
+chiamava "smoke test", che promette velocità, e costa **51 minuti su 24 core,
+77 su 4**. Come primo passo è fuori scala.
+
+**Dove va quel tempo, misurato.** Dieci epoche nnU-Net, 340-590 s l'una nel
+container. Non dipende dai nostri dati: nnU-Net fa 250 iterazioni per epoca a
+prescindere, quindi cinque immagini 64×64 costano quanto un dataset vero.
+
+**Perché non lo abbiamo accorciato.** `nnUNetTrainer_1epoch` esiste e porterebbe
+a ~8 minuti, ma toglie al test la cosa che verifica: con dieci epoche la rete
+predice 595 voxel sui 616 del cerchio, con una predice rumore, e il controllo
+visivo — «una macchia bianca dove c'è il cerchio» — non funziona più.
+
+**Cosa è cambiato invece.** Le due fasi sono ora separate nel README:
+
+| | prima | ora |
+|---|---|---|
+| l'esperimento 1 | «Smoke test» | «Installation check, synthetic data», con scritto che appartiene alla review e va messo in background |
+| la sezione breve | «Early light review — 5 minutes» | «Early light review (kick-the-tires)», dichiarata come **l'intera fase**, e sufficiente da sola |
+| cosa provava | checksum, bootstrap, typecheck: **verificava senza calcolare** | in più un quarto passo che **calcola** |
+
+Il quarto passo è `doc/gallery/programs/default/default-range-map.imgql`:
+venti quadrati via `range` e `map`, **un secondo, nessun dato**, con l'output
+atteso scritto per esteso nel README. Viaggia in `ENGINE` e non in `PROGRAMS`,
+perché non è un esperimento: è un controllo. `arrays-metrics` era il candidato
+alternativo ed è stato scartato — dipende da `tests/data/chris_t1.nii.gz`, che
+non spediamo.
+
+Verificato sull'artifact costruito: 0 file non-OK, bootstrap exit 0, `ok 5/5`
+sui programmi, e la riga `squares=[0.0, 1.0, 4.0, ...]` in un secondo.
+
+---
+
 ## La versione da spedire è un tag, non un branch
 
 **`tacas-artifact-rc1`** = `a1e22b6`. È il commit da cui `tools/make_artifact.py`
@@ -135,7 +172,7 @@ I quattro esperimenti spediti:
 
 | # | esperimento | serve | tempo | goal | riproducibile |
 |---|---|---|---|---|---|
-| 1 | smoke test (cerchi sintetici) | niente | 15-25 min | 1 | pass/fail |
+| 1 | installation check (cerchi sintetici) | niente | 51 min (24 core), 77 (4) | 1 | pass/fail |
 | 2 | ricetta TACAS, cinque casi | BraTS2020 | 2-5 min | 15 | bit-identical |
 | 3 | sweep AIIM | BraTS2020 | 60-170 min | 16 | bit-identical |
 | 4 | sweep AIIM su riferimento appreso | BraTS2020 + GPU | ore | 23 | no, allena una rete |
