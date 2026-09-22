@@ -2,8 +2,16 @@
 
 These are the *abstract values* manipulated by ``analysis.type_checker`` when it
 runs a plan abstractly. Each concrete runtime value has one of these as its
-description; ``VoxAny`` is the top of the lattice and stands for "not governed
+description; ``VoxAny`` is the top of the domain and stands for "not governed
 by any declared rule", which is what an unannotated primitive produces.
+
+Deliberately NOT a lattice, and the word is avoided on purpose. ``VoxAny`` is
+compatible with every type in *both* directions, so ``is_subtype`` is the
+consistent-subtyping relation of gradual typing rather than an order: it is
+neither antisymmetric (``any <= int`` and ``int <= any``) nor transitive
+(``int <= any`` and ``any <= string``, but ``int`` is not a subtype of
+``string``). ``join`` accordingly returns *an* upper bound; see there for the
+one constructor where it is not the least one.
 
 The domain is deliberately structural and closed: there are no type variables
 and no unification. Polymorphism is expressed by the *rules* (a ``TypeRule`` is
@@ -27,7 +35,7 @@ class VoxType(ABC):
 
 @dataclass(frozen=True)
 class VoxAny(VoxType):
-    """Top of the lattice: an unconstrained value.
+    """Top of the domain: an unconstrained value.
 
     Produced by any primitive without a declared type rule, by a literal whose
     Python type is not in the literal map, and by every construct the checker
@@ -144,7 +152,13 @@ def is_subtype(actual: VoxType, expected: VoxType) -> bool:
     """Return whether a value of type ``actual`` is acceptable where ``expected`` is required.
 
     ``VoxAny`` is compatible with everything in both directions; see ``VoxAny``
-    for why the checker is gradual rather than sound.
+    for why the checker is gradual rather than sound. That compatibility is
+    also why this is a preorder and not an order -- it is neither antisymmetric
+    nor transitive -- so nothing here may be read as an ordering on types.
+
+    Ignoring ``VoxAny``, what remains IS a partial order: the numeric types form
+    a chain (``int <= float <= number``) and every constructor is compared
+    componentwise, covariantly except for a closure's argument.
     """
     if isinstance(actual, VoxAny) or isinstance(expected, VoxAny):
         return True
@@ -186,12 +200,27 @@ def is_subtype(actual: VoxType, expected: VoxType) -> bool:
 
 
 def join(left: VoxType, right: VoxType) -> VoxType:
-    """Return the least upper bound of two types in this lattice.
+    """Return an upper bound of two types: one type that describes both.
 
     Used wherever one static type has to describe several runtime values at
     once — the elements of a sequence literal, or a fold's accumulator. Types
     with no common supertype below ``VoxAny`` join to ``VoxAny`` rather than
     producing a union, because the domain has no unions.
+
+    AN upper bound. It is the least one for sequences, maps and records, but
+    not for closures: a closure's argument is widened to ``VoxAny`` rather than
+    intersected, because the domain has no meet to intersect with. Joining
+    ``int -> int`` with ``int -> float`` therefore gives ``any -> float``,
+    although ``int -> float`` bounds both and is strictly smaller in the
+    ``VoxAny``-free fragment — the part of the domain that is a partial order.
+    (In the full preorder "least" is not well defined anyway: ``VoxAny`` is
+    related to everything in both directions, so ``any -> float`` and
+    ``int -> float`` are each below the other.) Widening the argument is the
+    safe direction, since that position is contravariant, and a meet operation
+    is something the analysis has no other use for.
+
+    Identical types short-circuit, so this widening is only ever reached by two
+    closures that actually differ.
     """
     if left == right:
         return left
