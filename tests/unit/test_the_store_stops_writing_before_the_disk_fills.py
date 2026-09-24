@@ -31,16 +31,17 @@ from voxlogica.storage import SQLiteResultsDatabase, spec_row_for
 _GB = 1024 ** 3
 
 
-def _volume(free_gb: float, total_gb: float = 100.0):
+def _volume(free_bytes: int, total_bytes: int = 100 * _GB):
     """A `shutil.disk_usage` stand-in reporting a volume of a chosen fullness.
 
-    100 GB total puts the reserve at 50 GB (the floor, and also half the
-    volume), so "90 GB free" is comfortably above it and "1 GB free" is
-    comfortably inside it -- no arithmetic near a boundary.
+    IN BYTES, and the reason is the rule it has to exercise. The reserve is
+    `min(max(50 GB, 5% of total), headroom // 2)` where headroom is what the
+    tier holds plus what is free -- so on an empty tier the clamp always wins
+    and the reserve is half of free, whatever the volume's size. A write is
+    refused only when it would not fit in the other half. Expressing that needs
+    free space comparable to one payload, which is bytes, not gigabytes.
     """
-    total = int(total_gb * _GB)
-    free = int(free_gb * _GB)
-    return lambda _path: _Usage(total, total - free, free)
+    return lambda _path: _Usage(total_bytes, total_bytes - free_bytes, free_bytes)
 
 
 class _Usage(tuple):
@@ -67,7 +68,7 @@ def _entry(index: int) -> tuple:
 @pytest.mark.unit
 def test_a_roomy_disk_still_gets_written(tmp_path: Path, monkeypatch) -> None:
     """The control: with space available nothing changes."""
-    monkeypatch.setattr(shutil, "disk_usage", _volume(free_gb=90.0))
+    monkeypatch.setattr(shutil, "disk_usage", _volume(free_bytes=90 * _GB))
     store = SQLiteResultsDatabase(db_path=str(tmp_path / "roomy.db"), max_bytes=0)
     try:
         store.put_success_batch([_entry(1)])
@@ -82,7 +83,7 @@ def test_a_roomy_disk_still_gets_written(tmp_path: Path, monkeypatch) -> None:
 @pytest.mark.unit
 def test_the_reserve_stops_the_write(tmp_path: Path, monkeypatch) -> None:
     """A volume inside its reserve takes no new payloads at all."""
-    monkeypatch.setattr(shutil, "disk_usage", _volume(free_gb=1.0))
+    monkeypatch.setattr(shutil, "disk_usage", _volume(free_bytes=_PAYLOAD // 2))
     store = SQLiteResultsDatabase(db_path=str(tmp_path / "full.db"), max_bytes=0)
     try:
         store.put_success_batch([_entry(2)])
@@ -103,7 +104,7 @@ def test_a_shed_value_keeps_its_recipe(tmp_path: Path, monkeypatch) -> None:
     with the value would trade nothing for the ability to ever name the node
     again -- which is the defect §37 spent a day on from the other direction.
     """
-    monkeypatch.setattr(shutil, "disk_usage", _volume(free_gb=1.0))
+    monkeypatch.setattr(shutil, "disk_usage", _volume(free_bytes=_PAYLOAD // 2))
     store = SQLiteResultsDatabase(db_path=str(tmp_path / "recipe.db"), max_bytes=0)
     node_id = _entry(3)[0]
     try:
@@ -121,7 +122,7 @@ def test_a_write_that_fails_anyway_is_shed_not_raised(tmp_path: Path, monkeypatc
     It must degrade to a shed. It used to propagate out of a persister thread,
     mid-run.
     """
-    monkeypatch.setattr(shutil, "disk_usage", _volume(free_gb=90.0))
+    monkeypatch.setattr(shutil, "disk_usage", _volume(free_bytes=90 * _GB))
     store = SQLiteResultsDatabase(db_path=str(tmp_path / "enospc.db"), max_bytes=0)
 
     def _no_space(self, payload_file, payload_bin):
