@@ -77,7 +77,7 @@ def _set_loop_delay_ns(value) -> None:
     _LOOP_DELAY_NS = ns
 
 from voxlogica.engine.persist import _NO_SNAPSHOT
-from voxlogica.engine.node_table import NodeTable
+from voxlogica.engine.node_table import NodeTable, MISSING
 from voxlogica.engine.evaluation import (NeedsExpansion, RewriteContext,
                                           grows_the_graph_by_name, modes_of)
 from voxlogica.handles import contains_handle, iter_handles, resolve_deep
@@ -423,6 +423,9 @@ class ComputationEngine:
         #: `NeedsExpansion ... must be expanded, not computed`, raised out of a
         #: goal's own side effect.
         self._forwarded: set[NodeId] = set()
+        # (waiter, expansion target) pairs already given a second chance; see
+        # _await_expansion.
+        self._expansion_retried: set[tuple[NodeId, NodeId]] = set()
         self.executor._handle_resolver = self._resolve_reference
         self.executor._names_handles = self.graph.names_handles
         # DISABLED, AND THE MEASUREMENT IS WHY. Moving the payload copy off the
@@ -932,6 +935,19 @@ class ComputationEngine:
         THE availability rule — every registration path uses this one predicate
         (goals excepted: they are always scheduled so their queries settle
         through the normal completion path).
+
+        A NODE THAT GROWS THE GRAPH IS NEVER AVAILABLE FROM DISK, however
+        materialized its row looks. Its stored value is a container naming its
+        bodies by hash, and those ids exist only once the loop has been
+        expanded; `NodeTable.load` therefore refuses it
+        (`_references_are_answerable`) and `_rematerialize` has nothing left but
+        `NeedsExpansion`. Pruning here promised a value the store cannot serve —
+        measured as a warm-store sweep dying at goal materialization with 21 of
+        23 goals, on a store where the row and all 69 of its elements were
+        intact. Nor is the pruning worth defending: scheduling only reaches this
+        node because a consumer above it must be recomputed, and that consumer
+        will ask for the value. Re-expanding costs the list of hashes; every
+        element it names is still served from disk.
         """
         # NOT SPECIAL-CASED FOR EXPANSION-PRODUCED NODES, and the attempt is
         # recorded because it looked compelling. Refusing to prune a `for_loop`
@@ -2087,6 +2103,28 @@ class ComputationEngine:
             # less -- the persist backlog is byte-budgeted, so the queue rarely
             # holds a value long enough to outlive its consumers -- but it buys
             # it safely.
+            if worth_it and self.graph.names_handles(nid):
+                # A CONTAINER IS WORTH EXACTLY WHAT IT NAMES, so what it names
+                # is made durable FIRST, and if one element cannot be, the
+                # container is not recorded at all. Without this the store held
+                # a durable promise it could not keep: a for_loop container is
+                # critical and always written, its bodies are best-effort and
+                # written only above `persist_min_compute_ms`, so a run that
+                # EXITED 0 left 110 of its 122 containers naming elements that
+                # were never stored (measured on a three-line program). A warm
+                # run then found the container, refused it -- one element
+                # unanswerable -- and, the sequence being spliced at runtime and
+                # never interned by that run, died naming it: the nnU-Net sweep
+                # lost `exported` and `exported_planes` this way, warm, every
+                # time, for six days.
+                #
+                # `spill` is the right tool: it ignores the worth-it gate (the
+                # element's worth is settled by the container's) but not the
+                # writer's backlog budget, and it is idempotent. When it refuses,
+                # the honest answer is to keep the container out of the store
+                # too; the value is still resident and the run is unaffected.
+                if not self._make_named_durable(value):
+                    critical = worth_it = False
             # POPPED UNCONDITIONALLY: a copy the worker took for a value we
             # then decline to persist must be released at this completion, not
             # held until the process ends.
@@ -2098,7 +2136,7 @@ class ComputationEngine:
             if _c is not None:
                 _c.add("fin_complete", time.perf_counter_ns() - _t)
                 _t = time.perf_counter_ns()
-            if node.operator in _SEQUENCE_OPERATORS:
+            if worth_it and node.operator in _SEQUENCE_OPERATORS:
                 for index, item in enumerate(value):
                     self.table.complete_item(nid, index, item)
                 if _c is not None:
@@ -2326,7 +2364,9 @@ class ComputationEngine:
         The critical set is deliberately small and cheap, yet covers nearly the
         whole DAG on a warm re-run:
         - goal-dependency *cut* nodes — pruning one collapses its entire subtree;
-        - structural loop/sequence nodes — same leverage, and they gate re-expansion;
+        - structural loop/sequence nodes — their elements are what a warm re-run
+          reuses (the loop node ITSELF is never pruned: `_available` explains
+          why its stored container cannot be served);
         - widely-shared results (high fan-out) — a per-case image feeding every
           combo, so a *variant* sweep reuses it and recomputes only its changed tail.
         Everything else (large one-shot intermediates) stays best-effort: forcing
@@ -2547,6 +2587,29 @@ class ComputationEngine:
         on its next turn.
         """
         priority = self._priority.get(waiting, 0)
+        if to_expand in self.table.completed:
+            # It has already had its expansion turn and no worker will give it
+            # another: `_worker` drops a completed node before dispatch. The
+            # `await_one` refusal below cannot catch this, because `register`
+            # just above would have put it back on `incomplete` and the wait
+            # would then be granted — on an arrival that has already been
+            # announced. Measured as an empty queue that never drains:
+            # qsize=0 outstanding=49 stuck=0.
+            #
+            # One retry, because a concurrent worker may have completed it in
+            # the window between the raise and here, in which case its value is
+            # there now and the waiter only needs to look again. A second visit
+            # means the value is genuinely unreachable — not resident, not
+            # loadable, not forwarded — and saying so beats hanging.
+            key = (waiting, to_expand)
+            if key not in self._expansion_retried:
+                self._expansion_retried.add(key)
+                self.ready.push(waiting, priority)
+                return
+            raise RuntimeError(
+                f"node {to_expand[:12]} grows the graph, has already completed, and its "
+                f"value can be neither loaded nor forwarded; {waiting[:12]} needs it. "
+                f"This is an engine bug — please report.")
         self._priority[to_expand] = max(self._priority.get(to_expand, 0), priority)
         if to_expand not in self.graph.incomplete:
             self.graph.register(to_expand)
@@ -2640,7 +2703,7 @@ class ComputationEngine:
         if nid in self.table.values:
             return self.table.values[nid]
         loaded = self.table.load(nid)
-        if loaded is not None:
+        if loaded is not MISSING:   # a stored None is a value, and comes back
             self._retrack_resident(nid)
             # A value coming back from disk has never passed `_finish`, so the
             # graph does not know which nodes its handles name -- and the eager
@@ -2686,7 +2749,15 @@ class ComputationEngine:
                 f"forwarded={nid in self._forwarded} "
                 f"incomplete={nid in self.graph.incomplete} "
                 f"persisted={self.table.persisted(nid)}")
-        node = self.table.nodes[nid]
+        node = self.table.nodes.get(nid)
+        if node is None:
+            # Neither resident, nor loadable, nor known to this run's graph.
+            # Reachable only through a handle whose target the store said it
+            # held and then could not produce (another process evicting
+            # mid-run). A named failure beats `KeyError: <64 hex chars>`.
+            raise KeyError(
+                f"node {nid[:12]} is named by a value but is neither resident, "
+                f"loadable from the store, nor part of this run's graph")
         if node.kind == "constant":
             value = node.attrs.get("value")
         elif node.kind == "closure":
@@ -2768,6 +2839,41 @@ class ComputationEngine:
         self.graph.hold_handles(nid, value)
         return value
 
+    def _make_named_durable(self, value: Any) -> bool:
+        """Make every node reachable from ``value`` through handles durable.
+
+        TRANSITIVE, and children first. A container names an `index` node whose
+        own value is a handle to a third node; spilling the `index` alone wrote
+        a row that named something the store did not have, and the warm run of
+        the AIIM sweep died on it one step later (`default.index c1e74254`,
+        handle to `60560560`, absent) -- the same failure as §9, one hop down.
+        So the walk follows handles through resident values, and each node is
+        spilled only after everything it names has been; on the first refusal
+        it stops, so no parent is ever queued ahead of a child that will not be.
+
+        Iterative on purpose: the depth is the nesting of the data, which is the
+        program's to choose, and this file may not recurse on it.
+
+        Returns False if something reachable cannot be made durable; the caller
+        then keeps its own value out of the store too.
+        """
+        stack: list[tuple[NodeId, bool]] = [(h.node, False) for h in iter_handles(value)]
+        seen: set[NodeId] = set()
+        while stack:
+            ref, expanded = stack.pop()
+            if expanded:
+                if not (self.table.persisted(ref) or self.table.spill(ref)):
+                    return False
+                continue
+            if ref in seen:
+                continue
+            seen.add(ref)
+            stack.append((ref, True))                 # visited again after its children
+            inner = self.table.values.get(ref, _MISSING)
+            if inner is not _MISSING:
+                stack.extend((h.node, False) for h in iter_handles(inner))
+        return True
+
     def _retrack_resident(self, nid: NodeId) -> None:
         """Re-arm reclaim for a value just brought BACK into the live tier.
 
@@ -2811,13 +2917,14 @@ class ComputationEngine:
                     self._forwarded.add(nid)
                     seq_id = self._alias[nid]
                     # persist=True even though seq_id already holds the same
-                    # value durably: the loop id is the *statically known*
-                    # pruning point — a warm re-run prunes at it and skips
-                    # re-expansion entirely (the spliced sequence id is only
-                    # discoverable BY re-expanding), and serve/inspect tooling
-                    # addresses sequence items by the loop's id. The price is
-                    # one duplicated payload per loop in the persist backlog;
-                    # those bytes are accounted, so admission absorbs them.
+                    # value durably: the loop id is the statically known name for
+                    # this value, and serve/inspect tooling addresses sequence
+                    # items by it. It is NOT a pruning point — `_available`
+                    # refuses to prune there, because the container names its
+                    # bodies by hash and those ids exist only after expansion.
+                    # The price is one duplicated payload per loop in the
+                    # persist backlog; those bytes are accounted, so admission
+                    # absorbs them.
                     self._finish(nid, self._rematerialize(seq_id))  # forward spliced result
                     self.graph.release(seq_id)                      # the forward's hold
                     if self._clock is not None:

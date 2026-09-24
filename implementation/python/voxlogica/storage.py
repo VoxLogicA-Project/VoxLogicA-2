@@ -76,6 +76,27 @@ def _auto_cache_max_bytes(payload_dir) -> int:
 #: (and with this run's own SQLite file and spill), so the promise goes stale.
 _DISK_RESERVE_MIN_BYTES = 50 * 1024 ** 3
 _DISK_RESERVE_FRACTION = 0.05
+def _disk_reserve(total: int, free: int, payload: int) -> int:
+    """Bytes that must stay free on this volume, given what the tier holds.
+
+    ONE RULE, ONE PLACE. It is computed from HEADROOM -- what the tier already
+    holds plus what is still free -- and never from the volume's size. Clamping
+    to half the VOLUME measures the wrong thing: on any volume less than half
+    empty it swallows the headroom whole, and a 31 GB tmpfs with 15.4 GB free
+    reserved 15.3 GB, leaving a ceiling of zero. The store then kept working
+    and kept nothing, silently, while the same run on a roomier disk behaved
+    differently.
+
+    This rule lived in `_effective_max_bytes` alone and was copied, with the
+    old clamp, into the admission path added later on another branch -- so the
+    bug outlived its own fix in a second copy, and the merge of the two kept
+    both cleanly. Hence a function.
+    """
+    headroom = payload + free
+    return min(max(_DISK_RESERVE_MIN_BYTES, int(total * _DISK_RESERVE_FRACTION)),
+               headroom // 2)
+
+
 #: Seconds between statvfs probes. The ceiling only moves as fast as the disk
 #: fills, so probing on every persist batch would burn syscalls for nothing.
 _DISK_PROBE_INTERVAL_S = 5.0
@@ -336,6 +357,9 @@ class SQLiteResultsDatabase:
         # Cached disk-pressure ceiling; see _effective_max_bytes.
         self._disk_ceiling: int | None = None
         self._disk_ceiling_at = 0.0
+        #: Said once, not every 5 s: a cache silently smaller than asked for
+        #: shows up only as a slow run, and that is the wrong thing to debug.
+        self._disk_ceiling_warned = False
         # Guard installed by the engine: "this node's RAM copy is waiting on its
         # disk copy". Evicting such a payload strands the live value — see
         # _enforce_budget.
@@ -1061,26 +1085,52 @@ class SQLiteResultsDatabase:
         if self._disk_ceiling is None or (now - self._disk_ceiling_at) >= _DISK_PROBE_INTERVAL_S:
             try:
                 usage = shutil.disk_usage(self.payload_dir)
-                # THE RESERVE MUST FIT THE VOLUME. A flat 50 GB minimum is
-                # larger than /tmp on this very machine (30.6 GB), so the
-                # ceiling below went to zero, `_enforce_budget` read zero as
-                # "no limit", and the cache grew unbounded -- on every volume
-                # SMALLER than the reserve, which is to say exactly where the
-                # disk needs protecting most. Measured: 24 MB held against a
-                # 5 MB budget, zero evictions.
-                reserve = min(max(_DISK_RESERVE_MIN_BYTES,
-                                  int(usage.total * _DISK_RESERVE_FRACTION)),
-                              usage.total // 2)
-                # Headroom the payload tier may occupy while leaving `reserve`
-                # free: what it holds now, plus what is free, less the reserve.
-                self._disk_ceiling = max(0, self._payload_bytes + usage.free - reserve)
+                # Headroom: every byte this tier could ever occupy -- what it
+                # holds now, plus what is still free.
+                headroom = self._payload_bytes + usage.free
+                # THE RESERVE MUST FIT WHAT IS ACTUALLY THERE, not the volume.
+                # An earlier fix clamped it to `usage.total // 2` because a flat
+                # 50 GB floor was bigger than /tmp on this machine (30.6 GB) and
+                # drove the ceiling to zero. That clamp measures the wrong thing:
+                # the ceiling is computed from FREE space, so on any volume less
+                # than half empty a reserve of `total // 2` still swallows the
+                # headroom whole and the ceiling collapses to zero anyway. A
+                # 31 GB tmpfs with 15.4 GB free reserved 15.3 GB and left a
+                # ceiling of 0 -- so `_enforce_budget` evicted every payload it
+                # had just written, against a requested budget of 5 MB, with
+                # 3000x that much free. The store kept working and kept nothing,
+                # silently, and the same run on a roomier disk behaved
+                # differently.
+                #
+                # Clamping to `headroom // 2` instead makes the rule say what it
+                # means: never hold back more than half of what is available.
+                # The ceiling is then always at least half the headroom, and
+                # reaches zero only when there is genuinely nothing left --
+                # which is the one case where evicting everything is right.
+                reserve = _disk_reserve(usage.total, usage.free, self._payload_bytes)
+                self._disk_ceiling = headroom - reserve
             except OSError:
-                self._disk_ceiling = self._max_bytes  # no probe: fall back to the budget
+                # No probe: the disk imposes nothing we can measure, so fall back
+                # to the configured budget -- and to _UNBOUNDED when there is
+                # none, because a budget of zero would mean the opposite.
+                self._disk_ceiling = self._max_bytes if self._max_bytes > 0 else _UNBOUNDED
             self._disk_ceiling_at = now
+            if (self._max_bytes > 0 and not self._disk_ceiling_warned
+                    and self._disk_ceiling != _UNBOUNDED
+                    and self._disk_ceiling < self._max_bytes):
+                self._disk_ceiling_warned = True
+                logger.warning(
+                    "cache budget cut from %.1f GB to %.1f GB by free space on %s: "
+                    "values will be evicted and recomputed more often",
+                    self._max_bytes / 1024 ** 3,
+                    self._disk_ceiling / 1024 ** 3,
+                    self.payload_dir)
         if self._max_bytes <= 0:
             # No configured budget: the disk is the only limit, and -1 says there
             # is not even that.
             return self._disk_ceiling if self._disk_ceiling is not None else _UNBOUNDED
+        if self._disk_ceiling == _UNBOUNDED:
+            return self._max_bytes
         return min(self._max_bytes, self._disk_ceiling)
 
     def _disk_free_and_reserve(self) -> tuple[int, int]:
@@ -1098,9 +1148,13 @@ class SQLiteResultsDatabase:
             except OSError:
                 self._disk_free_at = now
                 return -1, 0
-            self._disk_reserve = min(max(_DISK_RESERVE_MIN_BYTES,
-                                         int(usage.total * _DISK_RESERVE_FRACTION)),
-                                     usage.total // 2)
+            # THE SAME RULE AS EVICTION, and it has to be: this line carried
+            # the half-the-volume clamp that `ad55306` fixed, because it was
+            # copied from `_effective_max_bytes` before that fix was merged
+            # here. The merge kept both copies cleanly and silently, which is
+            # how a fixed bug comes back.
+            self._disk_reserve = _disk_reserve(usage.total, usage.free,
+                                               self._payload_bytes)
             self._disk_free = usage.free
             self._disk_free_at = now
         return (self._disk_free if self._disk_free is not None else -1,

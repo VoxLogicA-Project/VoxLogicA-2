@@ -59,15 +59,33 @@ nnunet_device  = "cuda"
 nnunet_trainer = "nnUNetTrainer"
 dataset_name   = "BraTS2020WholeTumour"
 
-// `dir` lists matching files in a stable order, so the five lists line up
-// index-for-index: case i is flair_paths[i], t1_paths[i], ... and gt_paths[i].
-// The lists are NOT sliced: `train_range` and `eval_range` index them directly,
-// so a case keeps the same index whichever range it falls in.
-flair_paths = dir(dataset_root, "*_flair.nii.gz", true, true)
-t1_paths    = dir(dataset_root, "*_t1.nii.gz",    true, true)
-t1ce_paths  = dir(dataset_root, "*_t1ce.nii.gz",  true, true)
-t2_paths    = dir(dataset_root, "*_t2.nii.gz",    true, true)
-gt_paths    = dir(dataset_root, "*_seg.nii.gz",   true, true)
+// ------------------------------------------------------- the population ---
+// HIGH-GRADE GLIOMAS ONLY, as in the published study. The grade is not in any
+// filename: it is in the dataset's own metadata, name_mapping.csv, one row per
+// case with the grade in the first field and the BraTS 2020 id in the last.
+// So the cases come from THAT file, not from a directory listing -- a case is
+// in the study because the metadata says HGG, not because it happens to sort
+// early. (It happens that BraTS 2020 orders the 293 HGG cases as 001-259 and
+// 336-369 with the 76 LGG cases in between, so positions 0-69 are the same
+// cases either way. That is a fact about this dataset, not something to rely
+// on, which is why the filter is written down.)
+name_mapping = load(concat(dataset_root, "/name_mapping.csv"))
+field(line, k) = index(strings.split(line, ","), k)
+grade(line)    = field(line, 0)
+case_id(line)  = field(line, 5)
+hgg_ids = for line in (filter line in name_mapping do strings.equals(grade(line), "HGG"))
+          do case_id(line)
+
+// Paths built from the id, in the layout BraTS ships: one directory per case,
+// five files inside it. The five lists line up index-for-index by construction.
+// They are NOT sliced: `train_range` and `eval_range` index them directly, so
+// a case keeps the same index whichever range it falls in.
+path_of(id, modality) = concat(dataset_root, "/", id, "/", id, "_", modality, ".nii.gz")
+flair_paths = for id in hgg_ids do path_of(id, "flair")
+t1_paths    = for id in hgg_ids do path_of(id, "t1")
+t1ce_paths  = for id in hgg_ids do path_of(id, "t1ce")
+t2_paths    = for id in hgg_ids do path_of(id, "t2")
+gt_paths    = for id in hgg_ids do path_of(id, "seg")
 
 train_range = range(train_start, train_start + train_count)
 eval_range  = range(eval_start,  eval_start  + eval_count)
@@ -123,6 +141,14 @@ segment(pflair, vi_thr) =
 
 dice(a, b) = 2 * volume(and(a, b)) / (volume(a) + volume(b))
 
+// Sensitivity is the share of the reference the segmentation recovers;
+// specificity the share of the non-reference it leaves alone. Over the whole
+// volume, as BraTS scores them, so specificity is dominated by the air around
+// the head and sits close to 1 for anything sane -- read the small differences,
+// not the absolute value. The second argument is the reference in both.
+sensitivity(a, ref) = volume(and(a, ref)) / volume(ref)
+specificity(a, ref) = volume(and(not(a), not(ref))) / volume(not(ref))
+
 whole_tumour(gt_image) = geq_sv(1.0, gt_image)
 
 // --------------------------------------------------- per-case evaluation ---
@@ -153,6 +179,19 @@ fixed_dice = for i in cases do dice(segment(pflair_of(i), published_vi_thr), tru
 // How good the learned reference itself is, against the real annotation.
 model_dice = for i in cases do dice(truth_of(i), reference_of(i))
 
+// The same three comparisons, as sensitivity and specificity. `best_vi_thr` is
+// positional over `cases`, so the per-case best segmentation is rebuilt from
+// position k and the case behind it.
+positions = range(0, eval_count)
+best_seg_of(k) = let i = index(cases, k) in segment(pflair_of(i), index(best_vi_thr, k))
+
+best_sensitivity  = for k in positions do sensitivity(best_seg_of(k), truth_of(index(cases, k)))
+best_specificity  = for k in positions do specificity(best_seg_of(k), truth_of(index(cases, k)))
+fixed_sensitivity = for i in cases do sensitivity(segment(pflair_of(i), published_vi_thr), truth_of(i))
+fixed_specificity = for i in cases do specificity(segment(pflair_of(i), published_vi_thr), truth_of(i))
+model_sensitivity = for i in cases do sensitivity(truth_of(i), reference_of(i))
+model_specificity = for i in cases do specificity(truth_of(i), reference_of(i))
+
 // ------------------------------------------------------------ statistics ---
 // Printed rather than derived into a yes/no, so the log records exactly which
 // cases trained and which were swept: equal starts mean the in-sample run.
@@ -167,11 +206,21 @@ print "model_dice_mean"     mean(model_dice)
 print "model_dice_median"   median(model_dice)
 print "model_dice_stdev"    stdev(model_dice)
 print "model_dice"          model_dice
+print "model_sensitivity_mean" mean(model_sensitivity)
+print "model_specificity_mean" mean(model_specificity)
+print "model_sensitivity"   model_sensitivity
+print "model_specificity"   model_specificity
 
 print "dice_fixed_mean"     mean(fixed_dice)
 print "dice_best_mean"      mean(best_dice)
 print "dice_best_median"    median(best_dice)
 print "dice_best_stdev"     stdev(best_dice)
+print "sensitivity_fixed_mean" mean(fixed_sensitivity)
+print "specificity_fixed_mean" mean(fixed_specificity)
+print "sensitivity_best_mean"  mean(best_sensitivity)
+print "specificity_best_mean"  mean(best_specificity)
+print "best_sensitivity"    best_sensitivity
+print "best_specificity"    best_specificity
 
 // The question of the study, asked of the learned reference this time.
 print "vi_thr_mean"         mean(best_vi_thr)

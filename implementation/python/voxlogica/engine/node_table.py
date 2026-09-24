@@ -41,6 +41,9 @@ from voxlogica.storage import NoCacheStorageBackend, StorageBackend, dumps_json
 
 
 _MISSING = object()
+#: What `load` returns when the store has NO value for a node. Public, because
+#: the caller must tell it apart from a stored None -- see `load`.
+MISSING = _MISSING
 
 _sitk = None
 
@@ -404,7 +407,16 @@ class NodeTable:
         return self._backend is not None and self._backend.has(node_id)
 
     def load(self, node_id: NodeId) -> Any:
-        """Bring a persisted value back into the live tier, or return None.
+        """Bring a persisted value back into the live tier, or return MISSING.
+
+        MISSING, NOT None. A stored None is a value: `simpleitk.WriteImage`
+        returns one, so does a closure, and both are persisted and legitimately
+        reloaded on a warm run. Returning None for "no row" made a stored None
+        unrecoverable -- the caller took it for a miss, the node was a loop
+        body this run had never interned, and the run died naming it. Measured
+        on the nnU-Net sweep, warm, three runs of three, always the same node,
+        always `WriteImage`: it is why `exported` and `exported_planes` were
+        the two goals missing for six days.
 
         This is the engine's single live-tier seam: a reloaded image is
         wrapped into a ``PolyArray`` here so every volumetric value the
@@ -415,16 +427,16 @@ class NodeTable:
         unaffected — this wrapping is scoped to the scheduler's own tier.
         """
         if self._backend is None:
-            return None
+            return MISSING
         record = self._backend.get_record(node_id)
-        if record is None or record.value is None:
-            return None
+        if record is None:
+            return MISSING
         value = record.value
         if not self._references_are_answerable(value):
             # A stored container names its elements by hash. If this run can
             # answer none of those questions the container is not a usable cache
             # hit, however intact its own bytes are.
-            return None
+            return MISSING
         sitk = _simpleitk()
         if sitk is not None and isinstance(value, sitk.Image):
             value = PolyArray.from_sitk(value)
@@ -434,21 +446,28 @@ class NodeTable:
     def _references_are_answerable(self, value: Any) -> bool:
         """Whether every handle inside a loaded value names something reachable.
 
-        Reachable means resident, or present in this run's graph. `persisted()`
-        is NOT enough and was tried: it answers from an id index, and a row can
-        exist carrying only lineage, so the load then returns None and the
-        rebuild dies on a node the graph never interned.
+        Reachable means resident, present in this run's graph, or ANSWERABLE BY
+        THE STORE. `_rematerialize` tries `load` before it ever looks a node up
+        in `nodes`, so a ref the store can serve needs no graph entry.
 
-        The cost of reporting a miss here is small and worth being explicit
-        about. A warm run that hits the stored container would SKIP the loop
-        expansion that defines its elements; refusing the hit makes it expand,
-        which interns them, and each element then hits the store on its own. So
-        what is recomputed is the list of hashes, and the expensive part -- the
-        elements -- is still served from disk.
+        `persisted()` was rejected here once, on the grounds that a row can
+        exist carrying only lineage — the load then returns None and the rebuild
+        dies on a node the graph never interned. That objection is weaker than
+        it was: `_persisted_ids` is built from materialized rows alone, and
+        `_evict_row` discards from the shared index as it tombstones, so the
+        index tracks payload presence rather than mere existence. What remains
+        is another process evicting mid-run, and `_rematerialize` now answers
+        that with a named error instead of a KeyError.
+
+        Refusing a container the store CAN serve is not free, and was measured:
+        a warm run whose loop was pruned finds its stored value refused, cannot
+        expand (the engine is past its run by the time a goal materializes) and
+        dies with `NeedsExpansion` — 14 of 23 goals, three runs of three, on a
+        store holding all 53 elements the container named.
         """
         for handle in iter_handles(value):
             ref = handle.node
-            if ref in self.values or ref in self.nodes:
+            if ref in self.values or ref in self.nodes or self.persisted(ref):
                 continue
             return False
         return True

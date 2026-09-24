@@ -35,14 +35,20 @@ training = [case0, case1, case2, case3, case4]
 to_png_u8(img) =
   Cast(RescaleIntensity(img, 0, 255), GetPixelIDValueFromString("sitkUInt8"))
 
+// Both writes are RETURNED, not sequenced. `let _ = write in write` reads like
+// "do this, then that" and means the opposite here: nothing reads `_`, so the
+// engine never demands it and that file is never written -- silently, because
+// the goal that asks for this case is satisfied by the other path. Evaluation
+// is demand-driven, so a side effect happens only where its value is wanted.
+// Returning both puts both in the goal.
 save_training_case(case) =
   let id = index(case, 0) in
   let image = index(index(case, 1), 0) in
   let label = index(case, 2) in
   let image_path = concat(export_root, "/training/", id, "_image.png") in
   let label_path = concat(export_root, "/training/", id, "_label.png") in
-  let _ = WriteImage(to_png_u8(image), image_path) in
-  WriteImage(to_png_u8(label), label_path)
+  [ WriteImage(to_png_u8(image), image_path),
+    WriteImage(to_png_u8(label), label_path) ]
 
 let test_a = mixed_case(concat("test_a"), 40, 32, 14, 24, 32, 12)
 let test_b = mixed_case(concat("test_b"), 32, 44, 9, 32, 18, 11)

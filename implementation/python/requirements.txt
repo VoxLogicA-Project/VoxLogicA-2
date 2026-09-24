@@ -11,16 +11,20 @@ watchdog==6.0.0
 # rendering engine. PyObjC >= 12 declares free-threaded support, so importing
 # the macOS backend does not re-enable the GIL -- tests/unit/test_ui_window.py
 # is what keeps that true. Optional at runtime: with no GUI backend the UI
-# falls back to a browser window (voxlogica/ui/window.py).
-pywebview>=6.2
+# falls back to a browser window (voxlogica/ui/window.py). Exact for the same
+# reason as everything else here: the artifact must resolve what we tested.
+pywebview==6.2.1
 numpy==2.3.2
-# numba/SimpleITK: first versions shipping free-threaded (cp314t) wheels.
-# The engine runs on a free-threaded interpreter only -- see
-# doc/dev/gil-free-default-plan.md. Do not pin these back below these floors
-# without also reverting that cutover; older releases have no cp314t wheel and
-# bootstrap will fail to resolve.
-numba>=0.66.0
-SimpleITK>=2.5.5
+# numba/SimpleITK. Exact, not floors: SimpleITK is the library that actually
+# does the thresholding, smoothing and connected components, so a minor bump
+# can move the last digit of a published Dice. An artifact rebuilt in six
+# months has to resolve the same versions we measured, and `>=` does not
+# promise that. The floors these replace were 0.66.0 and 2.5.5, the first
+# releases shipping free-threaded (cp314t) wheels -- do not pin BELOW those
+# without also reverting the free-threaded cutover (doc/dev/gil-free-default-plan.md),
+# because older releases have no cp314t wheel and bootstrap cannot resolve.
+numba==0.67.0
+SimpleITK==2.5.6
 nnunetv2==2.6.2
 torch==2.8.0; python_version < "3.13"
 torch==2.10.0; python_version >= "3.13"

@@ -236,32 +236,27 @@ def postprocessing_pkl(trainer_path: Path, fold: int) -> Path:
     return trainer_path / f"fold_{fold}" / "validation" / "postprocessing.pkl"
 
 
-def _native(value: Any) -> Any:
-    """One numpy (or other foreign) scalar as the Python value it stands for.
+def _plain(value: Any) -> Any:
+    """Strip numpy out of a value that has to survive as JSON.
 
-    `json.dumps` calls this only for what it cannot encode, so the common path
-    pays nothing. `.item()` covers numpy scalars, `.tolist()` arrays; anything
-    else becomes its string form, because a decision that cannot be described
-    is still better than a training that cannot be saved.
+    The model handle is serialized into the run state and content-addressed by
+    the engine, so everything on it must be a plain Python value. nnU-Net's
+    postprocessing kwargs carry label ids as numpy integers, and np.int64 is
+    not JSON -- which ended a completed 1000-epoch training with "Object of
+    type int64 is not JSON serializable", AFTER the weights were on disk and
+    the validation Dice was computed. The whole run failed on the last line of
+    bookkeeping; converting here is what keeps that impossible.
     """
-    for attribute in ("item", "tolist"):
-        method = getattr(value, attribute, None)
-        if callable(method):
-            try:
-                return method()
-            except Exception:                                   # noqa: BLE001
-                pass
-    return str(value)
-
-
-def _json_safe(value: Any) -> Any:
-    """The same data, guaranteed to survive `json.dumps`.
-
-    A round trip rather than a hand-written walk: it is one line, it cannot
-    miss a nesting level, and the structures it is given (a decision's
-    operations and kwargs) are small and shallow.
-    """
-    return json.loads(json.dumps(value, default=_native))
+    if isinstance(value, dict):
+        return {_plain(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_plain(v) for v in value]
+    # numpy scalar: 0-d and knows how to become a Python number.
+    if getattr(value, "ndim", None) == 0 and hasattr(value, "item"):
+        return value.item()
+    if hasattr(value, "tolist"):  # ndarray
+        return value.tolist()
+    return value
 
 
 def _decision_from_pickle(path: Path) -> dict[str, Any] | None:
@@ -280,23 +275,17 @@ def _decision_from_pickle(path: Path) -> dict[str, Any] | None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("%s is unreadable (%s)", path.name, exc)
         return None
-    # JSON-SAFE AT THE BOUNDARY, and this is not defensive tidying: it cost a
-    # 21-hour training run. nnU-Net's pickle carries numpy scalars -- the
-    # decision for this dataset was
-    # `remove_all_but_largest_component_from_segmentation` with a numpy int64
-    # label -- and that dict is written straight into the work root's state
-    # file and carried on the model handle, both of which are JSON. On
-    # 2026-09-18 a completed 1000-epoch fold (mean validation Dice 0.9353) was
-    # thrown away by `TypeError: Object of type int64 is not JSON serializable`
-    # raised AFTER the last epoch, and the failure was reported as "nnUNet
-    # training failed", which is exactly what it was not.
-    #
-    # A pickle from another library is untyped input. It is normalised once,
-    # here, rather than every consumer being taught about numpy.
-    return _json_safe({
+    # Normalised once, here, by `_plain` above: a pickle from another
+    # library is untyped input, and every consumer should not have to be
+    # taught about numpy. This branch paid for that lesson a second time --
+    # on 2026-09-18 a completed 1000-epoch fold (mean validation Dice
+    # 0.9353) was thrown away by `Object of type int64 is not JSON
+    # serializable` raised after the last epoch, ten days after the fix
+    # below had landed on main and was not yet merged here.
+    return {
         "operations": [getattr(fn, "__name__", str(fn)) for fn in pp_fns],
-        "kwargs": [dict(kw) for kw in pp_kwargs],
-    })
+        "kwargs": [_plain(dict(kw)) for kw in pp_kwargs],
+    }
 
 
 def determine_postprocessing_for(trainer_path: Path, labels_dir: Path,

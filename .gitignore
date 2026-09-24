@@ -66,3 +66,7 @@ doc/user/brats-tests-howto.md
 tmp
 pty.log
 playwright-*
+
+# Diario di lavoro dell'artifact TACAS: italiano, misure e percorsi di questa
+# macchina. Vive in locale; vedi anche /home/laura/tacas-artifact-reproducibility.md
+doc/dev/tacas-artifact-reproducibility.md
