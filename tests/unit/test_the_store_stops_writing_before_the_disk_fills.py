@@ -55,13 +55,20 @@ class _Usage(tuple):
     free = property(lambda self: self[2])
 
 
+#: Bytes of INCOMPRESSIBLE payload each entry carries. Random, not zeros: the
+#: store gzips payloads, and four megabytes of zeros become a few hundred
+#: bytes, which would make every size comparison here meaningless.
+_PAYLOAD = 4 * 1024 * 1024
+
+
 def _entry(index: int) -> tuple:
     """One storable result whose value is big enough to need a payload file."""
     numpy = pytest.importorskip("numpy")
     spec = NodeSpec(kind="primitive", operator="test.block",
                     args=(f"{index:064x}",), output_kind="overlay")
     node_id = hash_node(spec)
-    value = numpy.zeros((64, 64), dtype=numpy.float32)
+    rng = numpy.random.default_rng(index)
+    value = rng.random((_PAYLOAD // 8,), dtype=numpy.float64)
     return (node_id, value, {}, 1.0, None, spec_row_for(node_id, spec))
 
 
