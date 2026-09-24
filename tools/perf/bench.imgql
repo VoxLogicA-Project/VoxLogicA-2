@@ -1,36 +1,59 @@
-// Benchmark program for the performance evaluation of Section 6.
+// Benchmark program for the performance evaluation.
 //
-// SELF-CONTAINED ON PURPOSE. It reads no dataset, so the whole suite runs on
-// any machine with the tool installed, and a reviewer can reproduce the shape
-// of every number in the section without first obtaining BraTS. The figures in
-// the paper come from the same script pointed at the case-study program with
-// --program; the two differ in the cost of a kernel, not in what is measured.
+// SELF-CONTAINED ON PURPOSE. It reads no dataset, so the suite runs on any
+// machine with the tool installed and a reviewer can reproduce the shape of
+// every number without first obtaining BraTS. Pass --program to point the same
+// measurements at the case-study program, which is what the paper reports; the
+// two differ in the cost of a kernel and not in what is measured.
 //
-// The shape is the one the case study has: ten independent sweeps over a
-// parameter, each element an image computation, with sub-expressions shared
-// between elements. Ten loops rather than one because a single loop cannot
-// exercise the expansion memo -- a run stopped halfway through the work stops
-// halfway through that loop's expansion, and no memo is ever written.
+// WHY THE PROGRAM IS WRITTEN THIS WAY. Three earlier versions of this file
+// were discarded after they were measured, and each failure is worth stating,
+// because the same mistakes would silently weaken the section.
 //
-// Each loop is given its own constant, since two identical loops would be one
-// node and the program would be a tenth of its apparent size.
+//   Operators. An earlier version used the SimpleITK arithmetic operators.
+//   They are not registered as element-wise, so no cone was ever formed and
+//   the fusion comparison measured nothing at all: cones dispatched was zero
+//   with fusion both enabled and disabled. The spatial operators used here are
+//   the ones fusion applies to, and the ones the case study is written in.
+//
+//   Size. With images of a few hundred pixels a side a node costs well under a
+//   millisecond, the process never rises above about an eighth of the machine,
+//   and the measurement describes the cost of coordinating work rather than of
+//   doing it: measured at 0.6 ms of processor time per node and 431% of a
+//   2400% ceiling. At the size used here a node costs about 17 ms, which is
+//   the regime the case-study kernels run in.
+//
+//   Shape. Ten independent sweeps rather than one, because a single loop
+//   cannot exercise the reuse of an expansion: a run stopped halfway through
+//   the work stops halfway through that loop's expansion, and no record of it
+//   is ever written. Each loop carries its own constant, since two identical
+//   loops would be one node and the program would be a tenth of its apparent
+//   size.
 
-import "simpleitk"
+import "vox1"
 import "geom"
-import "arrays"
 
-let base = blank(32, 32, 1.0)
+// One element: a brightness band, its complement, and their combination. The
+// four spatial operators in the middle are contiguous and element-wise, so the
+// engine may gather them into a single compiled per-voxel loop; `volume`
+// reduces the result to a number and ends the cone.
+let band(i, k) =
+  let img = blank(4096, 4096, i) in
+  let lo = geq_sv(0.30, img) in
+  let hi = geq_sv(0.70, img) in
+  let core = and(lo, not(hi)) in
+  volume(or(core, and(lo, geq_sv(k, img))))
 
-let l0 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 0.0)))
-let l1 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 1.0)))
-let l2 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 2.0)))
-let l3 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 3.0)))
-let l4 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 4.0)))
-let l5 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 5.0)))
-let l6 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 6.0)))
-let l7 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 7.0)))
-let l8 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 8.0)))
-let l9 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 9.0)))
+let l0 = for i in range(0, 120) do band(i, 0.10)
+let l1 = for i in range(0, 120) do band(i, 0.11)
+let l2 = for i in range(0, 120) do band(i, 0.12)
+let l3 = for i in range(0, 120) do band(i, 0.13)
+let l4 = for i in range(0, 120) do band(i, 0.14)
+let l5 = for i in range(0, 120) do band(i, 0.15)
+let l6 = for i in range(0, 120) do band(i, 0.16)
+let l7 = for i in range(0, 120) do band(i, 0.17)
+let l8 = for i in range(0, 120) do band(i, 0.18)
+let l9 = for i in range(0, 120) do band(i, 0.19)
 
 print "l0" l0
 print "l1" l1

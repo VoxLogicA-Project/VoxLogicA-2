@@ -59,11 +59,19 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 DEFAULT_PROGRAM = HERE / "bench.imgql"
 
-#: Completions after which the interrupted run of the `resume` measurement
-#: stops. Half of what the program does is the informative point: a run that
-#: ignores the store does the whole program again, a run that uses it does the
-#: remainder, and the two outcomes are a factor of two apart.
-RESUME_STOP = 40_000
+#: Fraction of the program at which the interrupted run is stopped. Half is the
+#: informative point: a run that ignores the store does the whole program
+#: again, a run that uses it does the remainder, and the two outcomes are a
+#: factor of two apart. It is a fraction and not a fixed count because the
+#: figure has to mean the same thing for the benchmark and for the case-study
+#: program, which differ by more than an order of magnitude in size.
+#:
+#: The guard stops between completions, on the engine's watchdog rather than
+#: immediately, so the run overshoots by whatever the workers retire in the
+#: meantime. The overshoot is proportional to the rate, which is why the table
+#: reports what the stopped run ACTUALLY did rather than what it was asked to
+#: do, and why the remainder is computed from the former.
+RESUME_FRACTION = 0.5
 
 
 def _cli(program: Path, store: Path, report: Path, threads: int,
@@ -202,8 +210,13 @@ def measure_resume(program: Path, work: Path, threads: int) -> list[dict]:
     _discard(store)
     reference = _run("resume-reference", program, store, threads, work)
     _discard(store)
+    # The stop is taken from what the program was just measured to do, so the
+    # same fraction applies whatever program this is pointed at.
+    whole = reference.get("completions") or 0
+    stop_after = max(1, int(whole * RESUME_FRACTION))
     stopped = _run("resume-stopped", program, store, threads, work,
-                   extra_env={"VOXLOGICA_DEV_STOP_AFTER": str(RESUME_STOP)})
+                   extra_env={"VOXLOGICA_DEV_STOP_AFTER": str(stop_after)})
+    stopped["requested_stop"] = stop_after
     resumed = _run("resume-resumed", program, store, threads, work)
     _discard(store)
     return [reference, stopped, resumed]
@@ -262,7 +275,7 @@ def main(argv: list[str]) -> int:
 
     payload = {
         "program": str(arguments.program),
-        "resume_stop_after": RESUME_STOP,
+        "resume_fraction": RESUME_FRACTION,
         "machine": {
             "cores": cores,
             "platform": platform.platform(),
