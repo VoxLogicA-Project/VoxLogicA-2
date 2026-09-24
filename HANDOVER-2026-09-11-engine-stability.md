@@ -3191,3 +3191,54 @@ equivalent of; hand-fix both reserve sites to her `headroom // 2`; run the full
 suite; then re-run the cold A/B of §37s, because her durable-transitively and
 answerable-reference changes touch precisely the store and resume paths every
 measurement in §37m–§37s depends on.
+
+### 37u. The merge, reviewed commit by commit — and what it cost to get green
+
+Merged `main` (= `tacas-artifact-rc5`, `6bfc398`) into this branch. Suite after:
+**1,344 passed, 4 skipped.**
+
+**Verdicts.** Kept as hers: the disk reserve fix, the numpy-in-the-handle fix,
+the stored-`None` sentinel, container-durability (both commits), one-expansion-
+per-loop, goal emission keyed by `(id, operation, name)`, no-goals-is-a-refusal,
+and the whole artifact toolchain. **Dropped one**: `94f0dae` sets
+`self.verifier = None` in `__init__` because her branch lacks `e26306b`; ours
+has it as a class attribute, set per instance by `strategy.py`. Redundant here,
+and its comment is false of us. **Merged rather than chosen**, two hunks: her
+container-durability guard runs before OUR snapshot pop in `_finish`, and our
+facts-in-the-exception `NeedsExpansion` precedes her named `KeyError` in
+`_rematerialize`. **Superseded, nothing to do**: `29634eb` refused to serve
+graph-growing nodes — the one change that would have collided with our prune
+site — and `48e0618` withdrew it before the tag.
+
+**The merge got one thing wrong silently**, and it is the one worth remembering:
+`ad55306` replaced the half-the-volume reserve clamp, and §37l had copied the
+OLD formula into `_disk_free_and_reserve`. Two copies, no textual conflict, and
+git kept both. The rule is now one function, `_disk_reserve(total, free,
+payload)`, called by eviction and admission alike.
+
+**Three reconciliations were needed, and only the third was a real defect.**
+
+1. `load` returns `MISSING`, not `None` (`0789ea6`), because `None` is a value a
+   program may store. Our test predated the sentinel; the refusal it checks is
+   unchanged.
+2. The reserve is now half of HEADROOM, so a volume with 1 GB free may use
+   500 MB — refusing that write was the bug she fixed. Our disk test asserted
+   the old behaviour and is rewritten to the corrected property, in bytes, with
+   incompressible payloads (the store gzips, and a megabyte of zeros is a few
+   hundred bytes).
+3. **The real one.** The warm pass of a fold over a computed loop died with a
+   bare `KeyError: <64 hex chars>` inside `default.fold`. Her `7348626` admits a
+   reference the store can answer, so the container is SERVED — and the refusal
+   was what used to send the pruned loop back to be expanded, which is what
+   interned its elements. `fold`'s rewriter then chains over element handles
+   this run never named, and `_register_new_subtree` walks `graph.deps` on them.
+   Fixed where the traceback points: that walk now stops at `_available`, the
+   same predicate `_schedule_subgraph` prunes on. A node the store can answer
+   needs no subtree registered.
+
+**Two of my own fixes were reverted**, and the reason is worth keeping. Both
+were written for failure 3 before I had its traceback — a spec-restore in
+`_rematerialize` and a narrowing of `_references_are_answerable` — and neither
+fixed it. Guessing produced two plausible engine changes that were not needed;
+reading the traceback produced a three-line fix in the right function. The
+answerability predicate stands as she wrote it.
