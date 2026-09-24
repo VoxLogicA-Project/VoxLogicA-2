@@ -44,6 +44,7 @@ import json
 import pytest
 
 from voxlogica.engine.core import _EXPANDED_OPERATORS, _SEQUENCE_OPERATORS
+from voxlogica.engine.node_table import MISSING
 from voxlogica.storage import SQLiteResultsDatabase
 
 
@@ -118,7 +119,7 @@ def test_an_unanswerable_container_is_refused_at_load(tmp_path) -> None:
     nothing could rebuild what comes back. `load` must report a miss rather
     than hand out a value whose handles resolve to nothing.
     """
-    from voxlogica.engine.node_table import NodeTable, MISSING
+    from voxlogica.engine.node_table import NodeTable
 
     db = SQLiteResultsDatabase(db_path=str(tmp_path / "p2.db"))
     loop_id = "d4" + "7" * 62
