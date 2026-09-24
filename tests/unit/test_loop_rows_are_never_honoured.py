@@ -118,7 +118,7 @@ def test_an_unanswerable_container_is_refused_at_load(tmp_path) -> None:
     nothing could rebuild what comes back. `load` must report a miss rather
     than hand out a value whose handles resolve to nothing.
     """
-    from voxlogica.engine.node_table import NodeTable
+    from voxlogica.engine.node_table import NodeTable, MISSING
 
     db = SQLiteResultsDatabase(db_path=str(tmp_path / "p2.db"))
     loop_id = "d4" + "7" * 62
@@ -126,7 +126,11 @@ def test_an_unanswerable_container_is_refused_at_load(tmp_path) -> None:
 
     table = NodeTable(backend=db)
     assert table.persisted(loop_id), "the row is still in the index (see above)"
-    assert table.load(loop_id) is None, (
+    # MISSING, not None. `None` is a value a program can legitimately store
+    # (`0789ea6`), so a miss has its own sentinel and the two are no longer the
+    # same answer. The refusal itself is unchanged: neither element is in the
+    # index, so the container is not answerable and the load reports a miss.
+    assert table.load(loop_id) is MISSING, (
         "a container whose elements this run cannot reach was handed out; the "
         "caller then resolves those handles to nothing, on whatever thread it "
         "happens to be on")
@@ -146,4 +150,4 @@ def test_an_answerable_container_is_served(tmp_path) -> None:
     # Both elements the payload names are interned in this run.
     table.nodes["a" * 64] = NodeSpec(kind="primitive", operator="test.blob")
     table.nodes["b" * 64] = NodeSpec(kind="primitive", operator="test.blob")
-    assert table.load(seq_id) is not None
+    assert table.load(seq_id) is not MISSING
