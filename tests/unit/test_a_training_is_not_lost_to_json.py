@@ -1,61 +1,42 @@
-"""A finished training must not be thrown away by its own bookkeeping.
+"""The belt behind the brace: the state writer must encode a foreign scalar.
 
-WHAT THIS COSTS WHEN IT IS WRONG. On 2026-09-18 a 1000-epoch nnU-Net fold
-finished -- mean validation Dice 0.9353, `checkpoint_final.pth` written -- and
-the run then died with:
+`runtime._plain` normalises nnU-Net's postprocessing decision where the pickle
+is read, and `test_nnunet_decision_is_json` covers that thoroughly. This file
+covers only what that one does not: the LAST line of defence, `save_state`,
+which serialises the work root's state file.
 
-    ERROR: nnUNet training failed: Object of type int64 is not JSON serializable
-
-nnU-Net's postprocessing decision is a pickle, and for this dataset it carried
-`remove_all_but_largest_component_from_segmentation` with a numpy `int64`
-label. That dict goes into the work root's state file and onto the model
-handle, both of which are JSON. Twenty-one hours of GPU time were reported as a
-*training* failure, which is precisely what it was not: the training had
-succeeded and was on disk.
-
-Two guards, tested here: the decision is normalised where the pickle is read,
-and the state writer can encode a foreign scalar whatever else arrives later.
+Why both exist. On 2026-09-18 a 1000-epoch fold finished -- mean validation
+Dice 0.9353, `checkpoint_final.pth` written -- and the run then died with
+`Object of type int64 is not JSON serializable`, reported as "nnUNet training
+failed", which is exactly what it was not. The fix for that decision had
+already landed on main ten days earlier and was not yet merged here. The brace
+is the right place to convert; this is the belt, so that the NEXT field to
+arrive from a third-party artefact cannot cost a run the same way.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
 from voxlogica.primitives.nnunet.materialize import load_state, save_state
-from voxlogica.primitives.nnunet.runtime import _json_safe, _native
-
-
-@pytest.mark.unit
-def test_a_numpy_scalar_becomes_a_python_value() -> None:
-    numpy = pytest.importorskip("numpy")
-    assert _native(numpy.int64(1)) == 1
-    assert isinstance(_native(numpy.int64(1)), int)
-    assert _native(numpy.float32(0.5)) == pytest.approx(0.5)
-    assert _native(numpy.array([1, 2])) == [1, 2]
-
-
-@pytest.mark.unit
-def test_the_real_decision_shape_survives_json() -> None:
-    """The exact structure that killed the run: operations plus kwargs from the
-    pickle, with a numpy label inside."""
-    numpy = pytest.importorskip("numpy")
-    decision = _json_safe({
-        "operations": ["remove_all_but_largest_component_from_segmentation"],
-        "kwargs": [{"labels_or_regions": numpy.int64(1)}],
-    })
-    encoded = json.dumps(decision)          # must not raise
-    assert json.loads(encoded)["kwargs"][0]["labels_or_regions"] == 1
 
 
 @pytest.mark.unit
 def test_the_state_file_round_trips_a_foreign_scalar(tmp_path: Path) -> None:
-    """The belt: even an un-normalised field must not cost a run."""
     numpy = pytest.importorskip("numpy")
     save_state(tmp_path, {"dataset_id": 900,
                           "postprocessing": {"kwargs": [{"label": numpy.int64(7)}]}})
     state = load_state(tmp_path)
     assert state is not None
     assert state["postprocessing"]["kwargs"][0]["label"] == 7
+
+
+@pytest.mark.unit
+def test_an_ordinary_state_is_written_unchanged(tmp_path: Path) -> None:
+    """A writer that rewrites what it should leave alone is its own bug."""
+    payload = {"dataset_id": 900, "modalities": ["flair", "t1"],
+               "trained_folds": [0], "postprocessing": None}
+    save_state(tmp_path, payload)
+    assert load_state(tmp_path) == payload
