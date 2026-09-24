@@ -2463,6 +2463,21 @@ class ComputationEngine:
             if (nid in seen or nid in self.table.completed
                     or nid in self.graph.incomplete):
                 continue
+            # STOP WHERE THE SCHEDULER WOULD STOP. A rewriter names nodes it did
+            # not make -- `fold` chains over the elements of the sequence it was
+            # handed -- and against a warm store those elements are in the store
+            # and were never interned by this run, because the loop that defines
+            # them was pruned rather than expanded. Walking their dependencies
+            # then asks `table.nodes` for a spec that is not there, and the
+            # KeyError escapes as `default.fold failed`, with sixty-four hex
+            # characters for a message.
+            #
+            # `_available` is the same predicate `_schedule_subgraph` prunes on:
+            # a node the store can answer needs no subtree registered, because
+            # nothing below it will be computed. Its value arrives through
+            # `_rematerialize` like any other cached value.
+            if self._available(nid):
+                continue
             seen.add(nid)
             stack.append((nid, True))          # visited again after its deps
             for dep in self.graph.deps(nid):
