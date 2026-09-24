@@ -32,12 +32,22 @@ REPOS = Path(os.environ.get("VOXLOGICA_REPOS", Path.home() / "data/local/repos")
 #: `incoming`. So a dialect can have its own program, and a case that does not
 #: provide one falls back to `vl2`. That fallback is not a formality -- it is how
 #: the kit reports which engines a case could actually reach.
+# "lazy" IS A STRATEGY, NOT A CHECKOUT. It used to be one: `main` had no
+# scheduling engine, so the lazy evaluator was whatever `main` did. `main` now
+# IS the engine, and it rejects the `vl2main` dialect this kit used to feed it
+# (`border` takes an argument now: E_ARITY, every goal missing, the column
+# reading as four disagreements that were really four failures to parse).
+# So the lazy strategy is reached where it now lives -- `--no-engine` on the
+# same checkout, same dialect as everyone else.
 ENGINES: list[tuple[str, str, str, Path]] = [
     ("A vl1", "vl1", "vl1", Path("/home/VoxLogicA/binaries/VoxLogicA_1.3.3-experimental_linux-x64/VoxLogicA")),
-    ("B lazy", "vl2", "vl2main", REPOS / "vlx-main"),
+    ("B lazy", "vl2", "vl2", REPOS / "vlx-main"),
     ("C engine", "vl2", "vl2", REPOS / "vlx-incoming"),
     ("D handles", "vl2", "vl2", REPOS / "vlx-handles"),
 ]
+#: Extra flags per engine, for the ones that are a strategy rather than a
+#: checkout. Empty for the others.
+STRATEGY = {"B lazy": ["--no-engine"]}
 
 VENV = Path(os.environ.get("VOXLOGICA_VENV",
                            REPOS / "VoxLogicA-2/.venv/bin/python"))
@@ -96,10 +106,13 @@ def vl2_flags(checkout: Path) -> list[str]:
     return cached
 
 
-def run_vl2(checkout: Path, program: Path) -> dict[str, str]:
-    env = dict(os.environ, PYTHONPATH=str(checkout / "implementation/python"))
+def run_vl2(checkout: Path, program: Path, extra: list[str] | None = None) -> dict[str, str]:
+    # PYTHON_GIL=0 because this bypasses the ./voxlogica wrapper that normally
+    # sets it: without it SimpleITK re-enables the GIL at import and the engines
+    # are compared under a runtime none of them is meant to run on.
+    env = dict(os.environ, PYTHONPATH=str(checkout / "implementation/python"), PYTHON_GIL="0")
     out = subprocess.run([str(VENV), "-m", "voxlogica.main", "run", str(program),
-                          *vl2_flags(checkout)],
+                          *vl2_flags(checkout), *(extra or [])],
                          capture_output=True, text=True, timeout=900,
                          cwd=checkout, env=env)
     return goals_from(out.stdout + out.stderr)
@@ -182,7 +195,7 @@ def main() -> int:
             scratch.write_text(text)
             try:
                 answers[label] = (run_vl1(where, scratch) if kind == "vl1"
-                                  else run_vl2(where, scratch))
+                                  else run_vl2(where, scratch, STRATEGY.get(label)))
             except subprocess.TimeoutExpired:
                 print(f"  {label:<10} TIMEOUT")
                 failures += 1
