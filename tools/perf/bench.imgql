@@ -1,0 +1,44 @@
+// Benchmark program for the performance evaluation of Section 6.
+//
+// SELF-CONTAINED ON PURPOSE. It reads no dataset, so the whole suite runs on
+// any machine with the tool installed, and a reviewer can reproduce the shape
+// of every number in the section without first obtaining BraTS. The figures in
+// the paper come from the same script pointed at the case-study program with
+// --program; the two differ in the cost of a kernel, not in what is measured.
+//
+// The shape is the one the case study has: ten independent sweeps over a
+// parameter, each element an image computation, with sub-expressions shared
+// between elements. Ten loops rather than one because a single loop cannot
+// exercise the expansion memo -- a run stopped halfway through the work stops
+// halfway through that loop's expansion, and no memo is ever written.
+//
+// Each loop is given its own constant, since two identical loops would be one
+// node and the program would be a tenth of its apparent size.
+
+import "simpleitk"
+import "geom"
+import "arrays"
+
+let base = blank(32, 32, 1.0)
+
+let l0 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 0.0)))
+let l1 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 1.0)))
+let l2 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 2.0)))
+let l3 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 3.0)))
+let l4 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 4.0)))
+let l5 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 5.0)))
+let l6 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 6.0)))
+let l7 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 7.0)))
+let l8 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 8.0)))
+let l9 = for i in range(0, 3500) do array_stats(Add(Add(blank(32, 32, i), base), blank(32, 32, 9.0)))
+
+print "l0" l0
+print "l1" l1
+print "l2" l2
+print "l3" l3
+print "l4" l4
+print "l5" l5
+print "l6" l6
+print "l7" l7
+print "l8" l8
+print "l9" l9
