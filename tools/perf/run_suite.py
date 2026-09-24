@@ -121,7 +121,12 @@ def _read_report(report: Path) -> dict:
         "ops_fused": work.get("ops_fused"),
         "wall_seconds": totals.get("wall_seconds"),
         "cpu_seconds": totals.get("cpu_seconds"),
-        "peak_rss_mb": totals.get("peak_rss_mb") or totals.get("max_rss_mb"),
+        # Resident memory is reported in bytes and quoted in megabytes, which
+        # is the unit the section uses. `getrusage` is the source, so this is
+        # what the process actually occupied and not the engine's own tally.
+        "peak_rss_mb": (round(totals["peak_rss_bytes"] / 1024 ** 2, 1)
+                        if totals.get("peak_rss_bytes") else None),
+        "cores_available": totals.get("cores_available"),
     }
 
 
