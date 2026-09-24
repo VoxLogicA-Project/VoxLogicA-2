@@ -2751,10 +2751,37 @@ class ComputationEngine:
                 f"persisted={self.table.persisted(nid)}")
         node = self.table.nodes.get(nid)
         if node is None:
-            # Neither resident, nor loadable, nor known to this run's graph.
-            # Reachable only through a handle whose target the store said it
-            # held and then could not produce (another process evicting
-            # mid-run). A named failure beats `KeyError: <64 hex chars>`.
+            # BEFORE GIVING UP, ASK THE STORE WHAT THIS NODE IS. A container
+            # served from disk names its elements by hash, and this run may
+            # never have interned them: `_references_are_answerable` now admits
+            # a reference the store can answer (7348626), so the container is
+            # handed over and its elements are met here for the first time.
+            #
+            # That is what broke the warm pass of a fold over a computed loop:
+            # the refusal used to send the loop back to be expanded, which is
+            # what interned the elements, and serving the container instead
+            # moved the failure downstream into `KeyError: <64 hex chars>`
+            # raised inside `default.fold`.
+            #
+            # The recipe is on disk -- `_memoise_expansion` writes the spec
+            # closure before it publishes the memo -- and `spec_from_row`
+            # re-hashes what it reads, so a row that does not describe THIS id
+            # is refused rather than trusted. Interning it here costs one
+            # lookup and lets the rebuild continue exactly as if the expansion
+            # had run.
+            backend = getattr(self.table, "_backend", None)
+            if backend is not None and hasattr(backend, "get_definition"):
+                try:
+                    restored = spec_from_row(nid, backend.get_definition(nid))
+                except Exception:                               # noqa: BLE001
+                    restored = None
+                if restored is not None:
+                    self.table.nodes[nid] = restored
+                    node = restored
+        if node is None:
+            # Neither resident, nor loadable, nor described by the store, nor
+            # known to this run's graph. A named failure beats
+            # `KeyError: <64 hex chars>`.
             raise KeyError(
                 f"node {nid[:12]} is named by a value but is neither resident, "
                 f"loadable from the store, nor part of this run's graph")
