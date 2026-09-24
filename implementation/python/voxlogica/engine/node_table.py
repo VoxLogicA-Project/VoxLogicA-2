@@ -464,39 +464,13 @@ class NodeTable:
         expand (the engine is past its run by the time a goal materializes) and
         dies with `NeedsExpansion` — 14 of 23 goals, three runs of three, on a
         store holding all 53 elements the container named.
-
-        ONE NARROWING, AND IT IS THE INVARIANT THIS BRANCH ALREADY ENFORCES.
-        The store must be able BOTH to serve the reference and to NAME it. A
-        value with no spec row cannot be named: `_rematerialize` has nothing to
-        rebuild from, and the caller meets `KeyError: <64 hex chars>` on
-        whatever thread it happens to be on -- measured as the warm pass of a
-        fold over a computed loop, which the refusal used to fix by sending the
-        loop back to be expanded.
-
-        `put_success_batch` has refused to store a result without its spec
-        since the guard went in, so on any store written since, this costs one
-        lookup and changes nothing. On a store written before it, the reference
-        is refused and the loop is expanded, which is exactly the old
-        behaviour -- and the elements are still served from disk individually.
         """
         for handle in iter_handles(value):
             ref = handle.node
-            if ref in self.values or ref in self.nodes:
-                continue
-            if self.persisted(ref) and self._describable(ref):
+            if ref in self.values or ref in self.nodes or self.persisted(ref):
                 continue
             return False
         return True
-
-    def _describable(self, node_id: NodeId) -> bool:
-        """Whether the store can say what this node IS, not just what it held."""
-        backend = self._backend
-        if backend is None or not hasattr(backend, "get_definition"):
-            return False
-        try:
-            return backend.get_definition(node_id) is not None
-        except Exception:                                       # noqa: BLE001
-            return False
 
     def is_claimable(self, node_id: NodeId) -> bool:
         """True iff ``begin(node_id)`` would succeed right now.
