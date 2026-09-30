@@ -3242,3 +3242,46 @@ were written for failure 3 before I had its traceback — a spec-restore in
 fixed it. Guessing produced two plausible engine changes that were not needed;
 reading the traceback produced a three-line fix in the right function. The
 answerability predicate stands as she wrote it.
+
+### 37v. The resume costs nothing measurable: §37s's 20% was the program, not the resume
+
+§37s set a cold run (the first 35 minutes of `brats027_oracle60.imgql`) against
+a resume doing a LATER part of the same program, off a 1.1 TB store, at another
+cache cap. That is two differences at once, and it was never shown which one
+the 20% belonged to. `tools/perf/resume_ab.sh` removes the second. Same code
+(`c801466`), same program, `--cache-max-gb 1000` (so neither arm evicts), a
+fresh store each, run one after the other on fmt-5000 on 2026-09-30:
+
+- `cont`: cold, 70 minutes without interruption
+- `kill`: cold 35 minutes, `kill -9`, then resumed for 35 minutes on the same
+  store, which by the end is 995 GB (`cont`'s is 950 GB), the size §37s had
+
+Both arms are read over the same stretch of work, the second 35 minutes. The
+first halves are the control: identical cold starts, so their gap is the noise.
+
+| stretch · method | `cont` node/s | `kill` node/s | gap |
+|---|---:|---:|---:|
+| first 35 min, both cold (control) | 469.0 | 447.6 | −4.6% |
+| second 35 min, mean | 492.7 | 473.9 | −3.8% |
+| second 35 min, best 15-min window | 502.0 | 483.7 | −3.6% |
+| CPU ms per completion, best window | 43.62 | 43.56 | 0% |
+| cores in use, best window | 21.9 | 21.1 | −3.7% |
+| recompute share, best window | 1.3% | 3.4% | |
+
+**The gap after the resume (−3.6 to −3.8%) is no bigger than the gap between
+two identical cold starts (−4.6%).** CPU per completion is the same to 0.1%.
+Against a store of the size §37s had, resuming after a `kill -9` gives the same
+rate as not being interrupted. The recompute share doubles, but it is 3.4% of
+completions, and it does not show in the rate.
+
+**So §37s's hypothesis is refuted.** It proposed a serial cost that grows with
+store interaction. With a store of 1 TB that cost is not there. The 540 → 431
+fall belongs to WHICH part of the program was running, since that is the one
+difference this test leaves in place. `cont`'s own progress line shows the
+effect directly: 511–515 node/s at 62–63 minutes, 443–476 at 64–69 minutes,
+with no resume involved.
+
+Not tested: the resume point of §37s itself (millions of completions later),
+and a 1.1 TB store written by earlier code. Outputs are in
+`tools/perf/results/resume_ab_2026-09-30/`: the table, the reports, the
+samples and the logs.

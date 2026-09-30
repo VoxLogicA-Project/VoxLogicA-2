@@ -1,0 +1,183 @@
+{
+  "schema": "voxlogica.measurement/1",
+  "environment": {
+    "argv": [
+      "/home/vincenzo/data/local/repos/VoxLogicA-2/.venv/bin/python",
+      "/tmp/vlx-resumeab/implementation/python/voxlogica/main.py",
+      "run",
+      "--no-serve",
+      "--threads",
+      "32",
+      "--store-db",
+      "/home/vincenzo/data/local/repos/VoxLogicA-2/looping_experiment/_scratch/resume_ab/cont.db",
+      "--cache-max-gb",
+      "1000",
+      "--error-details",
+      "--verify=report",
+      "--measure",
+      "/home/vincenzo/data/local/repos/VoxLogicA-2/looping_experiment/_scratch/resume_ab/cont.report.json",
+      "--measure-series",
+      "--control",
+      "/home/vincenzo/data/local/repos/VoxLogicA-2/looping_experiment/_scratch/resume_ab/cont.ctl",
+      "/home/vincenzo/data/local/repos/VoxLogicA-2/looping_experiment/brats027_oracle60.imgql"
+    ],
+    "program": "",
+    "flags": {
+      "threads": 32,
+      "threads_auto": "logical",
+      "strategy": "engine",
+      "sparse_cache": false,
+      "goals": 7
+    },
+    "commit": "c80146602ffb54592fa9861782e2f727628393c2",
+    "working_tree_dirty": false,
+    "host": "fmt-5000",
+    "cpu_model": "Intel(R) Core(TM) Ultra 9 285K",
+    "cpu_count": 24,
+    "python": "3.14.6 free-threading build (main, Jun 11 2026, 04:03:14) [Clang 22.1.3 ]",
+    "free_threaded_build": true,
+    "gil_enabled": false,
+    "loop_thread_id": 2374931,
+    "per_thread_sampling": true,
+    "period_requested_s": 0.25,
+    "ticks_per_second": 100,
+    "sector_bytes": 512,
+    "store_path": "/home/vincenzo/data/local/repos/VoxLogicA-2/looping_experiment/_scratch/resume_ab/cont.db",
+    "device_resolved_from": "/home/vincenzo/data/local/repos/VoxLogicA-2/looping_experiment/_scratch/resume_ab/cont.db",
+    "block_device": "nvme0n1",
+    "device_stats_available": true,
+    "process_io_available": true,
+    "census_every_n_ticks": 4,
+    "census_period_s": 1.0,
+    "started_unix": 1790768782.5594785
+  },
+  "outcome": {
+    "recorded": false
+  },
+  "totals": {
+    "wall_seconds": 4047.005,
+    "cpu_seconds": 87883.315,
+    "mean_cpu_percent": 2171.6,
+    "cores_available": 24,
+    "ceiling_percent": 2400.0,
+    "user_seconds": 85356.381,
+    "system_seconds": 2526.934,
+    "peak_rss_bytes": 25872482304,
+    "minor_faults": 835539599,
+    "major_faults": 250597,
+    "voluntary_switches": 25574905,
+    "involuntary_switches": 61418606,
+    "source": "getrusage(RUSAGE_SELF), read once at start and once at exit"
+  },
+  "throughput": {
+    "completions": null,
+    "completions_per_second": 0.0,
+    "kernels_per_second": 0.0,
+    "cpu_seconds_per_completion_ms": null,
+    "note": "cpu_seconds_per_completion is the energy cost of one unit of work. A change must not raise it. Context switches are in totals: a parallelisation that trades loop time for switching shows up there and in this ratio, not in CPU%."
+  },
+  "work": {
+    "kernels_executed": null,
+    "recomputes": null,
+    "cones_dispatched": null,
+    "ops_fused": null,
+    "interiors_elided": null,
+    "completed": null,
+    "persist_shed": null,
+    "persist_skipped_dead": null
+  },
+  "work_by_operator": [],
+  "shape": {
+    "intervals": 16187,
+    "process_cpu_mean_percent": 2169.3,
+    "process_cpu_max_percent": 2426.2,
+    "saturated_fraction_90": 0.8327,
+    "saturated_fraction_75": 0.943,
+    "below_half_fraction": 0.0492,
+    "note": "Sampled, therefore approximate; the exact mean is in totals.mean_cpu_percent. Use these for the SHAPE only."
+  },
+  "event_loop": {
+    "mean_occupancy_percent": 55.9,
+    "max_occupancy_percent": 162.9,
+    "hot_fraction_90": 0.0077,
+    "phases": {}
+  },
+  "io": {
+    "io_wchar": null,
+    "io_write_bytes": null,
+    "io_read_bytes": null,
+    "io_cancelled_write_bytes": null,
+    "dev_io_ticks_ms": null,
+    "dev_sectors_written": null
+  },
+  "threads": {
+    "censuses": 4047,
+    "threads_total_mean": 388.4,
+    "runnable_mean": 39.96,
+    "runnable_median": 38,
+    "runnable_max": 80,
+    "runnable_p10": 28,
+    "sleeping_mean": 348.3,
+    "uninterruptible_mean": 0.12,
+    "note": "runnable = threads in R. Compare with totals.mean_cpu_percent / 100: if they agree, the CPU figure is an honest account of how much of the machine is working, and the remaining threads are blocked rather than starved of cores."
+  },
+  "runnable_vs_cpu": [
+    {
+      "runnable": "0-4",
+      "intervals": 201,
+      "cpu_percent_mean": 407.0,
+      "cpu_percent_max": 2348.0,
+      "share_of_ceiling": 0.169
+    },
+    {
+      "runnable": "5-12",
+      "intervals": 79,
+      "cpu_percent_mean": 2072.0,
+      "cpu_percent_max": 2363.0,
+      "share_of_ceiling": 0.864
+    },
+    {
+      "runnable": "13-20",
+      "intervals": 43,
+      "cpu_percent_mean": 2167.0,
+      "cpu_percent_max": 2372.0,
+      "share_of_ceiling": 0.903
+    },
+    {
+      "runnable": "21-28",
+      "intervals": 94,
+      "cpu_percent_mean": 2224.0,
+      "cpu_percent_max": 2386.0,
+      "share_of_ceiling": 0.927
+    },
+    {
+      "runnable": "29-40",
+      "intervals": 1986,
+      "cpu_percent_mean": 2267.0,
+      "cpu_percent_max": 2392.0,
+      "share_of_ceiling": 0.945
+    },
+    {
+      "runnable": "41+",
+      "intervals": 1643,
+      "cpu_percent_mean": 2273.0,
+      "cpu_percent_max": 2386.0,
+      "share_of_ceiling": 0.947
+    }
+  ],
+  "instrument": {
+    "samples": 16188,
+    "period_requested_s": 0.25,
+    "period_achieved_mean_s": 0.250002,
+    "period_achieved_min_s": 0.00614,
+    "period_achieved_max_s": 4.10681,
+    "sampler_cpu_seconds": 0.0,
+    "sampler_share_of_run_cpu": 0.0,
+    "rate_rule": "Every rate here is computed from consecutive sample timestamps. Dividing by the nominal period overstated CPU by 39% in the method this replaced."
+  },
+  "control": {
+    "knob_changes": [],
+    "evals": [],
+    "altered_while_running": false
+  }
+}

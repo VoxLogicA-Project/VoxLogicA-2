@@ -1,0 +1,8 @@
+cont start 2026-09-30T13:45:49+02:00
+950G	/home/vincenzo/data/local/repos/VoxLogicA-2/looping_experiment/_scratch/resume_ab/cont.db.files
+cont done 2026-09-30T14:56:20+02:00
+kill start 2026-09-30T14:56:20+02:00
+/tmp/vlx-resumeab/tools/perf/resume_ab.sh: line 45: 2398051 Killed                     env PYTHONPATH=$R/implementation/python PTYRUN_LOG=$OUT/$1.log PTYRUN_COLS=180 $V ptyrun.py $V -u -m voxlogica.main run --no-serve --threads 32 --store-db $2 --cache-max-gb 1000 --error-details --verify=report --measure $OUT/$1.report.json --measure-series --control $OUT/$1.ctl $PROG
+kill1 killed 2026-09-30T15:31:25+02:00
+995G	/home/vincenzo/data/local/repos/VoxLogicA-2/looping_experiment/_scratch/resume_ab/kill.db.files
+kill done 2026-09-30T16:06:52+02:00   (store kept: /home/vincenzo/data/local/repos/VoxLogicA-2/looping_experiment/_scratch/resume_ab/kill.db)
