@@ -20,8 +20,10 @@ def load(path):
     pts = []
     with open(path) as f:
         for r in csv.DictReader(f, delimiter="\t"):
+            if not r.get("completed"):   # engine counters sampled on a slower cadence
+                continue
             try:
-                pts.append((float(r["t_ns"]) / 1e9, float(r["completed"] or 0),
+                pts.append((float(r["t_ns"]) / 1e9, float(r["completed"]),
                             float(r["recomputes"] or 0), float(r["proc_ticks"] or 0)))
             except (KeyError, ValueError):
                 pass
@@ -57,8 +59,16 @@ def series(out, tag):
 
 
 out = sys.argv[1]
-cont = [p for p in load(series(out, "cont")) if p[0] >= HALF]
+full = load(series(out, "cont"))
+cont = [p for p in full if p[0] >= HALF]
 kill = load(series(out, "kill2"))
+# The first halves are the control: same cold start, so they must agree.
+print("| arm, first 35 min (control) | completions | mean node/s | CPU ms/completion |")
+print("|---|---:|---:|---:|")
+for name, pts in (("cont", [p for p in full if p[0] < HALF]), ("kill", load(series(out, "kill1")))):
+    dc, mean, cpu, _ = stats(pts)
+    print("| %s | %d | %.1f | %.2f |" % (name, dc, mean, cpu))
+print()
 print("| arm, second 35 min | completions | mean node/s | CPU ms/completion | "
       "best 15-min node/s | CPU ms/completion @best | cores @best | recompute share @best |")
 print("|---|---:|---:|---:|---:|---:|---:|---:|")
