@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -175,6 +176,8 @@ def main() -> int:
     if args.case:
         cases = [c for c in cases if c in args.case]
 
+    scratch_dir = Path(tempfile.mkdtemp(prefix="voxlogica-differential-"))
+
     failures = 0
     for case in cases:
         print(f"\n=== {case} ===")
@@ -188,7 +191,11 @@ def main() -> int:
                 continue
             suffix = program.name.split(".")[-2]
             text = program.read_text().replace("$FLAIR", args.flair)
-            scratch = Path("/tmp") / f"diff_{case}_{suffix}.imgql"
+            # A fresh directory per run, not a fixed name under /tmp: the
+            # fixed name belongs to whoever ran the kit first on a shared
+            # machine, and the second person gets EACCES before the first
+            # comparison.
+            scratch = scratch_dir / f"diff_{case}_{suffix}.imgql"
             scratch.write_text(text)
             try:
                 answers[label] = (run_vl1(where, scratch) if kind == "vl1"
