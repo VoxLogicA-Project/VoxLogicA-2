@@ -52,7 +52,7 @@ PRIMITIVE_GOALS: list[tuple[str, str, str]] = [
     ("vol_xor",        "volume(xor(hi, vi))",            "volume(xor(hi, vi))"),
     ("vol_near",       "volume(N(hi))",                  "volume(N(hi))"),
     ("vol_interior",   "volume(I(hi))",                  "volume(I(hi))"),
-    ("vol_boundary",   "volume(B+(hi))",                 "volume(B+(hi))"),
+    ("vol_boundary",   "volume(boundaryL(hi))",          "volume(boundaryL(hi))"),
     ("vol_touch",      "volume(touch(vi, hi))",          "volume(touch(vi, hi))"),
     ("vol_grow",       "volume(grow(hi, vi))",           "volume(grow(hi, vi))"),
     ("vol_surrounded", "volume(surrounded(hi, brain))",  "volume(surrounded(hi, brain))"),
@@ -72,19 +72,25 @@ PRIMITIVE_GOALS: list[tuple[str, str, str]] = [
 ]
 
 #: Defined in the program rather than taken from a library, because VoxLogicA 1
-#: has no morphology operators and VoxLogicA 2 has four. Same definitions on
+#: has no morphology operators and VoxLogicA 2 has four -- and because `B+`, the
+#: boundary, cannot be called in EITHER library: both define it before they
+#: define the set difference it uses, so both reject it with "Unknown identifier
+#: \\". The same bug on both sides, which is what a faithful transliteration
+#: gets you. The operators themselves are fine, so the program defines it. Same definitions on
 #: both sides, so what is compared is the evaluation and not the library.
 LOCAL_VL1 = """let dice(x,y) = (2 .*. volume(x & y)) ./. (volume(x) .+. volume(y))
 let erodeL(a,x) = !(distleq(x,!a))
 let dilateL(a,x) = distleq(x,a)
 let imopenL(a,x) = dilateL(erodeL(a,x),x)
-let imcloseL(a,x) = erodeL(dilateL(a,x),x)"""
+let imcloseL(a,x) = erodeL(dilateL(a,x),x)
+let boundaryL(a) = (N(a)) \\ a"""
 
 LOCAL_VL2 = """dice(x, y) = (2 * volume(and(x, y))) / (volume(x) + volume(y))
 erodeL(a, x) = not(distleq(x, not(a)))
 dilateL(a, x) = distleq(x, a)
 imopenL(a, x) = dilateL(erodeL(a, x), x)
-imcloseL(a, x) = erodeL(dilateL(a, x), x)"""
+imcloseL(a, x) = erodeL(dilateL(a, x), x)
+boundaryL(a) = N(a) \\ a"""
 
 
 def case_paths(n: int) -> tuple[str, str]:

@@ -5,6 +5,7 @@ let erodeL(a,x) = !(distleq(x,!a))
 let dilateL(a,x) = distleq(x,a)
 let imopenL(a,x) = dilateL(erodeL(a,x),x)
 let imcloseL(a,x) = erodeL(dilateL(a,x),x)
+let boundaryL(a) = (N(a)) \ a
 
 load imgFLAIR = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_001/BraTS20_Training_001_flair.nii.gz"
 let flair = intensity(imgFLAIR)
@@ -27,7 +28,7 @@ print "vol_setminus" volume(vi \ hi)
 print "vol_xor" volume(xor(hi, vi))
 print "vol_near" volume(N(hi))
 print "vol_interior" volume(I(hi))
-print "vol_boundary" volume(B+(hi))
+print "vol_boundary" volume(boundaryL(hi))
 print "vol_touch" volume(touch(vi, hi))
 print "vol_grow" volume(grow(hi, vi))
 print "vol_surrounded" volume(surrounded(hi, brain))

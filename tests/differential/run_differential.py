@@ -72,7 +72,20 @@ _GOAL_LINE = re.compile(
 def goals_from(text: str) -> dict[str, str]:
     """The printed goals of a run, whichever engine printed them."""
     found: dict[str, str] = {}
+    in_traceback = False
     for line in text.splitlines():
+        # A traceback's own source lines reach here, and `spec_row=(id_bytes(` is
+        # a perfectly good goal as far as the regex is concerned. Anchoring was
+        # not enough: Python prints the call that raised, keyword arguments and
+        # all. So the block is skipped as a block, and the engine that produced
+        # one is reported rather than quietly compared.
+        if line.startswith("Traceback (most recent call last)"):
+            in_traceback = True
+            continue
+        if in_traceback:
+            if line[:1].isspace() or line.startswith(("  ", "\t")):
+                continue
+            in_traceback = False
         matched = _GOAL_LINE.match(line.strip())
         if matched:
             found[matched.group(1)] = matched.group(2).strip()

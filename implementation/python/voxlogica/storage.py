@@ -1420,7 +1420,13 @@ class NoCacheStorageBackend:
         return None
 
     def put_success(self, node_id: str, value: Any, metadata: dict[str, Any] | None = None,
-                    compute_ms: float = 0.0) -> None:
+                    compute_ms: float = 0.0, spec_row: tuple | None = None) -> None:
+        # `spec_row` is accepted and dropped. The persistence loop passes it to
+        # every backend, so a backend that stores nothing still has to have the
+        # parameter: without it the call raised TypeError inside the writer
+        # thread, once per completed node, and the run carried on printing
+        # correct answers with a traceback per value behind them. Found by the
+        # differential kit, which runs with --no-cache.
         return None
 
     def set_live_nodes(self, node_ids: set[str]) -> None:
