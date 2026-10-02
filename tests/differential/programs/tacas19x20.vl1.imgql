@@ -1,0 +1,206 @@
+import "stdlib.imgql"
+
+let dice(x,y) = (2 .*. volume(x & y)) ./. (volume(x) .+. volume(y))
+let distlt(x,y) = dt(y) <. x
+let grow2(a,b) = (a|touch(b,a))
+let flt(r,a) = distlt(r,distgeq(r,!a))
+
+// === case 1 ===
+load imgFLAIR1 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_001/BraTS20_Training_001_flair.nii.gz"
+let flair1 = intensity(imgFLAIR1)
+load imgSeg1 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_001/BraTS20_Training_001_seg.nii.gz"
+let gt1 = intensity(imgSeg1) >. 0
+let background1 = touch(flair1 <. 0.1, border)
+let pflair1 = percentiles(flair1, !background1, 0.5)
+let seg1 = grow2(flt(5.0, pflair1 >. 0.95), flt(2.0, pflair1 >. 0.86))
+print "dice_c1" dice(seg1, gt1)
+
+// === case 2 ===
+load imgFLAIR2 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_002/BraTS20_Training_002_flair.nii.gz"
+let flair2 = intensity(imgFLAIR2)
+load imgSeg2 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_002/BraTS20_Training_002_seg.nii.gz"
+let gt2 = intensity(imgSeg2) >. 0
+let background2 = touch(flair2 <. 0.1, border)
+let pflair2 = percentiles(flair2, !background2, 0.5)
+let seg2 = grow2(flt(5.0, pflair2 >. 0.95), flt(2.0, pflair2 >. 0.86))
+print "dice_c2" dice(seg2, gt2)
+
+// === case 3 ===
+load imgFLAIR3 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_003/BraTS20_Training_003_flair.nii.gz"
+let flair3 = intensity(imgFLAIR3)
+load imgSeg3 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_003/BraTS20_Training_003_seg.nii.gz"
+let gt3 = intensity(imgSeg3) >. 0
+let background3 = touch(flair3 <. 0.1, border)
+let pflair3 = percentiles(flair3, !background3, 0.5)
+let seg3 = grow2(flt(5.0, pflair3 >. 0.95), flt(2.0, pflair3 >. 0.86))
+print "dice_c3" dice(seg3, gt3)
+
+// === case 4 ===
+load imgFLAIR4 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_004/BraTS20_Training_004_flair.nii.gz"
+let flair4 = intensity(imgFLAIR4)
+load imgSeg4 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_004/BraTS20_Training_004_seg.nii.gz"
+let gt4 = intensity(imgSeg4) >. 0
+let background4 = touch(flair4 <. 0.1, border)
+let pflair4 = percentiles(flair4, !background4, 0.5)
+let seg4 = grow2(flt(5.0, pflair4 >. 0.95), flt(2.0, pflair4 >. 0.86))
+print "dice_c4" dice(seg4, gt4)
+
+// === case 5 ===
+load imgFLAIR5 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_005/BraTS20_Training_005_flair.nii.gz"
+let flair5 = intensity(imgFLAIR5)
+load imgSeg5 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_005/BraTS20_Training_005_seg.nii.gz"
+let gt5 = intensity(imgSeg5) >. 0
+let background5 = touch(flair5 <. 0.1, border)
+let pflair5 = percentiles(flair5, !background5, 0.5)
+let seg5 = grow2(flt(5.0, pflair5 >. 0.95), flt(2.0, pflair5 >. 0.86))
+print "dice_c5" dice(seg5, gt5)
+
+// === case 6 ===
+load imgFLAIR6 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_006/BraTS20_Training_006_flair.nii.gz"
+let flair6 = intensity(imgFLAIR6)
+load imgSeg6 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_006/BraTS20_Training_006_seg.nii.gz"
+let gt6 = intensity(imgSeg6) >. 0
+let background6 = touch(flair6 <. 0.1, border)
+let pflair6 = percentiles(flair6, !background6, 0.5)
+let seg6 = grow2(flt(5.0, pflair6 >. 0.95), flt(2.0, pflair6 >. 0.86))
+print "dice_c6" dice(seg6, gt6)
+
+// === case 7 ===
+load imgFLAIR7 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_007/BraTS20_Training_007_flair.nii.gz"
+let flair7 = intensity(imgFLAIR7)
+load imgSeg7 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_007/BraTS20_Training_007_seg.nii.gz"
+let gt7 = intensity(imgSeg7) >. 0
+let background7 = touch(flair7 <. 0.1, border)
+let pflair7 = percentiles(flair7, !background7, 0.5)
+let seg7 = grow2(flt(5.0, pflair7 >. 0.95), flt(2.0, pflair7 >. 0.86))
+print "dice_c7" dice(seg7, gt7)
+
+// === case 8 ===
+load imgFLAIR8 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_008/BraTS20_Training_008_flair.nii.gz"
+let flair8 = intensity(imgFLAIR8)
+load imgSeg8 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_008/BraTS20_Training_008_seg.nii.gz"
+let gt8 = intensity(imgSeg8) >. 0
+let background8 = touch(flair8 <. 0.1, border)
+let pflair8 = percentiles(flair8, !background8, 0.5)
+let seg8 = grow2(flt(5.0, pflair8 >. 0.95), flt(2.0, pflair8 >. 0.86))
+print "dice_c8" dice(seg8, gt8)
+
+// === case 9 ===
+load imgFLAIR9 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_009/BraTS20_Training_009_flair.nii.gz"
+let flair9 = intensity(imgFLAIR9)
+load imgSeg9 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_009/BraTS20_Training_009_seg.nii.gz"
+let gt9 = intensity(imgSeg9) >. 0
+let background9 = touch(flair9 <. 0.1, border)
+let pflair9 = percentiles(flair9, !background9, 0.5)
+let seg9 = grow2(flt(5.0, pflair9 >. 0.95), flt(2.0, pflair9 >. 0.86))
+print "dice_c9" dice(seg9, gt9)
+
+// === case 10 ===
+load imgFLAIR10 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_010/BraTS20_Training_010_flair.nii.gz"
+let flair10 = intensity(imgFLAIR10)
+load imgSeg10 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_010/BraTS20_Training_010_seg.nii.gz"
+let gt10 = intensity(imgSeg10) >. 0
+let background10 = touch(flair10 <. 0.1, border)
+let pflair10 = percentiles(flair10, !background10, 0.5)
+let seg10 = grow2(flt(5.0, pflair10 >. 0.95), flt(2.0, pflair10 >. 0.86))
+print "dice_c10" dice(seg10, gt10)
+
+// === case 11 ===
+load imgFLAIR11 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_011/BraTS20_Training_011_flair.nii.gz"
+let flair11 = intensity(imgFLAIR11)
+load imgSeg11 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_011/BraTS20_Training_011_seg.nii.gz"
+let gt11 = intensity(imgSeg11) >. 0
+let background11 = touch(flair11 <. 0.1, border)
+let pflair11 = percentiles(flair11, !background11, 0.5)
+let seg11 = grow2(flt(5.0, pflair11 >. 0.95), flt(2.0, pflair11 >. 0.86))
+print "dice_c11" dice(seg11, gt11)
+
+// === case 12 ===
+load imgFLAIR12 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_012/BraTS20_Training_012_flair.nii.gz"
+let flair12 = intensity(imgFLAIR12)
+load imgSeg12 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_012/BraTS20_Training_012_seg.nii.gz"
+let gt12 = intensity(imgSeg12) >. 0
+let background12 = touch(flair12 <. 0.1, border)
+let pflair12 = percentiles(flair12, !background12, 0.5)
+let seg12 = grow2(flt(5.0, pflair12 >. 0.95), flt(2.0, pflair12 >. 0.86))
+print "dice_c12" dice(seg12, gt12)
+
+// === case 13 ===
+load imgFLAIR13 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_013/BraTS20_Training_013_flair.nii.gz"
+let flair13 = intensity(imgFLAIR13)
+load imgSeg13 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_013/BraTS20_Training_013_seg.nii.gz"
+let gt13 = intensity(imgSeg13) >. 0
+let background13 = touch(flair13 <. 0.1, border)
+let pflair13 = percentiles(flair13, !background13, 0.5)
+let seg13 = grow2(flt(5.0, pflair13 >. 0.95), flt(2.0, pflair13 >. 0.86))
+print "dice_c13" dice(seg13, gt13)
+
+// === case 14 ===
+load imgFLAIR14 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_014/BraTS20_Training_014_flair.nii.gz"
+let flair14 = intensity(imgFLAIR14)
+load imgSeg14 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_014/BraTS20_Training_014_seg.nii.gz"
+let gt14 = intensity(imgSeg14) >. 0
+let background14 = touch(flair14 <. 0.1, border)
+let pflair14 = percentiles(flair14, !background14, 0.5)
+let seg14 = grow2(flt(5.0, pflair14 >. 0.95), flt(2.0, pflair14 >. 0.86))
+print "dice_c14" dice(seg14, gt14)
+
+// === case 15 ===
+load imgFLAIR15 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_015/BraTS20_Training_015_flair.nii.gz"
+let flair15 = intensity(imgFLAIR15)
+load imgSeg15 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_015/BraTS20_Training_015_seg.nii.gz"
+let gt15 = intensity(imgSeg15) >. 0
+let background15 = touch(flair15 <. 0.1, border)
+let pflair15 = percentiles(flair15, !background15, 0.5)
+let seg15 = grow2(flt(5.0, pflair15 >. 0.95), flt(2.0, pflair15 >. 0.86))
+print "dice_c15" dice(seg15, gt15)
+
+// === case 16 ===
+load imgFLAIR16 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_016/BraTS20_Training_016_flair.nii.gz"
+let flair16 = intensity(imgFLAIR16)
+load imgSeg16 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_016/BraTS20_Training_016_seg.nii.gz"
+let gt16 = intensity(imgSeg16) >. 0
+let background16 = touch(flair16 <. 0.1, border)
+let pflair16 = percentiles(flair16, !background16, 0.5)
+let seg16 = grow2(flt(5.0, pflair16 >. 0.95), flt(2.0, pflair16 >. 0.86))
+print "dice_c16" dice(seg16, gt16)
+
+// === case 17 ===
+load imgFLAIR17 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_017/BraTS20_Training_017_flair.nii.gz"
+let flair17 = intensity(imgFLAIR17)
+load imgSeg17 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_017/BraTS20_Training_017_seg.nii.gz"
+let gt17 = intensity(imgSeg17) >. 0
+let background17 = touch(flair17 <. 0.1, border)
+let pflair17 = percentiles(flair17, !background17, 0.5)
+let seg17 = grow2(flt(5.0, pflair17 >. 0.95), flt(2.0, pflair17 >. 0.86))
+print "dice_c17" dice(seg17, gt17)
+
+// === case 18 ===
+load imgFLAIR18 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_018/BraTS20_Training_018_flair.nii.gz"
+let flair18 = intensity(imgFLAIR18)
+load imgSeg18 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_018/BraTS20_Training_018_seg.nii.gz"
+let gt18 = intensity(imgSeg18) >. 0
+let background18 = touch(flair18 <. 0.1, border)
+let pflair18 = percentiles(flair18, !background18, 0.5)
+let seg18 = grow2(flt(5.0, pflair18 >. 0.95), flt(2.0, pflair18 >. 0.86))
+print "dice_c18" dice(seg18, gt18)
+
+// === case 19 ===
+load imgFLAIR19 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_019/BraTS20_Training_019_flair.nii.gz"
+let flair19 = intensity(imgFLAIR19)
+load imgSeg19 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_019/BraTS20_Training_019_seg.nii.gz"
+let gt19 = intensity(imgSeg19) >. 0
+let background19 = touch(flair19 <. 0.1, border)
+let pflair19 = percentiles(flair19, !background19, 0.5)
+let seg19 = grow2(flt(5.0, pflair19 >. 0.95), flt(2.0, pflair19 >. 0.86))
+print "dice_c19" dice(seg19, gt19)
+
+// === case 20 ===
+load imgFLAIR20 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_020/BraTS20_Training_020_flair.nii.gz"
+let flair20 = intensity(imgFLAIR20)
+load imgSeg20 = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData/BraTS20_Training_020/BraTS20_Training_020_seg.nii.gz"
+let gt20 = intensity(imgSeg20) >. 0
+let background20 = touch(flair20 <. 0.1, border)
+let pflair20 = percentiles(flair20, !background20, 0.5)
+let seg20 = grow2(flt(5.0, pflair20 >. 0.95), flt(2.0, pflair20 >. 0.86))
+print "dice_c20" dice(seg20, gt20)

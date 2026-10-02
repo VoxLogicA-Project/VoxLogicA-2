@@ -32,11 +32,21 @@ REPOS = Path(os.environ.get("VOXLOGICA_REPOS", Path.home() / "data/local/repos")
 #: `incoming`. So a dialect can have its own program, and a case that does not
 #: provide one falls back to `vl2`. That fallback is not a formality -- it is how
 #: the kit reports which engines a case could actually reach.
-ENGINES: list[tuple[str, str, str, Path]] = [
-    ("A vl1", "vl1", "vl1", Path("/home/VoxLogicA/binaries/VoxLogicA_1.3.3-experimental_linux-x64/VoxLogicA")),
-    ("B lazy", "vl2", "vl2main", REPOS / "vlx-main"),
-    ("C engine", "vl2", "vl2", REPOS / "vlx-incoming"),
-    ("D handles", "vl2", "vl2", REPOS / "vlx-handles"),
+#: label -> (kind, dialect, location, extra flags). `kind` says how to invoke
+#: it; `dialect` says which program file to feed it; the flags pick the
+#: evaluator inside one checkout.
+#:
+#: THIS USED TO BE THREE SEPARATE CHECKOUTS -- `main` for the lazy strategy,
+#: `incoming` for the scheduling engine, `handles` for a third. They have since
+#: been merged, so the two VoxLogicA 2 evaluators now live in one tree and are
+#: selected with `--engine`. That also removes the old `vl2main` dialect: the
+#: two strategies share a parser, so they share a program, and a disagreement
+#: between them is unambiguously a defect.
+ENGINES: list[tuple[str, str, str, Path, list[str]]] = [
+    ("A vl1", "vl1", "vl1",
+     Path("/home/VoxLogicA/binaries/VoxLogicA_1.3.3-experimental_linux-x64/VoxLogicA"), []),
+    ("B lazy", "vl2", "vl2", REPOS / "vlx-diff", ["--engine", "lazy"]),
+    ("C engine", "vl2", "vl2", REPOS / "vlx-diff", ["--engine", "engine"]),
 ]
 
 VENV = Path(os.environ.get("VOXLOGICA_VENV",
@@ -96,10 +106,10 @@ def vl2_flags(checkout: Path) -> list[str]:
     return cached
 
 
-def run_vl2(checkout: Path, program: Path) -> dict[str, str]:
+def run_vl2(checkout: Path, program: Path, flags: list[str]) -> dict[str, str]:
     env = dict(os.environ, PYTHONPATH=str(checkout / "implementation/python"))
     out = subprocess.run([str(VENV), "-m", "voxlogica.main", "run", str(program),
-                          *vl2_flags(checkout)],
+                          *vl2_flags(checkout), *flags],
                          capture_output=True, text=True, timeout=900,
                          cwd=checkout, env=env)
     return goals_from(out.stdout + out.stderr)
@@ -152,9 +162,9 @@ def main() -> int:
     args = parser.parse_args()
 
     available = []
-    for label, kind, dialect, where in ENGINES:
+    for label, kind, dialect, where, flags in ENGINES:
         if where.exists():
-            available.append((label, kind, dialect, where))
+            available.append((label, kind, dialect, where, flags))
         else:
             print(f"skip {label}: not at {where}")
     if len(available) < 2:
@@ -169,7 +179,7 @@ def main() -> int:
     for case in cases:
         print(f"\n=== {case} ===")
         answers: dict[str, dict[str, str]] = {}
-        for label, kind, dialect, where in available:
+        for label, kind, dialect, where, flags in available:
             program = PROGRAMS / f"{case}.{dialect}.imgql"
             if not program.is_file() and dialect != "vl1":
                 program = PROGRAMS / f"{case}.vl2.imgql"   # the common dialect
@@ -182,7 +192,7 @@ def main() -> int:
             scratch.write_text(text)
             try:
                 answers[label] = (run_vl1(where, scratch) if kind == "vl1"
-                                  else run_vl2(where, scratch))
+                                  else run_vl2(where, scratch, flags))
             except subprocess.TimeoutExpired:
                 print(f"  {label:<10} TIMEOUT")
                 failures += 1
