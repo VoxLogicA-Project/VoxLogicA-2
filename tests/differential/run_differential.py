@@ -121,7 +121,11 @@ def vl2_flags(checkout: Path) -> list[str]:
 
 
 def run_vl2(checkout: Path, program: Path, flags: list[str]) -> dict[str, str]:
-    env = dict(os.environ, PYTHONPATH=str(checkout / "implementation/python"))
+    # PYTHON_GIL=0 because this bypasses the ./voxlogica wrapper that normally
+    # sets it: without it SimpleITK re-enables the GIL at import and the engines
+    # are compared under a runtime none of them is meant to run on. (From
+    # b86cff0, Laura's fix of the same kit on main.)
+    env = dict(os.environ, PYTHONPATH=str(checkout / "implementation/python"), PYTHON_GIL="0")
     out = subprocess.run([str(VENV), "-m", "voxlogica.main", "run", str(program),
                           *vl2_flags(checkout), *flags],
                          capture_output=True, text=True, timeout=900,
