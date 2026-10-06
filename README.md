@@ -140,6 +140,63 @@ a different starting point. Everything binds to loopback only.
 python3 bootstrap.py --runtime-only
 ```
 
+## Measuring Performance
+
+`tools/perf/suite.py` runs one program under a set of experiments, repeated
+and interleaved, and records one line per run; `tools/perf/report.py`
+summarises the result. Time, CPU and peak memory come from the operating
+system, not from the engine, and the engine's own counters (kernels, fusion
+cones, saturation) are read from the summary every `voxlogica run` prints, so
+the same suite measures any branch.
+
+```bash
+python3 bootstrap.py --runtime-only        # once: the engine's .venv
+
+python3 tools/perf/suite.py \
+  --program doc/gallery/programs/simpleitk/brats-threshold-sweep-aiim.imgql \
+  --set case_count=10 --set outlier_count=3 \
+  --out ~/perf/2026-10-06-sweep --work-dir ~/perf/work \
+  --threads 24 --threads-list 1,2,4,8,16,24 --reps 3
+
+python3 tools/perf/report.py ~/perf/2026-10-06-sweep
+```
+
+Experiments (`--experiments`, default all):
+
+| name | what runs | what it answers |
+|---|---|---|
+| `scaling` | each width in `--threads-list`, fresh store | how wall time and CPU per wall change with workers |
+| `fusion` | `--threads`, fusion on and `VOXLOGICA_FUSION=0`, fresh store | what element-wise fusion buys |
+| `cache` | a cold run, then `--warm-runs` runs on the same store | what a repeated program costs |
+| `resume` | an uninterrupted run; a run stopped with SIGINT after `--resume-fraction` of its time; a run restarted on what it left | whether an interrupted run redoes finished work |
+
+What the suite does so that a number means something:
+
+- **Waits for a quiet machine** before every run (other users' CPU below
+  `--quiet-pct`, in percent of one core, for `--hold` seconds) and records
+  other users' CPU during the run. On a shared host the same program has been
+  measured at 55, 79 and 137 s. Use `--hold 0` for a smoke test only.
+- **Refuses a work directory on tmpfs**, where the store would take the RAM
+  the engine sizes its memory budget from.
+- **Isolates the engine's calibration cache** (`VOXLOGICA_CACHE_DIR`), and
+  drops any `VOXLOGICA_*` variable inherited from the shell, so no hidden
+  setting changes between runs. `--itk-threads N` pins ITK's thread count.
+- **Warms up** with one untimed run: the dataset enters the page cache and
+  Numba compiles its kernels before anything is timed.
+- **Interleaves repetitions** and alternates the order of configurations, so
+  slow drifts do not always land on the same configuration.
+- **Checks the answers**: every run's printed goals are hashed, and the
+  report flags runs of the same program whose goals differ.
+- `--set NAME=VALUE` rewrites a top-level constant of the program (e.g. the
+  number of cases); the program actually run is saved beside the results.
+
+Output, in `--out` (never overwritten): `meta.json` (machine, interpreter and
+package versions, engine commit and whether the tree was dirty, program hash,
+settings), `runs.jsonl` (one record per run), `logs/` (stdout, stderr and the
+goals of every run). `report.py` prints a Markdown table with median and range
+per configuration, lists every problem it found, writes `summary.json`, and
+exits non-zero if there was any problem.
+
 ## Release Upgrade
 
 ```bash
