@@ -88,7 +88,9 @@ ENGINE_COUNTERS = (
     "completed", "memo_hits", "memo_misses",
 )
 
-GOAL_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+#: `name=value`, as VoxLogicA 2 prints a goal; VoxLogicA 1 prefixes it with a
+#: timestamp and `[user]`.
+GOAL_LINE = re.compile(r"^(?:\[[^\]]*\] \[user\] )?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
 
 # ------------------------------------------------------------ machine probes
@@ -372,14 +374,20 @@ class Suite:
         return env
 
     def run(self, experiment: str, config: str, rep: int, threads: int, store: Path, *,
-            env: dict[str, str] | None = None, interrupt_after: float | None = None) -> dict:
-        """One measured run; returns and appends its record."""
+            env: dict[str, str] | None = None, interrupt_after: float | None = None,
+            command: list[str] | None = None, cwd: Path | None = None) -> dict:
+        """One measured run; returns and appends its record.
+
+        ``command`` and ``cwd`` replace the VoxLogicA 2 invocation, so that
+        another tool (VoxLogicA 1) is measured by exactly the same means.
+        """
         self.counter += 1
         run_id = f"{self.counter:03d}-{experiment}-{config}-r{rep}"
         waited = wait_until_quiet(self.args.quiet_pct, self.args.hold, self.log)
         extra = env or {}
-        cwd = self.work / "cwd"
-        cwd.mkdir(exist_ok=True)
+        if cwd is None:
+            cwd = self.work / "cwd"
+            cwd.mkdir(exist_ok=True)
         out_path, err_path = self.logs / f"{run_id}.out", self.logs / f"{run_id}.err"
         load = ForeignLoad()
         started_at = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -389,7 +397,7 @@ class Suite:
             # leaves SIGINT ignored, and an ignored disposition is inherited:
             # the engine would then never see the interrupt the resume
             # experiment sends. Restore the default in the child.
-            proc = subprocess.Popen(self.command(threads, store), cwd=cwd, stdout=out_f,
+            proc = subprocess.Popen(command or self.command(threads, store), cwd=cwd, stdout=out_f,
                                     stderr=err_f, env=self.environment(extra),
                                     preexec_fn=_default_sigint)
             load.start(proc.pid)
