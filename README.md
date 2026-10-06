@@ -190,6 +190,20 @@ What the suite does so that a number means something:
 - `--set NAME=VALUE` rewrites a top-level constant of the program (e.g. the
   number of cases); the program actually run is saved beside the results.
 
+`tools/perf/vl1_compare.py` compares VoxLogicA 1 with VoxLogicA 2 on the
+threshold sweep, using the same measurement code. VoxLogicA 1 has no loops, so
+the script generates one program per case with the 21 thresholds unrolled, and
+the matching VoxLogicA 2 programs. It runs both, case by case, plus one
+VoxLogicA 2 process over all cases. It then checks that every Dice value agrees
+(`agreement.json`) and fails if any does not.
+
+```bash
+python3 tools/perf/vl1_compare.py \
+  --vl1 /home/VoxLogicA/binaries/VoxLogicA_1.3.3-experimental_linux-x64 \
+  --dataset /home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData \
+  --cases 20 --reps 5 --out ~/perf/vl1 --work-dir ~/perf/work-vl1
+```
+
 Output, in `--out` (never overwritten): `meta.json` (machine, interpreter and
 package versions, engine commit and whether the tree was dirty, program hash,
 settings), `runs.jsonl` (one record per run), `logs/` (stdout, stderr and the
