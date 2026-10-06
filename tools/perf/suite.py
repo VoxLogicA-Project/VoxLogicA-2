@@ -319,6 +319,15 @@ def _default_sigint() -> None:
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 
+def _child_setup(cpus: set[int] | None):
+    """What the child does before exec: default SIGINT, and the CPU set."""
+    def setup() -> None:
+        _default_sigint()
+        if cpus:
+            os.sched_setaffinity(0, cpus)
+    return setup
+
+
 class Suite:
     def __init__(self, args: argparse.Namespace):
         self.args = args
@@ -399,7 +408,7 @@ class Suite:
             # experiment sends. Restore the default in the child.
             proc = subprocess.Popen(command or self.command(threads, store), cwd=cwd, stdout=out_f,
                                     stderr=err_f, env=self.environment(extra),
-                                    preexec_fn=_default_sigint)
+                                    preexec_fn=_child_setup(self.args.cpus))
             load.start(proc.pid)
             ended_by = "exit"
             timer = None
@@ -513,7 +522,8 @@ class Suite:
                          "warm_runs": a.warm_runs, "resume_fraction": a.resume_fraction,
                          "itk_threads": a.itk_threads or "ITK default",
                          "quiet_pct": a.quiet_pct, "hold_s": a.hold,
-                         "engine_args": a.engine_arg},
+                         "engine_args": a.engine_arg,
+                         "cpus": sorted(a.cpus) if a.cpus else "all"},
         }
         (self.out / "meta.json").write_text(json.dumps(meta, indent=2))
         self.log(f"engine {meta['engine']['branch']} {meta['engine']['describe']}"
@@ -564,6 +574,10 @@ def main(argv: list[str]) -> int:
                    help="other users' CPU, in percent of one core, below which a run may start")
     p.add_argument("--hold", type=float, default=60.0,
                    help="seconds the machine must stay quiet before a run (0: do not wait)")
+    p.add_argument("--cpus", type=lambda t: {c for part in t.split(",") for c in (
+                       range(int(part.split("-")[0]), int(part.split("-")[-1]) + 1))},
+                   default=None, metavar="LIST",
+                   help="run the measured process on these CPUs only, e.g. 0-7 (Linux)")
     p.add_argument("--timeout", type=float, default=4 * 3600)
     p.add_argument("--keep-stores", action="store_true")
     p.add_argument("--allow-tmpfs", action="store_true")

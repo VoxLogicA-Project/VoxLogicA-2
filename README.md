@@ -181,6 +181,8 @@ What the suite does so that a number means something:
 - **Isolates the engine's calibration cache** (`VOXLOGICA_CACHE_DIR`), and
   drops any `VOXLOGICA_*` variable inherited from the shell, so no hidden
   setting changes between runs. `--itk-threads N` pins ITK's thread count.
+  `--cpus 0-7` runs the measured process on those CPUs only, e.g. the
+  performance cores of a hybrid processor.
 - **Warms up** with one untimed run: the dataset enters the page cache and
   Numba compiles its kernels before anything is timed.
 - **Interleaves repetitions** and alternates the order of configurations, so

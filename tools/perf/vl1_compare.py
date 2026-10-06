@@ -173,7 +173,7 @@ def main(argv: list[str]) -> int:
     s_args = argparse.Namespace(
         out=a.out, work_dir=a.work_dir, keep_stores=False, engine=a.engine,
         engine_python=a.engine_python, engine_arg=[], itk_threads=0,
-        quiet_pct=a.quiet_pct, hold=a.hold, timeout=a.timeout)
+        quiet_pct=a.quiet_pct, hold=a.hold, timeout=a.timeout, cpus=None)
     s = suite.Suite(s_args)
     vl1_bin = a.vl1 / "VoxLogicA"
     meta = {
