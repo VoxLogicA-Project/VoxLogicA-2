@@ -313,6 +313,10 @@ def parse_output(stdout: str) -> tuple[dict, dict]:
 
 # ------------------------------------------------------------------- the run
 
+def _default_sigint() -> None:
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
 class Suite:
     def __init__(self, args: argparse.Namespace):
         self.args = args
@@ -381,8 +385,13 @@ class Suite:
         started_at = time.strftime("%Y-%m-%d %H:%M:%S")
         t0 = time.monotonic()
         with open(out_path, "w") as out_f, open(err_path, "w") as err_f:
+            # A shell starting the suite in the background (`cmd &`, nohup)
+            # leaves SIGINT ignored, and an ignored disposition is inherited:
+            # the engine would then never see the interrupt the resume
+            # experiment sends. Restore the default in the child.
             proc = subprocess.Popen(self.command(threads, store), cwd=cwd, stdout=out_f,
-                                    stderr=err_f, env=self.environment(extra))
+                                    stderr=err_f, env=self.environment(extra),
+                                    preexec_fn=_default_sigint)
             load.start(proc.pid)
             ended_by = "exit"
             timer = None

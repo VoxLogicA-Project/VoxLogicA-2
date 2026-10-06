@@ -61,6 +61,8 @@ def main(argv: list[str]) -> int:
     for r in runs:
         if r["exit_code"] != 0 and r["ended_by"] != "sigint":
             problems.append(f"{r['run_id']} exited with {r['exit_code']}")
+        if r["ended_by"] == "sigint" and r["exit_code"] == 0:
+            problems.append(f"{r['run_id']} was sent SIGINT but ran to completion")
         if r["ended_by"] == "exit" and r["config"] == "interrupted":
             problems.append(f"{r['run_id']} finished before it could be interrupted")
         if (r.get("foreign_cpu_max_pct") or 0) > a.max_foreign:
