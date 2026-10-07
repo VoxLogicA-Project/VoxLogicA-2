@@ -18,6 +18,75 @@ Start at [**doc/user/README.md**](doc/user/README.md), which says which document
 answers which question about writing ImgQL: the narrative guide, the runnable
 gallery, and the syntax/semantics/type specs.
 
+## What is new since VoxLogicA 1
+
+The language is still ImgQL, and every operator of VoxLogicA 1 (1.3.3) and
+its standard library is available after `import "vox1"`. What changed:
+
+- **Sequences and loops.** `[a, b, c]` builds a sequence; `s[i]` and `s[i:j]`
+  index and slice it. `for x in s do e`, `filter x in s do e`,
+  `fold + 0 s` and `fold max s` work on whole sequences, and so do `range`, `map`,
+  `subsequence`, `index`, `argmax`, `argsort`, `tally`, `mean`, `median` and
+  `stdev`. A study over many cases is one program instead of one file per case.
+- **Local definitions.** `let x = e in body` is an expression. At top level
+  `let` is optional: `f(x) = ...` and `let f(x) = ...` mean the same.
+- **Files are values.** `dir(root, pattern, ...)` lists files.
+  `ReadImage(path)` reads an image and `WriteImage(image, path)` writes one and
+  returns the path, so reading and writing can happen inside a loop. `print`
+  and `save` work as before.
+- **Many images, many sizes.** There is no longer one image that fixes the
+  geometry of the whole program. Operators that need a geometry take it from an
+  argument: `border(img)`, `x(img)`, `y(img)`, `z(img)`.
+- **Namespaces.** `import "name"` loads a set of primitives: `vox1` (the
+  VoxLogicA 1 operators), `simpleitk` (SimpleITK filters), `nnunet` (training
+  and prediction, see [doc/user/nnunet-namespace.md](doc/user/nnunet-namespace.md)),
+  `strings`, `geom`, `arrays`. `import` of a `.imgql` file still works.
+- **Checked before running.** Arity and types are checked on the whole program
+  before anything is computed.
+- **Computed once, kept.** Equal expressions are the same node and are
+  computed once. Results are stored, so running a program again reuses them,
+  and an interrupted run continues from where it stopped. Independent parts
+  run in parallel.
+
+## Migrating a VoxLogicA 1 program
+
+A VoxLogicA 1 file does not run unchanged. Five things to change:
+
+1. `import "stdlib.imgql"` becomes `import "vox1"` (add `import "simpleitk"`
+   for `ReadImage`). The old import fails with a file-not-found error.
+2. `load img = "file.nii.gz"` becomes `img = ReadImage("file.nii.gz")`.
+   `intensity(img)` is unchanged.
+3. `border`, `x`, `y` and `z` take the image whose geometry they describe:
+   `touch(flair <. 0.1, border)` becomes `touch(flair <. 0.1, border(flair))`.
+   Leaving the argument out is an arity error.
+4. **Infix operators group the other way.** VoxLogicA 1 reads `a op b op c` as
+   `a op (b op c)`; VoxLogicA 2 reads it as `(a op b) op c`. Neither gives `*`
+   precedence over `+`. So `10 .-. 2 .-. 3` is 11 in VoxLogicA 1 and 5 in
+   VoxLogicA 2, and no error says so. Put parentheses wherever an expression
+   has more than one infix operator.
+5. Check image sizes yourself. VoxLogicA 1 required one size for the whole
+   program; VoxLogicA 2 accepts several, and an operation on two images of
+   different sizes is not checked yet: depending on the order of the arguments
+   it either fails or silently uses the size of the first.
+
+For example, the start of the TACAS 2019 segmentation:
+
+```
+// VoxLogicA 1
+import "stdlib.imgql"
+load imgFLAIR = "flair.nii.gz"
+let flair = intensity(imgFLAIR)
+let background = touch(flair <. 0.1, border)
+```
+
+```
+// VoxLogicA 2
+import "vox1"
+import "simpleitk"
+flair = intensity(ReadImage("flair.nii.gz"))
+background = touch(flair <. 0.1, border(flair))
+```
+
 ## Examples
 
 Runnable, commented programs live in the [example gallery](doc/gallery/README.md),
