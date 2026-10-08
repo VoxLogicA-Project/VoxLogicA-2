@@ -133,10 +133,11 @@ PROGRAMS: list[dict] = [
             "`vi_thr_distribution` -- which thresholds won, and how often. A SPREAD "
             "here rather than one winner is the study's result",
             "`case_start` -- 50, a guard: it says which twenty cases were scored",
-            "36 PNGs under `output/aiim-sweep/`, three planes for each of the ten "
-            "worst cases",
+            "90 PNGs under `output/aiim-sweep/`, nine for each of the ten worst "
+            "cases: three planes, and for each plane the FLAIR, the segmentation "
+            "and the ground truth",
         ],
-        "total_files": 36,
+        "total_files": 90,
     },
     {
         "path": "doc/gallery/programs/nnunet/brats-threshold-sweep-nnunet.imgql",
@@ -729,23 +730,29 @@ Expected: `OK: this dataset matches the one the expected values were measured
 on.` and exit status 0. It takes a few seconds; `--quick` skips the hashing and
 compares sizes only.
 
-**What this protects against.** The experiments select cases by POSITION --
-`subsequence(dir(...), 0, case_count)` in the AIIM sweep, `train_start` and
-`eval_start` in the nnU-Net one. One case missing, one extra, or a stray file
-matching the glob shifts every position after it onto a different case. The run
-still succeeds and the Dice values still look reasonable, but they describe a
-different set of patients, and nothing in the output indicates this.
+**What this protects against.** The two BraTS experiments select cases by NAME
+-- the ids `name_mapping.csv` lists as `HGG`, offset by `case_start` and
+`eval_start` -- so a missing or extra case no longer shifts the others onto a
+different patient. What the manifest still pins is WHICH BYTES those names
+resolve to. A case whose files differ from the ones we measured, or a copy of
+the dataset where a name points at different data, produces a run that
+succeeds with Dice values that look reasonable and describe something else,
+with nothing in the output to indicate it.
+
+The five-case sampler (experiment 2) is the exception: it reads whatever is in
+its own `data/` directory, in listing order, and names the five cases it
+expects in the README there.
 
 The check therefore compares the ORDERED listing rather than counting files,
 and on a mismatch it reports the index where the two diverge. Everything from
 that index onwards is reading data we did not measure.
 
 It also checks `name_mapping.csv`, the metadata file BraTS ships beside the
-cases. The nnU-Net experiment selects its population from it -- the 293 cases
+cases. BOTH BraTS experiments select their population from it -- the 293 cases
 whose first field says `HGG` -- so a copy of BraTS without that file cannot run
-experiment 4 at all, and a copy with a DIFFERENT one runs it on a different
-population. The check reproduces the selection and names the first case it
-would pick differently.
+experiment 3 or experiment 4 at all, and a copy with a DIFFERENT one runs them
+on a different population. The check reproduces the selection and names the
+first case it would pick differently.
 
 Symlinks are fine -- to the whole dataset, to case directories, or to files;
 `dir` follows them. One thing to know: with `full_paths` the programs sort by
