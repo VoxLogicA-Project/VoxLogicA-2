@@ -128,8 +128,11 @@ PROGRAMS: list[dict] = [
                 "outside that program's training set so neither method is in-sample.",
         "outputs": "output/aiim-sweep/",
         "expect": [
-            "`dice_fixed_mean` -- the single published threshold, scored",
+            "`dice_fixed_mean`, `dice_fixed_median`, `dice_fixed_stdev` -- the single "
+            "published threshold, scored",
             "`dice_best_mean`, `dice_best_median`, `dice_best_stdev` -- the per-case best",
+            "`fixed_dice` and `best_dice` -- the twenty per-case scores behind each "
+            "of those two families, so a reader can recompute the statistics",
             "`vi_thr_distribution` -- which thresholds won, and how often. A SPREAD "
             "here rather than one winner is the study's result",
             "`case_start` -- 50, a guard: it says which twenty cases were scored",
@@ -237,13 +240,15 @@ ORACLE: dict[str, dict] = {
                 "have reproduced our result.",
     },
     "doc/gallery/programs/simpleitk/brats-threshold-sweep-aiim.imgql": {
-        "provenance": "Six runs on 2026-10-08, bit-identical throughout: the shipped program on an empty store at 24 threads and at 1, plus an earlier formulation of the same case selection at 24 threads, at 4, warm, and under the lazy strategy. Two ways of naming the same twenty cases agree digit for digit.",
+        "provenance": "Seven runs on 2026-10-08, bit-identical throughout: the shipped program on an empty store at 24 threads and at 1, plus an earlier formulation of the same case selection at 24 threads, at 4, warm, and under the lazy strategy. Two ways of naming the same twenty cases agree digit for digit. The seventh run added the fixed threshold's spread -- `dice_fixed_median`, `dice_fixed_stdev` and the per-case `fixed_dice` list -- and returned the other seventeen goals unchanged.",
         "tolerance": 0.0,
         "values": [
             ("case_start", "50.0",
              "which cases these are: HGG positions 50-69, i.e. 051-070. The same "
              "twenty the nnU-Net program evaluates, and outside its training set"),
             ("dice_fixed_mean", "0.8276376252018517", "the single published threshold"),
+            ("dice_fixed_median", "0.8575208544440295", ""),
+            ("dice_fixed_stdev", "0.12851916465807944", ""),
             ("dice_best_mean", "0.8554965584750516", "per-case best"),
             ("dice_best_median", "0.9073711220615291", ""),
             ("dice_best_stdev", "0.11245649918780284", ""),
@@ -793,7 +798,7 @@ because each program defines `truth_of` for itself:
 | experiment 4 | what nnU-Net predicted |
 
 Everything downstream of it follows: `best_dice`, `best_vi_thr`, the
-`dice_best_*` and `vi_thr_*` families, `dice_fixed_mean`, and -- because they
+`dice_best_*`, `dice_fixed_*` and `vi_thr_*` families, and -- because they
 are ranked by a different score -- `outlier_cases`, `outlier_dice`,
 `outlier_paths` and the exported planes. So `dice_best_mean` is 0.8555 in
 experiment 3 and 0.8502 in experiment 4, on the same twenty cases, and these

@@ -130,6 +130,8 @@ fixed_dice = for i in cases do dice(segment(pflair_of(i), published_vi_thr), tru
 print "n_cases"            case_count
 print "case_start"         case_start
 print "dice_fixed_mean"    mean(fixed_dice)
+print "dice_fixed_median"  median(fixed_dice)
+print "dice_fixed_stdev"   stdev(fixed_dice)
 print "dice_best_mean"     mean(best_dice)
 print "dice_best_median"   median(best_dice)
 print "dice_best_stdev"    stdev(best_dice)
@@ -144,6 +146,11 @@ print "vi_thr_distribution" tally(best_vi_thr)      // [threshold, how often it 
 
 print "best_dice"          best_dice
 print "best_vi_thr"        best_vi_thr
+
+// The baseline per case too, not just its mean: a table that reports a spread
+// for the swept threshold and only an average for the fixed one invites the
+// reading that the fixed one has no spread.
+print "fixed_dice"         fixed_dice
 
 // -------------------------------------------------------------- outliers ---
 // `argsort` returns positions ordered by ascending score, so the first few are
