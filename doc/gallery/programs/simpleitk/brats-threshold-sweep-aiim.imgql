@@ -30,13 +30,29 @@ import "strings"
 // ---------------------------------------------------------------- inputs ---
 dataset_root = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData"
 output_dir   = "output/aiim-sweep"
+case_start   = 50        // first case, as a position in the HGG list
 case_count   = 20        // cases to score
 outlier_count = 10       // worst cases to export
 
-// `dir` lists matching files in a stable order, so the two lists line up
-// index-for-index: case i is flair_paths[i] together with gt_paths[i].
-flair_paths = subsequence(dir(dataset_root, "*_flair.nii.gz", true, true), 0, case_count)
-gt_paths    = subsequence(dir(dataset_root, "*_seg.nii.gz",   true, true), 0, case_count)
+// The same twenty cases the hybrid nnU-Net program evaluates, chosen the same
+// way: HGG only, named from name_mapping.csv, then sliced. Selecting by NAME
+// rather than by position in a directory listing means the choice does not
+// depend on which cases happen to be on disk -- and `case_start = 50` keeps
+// these cases OUT of the network's training set, which is what makes the
+// symbolic and the hybrid figure comparable.
+name_mapping = load(concat(dataset_root, "/name_mapping.csv"))
+field(line, k) = index(strings.split(line, ","), k)
+grade(line)    = field(line, 0)
+case_id(line)  = field(line, 5)
+hgg_ids = for line in (filter line in name_mapping do strings.equals(grade(line), "HGG"))
+          do case_id(line)
+path_of(id, modality) = concat(dataset_root, "/", id, "/", id, "_", modality, ".nii.gz")
+
+// Sliced, so position 0 is case_start: every index downstream stays 0-based.
+// `subsequence` takes a half-open interval [start, stop) -- a STOP, not a
+// count -- which is why the second bound is a sum.
+flair_paths = subsequence(for id in hgg_ids do path_of(id, "flair"), case_start, case_start + case_count)
+gt_paths    = subsequence(for id in hgg_ids do path_of(id, "seg"),   case_start, case_start + case_count)
 
 // ------------------------------------------------------------ parameters ---
 hi_thr           = 0.93        // strict threshold, fixed at its published value
@@ -94,6 +110,7 @@ fixed_dice = for i in cases do dice(segment(pflair_of(i), published_vi_thr), tru
 
 // ------------------------------------------------------------ statistics ---
 print "n_cases"            case_count
+print "case_start"         case_start
 print "dice_fixed_mean"    mean(fixed_dice)
 print "dice_best_mean"     mean(best_dice)
 print "dice_best_median"   median(best_dice)

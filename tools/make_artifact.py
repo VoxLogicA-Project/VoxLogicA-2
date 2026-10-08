@@ -57,8 +57,11 @@ ENGINE: list[str] = [
     "implementation/python/requirements.lock",
     # No requirements-test.lock: tests/ does not ship, so the reviewer's venv
     # is the runtime only. bootstrap.py installs from whichever locks exist.
-    # The dataset contract. The programs index cases by POSITION, so which copy
-    # of BraTS a reviewer has is part of what the numbers mean.
+    # The dataset contract. Both BraTS programs now name their cases from the
+    # dataset's own name_mapping.csv -- by grade and id, not by directory order
+    # -- so a reviewer's copy no longer silently renumbers the cases. The
+    # manifest still pins WHICH bytes those names resolve to, which is the part
+    # that makes the numbers mean anything.
     "tools/dataset_manifest.py",
     "tools/brats2020-manifest.json",
     # Not an experiment: the one-second program the kick-the-tires phase runs to
@@ -119,13 +122,17 @@ PROGRAMS: list[dict] = [
         "minutes": "1-3 min (32 s on 24 cores, 3 min on 4)",
         "note": "The AIIM study as one declarative program: sweep the permissive "
                 "threshold over 0.72-0.92, keep the best per case, and report the "
-                "spread of the winning thresholds. This is the paper's experiment.",
+                "spread of the winning thresholds. This is the paper's experiment. "
+                "Scored on HGG cases 051-070 -- the same twenty the nnU-Net program "
+                "evaluates, so the symbolic and the hybrid figure are comparable, and "
+                "outside that program's training set so neither method is in-sample.",
         "outputs": "output/aiim-sweep/",
         "expect": [
             "`dice_fixed_mean` -- the single published threshold, scored",
             "`dice_best_mean`, `dice_best_median`, `dice_best_stdev` -- the per-case best",
             "`vi_thr_distribution` -- which thresholds won, and how often. A SPREAD "
             "here rather than one winner is the study's result",
+            "`case_start` -- 50, a guard: it says which twenty cases were scored",
             "36 PNGs under `output/aiim-sweep/`, three planes for each of the ten "
             "worst cases",
         ],
@@ -229,20 +236,22 @@ ORACLE: dict[str, dict] = {
                 "have reproduced our result.",
     },
     "doc/gallery/programs/simpleitk/brats-threshold-sweep-aiim.imgql": {
-        "provenance": "Six runs across two days: warm cache, empty store, and "
-                      "--no-cache at 1, 4 and 16 threads. Bit-identical every time.",
+        "provenance": "Four runs on 2026-10-08, all on this program's new case range: the engine on an empty store, the lazy strategy on an empty store, a warm re-run, and 4 threads. Bit-identical every time.",
         "tolerance": 0.0,
         "values": [
-            ("dice_fixed_mean", "0.8069413698956456", "the single published threshold"),
-            ("dice_best_mean", "0.8513501430954795", "per-case best"),
-            ("dice_best_median", "0.8904556073150862", ""),
-            ("dice_best_stdev", "0.10944800755354497", ""),
-            ("vi_thr_mean", "0.89", ""),
-            ("vi_thr_median", "0.91", ""),
-            ("vi_thr_stdev", "0.03879772103996235", ""),
+            ("case_start", "50.0",
+             "which cases these are: HGG positions 50-69, i.e. 051-070. The same "
+             "twenty the nnU-Net program evaluates, and outside its training set"),
+            ("dice_fixed_mean", "0.8276376252018517", "the single published threshold"),
+            ("dice_best_mean", "0.8554965584750516", "per-case best"),
+            ("dice_best_median", "0.9073711220615291", ""),
+            ("dice_best_stdev", "0.11245649918780284", ""),
+            ("vi_thr_mean", "0.8895", ""),
+            ("vi_thr_median", "0.895", ""),
+            ("vi_thr_stdev", "0.02837252191822224", ""),
             ("vi_thr_distribution",
-             "[[0.81,2],[0.83,1],[0.85,1],[0.86,1],[0.87,1],[0.88,1],[0.89,1],[0.9,2],[0.92,10]]",
-             "**the study's result**: nine thresholds win across twenty cases"),
+             "[[0.82,1],[0.85,2],[0.86,2],[0.88,1],[0.89,4],[0.9,4],[0.91,1],[0.92,5]]",
+             "**the study's result**: eight thresholds win across twenty cases"),
         ],
         "note": "These are exact. The engine is deterministic in its values: the same "
                 "digits came back at every thread count and with the disk cache both "
@@ -687,8 +696,11 @@ layout ourselves:
 2. **One misnamed file.** The same notebooks mention that case
    `BraTS20_Training_355` ships its segmentation under a different name
    (`W39_1998.09.19_Segm.nii`). If so, rename it to
-   `BraTS20_Training_355_seg.nii.gz` after gzipping, or that case is silently
-   missing from `*_seg.nii.gz` and every position after 354 shifts.
+   `BraTS20_Training_355_seg.nii.gz` after gzipping. Both BraTS programs name
+   their cases from `name_mapping.csv` rather than from a directory listing, so
+   a missing file does not shift anyone else's case: it makes that one case fail
+   to read, loudly. 355 is LGG and neither program scores it, but the manifest
+   check will still report it.
 
 Either way, run the manifest check below before anything else: it compares the
 ordered listing and the hashes, and will name exactly what differs.
