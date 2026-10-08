@@ -53,13 +53,21 @@ path_of(id, modality) = concat(dataset_root, "/", id, "/", id, "_", modality, ".
 //
 // Written as three functions rather than as two sliced lists -- the obvious
 // form, `subsequence(for id in hgg_ids do path_of(id, m), case_start, stop)`.
-// That form gives the same seventeen values, digit for digit, at 4 and 24
-// threads and under the lazy strategy, and then DEADLOCKS at --threads 1:
-// every kernel completes, nothing is in flight, nothing is ready, and no goal
-// is ever printed. This form runs single-threaded in 65 s. The reason is not
-// known -- it is not expansion pressure, since this form expands more loop
-// bodies than the one that hangs -- so the engine bug stands and this is a way
-// around it, not an explanation of it.
+// That form gives the same seventeen values, digit for digit, at 4 and at 24
+// threads and under the lazy strategy, and then HANGS at --threads 1: after
+// 17132 kernels it stops for an hour on three `default.for_loop` nodes, and
+// the engine's own stall watchdog aborts the run. The frontier it dumps names
+// the defect precisely -- one of the three has nothing left to wait for and
+// still never completes, while the other two wait on it:
+//
+//     fd5b176b op=default.for_loop pending=1 unmet=['bdd4b6a8']
+//     bdd4b6a8 op=default.for_loop pending=0 unmet=[]
+//     bef39465 op=default.for_loop pending=1 unmet=['bdd4b6a8']
+//
+// So a ready loop node never gets scheduled when there is one worker. This
+// form runs single-threaded in 65 s instead of 3680 s. It is a way around an
+// engine bug, not a fix: the engine says so itself ("a hang must never
+// happen").
 case_at(i)       = index(hgg_ids, case_start + i)
 flair_path_of(i) = path_of(case_at(i), "flair")
 gt_path_of(i)    = path_of(case_at(i), "seg")
