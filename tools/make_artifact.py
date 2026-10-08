@@ -766,6 +766,50 @@ not.
 {"".join(sections)}
 ---
 
+## C.5 Reading experiments 3 and 4 together
+
+Both score the SAME twenty cases -- HGG positions 50-69, which are
+`BraTS20_Training_051` to `_070` -- and both build the segmentation with the
+same definitions: `preprocess`, `segment`, `sweep_of`, `dice`, `vi_thresholds`,
+`published_vi_thr` and `whole_tumour` are identical in the two programs. So the
+three pairings below are comparable, and together they are the paper's claim:
+
+| | where | mean | median |
+|---|---|---|---|
+| threshold sweep vs the **annotation** | exp 3, `dice_best_mean` | 0.8555 | 0.9074 |
+| nnU-Net vs the **annotation** | exp 4, `model_dice_mean` | 0.8588 | 0.9152 |
+| threshold sweep vs **nnU-Net** | exp 4, `dice_best_mean` | 0.8502 | 0.9258 |
+
+The twenty cases are outside the network's training set (positions 0-49), so
+neither method is being scored on data it was fitted to.
+
+**A trap worth naming.** The two programs print sixteen goal names in common,
+and fifteen of the sixteen MEAN DIFFERENT THINGS -- only `n_cases` does not --
+because each program defines `truth_of` for itself:
+
+| | `truth_of(i)` is |
+|---|---|
+| experiment 3 | the annotation BraTS ships |
+| experiment 4 | what nnU-Net predicted |
+
+Everything downstream of it follows: `best_dice`, `best_vi_thr`, the
+`dice_best_*` and `vi_thr_*` families, `dice_fixed_mean`, and -- because they
+are ranked by a different score -- `outlier_cases`, `outlier_dice`,
+`outlier_paths` and the exported planes. So `dice_best_mean` is 0.8555 in
+experiment 3 and 0.8502 in experiment 4, on the same twenty cases, and these
+are two different quantities, not a discrepancy. The two experiments also
+export DIFFERENT ten worst cases, for the same reason. Experiment 4's name for
+"against the annotation" is `model_dice_mean`; experiment 3 needs no separate
+name because the annotation is the only reference it uses.
+
+**The exported PNGs are numbered by POSITION, not by BraTS id.**
+`output/aiim-sweep/case_001_*` is position 1 of the twenty, which is
+`BraTS20_Training_052`. The `outlier_paths` goal prints the real path of every
+case it exported; that is the mapping to use, and it is the reason the goal
+exists.
+
+---
+
 ## D. Two behaviours worth knowing about
 
 **A second run finishes instantly and writes no files.** Results are cached in
