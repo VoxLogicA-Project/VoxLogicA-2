@@ -48,11 +48,21 @@ hgg_ids = for line in (filter line in name_mapping do strings.equals(grade(line)
           do case_id(line)
 path_of(id, modality) = concat(dataset_root, "/", id, "/", id, "_", modality, ".nii.gz")
 
-// Sliced, so position 0 is case_start: every index downstream stays 0-based.
-// `subsequence` takes a half-open interval [start, stop) -- a STOP, not a
-// count -- which is why the second bound is a sum.
-flair_paths = subsequence(for id in hgg_ids do path_of(id, "flair"), case_start, case_start + case_count)
-gt_paths    = subsequence(for id in hgg_ids do path_of(id, "seg"),   case_start, case_start + case_count)
+// Offset at the point of use, so position 0 is case_start and every index
+// downstream stays 0-based.
+//
+// Written as three functions rather than as two sliced lists -- the obvious
+// form, `subsequence(for id in hgg_ids do path_of(id, m), case_start, stop)`.
+// That form gives the same seventeen values, digit for digit, at 4 and 24
+// threads and under the lazy strategy, and then DEADLOCKS at --threads 1:
+// every kernel completes, nothing is in flight, nothing is ready, and no goal
+// is ever printed. This form runs single-threaded in 65 s. The reason is not
+// known -- it is not expansion pressure, since this form expands more loop
+// bodies than the one that hangs -- so the engine bug stands and this is a way
+// around it, not an explanation of it.
+case_at(i)       = index(hgg_ids, case_start + i)
+flair_path_of(i) = path_of(case_at(i), "flair")
+gt_path_of(i)    = path_of(case_at(i), "seg")
 
 // ------------------------------------------------------------ parameters ---
 hi_thr           = 0.93        // strict threshold, fixed at its published value
@@ -88,8 +98,8 @@ dice(a, b) = 2 * volume(and(a, b)) / (volume(a) + volume(b))
 whole_tumour(gt_image) = geq_sv(1.0, gt_image)
 
 // --------------------------------------------------- per-case evaluation ---
-pflair_of(i) = preprocess(intensity(ReadImage(index(flair_paths, i))))
-truth_of(i)  = whole_tumour(intensity(ReadImage(index(gt_paths, i))))
+pflair_of(i) = preprocess(intensity(ReadImage(flair_path_of(i))))
+truth_of(i)  = whole_tumour(intensity(ReadImage(gt_path_of(i))))
 
 // The sweep for one case: one Dice per candidate threshold.
 sweep_of(i) =
@@ -138,7 +148,7 @@ print "outlier_cases" outliers
 print "outlier_dice"  for i in outliers do index(best_dice, i)
 // Positions are meaningless outside this run: print the files they refer to, so
 // a reader can open the case that scored worst.
-print "outlier_paths" for i in outliers do index(flair_paths, i)
+print "outlier_paths" for i in outliers do flair_path_of(i)
 
 // ---------------------------------------------------- significant slices ---
 // One slice per case is not enough to judge a segmentation: the middle of a

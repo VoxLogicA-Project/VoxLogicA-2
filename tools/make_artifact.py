@@ -119,7 +119,7 @@ PROGRAMS: list[dict] = [
         "title": "AIIM threshold sweep",
         "reproducibility": "bit-identical",
         "needs_dataset": True,
-        "minutes": "1-3 min (32 s on 24 cores, 3 min on 4)",
+        "minutes": "30 s - 2 min (29 s on 24 cores, 65 s single-threaded)",
         "note": "The AIIM study as one declarative program: sweep the permissive "
                 "threshold over 0.72-0.92, keep the best per case, and report the "
                 "spread of the winning thresholds. This is the paper's experiment. "
@@ -236,7 +236,7 @@ ORACLE: dict[str, dict] = {
                 "have reproduced our result.",
     },
     "doc/gallery/programs/simpleitk/brats-threshold-sweep-aiim.imgql": {
-        "provenance": "Four runs on 2026-10-08, all on this program's new case range: the engine on an empty store, the lazy strategy on an empty store, a warm re-run, and 4 threads. Bit-identical every time.",
+        "provenance": "Six runs on 2026-10-08, bit-identical throughout: the shipped program on an empty store at 24 threads and at 1, plus an earlier formulation of the same case selection at 24 threads, at 4, warm, and under the lazy strategy. Two ways of naming the same twenty cases agree digit for digit.",
         "tolerance": 0.0,
         "values": [
             ("case_start", "50.0",
