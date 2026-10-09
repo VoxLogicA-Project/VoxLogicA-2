@@ -33,8 +33,11 @@ def _wrap_sitk_function(func: Callable, func_name: str) -> Callable:
             sig = inspect.signature(func)
             params = list(sig.parameters.keys())
             
-            # Special handling for *args functions
-            if len(params) == 1 and sig.parameters[params[0]].kind == inspect.Parameter.VAR_POSITIONAL:
+            # Special handling for *args functions. Most SimpleITK procedures are
+            # declared (*args, **kwargs): walking their two parameters by name
+            # would pass only the first two arguments (Extract's index,
+            # RescaleIntensity's maximum were silently dropped).
+            if any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in sig.parameters.values()):
                 # This is a *args function, collect all numeric arguments
                 args = []
                 i = 0
