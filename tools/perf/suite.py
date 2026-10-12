@@ -585,6 +585,10 @@ def main(argv: list[str]) -> int:
 
     a.engine = a.engine.resolve()
     a.engine_python = a.engine_python or a.engine / ".venv" / "bin" / "python"
+    if not a.engine_python.exists():
+        p.error(f"no interpreter at {a.engine_python}: build the engine first "
+                f"(`./voxlogica --help` in {a.engine} creates .venv), or pass "
+                f"--engine-python")
     a.experiments = [e for e in a.experiments.split(",") if e]
     unknown = set(a.experiments) - set(EXPERIMENTS)
     if unknown:

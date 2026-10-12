@@ -40,7 +40,7 @@ REPO = Path(__file__).resolve().parent.parent
 MARKER = ".voxlogica-artifact"
 
 # --------------------------------------------------------------- manifest ---
-# Edit these four lists as the tree moves. Everything else follows from them.
+# Edit these five lists as the tree moves. Everything else follows from them.
 
 #: What makes the tool run. Paths are repo-relative and keep their layout in
 #: the artifact, so a program's relative imports and paths still resolve.
@@ -67,6 +67,22 @@ ENGINE: list[str] = [
     # Not an experiment: the one-second program the kick-the-tires phase runs to
     # see the engine COMPUTE something, rather than only parse and typecheck.
     "doc/gallery/programs/default/default-range-map.imgql",
+]
+
+#: The measurement suite. The paper's performance figures were taken with this
+#: code and not with a stopwatch, so it ships: a reviewer who doubts a number
+#: can retake it instead of believing it. It measures from OUTSIDE the engine
+#: -- wall clock, processor time and peak RSS come from `os.wait4` -- so an
+#: error in the engine's own bookkeeping cannot flatter its own measurement.
+#:
+#: Pure standard library, deliberately: it runs under the reviewer's system
+#: `python3` and MEASURES the venv that `bootstrap.py` builds, which keeps the
+#: measuring apparatus out of the measured stack. `vl1_compare.py` imports
+#: `suite`, so the two travel together or neither works.
+MEASUREMENT: list[str] = [
+    "tools/perf/suite.py",       # the harness: experiments, repetitions, gating
+    "tools/perf/report.py",      # the summary table, and what makes a row untrustworthy
+    "tools/perf/vl1_compare.py", # VoxLogicA 1 against VoxLogicA 2, same measurements
 ]
 
 #: The experiments, in the order the README presents them. `needs_dataset`
@@ -590,11 +606,24 @@ The last command must print exactly:
 squares=[0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0, 64.0, 81.0, 100.0, 121.0, 144.0, 169.0, 196.0, 225.0, 256.0, 289.0, 324.0, 361.0]
 ```
 
-Step 3 parses, reduces and type-checks each program without computing anything;
-step 4 computes. Together they show that the environment is complete and the
-engine works end to end.
+```bash
+# 5. the measurement suite runs -- about 3 seconds, still no data
+python3 tools/perf/suite.py --hold 0 --reps 1 --warm-runs 1 --experiments cache \\
+    --program doc/gallery/programs/default/default-range-map.imgql \\
+    --out perf/smoke --work-dir perf/work
+python3 tools/perf/report.py perf/smoke
+```
 
-If all four steps pass, the artifact is ready for the full evaluation. A good
+Three runs, then a two-row table whose `Problems` section reads `- none`. That
+is the apparatus the paper's performance figures were taken with; section G
+says how to point it at a real experiment.
+
+Step 3 parses, reduces and type-checks each program without computing anything;
+step 4 computes; step 5 measures. Together they show that the environment is
+complete, that the engine works end to end, and that the measurements in the
+paper can be retaken here.
+
+If all five steps pass, the artifact is ready for the full evaluation. A good
 next move is to start experiment 1 in the background -- it needs no dataset
 either, but takes 51 minutes on 24 cores and 77 on 4, at 1.2 GB of memory --
 and meanwhile obtain BraTS as section B describes.
@@ -845,6 +874,78 @@ shipped weights rather than retraining.
 ## F. The trained model
 
 {model_section}
+
+## G. Measuring performance yourself
+
+The paper's performance figures were taken with the suite that ships here, not
+with a stopwatch. It measures from OUTSIDE the engine -- wall clock, processor
+time and peak resident memory come from `os.wait4` -- so an error in the
+engine's own bookkeeping cannot flatter its own measurement. The engine's
+counters (kernels, fusion cones, saturation) are read from the JSON summary
+every run prints, and reported beside the external numbers rather than instead
+of them.
+
+| file | what it does |
+|---|---|
+| `tools/perf/suite.py` | runs one program under a set of experiments, repeated and interleaved |
+| `tools/perf/report.py` | one Markdown table per results directory, plus `summary.json` |
+| `tools/perf/vl1_compare.py` | the same measurements for VoxLogicA 1 and VoxLogicA 2 on the sweep |
+
+It needs only the standard library, so it runs under your system `python3`;
+what it measures is the `.venv` that section A built. Do section A first.
+
+```bash
+# scaling and cache behaviour on experiment 3, three repetitions
+python3 tools/perf/suite.py \\
+    --program doc/gallery/programs/simpleitk/brats-threshold-sweep-aiim.imgql \\
+    --out perf/aiim --work-dir perf/work \\
+    --experiments scaling,cache --threads-list 1,4,8,24 --reps 3
+python3 tools/perf/report.py perf/aiim
+```
+
+Four experiments are available, comma-separated to `--experiments`: `scaling`
+(each width in `--threads-list`), `fusion` (element-wise fusion on and off),
+`cache` (a cold run, then runs against the store it left) and `resume` (a run
+interrupted with the signal Ctrl-C sends, then restarted on the store it
+left). `--reps` repetitions are interleaved rather than run back to back, so
+thermal drift spreads over every configuration instead of loading the last
+ones.
+
+**What the report will tell you about your own run.** Every run's printed goals
+are hashed, and runs of the same program that disagree are listed under
+`Problems` -- a fast wrong answer is not a result. So is a non-zero exit, and
+so is a run during which other users' processes took more than
+`--max-foreign` percent of a core. On a shared or busy machine use
+`--quiet-pct` and `--hold` to make the suite wait for the machine to go quiet
+before each run; it records what it saw either way.
+
+**Two things it will refuse to do.** It will not put stores or scratch files on
+tmpfs -- a store in RAM eats the memory the engine sizes its budget from, which
+changes the thing being measured -- so give `--work-dir` a path on a real
+filesystem -- every run gets a fresh store there, removed when the run ends
+unless you pass `--keep-stores`, so plan for one store rather than one per run.
+And it isolates the engine's per-machine calibration in a fresh
+directory, so a calibration left by an earlier session cannot quietly change
+ITK's thread count between two measurements.
+
+**One rough edge.** `--set NAME=VALUE` overrides a top-level definition in the
+program before running it, which is how to measure a shorter sweep
+(`--set case_count=5`). It does not accept a value containing `/`, so the
+dataset path cannot be set this way: edit `dataset_root` in the program as
+section B describes.
+
+**Comparing against VoxLogicA 1.** `vl1_compare.py` needs a VoxLogicA 1 binary
+of your own (we used 1.3.3). VoxLogicA 1 has no loops and no sequences, so the
+script writes the sweep out for it one case at a time, writes the VoxLogicA 2
+programs from the same template with the same constants and goal names, and
+compares the two tools' answers value by value before reporting any timing: a
+speed comparison between programs that compute different numbers would mean
+nothing. To measure the same twenty cases the experiments use, pass
+`--first-case 51` -- it defaults to case 001.
+
+**Your numbers will not be our numbers.** They were taken on 24 cores; the
+shape is the claim -- how the time moves with the width, what the cache is
+worth, what an interrupted run costs -- not the digits.
 """, encoding="utf-8")
 
 
@@ -889,7 +990,27 @@ def main() -> int:
         size += s
         print(f"    {spec['title']}: {spec['path']}")
 
-    step(4, "Placeholder for the five-case sample (no image data is copied)")
+    step(4, f"Copying the measurement suite ({len(MEASUREMENT)} files)")
+    for rel in MEASUREMENT:
+        src = REPO / rel
+        if not src.exists():
+            sys.exit(f"missing from the checkout: {rel}")
+        f, sz = copy_tree(src, out / rel)
+        files += f
+        size += sz
+        print(f"    {rel}  ({human(sz)})")
+    # The programs get type-checked in step 7; nothing else would notice if one
+    # of these three shipped broken, so compile them here. In memory: writing
+    # .pyc files into the artifact would add files the checksums never list.
+    for rel in MEASUREMENT:
+        try:
+            compile((out / rel).read_text(encoding="utf-8"), rel, "exec")
+        except SyntaxError as exc:
+            sys.exit(f"the measurement suite does not compile: {rel}: {exc}")
+    print(f"    all {len(MEASUREMENT)} compile under Python "
+          f"{sys.version_info.major}.{sys.version_info.minor}")
+
+    step(5, "Placeholder for the five-case sample (no image data is copied)")
     data_dir = out / "doc/gallery/programs/brats2020/data"
     data_dir.mkdir(parents=True, exist_ok=True)
     cases = sorted(p.name for p in (REPO / "doc/gallery/programs/brats2020/data").iterdir()
@@ -906,7 +1027,7 @@ def main() -> int:
         encoding="utf-8")
     print(f"    named {len(cases)} cases, copied 0 images (BraTS policy)")
 
-    step(5, "Trained model")
+    step(6, "Trained model")
     if args.with_model:
         src = MODEL["source"]
         if not src.exists():
@@ -970,7 +1091,7 @@ def main() -> int:
     else:
         print("    skipped (pass --with-model to include ~240 MB of weights)")
 
-    step(6, "Checking the programs")
+    step(7, "Checking the programs")
     shipped = {spec["path"] for spec in PROGRAMS}
     orphaned = sorted(set(ORACLE) - shipped)
     if orphaned:
@@ -986,7 +1107,7 @@ def main() -> int:
                              for s in PROGRAMS))
     print(f"    {len(paths)} paths for the reviewer to set")
 
-    step(7, "Writing README.md and PROVENANCE.json")
+    step(8, "Writing README.md and PROVENANCE.json")
     write_readme(out, paths, goals, args.with_model)
     dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
     (out / "PROVENANCE.json").write_text(json.dumps({
@@ -1006,12 +1127,12 @@ def main() -> int:
         print("    WARNING: working tree has uncommitted tracked changes; "
               "the commit in PROVENANCE.json does not describe what was copied")
 
-    step(8, "Writing SHA256SUMS")
+    step(9, "Writing SHA256SUMS")
     print(f"    {write_checksums(out)} files hashed")
 
     tarball = None
     if args.tar:
-        step(9, "Writing the tarball")
+        step(10, "Writing the tarball")
         tarball = out.with_suffix(".tar.gz")
         with tarfile.open(tarball, "w:gz") as tf:
             tf.add(out, arcname=out.name)
@@ -1019,7 +1140,7 @@ def main() -> int:
 
     zipball = None
     if args.zip:
-        step(10 if args.tar else 9, "Writing the zip")
+        step(11 if args.tar else 10, "Writing the zip")
         import zipfile
         zipball = out.with_suffix(".zip")
         with zipfile.ZipFile(zipball, "w", zipfile.ZIP_DEFLATED) as zf:
