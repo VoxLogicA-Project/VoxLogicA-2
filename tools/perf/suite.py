@@ -280,11 +280,18 @@ def apply_overrides(text: str, overrides: list[str]) -> str:
     Only a line of the form ``name = value`` at column 0 is touched, keeping
     any trailing ``//`` comment; a name that is not found is an error, because
     a silent no-op would measure the wrong program.
+
+    The value is everything up to a ``//``, which is not the same as everything
+    up to a ``/``: paths are values too, and excluding the single slash made
+    ``--set dataset_root=/data/BraTS`` -- and every other path or quoted path in
+    these programs -- report the definition as missing. A value that itself
+    contains ``//`` is still read as ending there; nothing in these programs has
+    one, and the alternative is parsing ImgQL here.
     """
     for item in overrides:
         name, _, value = item.partition("=")
         name = name.strip()
-        pattern = re.compile(rf"^({re.escape(name)}\s*=\s*)([^/\n]*?)(\s*(//.*)?)$", re.M)
+        pattern = re.compile(rf"^({re.escape(name)}\s*=\s*)((?:(?!//).)*?)(\s*(//.*)?)$", re.M)
         text, count = pattern.subn(lambda m: m.group(1) + value.strip() + m.group(3), text, count=1)
         if count != 1:
             raise SystemExit(f"--set {item}: no top-level definition of {name!r} in the program")

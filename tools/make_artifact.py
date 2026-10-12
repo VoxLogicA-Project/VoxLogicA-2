@@ -961,11 +961,19 @@ And it isolates the engine's per-machine calibration in a fresh
 directory, so a calibration left by an earlier session cannot quietly change
 ITK's thread count between two measurements.
 
-**One rough edge.** `--set NAME=VALUE` overrides a top-level definition in the
-program before running it, which is how to measure a shorter sweep
-(`--set case_count=5`). It does not accept a value containing `/`, so the
-dataset path cannot be set this way: edit `dataset_root` in the program as
-section B describes.
+**Measuring a different program without editing it.** `--set NAME=VALUE`
+overrides a top-level definition before the run, so a shorter sweep is
+`--set case_count=5`. A value that is a STRING keeps its quotes, and the shell
+must not eat them:
+
+```bash
+--set 'dataset_root="/path/to/MICCAI_BraTS2020_TrainingData"' \\
+--set 'output_dir="/tmp/sweep-png"' --set case_count=2 --set outlier_count=1
+```
+
+The program the suite actually ran is written to `program.imgql` in the results
+directory, overrides applied, so what was measured is on the record. A name
+that is not defined at the top level is an error rather than a silent no-op.
 
 **Comparing against VoxLogicA 1.** `vl1_compare.py` needs a VoxLogicA 1 binary
 of your own (we used 1.3.3). VoxLogicA 1 has no loops and no sequences, so the
