@@ -155,6 +155,10 @@ PROGRAMS: list[dict] = [
             "90 PNGs under `output/aiim-sweep/`, nine for each of the ten worst "
             "cases: three planes, and for each plane the FLAIR, the segmentation "
             "and the ground truth",
+            "those PNGs are 90 DIFFERENT images -- grey anatomy, with a white mask "
+            "on the segmentation and ground-truth ones. All black, or nine "
+            "identical files per case, means the `Extract` index is being dropped: "
+            "the engine that ships here fixed that, an older one did not",
         ],
         "total_files": 90,
     },
@@ -256,7 +260,7 @@ ORACLE: dict[str, dict] = {
                 "have reproduced our result.",
     },
     "doc/gallery/programs/simpleitk/brats-threshold-sweep-aiim.imgql": {
-        "provenance": "Seven runs on 2026-10-08, bit-identical throughout: the shipped program on an empty store at 24 threads and at 1, plus an earlier formulation of the same case selection at 24 threads, at 4, warm, and under the lazy strategy. Two ways of naming the same twenty cases agree digit for digit. The seventh run added the fixed threshold's spread -- `dice_fixed_median`, `dice_fixed_stdev` and the per-case `fixed_dice` list -- and returned the other seventeen goals unchanged.",
+        "provenance": "Nine runs, bit-identical throughout. Seven on 2026-10-08: the shipped program on an empty store at 24 threads and at 1, plus an earlier formulation of the same case selection at 24 threads, at 4, warm, and under the lazy strategy, and one that added the fixed threshold's spread. Two ways of naming the same twenty cases agree digit for digit. Two more on 2026-10-12, across a SimpleITK wrapper fix that changed every exported image: the printed values did not move.",
         "tolerance": 0.0,
         "values": [
             ("case_start", "50.0",

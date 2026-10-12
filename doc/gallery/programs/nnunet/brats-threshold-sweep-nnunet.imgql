@@ -257,9 +257,14 @@ tropics_and_equator(m) =
 
 plane_names = ["tropic_low", "equator", "tropic_high"]
 
+// White where the mask is, the ranked FLAIR everywhere else. `pflair` is a
+// PERCENTILE RANK, so it lives in [0,1] and the white has to be 1.0: a 255
+// here -- an 8-bit habit -- rescales to white and pushes the whole brain into
+// the bottom 0.4% of the range, which is a white blob on black rather than a
+// comparison. Same definition as the symbolic program's.
 overlay_mask(pflair, m, zi) =
   let p = plane(m, zi) in
-  mask(constant(255.0), p) + mask(pflair, not(p))
+  mask(constant(1.0), p) + mask(pflair, not(p))
 
 extract_axial(img, zi) =
   Extract(img,
