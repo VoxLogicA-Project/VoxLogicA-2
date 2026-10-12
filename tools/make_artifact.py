@@ -182,8 +182,17 @@ PROGRAMS: list[dict] = [
             "`vi_thr_distribution` -- the same question as experiment 3, asked of "
             "the learned reference",
             "`best_dice`, `best_vi_thr` -- per case",
+            "`dice_fixed_mean`, `dice_fixed_median`, `dice_fixed_stdev` and the "
+            "per-case `fixed_dice` -- the single published threshold, scored",
+            "120 PNGs under `output/aiim-sweep-nnunet/`, twelve for each of the ten "
+            "worst cases: three planes, and for each plane FOUR images -- `_flair`, "
+            "`_predicted` (the sweep), `_nnunet` (the learned reference it was scored "
+            "against) and `_truth` (the annotation, for the reader's own judgement)",
+            "those PNGs are 120 DIFFERENT images -- grey anatomy with a white mask on "
+            "the three masked ones. All black means the `Extract` index is being "
+            "dropped; the engine that ships here fixed that",
         ],
-        "total_files": 40,
+        "total_files": 120,
     },
 ]
 
@@ -285,31 +294,39 @@ ORACLE: dict[str, dict] = {
                 "scheduling noise -- start with your SimpleITK version.",
     },
     "doc/gallery/programs/nnunet/brats-threshold-sweep-nnunet.imgql": {
-        "provenance": "Four independent cold-store runs (2026-09-08 x2, 2026-09-11, "
-                      "2026-09-15) on the same trained weights and the same 20 cases; "
-                      "the last one on this artifact as a reviewer would run it -- fresh "
-                      "checkout, shipped weights, empty store. The values are the "
-                      "2026-09-11 run; the others sit within 3.8e-06 of them, the winning "
-                      "thresholds identical every time.",
+        "provenance": "Five independent cold-store runs (2026-09-08 x2, 2026-09-11, "
+                      "2026-09-15, 2026-10-12) on the same trained weights and the same "
+                      "20 cases; the 2026-09-15 one on this artifact as a reviewer would "
+                      "run it -- fresh checkout, shipped weights, empty store. The values "
+                      "are the 2026-10-12 run, the only one that printed every goal: it "
+                      "added the fixed threshold's spread and the per-case `fixed_dice` "
+                      "list, and it is the first after a SimpleITK wrapper fix that "
+                      "changed every exported image. The four earlier runs sit within "
+                      "1.6e-05 of these, with the winning thresholds identical every "
+                      "time.",
         "tolerance": 1e-4,
         "values": [
-            ("model_dice_mean", "0.8587654381227321",
+            ("model_dice_mean", "0.8587657935069911",
              "how close the learned reference is to the annotation. Read first"),
-            ("model_dice_median", "0.9152127540638253", ""),
-            ("model_dice_stdev", "0.1101112733588743",
+            ("model_dice_median", "0.9152163651578276", ""),
+            ("model_dice_stdev", "0.11011142897334406",
              "large: on some cases the network is weak"),
-            ("model_sensitivity_mean", "0.8213030657937151",
+            ("model_sensitivity_mean", "0.821302951428539",
              "per case 0.38-0.98: where this is low, the reference is weak"),
-            ("model_specificity_mean", "0.9994939855877394", "whole-volume; read differences"),
-            ("dice_fixed_mean", "0.8069295235180464", ""),
-            ("sensitivity_fixed_mean", "0.9164724040507275", ""),
-            ("specificity_fixed_mean", "0.9979484261834999", ""),
-            ("dice_best_mean", "0.8501655344839311", ""),
-            ("dice_best_median", "0.9258472009239862", ""),
-            ("dice_best_stdev", "0.18727288008444662", ""),
-            ("sensitivity_best_mean", "0.9431578561623185",
+            ("model_specificity_mean", "0.9994939912279985", "whole-volume; read differences"),
+            ("dice_fixed_mean", "0.8069294373520195", ""),
+            ("dice_fixed_median", "0.8846858248141457", ""),
+            ("dice_fixed_stdev", "0.22969636865562157",
+             "twice experiment 3's spread, and one case scores 0.000: the fixed "
+             "threshold fails outright where the sweep does not"),
+            ("sensitivity_fixed_mean", "0.9164727345951725", ""),
+            ("specificity_fixed_mean", "0.9979484205242406", ""),
+            ("dice_best_mean", "0.850164485800129", ""),
+            ("dice_best_median", "0.9258509606139985", ""),
+            ("dice_best_stdev", "0.18727226965618532", ""),
+            ("sensitivity_best_mean", "0.9431586991502892",
              "the sweep's gain over fixed is almost all recall"),
-            ("specificity_best_mean", "0.9973265002479786", "and costs almost nothing here"),
+            ("specificity_best_mean", "0.9973265001914303", "and costs almost nothing here"),
             ("vi_thr_mean", "0.8945000000000001", "**exact**, no tolerance"),
             ("vi_thr_median", "0.9", "**exact**"),
             ("vi_thr_stdev", "0.041986840043543486", "**exact**"),
@@ -816,7 +833,7 @@ three pairings below are comparable, and together they are the paper's claim:
 |---|---|---|---|
 | threshold sweep vs the **annotation** | exp 3, `dice_best_mean` | 0.8555 | 0.9074 |
 | nnU-Net vs the **annotation** | exp 4, `model_dice_mean` | 0.8588 | 0.9152 |
-| threshold sweep vs **nnU-Net** | exp 4, `dice_best_mean` | 0.8502 | 0.9258 |
+| threshold sweep vs **nnU-Net** | exp 4, `dice_best_mean` | 0.8502 | 0.9259 |
 
 The twenty cases are outside the network's training set (positions 0-49), so
 neither method is being scored on data it was fitted to.
@@ -840,11 +857,23 @@ export DIFFERENT ten worst cases, for the same reason. Experiment 4's name for
 "against the annotation" is `model_dice_mean`; experiment 3 needs no separate
 name because the annotation is the only reference it uses.
 
-**The exported PNGs are numbered by POSITION, not by BraTS id.**
-`output/aiim-sweep/case_001_*` is position 1 of the twenty, which is
-`BraTS20_Training_052`. The `outlier_paths` goal prints the real path of every
-case it exported; that is the mapping to use, and it is the reason the goal
+**The exported PNGs are numbered by POSITION, not by BraTS id -- and the two
+programs do not use the same position.**
+
+| | a file name | what it is |
+|---|---|---|
+| experiment 3 | `output/aiim-sweep/case_001_*` | position 1 of the TWENTY, i.e. `BraTS20_Training_052` |
+| experiment 4 | `output/aiim-sweep-nnunet/case_053_*` | position 53 of the 293 HGG, i.e. `BraTS20_Training_054` |
+
+So the same case appears under two different numbers, and neither number is the
+BraTS id. The `outlier_paths` goal prints the real path of every case either
+program exported; that is the mapping to use, and it is the reason the goal
 exists.
+
+Experiment 4 also writes FOUR images per plane where experiment 3 writes three:
+`_flair`, `_predicted` (the sweep), `_nnunet` (the reference it was scored
+against) and `_truth` (the annotation, which experiment 4 does not score the
+sweep against but exports so a reader can judge both).
 
 ---
 
