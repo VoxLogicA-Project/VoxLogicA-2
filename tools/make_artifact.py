@@ -1143,7 +1143,19 @@ def main() -> int:
                 size += target.stat().st_size
                 print(f"    {item.relative_to(src)}  ({human(target.stat().st_size)})")
         if manifest.exists():
-            shutil.copy2(manifest, out / "model" / manifest.name)
+            # The manifest records where the weights were trained, as absolute
+            # paths on the build machine. The engine recomputes `trainer_dir`
+            # from the reviewer's own `work_root` on every run, so these are
+            # history, not configuration -- and history that names a stranger's
+            # home directory. Rewrite them to where the weights now live.
+            text = manifest.read_text(encoding="utf-8")
+            before = text
+            text = text.replace(str(MODEL_SOURCE) + "/", "model/")
+            text = text.replace(str(MODEL_SOURCE), "model")
+            target = out / "model" / manifest.name
+            target.write_text(text, encoding="utf-8")
+            if text != before:
+                print(f"    {manifest.name}: rewrote the build machine's paths")
             kept += 1
         print(f"    kept {kept} files; refused {', '.join(MODEL['refused'])} "
               f"(BraTS-derived volumes)")
