@@ -168,12 +168,26 @@ PROGRAMS: list[dict] = [
         "needs_dataset": True,
         "needs_gpu": True,
         "reproducibility": "no -- trains a network",
-        "minutes": "~3 min with the shipped weights; hours if retraining",
+        "minutes": "2 min at 4 threads (118 s measured); hours if retraining",
         "note": "The same sweep as experiment 3, scored against nnU-Net's prediction "
                 "instead of the radiologist's annotation. It asks whether the "
                 "case-dependence of the permissive threshold survives when the "
                 "reference stops being a human annotation. Trains the network first, "
                 "unless matching weights are already present.",
+        "run_flags": "--threads 4",
+        "flags_note": (
+            "**Run this one with `--threads 4`.** Measured on 24 cores: at 4 threads "
+            "it takes 118 s and peaks at 8.0 GB; at 24 it takes 136 s and peaks at "
+            "21 GB. Lower is both faster and smaller here, because 24 concurrent "
+            "nnU-Net predictions compete for memory that the engine's budget does not "
+            "see. The 36 printed goals are identical either way -- the winning "
+            "thresholds and their distribution to the digit, the Dice values to "
+            "1.2e-05.\n\n"
+            "8.0 GB is close to the floor: `nnUNetv2_plan_and_preprocess` alone "
+            "reaches 7.7 GB in the first minute, and that part does not depend on "
+            "`--threads`. So this experiment wants a machine with 16 GB; in 8 GB it "
+            "is killed by the out-of-memory killer during preprocessing, before the "
+            "GPU matters at all."),
         "outputs": "output/aiim-sweep-nnunet/",
         "expect": [
             "`model_dice_mean` -- how close the learned reference is to the "
@@ -513,13 +527,18 @@ def write_readme(out: Path, paths: list[tuple[str, str, str]],
             data_line += ("\nA CUDA GPU is assumed (`nnunet_device = \"cuda\"` in the\n"
                           "program). Set it to `\"cpu\"` to run without one, and expect it\n"
                           "to take very much longer.\n")
+        cmd = f"./voxlogica run {spec['path']}"
+        if spec.get("run_flags"):
+            cmd += " " + spec["run_flags"]
+        if spec.get("flags_note"):
+            data_line += "\n" + spec["flags_note"] + "\n"
         sections.append(f"""### {i}. {spec['title']}
 
 {spec['note']}
 
 {data_line}
 ```bash
-./voxlogica run {spec['path']}
+{cmd}
 ```
 
 Expected: **exit status 0**, {goals[spec['path']]} named goal{'' if goals[spec['path']] == 1 else 's'} printed as JSON,
@@ -654,7 +673,7 @@ and meanwhile obtain BraTS as section B describes.
 | | |
 |---|---|
 | Disk | 25 GB free, dataset excluded (venv 8 GB, ~5 GB of results store per sweep) |
-| RAM, measured peak | depends on parallelism. At 24 threads: experiment 2: 8.8 GB; 3: 4.5 GB; **4: 20 GB**. At 4 threads (`--threads 4`): experiment 1: 1.2 GB; 2: 1.9 GB; 3: 2.4 GB. A VM with 8 GB runs experiments 1, 2 and 3; experiment 4 does not start in 8 GB -- see below |
+| RAM, measured peak | depends on parallelism, and for experiment 4 it depends on it a lot. At 24 threads: experiment 2: 8.8 GB; 3: 4.5 GB; **4: 21 GB**. At 4 threads (`--threads 4`): experiment 1: 1.2 GB; 2: 1.9 GB; 3: 2.4 GB; **4: 8.0 GB**, and faster than at 24. A VM with 8 GB runs experiments 1, 2 and 3; **16 GB runs all four**, experiment 4 at `--threads 4` -- see below |
 | CPU | any; the engine uses every core it finds. Times in this README are from a 24-core machine |
 | GPU | **experiment 4 only** (`nnunet_device = "cuda"`). Without one it can run on CPU -- set the device to `"cpu"` -- but we have not timed that |
 | Network | once, during bootstrap; every download is version-pinned and hash-checked |
@@ -664,12 +683,17 @@ In a virtual machine: experiments 1, 2 and 3 fit, measured in an Ubuntu 22.04
 container with 4 cores, 8 GB and no GPU -- experiment 1 in 77 min, 2 in 31 s,
 3 in 3 min.
 
-Experiment 4 does not. With 8 GB it is killed by the out-of-memory killer after
-24 seconds, inside `nnUNetv2_plan_and_preprocess` -- before any prediction and
-before the GPU would matter at all. Preprocessing 50 BraTS cases at
-`3d_fullres` is what does not fit. So the obstacle is memory first and the GPU
-second, and we have asked the chairs for the hardware exemption the call
-provides.
+Experiment 4 needs more, but less than it first appeared. At `--threads 4` it
+peaks at **8.0 GB** rather than 21, and runs faster -- so **16 GB is enough**,
+and that is how section C tells you to run it.
+
+It will not fit in 8 GB, and lowering `--threads` further does not help:
+`nnUNetv2_plan_and_preprocess` reaches 7.7 GB on its own in the first minute,
+and that part is nnU-Net's own process, outside the engine's control. With 8 GB
+the run is killed by the out-of-memory killer after 24 seconds, inside
+preprocessing -- before any prediction and before the GPU would matter at all.
+So the obstacle is memory first and the GPU second, and the ask is a 16 GB
+machine with a CUDA device, not a large one.
 
 ---
 
@@ -882,11 +906,27 @@ sweep against but exports so a reader can judge both).
 **A second run finishes instantly and writes no files.** Results are cached in
 `~/.voxlogica`, keyed by content, so re-running an unchanged program returns the
 stored values without recomputing -- and therefore without re-writing the
-images. This is the intended behaviour. To force real computation:
+images. This is the intended behaviour, and it is worth seeing: run an
+experiment twice and the second one costs about a second.
+
+To make a run compute everything again, give it a store of its own:
 
 ```bash
-./voxlogica run --no-cache <program>       # no disk tier at all
+./voxlogica run <program> --store-db /path/to/a/new/store.db
 ```
+
+That is how every number in section C was measured -- each on a store created
+for that run and deleted afterwards -- and it is the stronger reproduction,
+because nothing in the result can have come from an earlier run. The store it
+builds is 5-7 GB for either BraTS experiment, and it must not be on a tmpfs
+(so not under `/tmp` on most systems): a store in RAM competes with the memory
+the engine budgets from.
+
+Sharing one store between experiments is also fine, and we check it: with
+experiment 3's store warm, experiment 4 returns all 36 of its goals, agreeing
+with a cold run to 1.2e-05, and experiment 3 returns all 20 of its own,
+bit-identical. A warm store is a cache, not a shortcut -- it changes the time,
+not the answer.
 
 **Do not run the same experiment twice at the same time.** The smoke test puts
 its training tree in a fixed directory under `/tmp`, and experiment 4 puts its
