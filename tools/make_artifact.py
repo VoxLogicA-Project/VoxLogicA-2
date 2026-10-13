@@ -212,13 +212,17 @@ PROGRAMS: list[dict] = [
 #: already exists" check, so shipped weights save the TRAINING (the GPU hours),
 #: not the dataset: the raw cases are still materialized and preprocessed. A
 #: reviewer without BraTS cannot run the nnU-Net program at all.
+#: Where the weights are on the BUILD machine -- not shipped, not in the
+#: artifact, and overridable with --model-source. It has to be the `work_root`
+#: the nnU-Net program was actually trained against, so the weights that get
+#: picked up are the ones that program produced: pointing it elsewhere is how
+#: you ship someone else's model by accident, and the check in step 6 is what
+#: catches it when you do.
+MODEL_SOURCE = Path.home() / "nnunet-brats-work"
+
 MODEL = {
-    # The work_root the shipped nnU-Net program names, so the weights that get
-    # picked up are the ones that program produced. Pointing this elsewhere is
-    # how you ship someone else's model by accident; the check below is what
-    # catches it when you do.
-    "source": Path("/home/laura/nnunet-brats-work") / "nnUNet_results",
-    "manifest": Path("/home/laura/nnunet-brats-work") / "voxlogica_manifest.json",
+    "source": MODEL_SOURCE / "nnUNet_results",
+    "manifest": MODEL_SOURCE / "voxlogica_manifest.json",
     "dest": "model/nnUNet_results",
     # postprocessing.pkl is THE DECISION, not data: two operation names and the
     # label they apply to, 260 bytes, sitting under fold_0/validation/ beside
@@ -781,8 +785,14 @@ The five-case sampler additionally wants five specific cases in
 `doc/gallery/programs/brats2020/data/`, one directory each, exactly as BraTS
 ships them; `doc/gallery/programs/brats2020/data/README.md` names the five.
 
-**A wrong path does not pass silently.** `dir` fails when its root does not
-exist, and the engine refuses a program whose goals would compute nothing.
+**A path left unset does not pass silently.** The BraTS programs read
+`name_mapping.csv` from `dataset_root` first, so a wrong root stops the run at
+once, naming the line and the file:
+
+```
+43 | name_mapping = load(concat(dataset_root, "/name_mapping.csv"))
+load source not found: /path/to/MICCAI_BraTS2020_TrainingData/name_mapping.csv
+```
 
 ### Check that your BraTS is the same BraTS
 
@@ -991,12 +1001,20 @@ def main() -> int:
                     help="output directory (default: beside the repository)")
     ap.add_argument("--with-model", action="store_true",
                     help="include the trained nnU-Net weights (~240 MB)")
+    ap.add_argument("--model-source", type=Path, default=None,
+                    help=f"nnU-Net work_root the weights come from "
+                         f"(default: {MODEL_SOURCE})")
     ap.add_argument("--tar", action="store_true", help="also write a .tar.gz beside it")
     ap.add_argument("--zip", action="store_true",
                     help="also write a .zip beside it (EasyChair wants a ZIP)")
     ap.add_argument("--force", action="store_true",
                     help="overwrite --out even if this script did not build it")
     args = ap.parse_args()
+
+    if args.model_source:
+        src = args.model_source.expanduser().resolve()
+        MODEL["source"] = src / "nnUNet_results"
+        MODEL["manifest"] = src / "voxlogica_manifest.json"
 
     out = Path(args.out).expanduser().resolve()
     started = time.time()

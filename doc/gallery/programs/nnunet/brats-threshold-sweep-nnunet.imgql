@@ -25,14 +25,14 @@ import "strings"
 import "nnunet"
 
 // ---------------------------------------------------------------- inputs ---
-dataset_root = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData"
+dataset_root = "/path/to/MICCAI_BraTS2020_TrainingData"
 output_dir   = "output/aiim-sweep-nnunet"
 
 // nnU-Net's raw/preprocessed/results tree. NOT under /tmp: that is a 31 GB
 // tmpfs on this host, and preprocessing BraTS into RAM competes with the
 // training it is feeding. NOT under the repo either -- it is many GB of
 // generated data.
-work_root = "/home/laura/nnunet-brats-work"
+work_root = "/path/to/this/artifact/model"
 
 // TRAIN AND EVALUATION RANGES. Disjoint by default: the sweep is scored against
 // predictions for cases the network never saw. Set `eval_start` to `train_start`

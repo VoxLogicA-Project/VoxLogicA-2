@@ -28,7 +28,7 @@ import "vox1"
 import "strings"
 
 // ---------------------------------------------------------------- inputs ---
-dataset_root = "/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData"
+dataset_root = "/path/to/MICCAI_BraTS2020_TrainingData"
 output_dir   = "output/aiim-sweep"
 case_start   = 50        // first case, as a position in the HGG list
 case_count   = 20        // cases to score
