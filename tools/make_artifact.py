@@ -35,6 +35,10 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
+#: Where this artifact is archived. Reserved on Zenodo before the tag, so the
+#: README can name it and the archived copy can name the README.
+DOI = "10.5281/zenodo.23340242"
+
 #: Marks a directory as ours to overwrite. Without it the script will not
 #: delete anything: pointing --out at a home directory should not be fatal.
 MARKER = ".voxlogica-artifact"
@@ -601,8 +605,9 @@ and failed; see section D.
 
     (out / "README.md").write_text(f"""# VoxLogicA-2 — TACAS artifact
 
-Built from the repository by `tools/make_artifact.py`. `PROVENANCE.json`
-records what went into this build.
+Archived at **https://doi.org/{DOI}** (DOI `{DOI}`). Built from the repository
+by `tools/make_artifact.py`; `PROVENANCE.json` records what went into this
+build.
 
 | # | experiment | needs | time | goals | reproducible | expected values |
 |---|---|---|---|---|---|---|
@@ -1165,6 +1170,7 @@ def main() -> int:
     write_readme(out, paths, goals, args.with_model)
     dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
     (out / "PROVENANCE.json").write_text(json.dumps({
+        "doi": DOI,
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "built_by": "tools/make_artifact.py",
         "git_commit": git("rev-parse", "HEAD"),
