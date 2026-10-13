@@ -176,17 +176,11 @@ PROGRAMS: list[dict] = [
                 "unless matching weights are already present.",
         "run_flags": "--threads 4",
         "flags_note": (
-            "**Run this one with `--threads 4`**, as the command below does. That is "
-            "the fastest configuration we measured for this experiment -- 118 s -- and "
-            "the one the figures here were taken at: it peaks at 8.0 GB, so a 16 GB "
-            "machine is enough. Four threads is not a limit on the result: the 36 "
-            "goals come back the same at any width, the winning thresholds and their "
-            "distribution to the digit and the Dice values to 1.2e-05.\n\n"
-            "8.0 GB is close to the floor, and the floor is not the engine's: "
-            "`nnUNetv2_plan_and_preprocess` reaches 7.7 GB on its own in the first "
-            "minute, in nnU-Net's process. In 8 GB the run is killed by the "
-            "out-of-memory killer during preprocessing, before the GPU matters at "
-            "all."),
+            "**Run this one with `--threads 4`**, as the command below does: it is the "
+            "fastest configuration we measured, 118 s, and the one these figures were "
+            "taken at. It peaks at 8.0 GB, so 16 GB of RAM is enough; in 8 GB the run "
+            "is killed during nnU-Net's own preprocessing, which reaches 7.7 GB before "
+            "the GPU matters at all. The 36 goals do not depend on the width."),
         "outputs": "output/aiim-sweep-nnunet/",
         "expect": [
             "`model_dice_mean` -- how close the learned reference is to the "
@@ -603,8 +597,8 @@ and failed; see section D.
 
     (out / "README.md").write_text(f"""# VoxLogicA-2 — TACAS artifact
 
-Built from the repository by `tools/make_artifact.py`; `PROVENANCE.json` records
-the exact commit.
+Built from the repository by `tools/make_artifact.py`. `PROVENANCE.json`
+records what went into this build.
 
 | # | experiment | needs | time | goals | reproducible | expected values |
 |---|---|---|---|---|---|---|
@@ -613,8 +607,8 @@ the exact commit.
 Read sections 0, A and B once, then run the experiments in order.
 **Experiment 1 needs nothing but this directory** -- start there.
 
-License: GPL-3.0, see `LICENSE`. Source: https://github.com/VoxLogicA-Project/VoxLogicA-2
-(the commit is in `PROVENANCE.json`).
+License: GPL-3.0, see `LICENSE`.
+Source: https://github.com/VoxLogicA-Project/VoxLogicA-2
 
 ## Early light review (kick-the-tires) -- about 5 minutes, no dataset
 
@@ -719,10 +713,8 @@ a fast connection. It is idempotent: re-run it freely.
 **Disk: have 25 GB free before you start**, dataset excluded. The venv is
 8 GB (torch and its CUDA libraries are most of it), each of the two sweeps
 writes a ~5 GB results store, and the nnU-Net experiment preprocesses ~2 GB
-under `model/`. We filled a disk twice running this. The symptoms are indirect: the engine
-warns once with `cache budget cut from ... by free space`, and the run later
-fails with `image must be a SimpleITK Image, got NoneType`. If you see either
-message, check free space and rerun.
+under `model/`. If space runs short the engine warns `cache budget cut from
+... by free space`; check free space and rerun.
 
 Every version is pinned. `implementation/python/requirements.lock` resolves the
 whole transitive graph -- {n_locked} packages, each with its sha256 -- and that
@@ -735,7 +727,7 @@ Environment synchronized with the hashed lock files.
 ```
 
 If it instead mentions `requirements.txt (NO LOCK FILE ...)`, the lock did not
-travel with this artifact and versions can drift. Say so in your review.
+travel with this artifact and the resolved versions may differ from ours.
 
 Two requirements:
 
@@ -761,9 +753,8 @@ You need a Kaggle account. The official source is the challenge organisers
 (CBICA, University of Pennsylvania), who require a registration; the Kaggle
 mirror is the same 369 cases and is what most people use.
 
-**Two things to check about the copy you download**, because we built our
-manifest on the official release and have not verified the Kaggle mirror's
-layout ourselves:
+**Two things to check about the copy you download**, since the mirror may
+differ from the official release:
 
 1. **Compression.** The programs look for `*_flair.nii.gz` etc. Public
    notebooks on the Kaggle mirror refer to uncompressed `.nii` files; if that
@@ -771,14 +762,10 @@ layout ourselves:
    `find <root> -name '*.nii' -exec gzip {{}} +`. With the wrong suffix `dir`
    finds nothing at all, and the manifest check below reports 0 files against
    369.
-2. **One misnamed file.** The same notebooks mention that case
-   `BraTS20_Training_355` ships its segmentation under a different name
-   (`W39_1998.09.19_Segm.nii`). If so, rename it to
-   `BraTS20_Training_355_seg.nii.gz` after gzipping. Both BraTS programs name
-   their cases from `name_mapping.csv` rather than from a directory listing, so
-   a missing file does not shift anyone else's case: it makes that one case fail
-   to read, loudly. 355 is LGG and neither program scores it, but the manifest
-   check will still report it.
+2. **One misnamed file.** Case `BraTS20_Training_355` is reported to ship its
+   segmentation as `W39_1998.09.19_Segm.nii`; rename it to
+   `BraTS20_Training_355_seg.nii.gz` after gzipping. It is LGG and neither
+   program scores it, but the manifest check reports it.
 
 Either way, run the manifest check below before anything else: it compares the
 ordered listing and the hashes, and will name exactly what differs.
@@ -869,10 +856,10 @@ because each program defines `truth_of` for itself:
 | experiment 3 | the annotation BraTS ships |
 | experiment 4 | what nnU-Net predicted |
 
-Everything downstream of it follows: `best_dice`, `best_vi_thr`, the
-`dice_best_*`, `dice_fixed_*` and `vi_thr_*` families, and -- because they
-are ranked by a different score -- `outlier_cases`, `outlier_dice`,
-`outlier_paths` and the exported planes. So `dice_best_mean` is 0.8555 in
+Everything downstream follows: `best_dice`, `best_vi_thr`, the `dice_best_*`,
+`dice_fixed_*` and `vi_thr_*` families, and -- ranked by a different score --
+`outlier_cases`, `outlier_dice`, `outlier_paths` and the exported planes. So
+`dice_best_mean` is 0.8555 in
 experiment 3 and 0.8502 in experiment 4, on the same twenty cases, and these
 are two different quantities, not a discrepancy. The two experiments also
 export DIFFERENT ten worst cases, for the same reason. Experiment 4's name for
@@ -887,44 +874,31 @@ programs do not use the same position.**
 | experiment 3 | `output/aiim-sweep/case_001_*` | position 1 of the TWENTY, i.e. `BraTS20_Training_052` |
 | experiment 4 | `output/aiim-sweep-nnunet/case_053_*` | position 53 of the 293 HGG, i.e. `BraTS20_Training_054` |
 
-So the same case appears under two different numbers, and neither number is the
-BraTS id. The `outlier_paths` goal prints the real path of every case either
-program exported; that is the mapping to use, and it is the reason the goal
-exists.
-
-Experiment 4 also writes FOUR images per plane where experiment 3 writes three:
-`_flair`, `_predicted` (the sweep), `_nnunet` (the reference it was scored
-against) and `_truth` (the annotation, which experiment 4 does not score the
-sweep against but exports so a reader can judge both).
+Neither number is the BraTS id; `outlier_paths` prints the real path of every
+case either program exported, and that is the mapping to use. Experiment 4 also
+writes four images per plane rather than three: `_flair`, `_predicted` (the
+sweep), `_nnunet` (the reference it was scored against) and `_truth` (the
+annotation, exported so a reader can judge both).
 
 ---
 
 ## D. Two behaviours worth knowing about
 
 **A second run finishes instantly and writes no files.** Results are cached in
-`~/.voxlogica`, keyed by content, so re-running an unchanged program returns the
-stored values without recomputing -- and therefore without re-writing the
-images. This is the intended behaviour, and it is worth seeing: run an
-experiment twice and the second one costs about a second.
+`~/.voxlogica`, keyed by content, so re-running an unchanged program returns
+the stored values without recomputing -- and so without re-writing the images.
+A warm store changes the time, not the answer.
 
-To make a run compute everything again, give it a store of its own:
+To compute everything again, give the run a store of its own:
 
 ```bash
 ./voxlogica run <program> --store-db /path/to/a/new/store.db
 ```
 
-That is how every number in section C was measured -- each on a store created
-for that run and deleted afterwards -- and it is the stronger reproduction,
-because nothing in the result can have come from an earlier run. The store it
-builds is 5-7 GB for either BraTS experiment, and it must not be on a tmpfs
-(so not under `/tmp` on most systems): a store in RAM competes with the memory
-the engine budgets from.
-
-Sharing one store between experiments is also fine, and we check it: with
-experiment 3's store warm, experiment 4 returns all 36 of its goals, agreeing
-with a cold run to 1.2e-05, and experiment 3 returns all 20 of its own,
-bit-identical. A warm store is a cache, not a shortcut -- it changes the time,
-not the answer.
+That is how the numbers in section C were measured. The store is 5-7 GB for
+either BraTS experiment and must not be on a tmpfs (so not under `/tmp` on
+most systems): a store in RAM competes with the memory the engine budgets
+from.
 
 **Do not run the same experiment twice at the same time.** The smoke test puts
 its training tree in a fixed directory under `/tmp`, and experiment 4 puts its
@@ -948,13 +922,10 @@ shipped weights rather than retraining.
 
 ## G. Measuring performance yourself
 
-The paper's performance figures were taken with the suite that ships here, not
-with a stopwatch. It measures from OUTSIDE the engine -- wall clock, processor
-time and peak resident memory come from `os.wait4` -- so an error in the
-engine's own bookkeeping cannot flatter its own measurement. The engine's
-counters (kernels, fusion cones, saturation) are read from the JSON summary
-every run prints, and reported beside the external numbers rather than instead
-of them.
+The paper's performance figures were taken with the suite that ships here. It
+measures from OUTSIDE the engine -- wall clock, processor time and peak
+resident memory come from `os.wait4` -- and reports the engine's own counters
+beside those numbers rather than instead of them.
 
 | file | what it does |
 |---|---|
@@ -963,10 +934,9 @@ of them.
 | `tools/perf/vl1_compare.py` | the same measurements for VoxLogicA 1 and VoxLogicA 2 on the sweep |
 
 It needs only the standard library, so it runs under your system `python3`;
-what it measures is the `.venv` that section A built. Do section A first.
+what it measures is the `.venv` that section A built, so do section A first.
 
 ```bash
-# scaling and cache behaviour on experiment 3, three repetitions
 python3 tools/perf/suite.py \\
     --program doc/gallery/programs/simpleitk/brats-threshold-sweep-aiim.imgql \\
     --out perf/aiim --work-dir perf/work \\
@@ -974,57 +944,44 @@ python3 tools/perf/suite.py \\
 python3 tools/perf/report.py perf/aiim
 ```
 
-Four experiments are available, comma-separated to `--experiments`: `scaling`
-(each width in `--threads-list`), `fusion` (element-wise fusion on and off),
-`cache` (a cold run, then runs against the store it left) and `resume` (a run
-interrupted with the signal Ctrl-C sends, then restarted on the store it
-left). `--reps` repetitions are interleaved rather than run back to back, so
-thermal drift spreads over every configuration instead of loading the last
-ones.
+`--experiments` takes any of `scaling` (each width in `--threads-list`),
+`fusion` (element-wise fusion on and off), `cache` (a cold run, then runs
+against the store it left) and `resume` (a run interrupted with the signal
+Ctrl-C sends, then restarted on that store). Repetitions are interleaved, so
+thermal drift spreads over every configuration instead of loading the last.
 
-**What the report will tell you about your own run.** Every run's printed goals
-are hashed, and runs of the same program that disagree are listed under
-`Problems` -- a fast wrong answer is not a result. So is a non-zero exit, and
-so is a run during which other users' processes took more than
-`--max-foreign` percent of a core. On a shared or busy machine use
-`--quiet-pct` and `--hold` to make the suite wait for the machine to go quiet
-before each run; it records what it saw either way.
+**What the report flags.** Every run's goals are hashed, and runs of the same
+program that disagree appear under `Problems` -- as do a non-zero exit, and a
+run during which other processes took more than `--max-foreign` percent of a
+core. On a busy machine, `--quiet-pct` and `--hold` make the suite wait for
+quiet before each run.
 
-**Two things it will refuse to do.** It will not put stores or scratch files on
-tmpfs -- a store in RAM eats the memory the engine sizes its budget from, which
-changes the thing being measured -- so give `--work-dir` a path on a real
-filesystem -- every run gets a fresh store there, removed when the run ends
-unless you pass `--keep-stores`, so plan for one store rather than one per run.
-And it isolates the engine's per-machine calibration in a fresh
-directory, so a calibration left by an earlier session cannot quietly change
-ITK's thread count between two measurements.
+`--work-dir` must not be on tmpfs: a store in RAM competes with the memory the
+engine budgets from. Each run gets a fresh store there, removed afterwards
+unless you pass `--keep-stores`. The engine's per-machine calibration is
+isolated per suite run, so an earlier session cannot change ITK's thread count
+between two measurements.
 
-**Measuring a different program without editing it.** `--set NAME=VALUE`
-overrides a top-level definition before the run, so a shorter sweep is
-`--set case_count=5`. A value that is a STRING keeps its quotes, and the shell
-must not eat them:
+**Measuring a variant.** `--set NAME=VALUE` overrides a top-level definition
+before the run. String values keep their quotes, and the shell must not eat
+them:
 
 ```bash
---set 'dataset_root="/path/to/MICCAI_BraTS2020_TrainingData"' \\
---set 'output_dir="/tmp/sweep-png"' --set case_count=2 --set outlier_count=1
+--set 'dataset_root="/path/to/MICCAI_BraTS2020_TrainingData"' --set case_count=2
 ```
 
-The program the suite actually ran is written to `program.imgql` in the results
-directory, overrides applied, so what was measured is on the record. A name
-that is not defined at the top level is an error rather than a silent no-op.
+The program as run is written to `program.imgql` beside the results, overrides
+applied. An undefined name is an error, not a silent no-op.
 
-**Comparing against VoxLogicA 1.** `vl1_compare.py` needs a VoxLogicA 1 binary
-of your own (we used 1.3.3). VoxLogicA 1 has no loops and no sequences, so the
-script writes the sweep out for it one case at a time, writes the VoxLogicA 2
-programs from the same template with the same constants and goal names, and
-compares the two tools' answers value by value before reporting any timing: a
-speed comparison between programs that compute different numbers would mean
-nothing. To measure the same twenty cases the experiments use, pass
-`--first-case 51` -- it defaults to case 001.
+**VoxLogicA 1.** `vl1_compare.py` needs a VoxLogicA 1 binary of your own (we
+used 1.3.3). VoxLogicA 1 has no loops or sequences, so the script writes the
+sweep out for it one case at a time, writes the VoxLogicA 2 programs from the
+same template, and compares both tools' answers value by value before
+reporting any timing. Pass `--first-case 51` for the twenty cases the
+experiments use; it defaults to case 001.
 
-**Your numbers will not be our numbers.** They were taken on 24 cores; the
-shape is the claim -- how the time moves with the width, what the cache is
-worth, what an interrupted run costs -- not the digits.
+Your numbers will not be ours -- these were taken on 24 cores. The shape is
+the claim: how the time moves with the width, and what the cache is worth.
 """, encoding="utf-8")
 
 
