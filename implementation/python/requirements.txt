@@ -28,3 +28,11 @@ SimpleITK==2.5.6
 nnunetv2==2.6.2
 torch==2.8.0; python_version < "3.13"
 torch==2.10.0; python_version >= "3.13"
+
+# Pinned for the free-threaded build, not for a feature: imagecodecs is a hard
+# dependency of nnunetv2, and PyPI published only abi3 wheels for it until
+# 2026.10.10. An abi3 wheel cannot be used by a free-threaded interpreter, so
+# every 3.14t install before this version had to compile imagecodecs from
+# source -- which needs lcms2 and a dozen other codec headers, and fails on a
+# machine that lacks them. 2026.10.10 ships cp314t manylinux wheels.
+imagecodecs>=2026.10.10

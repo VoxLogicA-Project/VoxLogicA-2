@@ -590,6 +590,13 @@ def main(argv: list[str]) -> int:
     p.add_argument("--allow-tmpfs", action="store_true")
     a = p.parse_args(argv[1:])
 
+    # Absolute, before anything uses them: the engine runs in a scratch cwd of
+    # its own, so a relative --out would hand it a program path that resolves
+    # nowhere -- and a relative --work-dir would put the stores under that same
+    # scratch directory instead of where they were asked for.
+    a.program = a.program.resolve()
+    a.out = a.out.resolve()
+    a.work_dir = a.work_dir.resolve()
     a.engine = a.engine.resolve()
     a.engine_python = a.engine_python or a.engine / ".venv" / "bin" / "python"
     if not a.engine_python.exists():
