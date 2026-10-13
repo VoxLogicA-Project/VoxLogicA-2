@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Pin which BraTS cases an experiment reads, and in which order.
 
-The programs select cases BY POSITION -- `subsequence(dir(...), 0, case_count)`
-in the AIIM sweep, `train_start`/`eval_start` in the nnU-Net one. `dir` sorts
-what it finds, so position means "the i-th path in sorted order". A copy of
-BraTS with one case missing, one case extra, or a stray file matching the glob
-therefore evaluates a DIFFERENT SET of cases, silently, and returns numbers that
-cannot be compared with ours. Nothing in the run says so: the sweep succeeds,
-the Dice values are plausible, and they are answers to another question.
+Both BraTS programs now name their cases from the dataset's own
+`name_mapping.csv` -- the HGG rows, offset by `case_start`/`eval_start` -- so a
+missing or extra case no longer renumbers anyone else's. What still decides the
+population is that CSV, and what still decides the data is the bytes behind
+each name. A copy of BraTS with a different `name_mapping.csv`, or with one
+case's volume replaced, returns numbers that cannot be compared with ours and
+says nothing about it: the sweep succeeds, the Dice values are plausible, and
+they answer another question.
 
 This writes down the order, and checks it.
 
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import gzip
 import hashlib
 import json
 import os
@@ -83,12 +85,35 @@ def naive_listing(root: Path, pattern: str) -> list[str]:
     return sorted(item.relative_to(root).as_posix() for item in _walk(root, pattern))
 
 
-def sha256(path: Path) -> str:
+#: Bumped when what the numbers MEAN changes, so an old manifest is refused
+#: instead of compared against the wrong thing. 2: `.nii.gz` files are
+#: identified by their decompressed content.
+MANIFEST_VERSION = 2
+
+
+def content(path: Path) -> tuple[str, int]:
+    """sha256 and length of what the file CONTAINS, not of the file.
+
+    For a `.nii.gz` that means the NIfTI inside, read through gzip. The reason
+    is the acquisition path: the public mirrors of BraTS 2020 ship the volumes
+    UNCOMPRESSED, so a reviewer gzips them, and gzip is not reproducible --
+    the header carries a name and a timestamp, and the level is a choice.
+    Measured on one case: the official file is 1782235 bytes, `gzip` gives
+    1784262 and `gzip -9` gives 1770718, three different digests for identical
+    data. Hashing the bytes would therefore report every file of a correctly
+    obtained dataset as wrong, which is worse than not checking.
+
+    The decompressed length is returned too, and stored as `size`, for the same
+    reason: the compressed size is not a property of the data.
+    """
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    total = 0
+    opener = gzip.open if path.suffix == ".gz" else (lambda p, mode: p.open(mode))
+    with opener(path, "rb") as handle:
         for block in iter(lambda: handle.read(_BLOCK), b""):
             digest.update(block)
-    return digest.hexdigest()
+            total += len(block)
+    return digest.hexdigest(), total
 
 
 def hgg_ids(root: Path) -> list[str]:
@@ -106,25 +131,32 @@ def hgg_ids(root: Path) -> list[str]:
     return out
 
 
+def _entry(full: Path, *, quick: bool) -> dict:
+    """What we record for one file. With --quick, the size only -- and for a
+    `.gz` that still means the decompressed size, so a quick check stays
+    meaningful on a recompressed copy; it costs a read either way."""
+    if quick:
+        if full.suffix == ".gz":
+            return {"size": content(full)[1]}
+        return {"size": full.stat().st_size}
+    digest, size = content(full)
+    return {"size": size, "sha256": digest}
+
+
 def survey(root: Path, *, quick: bool) -> dict:
     order = {pattern: listing(root, pattern) for pattern in GLOBS}
     files: dict[str, dict] = {}
     for rel in METADATA:
         full = root / rel
         if full.is_file():
-            entry = {"size": full.stat().st_size}
-            if not quick:
-                entry["sha256"] = sha256(full)
+            entry = _entry(full, quick=quick)
             files[rel] = entry
     for paths in order.values():
         for rel in paths:
             if rel in files:
                 continue
             full = root / rel
-            entry = {"size": full.stat().st_size}
-            if not quick:
-                entry["sha256"] = sha256(full)
-            files[rel] = entry
+            files[rel] = _entry(full, quick=quick)
     return {"order": order, "files": files, "hgg_ids": hgg_ids(root)}
 
 
@@ -139,6 +171,7 @@ def write(root: Path, quick: bool) -> int:
         "case_count": len(data["order"]["*_flair.nii.gz"]),
         "hgg_count": len(data["hgg_ids"]),
         "counts": counts,
+        "manifest_version": MANIFEST_VERSION,
         "hashed": not quick,
         **data,
     }, indent=1) + "\n", encoding="utf-8")
@@ -155,6 +188,12 @@ def check(root: Path, quick: bool) -> int:
     if not MANIFEST.is_file():
         sys.exit(f"no manifest at {MANIFEST}")
     want = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    version = want.get("manifest_version", 1)
+    if version != MANIFEST_VERSION:
+        sys.exit(f"{MANIFEST.name} is version {version}, this tool writes and reads "
+                 f"version {MANIFEST_VERSION}. Version 1 identified `.nii.gz` files "
+                 f"by their compressed bytes, which no recompressed copy can match; "
+                 f"regenerate it with --write against the reference dataset.")
     if quick or not want.get("hashed"):
         quick = True
     problems: list[str] = []
@@ -215,11 +254,18 @@ def check(root: Path, quick: bool) -> int:
             if not full.is_file():
                 problems.append(f"missing: {rel}")
                 continue
-            if full.stat().st_size != entry["size"]:
-                problems.append(f"size differs: {rel}")
-                continue
-            if not quick and sha256(full) != entry["sha256"]:
-                problems.append(f"content differs: {rel}")
+            if quick:
+                size = content(full)[1] if full.suffix == ".gz" else full.stat().st_size
+                if size != entry["size"]:
+                    problems.append(f"size differs: {rel}")
+                    continue
+            else:
+                digest, size = content(full)
+                if size != entry["size"]:
+                    problems.append(f"size differs: {rel}")
+                    continue
+                if digest != entry["sha256"]:
+                    problems.append(f"content differs: {rel}")
             checked += 1
         print(f"\n  {checked} files checked "
               f"({'size only' if quick else 'size and sha256'})")

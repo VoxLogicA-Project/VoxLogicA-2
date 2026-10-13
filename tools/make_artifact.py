@@ -756,28 +756,35 @@ none of this.
 
 **Where to get BraTS 2020.** The training data is mirrored on Kaggle:
 
-    https://www.kaggle.com/datasets/awsaf49/brats2020-training-data
+    https://www.kaggle.com/datasets/awsaf49/brats20-dataset-training-validation
 
 You need a Kaggle account. The official source is the challenge organisers
-(CBICA, University of Pennsylvania), who require a registration; the Kaggle
-mirror is the same 369 cases and is what most people use.
+(CBICA, University of Pennsylvania), who require a registration; this mirror
+carries the same 369 training cases in the layout BraTS ships, one directory
+per case.
 
-**Two things to check about the copy you download**, since the mirror may
-differ from the official release:
+It nests them one level below the archive root, so the path the programs want is
 
-1. **Compression.** The programs look for `*_flair.nii.gz` etc. Public
-   notebooks on the Kaggle mirror refer to uncompressed `.nii` files; if that
-   is what you have, gzip them in place first:
-   `find <root> -name '*.nii' -exec gzip {{}} +`. With the wrong suffix `dir`
-   finds nothing at all, and the manifest check below reports 0 files against
-   369.
-2. **One misnamed file.** Case `BraTS20_Training_355` is reported to ship its
-   segmentation as `W39_1998.09.19_Segm.nii`; rename it to
-   `BraTS20_Training_355_seg.nii.gz` after gzipping. It is LGG and neither
-   program scores it, but the manifest check reports it.
+    <where you unzipped>/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData
 
-Either way, run the manifest check below before anything else: it compares the
-ordered listing and the hashes, and will name exactly what differs.
+**Two things to do to that copy.** Both are properties of this mirror, checked
+against its own file listing rather than assumed:
+
+1. **Compress the volumes.** All 1845 of them arrive uncompressed -- `.nii`,
+   not one `.nii.gz` -- and the programs look for `*_flair.nii.gz` and friends:
+   `find <root> -name '*.nii' -exec gzip {{}} +`. Without it `dir` finds
+   nothing at all.
+2. **Rename one file.** Case `BraTS20_Training_355` ships its segmentation as
+   `W39_1998.09.19_Segm.nii`, which is why the mirror has 368 `_seg` files and
+   369 of everything else. After gzipping, rename it to
+   `BraTS20_Training_355_seg.nii.gz`. It is LGG and neither program scores it,
+   but the manifest check counts it.
+
+Then run the manifest check below, before anything else. It identifies every
+volume by its DECOMPRESSED content, so compressing the mirror's files yourself
+is fine: gzip is not reproducible -- the same data gives different bytes at a
+different level -- and a check on the bytes would have reported a correctly
+obtained dataset as wrong, every file of it.
 
 Each program names its dataset root as a literal near the top. These are the
 lines to edit:
