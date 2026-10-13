@@ -176,18 +176,17 @@ PROGRAMS: list[dict] = [
                 "unless matching weights are already present.",
         "run_flags": "--threads 4",
         "flags_note": (
-            "**Run this one with `--threads 4`.** Measured on 24 cores: at 4 threads "
-            "it takes 118 s and peaks at 8.0 GB; at 24 it takes 136 s and peaks at "
-            "21 GB. Lower is both faster and smaller here, because 24 concurrent "
-            "nnU-Net predictions compete for memory that the engine's budget does not "
-            "see. The 36 printed goals are identical either way -- the winning "
-            "thresholds and their distribution to the digit, the Dice values to "
-            "1.2e-05.\n\n"
-            "8.0 GB is close to the floor: `nnUNetv2_plan_and_preprocess` alone "
-            "reaches 7.7 GB in the first minute, and that part does not depend on "
-            "`--threads`. So this experiment wants a machine with 16 GB; in 8 GB it "
-            "is killed by the out-of-memory killer during preprocessing, before the "
-            "GPU matters at all."),
+            "**Run this one with `--threads 4`**, as the command below does. That is "
+            "the fastest configuration we measured for this experiment -- 118 s -- and "
+            "the one the figures here were taken at: it peaks at 8.0 GB, so a 16 GB "
+            "machine is enough. Four threads is not a limit on the result: the 36 "
+            "goals come back the same at any width, the winning thresholds and their "
+            "distribution to the digit and the Dice values to 1.2e-05.\n\n"
+            "8.0 GB is close to the floor, and the floor is not the engine's: "
+            "`nnUNetv2_plan_and_preprocess` reaches 7.7 GB on its own in the first "
+            "minute, in nnU-Net's process. In 8 GB the run is killed by the "
+            "out-of-memory killer during preprocessing, before the GPU matters at "
+            "all."),
         "outputs": "output/aiim-sweep-nnunet/",
         "expect": [
             "`model_dice_mean` -- how close the learned reference is to the "
@@ -673,7 +672,7 @@ and meanwhile obtain BraTS as section B describes.
 | | |
 |---|---|
 | Disk | 25 GB free, dataset excluded (venv 8 GB, ~5 GB of results store per sweep) |
-| RAM, measured peak | depends on parallelism, and for experiment 4 it depends on it a lot. At 24 threads: experiment 2: 8.8 GB; 3: 4.5 GB; **4: 21 GB**. At 4 threads (`--threads 4`): experiment 1: 1.2 GB; 2: 1.9 GB; 3: 2.4 GB; **4: 8.0 GB**, and faster than at 24. A VM with 8 GB runs experiments 1, 2 and 3; **16 GB runs all four**, experiment 4 at `--threads 4` -- see below |
+| RAM, measured peak | depends on parallelism. At 24 threads: experiment 2: 8.8 GB; 3: 4.5 GB. At 4 threads (`--threads 4`): experiment 1: 1.2 GB; 2: 1.9 GB; 3: 2.4 GB. Experiment 4 is run at `--threads 4`, as section C gives it, and peaks at **8.0 GB**. A VM with 8 GB runs experiments 1, 2 and 3; **16 GB runs all four** |
 | CPU | any; the engine uses every core it finds. Times in this README are from a 24-core machine |
 | GPU | **experiment 4 only** (`nnunet_device = "cuda"`). Without one it can run on CPU -- set the device to `"cpu"` -- but we have not timed that |
 | Network | once, during bootstrap; every download is version-pinned and hash-checked |
@@ -683,9 +682,8 @@ In a virtual machine: experiments 1, 2 and 3 fit, measured in an Ubuntu 22.04
 container with 4 cores, 8 GB and no GPU -- experiment 1 in 77 min, 2 in 31 s,
 3 in 3 min.
 
-Experiment 4 needs more, but less than it first appeared. At `--threads 4` it
-peaks at **8.0 GB** rather than 21, and runs faster -- so **16 GB is enough**,
-and that is how section C tells you to run it.
+Experiment 4 needs more: at `--threads 4`, the configuration section C gives,
+it peaks at **8.0 GB**, so **16 GB is enough**.
 
 It will not fit in 8 GB, and lowering `--threads` further does not help:
 `nnUNetv2_plan_and_preprocess` reaches 7.7 GB on its own in the first minute,
