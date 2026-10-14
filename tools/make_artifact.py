@@ -767,6 +767,10 @@ It nests them one level below the archive root, so the path the programs want is
 
     <where you unzipped>/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData
 
+The archive also carries the validation split -- 125 cases, four modalities and
+no segmentations, as BraTS publishes it. Nothing here reads it, so point the
+commands below at the training directory above rather than at the archive root.
+
 **Two things to do to that copy.** Both are properties of this mirror, checked
 against its own file listing rather than assumed:
 
