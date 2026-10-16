@@ -112,7 +112,9 @@ def _launch_numba_threads_on_main_thread() -> None:
     never returns: the run prints its result and then hangs at exit, forever
     (2 of 3 sequential runs on fmt-5000, 2026-10-15). Starting the layer here,
     on the main thread -- the thread that runs the teardown -- leaves the task
-    where the waiting thread itself executes it.
+    where the waiting thread itself executes it. Imported off the main thread
+    (the UI's analysis thread loads the namespaces too), this does nothing:
+    main.main() imports this module on the main thread before any handler runs.
     """
     if not _PARALLEL_SAFE:
         return

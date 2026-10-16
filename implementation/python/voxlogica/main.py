@@ -865,6 +865,12 @@ def main(argv: list[str] | None = None) -> int:
         print("[voxlogica] WARNING: calibrate is DEPRECATED. On the reference host its winner beat "
               "the shipped heuristic by 0.1% (noise) and it caches no ITK thread count, so it "
               "changes nothing. The shipped defaults measured fastest.", file=sys.stderr)
+    # Before any handler can start a thread: importing the vox1 kernels here,
+    # on the main thread, starts numba's threading layer on the main thread
+    # (kernels._launch_numba_threads_on_main_thread). Left to the first import,
+    # it happened on the UI's analysis thread in 5 of 6 runs, and at --threads 1
+    # under one CPU those runs hung at exit (numba TBB teardown).
+    from voxlogica.primitives.vox1 import kernels as _kernels  # noqa: F401
     try:
         return int(args.handler(args))
     except (KeyboardInterrupt, SystemExit):
