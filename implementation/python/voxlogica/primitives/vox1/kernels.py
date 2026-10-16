@@ -98,6 +98,39 @@ def _numba_parallel_is_safe() -> bool:
 #: from the executor's worker threads aborts the process.
 _PARALLEL_SAFE = _numba_parallel_is_safe()
 
+
+def _launch_numba_threads_on_main_thread() -> None:
+    """Start numba's threading layer now, from the main thread.
+
+    numba starts its layer lazily, on the first parallel call, from whichever
+    thread makes it; with TBB that start queues an empty warm-up task on the
+    calling thread (``tg->run([]{})`` in numba/np/ufunc/tbbpool.cpp), and the
+    module's teardown at interpreter exit waits for it (``unload_tbb``,
+    ``tg->wait()``). When the first call comes from an executor worker that has
+    since exited and the process may use one CPU (``--threads 1`` under
+    ``taskset``), TBB has no worker thread to run the task either, so the wait
+    never returns: the run prints its result and then hangs at exit, forever
+    (2 of 3 sequential runs on fmt-5000, 2026-10-15). Starting the layer here,
+    on the main thread -- the thread that runs the teardown -- leaves the task
+    where the waiting thread itself executes it.
+    """
+    if not _PARALLEL_SAFE:
+        return
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        return
+    try:
+        from numba.np.ufunc import parallel as _numba_parallel
+
+        _numba_parallel._launch_threads()
+    except Exception as e:  # pragma: no cover - a numba without this hook
+        import sys
+        print(f"WARNING: could not start numba's threading layer early: {e}", file=sys.stderr)
+
+
+_launch_numba_threads_on_main_thread()
+
 from voxlogica.arrays import (
     WritableViewUnavailable,
     allocate_writable_like,
