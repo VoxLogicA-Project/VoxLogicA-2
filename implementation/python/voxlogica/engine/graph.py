@@ -319,9 +319,16 @@ class DependencyGraph:
             del self.consumers[nid]  # drop the entry: state is frontier-only
             if nid not in self.protected:
                 self.table.evict(nid)
-            # The holder is gone, so what its value named is no longer held by
-            # it. Popped before releasing: a ref cycle cannot exist (handles
-            # name nodes, nodes form a DAG), but re-entering through the same
-            # entry would double-release.
-            for ref in self._handle_refs.pop(nid, ()):
-                self.release(ref)
+                # The holder is gone, so what its value named is no longer held by
+                # it. Popped before releasing: a ref cycle cannot exist (handles
+                # name nodes, nodes form a DAG), but re-entering through the same
+                # entry would double-release.
+                for ref in self._handle_refs.pop(nid, ()):
+                    self.release(ref)
+            # A PROTECTED value stays resident, so its record stays too, and so do
+            # the holds on what it names. Popping it here left a resident value
+            # whose handles `names_handles` denied: the next eager consumer was
+            # handed raw Handles ("'>' not supported between instances of
+            # 'Handle' and 'Handle'" in default.argmax). With a store the value
+            # was usually reloaded, which rebuilt the record; with --no-cache it
+            # never is: 3 of 16 goals lost in 3 of 4 runs (fmt-5000, 2026-10-18).
