@@ -700,7 +700,10 @@ Read sections 0, A and B once, then run the experiments in order.
 **Experiment 1 needs nothing but this directory** -- start there. For the
 early light review, the smoke test is the next section.
 
-License: GPL-3.0, see `LICENSE`.
+License: GPL-3.0, see `LICENSE` -- which covers the CODE here. The BraTS 2020
+cases under `data/` are not ours to license: they are the challenge's, and
+section B says which they are and what to cite. The weights under `model/` we
+trained, on those cases.
 Source: https://github.com/VoxLogicA-Project/VoxLogicA-2
 
 ## Badges, requirements, platforms
