@@ -13,11 +13,12 @@ ship is what the repository says today.
 Stdlib only, and plain `python3`: this must work before `bootstrap.py` has
 built anything.
 
-WHAT IT REFUSES TO DO. BraTS may not be redistributed, so the script never
-copies image data, and it says so rather than quietly skipping: the five-case
-sampler's `data/` directory is symlinks into the dataset, and nnU-Net's
-`nnUNet_raw`/`nnUNet_preprocessed` trees are BraTS volumes rewritten. Only the
-trained weights leave, and only when asked.
+WHAT IMAGE DATA LEAVES. The twenty-five BraTS 2020 cases the shipped programs
+read, and nothing else: the twenty both sweeps score and the five the sampler
+reads, copied from the official training set. The slice comes out of the
+programs' own literals, so this cannot ship a window they do not read. nnU-Net's
+`nnUNet_raw`/`nnUNet_preprocessed` trees do not travel -- they are the same
+volumes rewritten, and the shipped program does not need them.
 """
 
 from __future__ import annotations
@@ -61,11 +62,10 @@ ENGINE: list[str] = [
     "implementation/python/requirements.lock",
     # No requirements-test.lock: tests/ does not ship, so the reviewer's venv
     # is the runtime only. bootstrap.py installs from whichever locks exist.
-    # The dataset contract. Both BraTS programs now name their cases from the
-    # dataset's own name_mapping.csv -- by grade and id, not by directory order
-    # -- so a reviewer's copy no longer silently renumbers the cases. The
-    # manifest still pins WHICH bytes those names resolve to, which is the part
-    # that makes the numbers mean anything.
+    # The dataset contract, which still has a job now that the cases ship: it
+    # pins them to the OFFICIAL set. `--subset` checks the twenty-five here
+    # against the manifest of all 369, so a reviewer can see that what we
+    # shipped is BraTS unmodified rather than something we prepared.
     "tools/dataset_manifest.py",
     "tools/brats2020-manifest.json",
     # Not an experiment: the one-second program the kick-the-tires phase runs to
@@ -90,7 +90,7 @@ MEASUREMENT: list[str] = [
 ]
 
 #: The experiments, in the order the README presents them. `needs_dataset`
-#: drives what the README tells the reviewer to obtain.
+#: drives what the README says each one reads.
 PROGRAMS: list[dict] = [
     {
         "path": "doc/gallery/programs/nnunet/nnunet-circle-segmentation.imgql",
@@ -171,20 +171,27 @@ PROGRAMS: list[dict] = [
         "title": "AIIM sweep against a learned reference",
         "needs_dataset": True,
         "needs_gpu": True,
-        "reproducibility": "no -- trains a network",
-        "minutes": "2 min at 4 threads (118 s measured); hours if retraining",
+        "reproducibility": "to 1e-4",
+        "minutes": "about 80 s at 4 threads (77 s measured)",
         "note": "The same sweep as experiment 3, scored against nnU-Net's prediction "
                 "instead of the radiologist's annotation. It asks whether the "
                 "case-dependence of the permissive threshold survives when the "
-                "reference stops being a human annotation. Trains the network first, "
-                "unless matching weights are already present.",
+                "reference stops being a human annotation. It does not train: "
+                "`nnunet.load_model` names the weights that ship in `model/`.",
+        "nondeterminism": (
+            "**Reproducible to 1e-4, not bit-identical.** The network is fixed -- these "
+            "are the shipped weights, not a retraining -- but nnU-Net's sliding-window "
+            "inference on a GPU is not bitwise deterministic. Across six runs the "
+            "per-case Dice values moved by at most 1.9e-05 and every aggregate in the "
+            "sixth decimal, while the winning thresholds came back identical every "
+            "time. Compare `vi_thr_distribution` and `best_vi_thr` exactly; compare "
+            "Dice to 1e-4."),
         "run_flags": "--threads 4",
         "flags_note": (
             "**Run this one with `--threads 4`**, as the command below does: it is the "
-            "fastest configuration we measured, 118 s, and the one these figures were "
-            "taken at. It peaks at 8.0 GB, so 16 GB of RAM is enough; in 8 GB the run "
-            "is killed during nnU-Net's own preprocessing, which reaches 7.7 GB before "
-            "the GPU matters at all. The 36 goals do not depend on the width."),
+            "fastest configuration we measured and the one these figures were taken at. "
+            "It peaks at 7.6 GB, so 16 GB of RAM is enough. The 34 goals do not depend "
+            "on the width."),
         "outputs": "output/aiim-sweep-nnunet/",
         "expect": [
             "`model_dice_mean` -- how close the learned reference is to the "
@@ -224,6 +231,20 @@ PROGRAMS: list[dict] = [
 #: catches it when you do.
 MODEL_SOURCE = Path.home() / "nnunet-brats-work"
 
+#: THE IMAGE DATA. The artifact ships the BraTS 2020 cases the programs read --
+#: the twenty both sweeps score and the five the sampler reads -- and not the
+#: other 344, which no shipped program names. They are copied from a reference
+#: copy of the official training set on the build machine (--dataset-source),
+#: and the slice is read out of the programs themselves rather than written
+#: here, so a program that moves its window ships the cases it moved to.
+DATASET_SOURCE = Path("/home/VoxLogicA/datasets/MICCAI_BraTS2020_TrainingData")
+
+#: Where they land, and what the shipped programs are rewritten to name.
+#: Relative: the README has the reviewer run from the artifact root, so nothing
+#: in the artifact names a path that only exists on one machine.
+DATASET_DEST = "data/MICCAI_BraTS2020_TrainingData"
+SAMPLE_DEST = "doc/gallery/programs/brats2020/data"
+
 MODEL = {
     "source": MODEL_SOURCE / "nnUNet_results",
     "manifest": MODEL_SOURCE / "voxlogica_manifest.json",
@@ -246,8 +267,11 @@ MODEL = {
 #: ("reusing it would answer the program's question with someone else's
 #: answer"). So shipping weights no program can name is shipping 236 MB of
 #: nothing, and this is checked rather than hoped for.
+#: The dataset folder is NOT among them: `nnunet.load_model` reads it from the
+#: work root's own manifest, which ships beside the weights, so it cannot
+#: disagree with them. What the program still chooses is the trainer and the
+#: configuration, and those two have to name the fold that is here.
 MODEL_SETTINGS_RE = {
-    "dataset_name": re.compile(r'^\s*dataset_name\s*=\s*"([^"]+)"', re.MULTILINE),
     "trainer": re.compile(r'^\s*nnunet_trainer\s*=\s*"([^"]+)"', re.MULTILINE),
     "configuration": re.compile(r'^\s*nnunet_config\s*=\s*"([^"]+)"', re.MULTILINE),
 }
@@ -309,16 +333,16 @@ ORACLE: dict[str, dict] = {
                 "scheduling noise -- start with your SimpleITK version.",
     },
     "doc/gallery/programs/nnunet/brats-threshold-sweep-nnunet.imgql": {
-        "provenance": "Five independent cold-store runs (2026-09-08 x2, 2026-09-11, "
-                      "2026-09-15, 2026-10-12) on the same trained weights and the same "
-                      "20 cases; the 2026-09-15 one on this artifact as a reviewer would "
-                      "run it -- fresh checkout, shipped weights, empty store. The values "
-                      "are the 2026-10-12 run, the only one that printed every goal: it "
-                      "added the fixed threshold's spread and the per-case `fixed_dice` "
-                      "list, and it is the first after a SimpleITK wrapper fix that "
-                      "changed every exported image. The four earlier runs sit within "
-                      "1.6e-05 of these, with the winning thresholds identical every "
-                      "time.",
+        "provenance": "Six independent cold-store runs (2026-09-08 x2, 2026-09-11, "
+                      "2026-09-15, 2026-10-12, 2026-10-20) on the same trained weights "
+                      "and the same 20 cases; the 2026-09-15 one on this artifact as a "
+                      "reviewer would run it -- fresh checkout, shipped weights, empty "
+                      "store. The values are the 2026-10-12 run, the first to print "
+                      "every goal. The 2026-10-20 one is the first to LOAD the weights "
+                      "rather than restate the training that produced them, which is "
+                      "how the shipped program names them; it sits within 1.9e-05 of "
+                      "these values, and the winning thresholds are identical in all "
+                      "six.",
         "tolerance": 1e-4,
         "values": [
             ("model_dice_mean", "0.8587657935069911",
@@ -348,15 +372,12 @@ ORACLE: dict[str, dict] = {
             ("vi_thr_distribution", "[[0.73,1],[0.87,2],[0.89,4],[0.9,4],[0.91,2],[0.92,7]]",
              "**exact**, and the point of the experiment"),
         ],
-        "note": "**What varies between runs, and what does not.** Across three runs the per-case "
-                "Dice values differed by at most 2.7e-05 and every aggregate moved in the "
-                "sixth decimal or beyond -- while `best_vi_thr` and `vi_thr_distribution` "
-                "came back IDENTICAL every time. That is the claim this experiment makes: "
-                "the case-dependence of the permissive threshold survives replacing a human "
-                "annotation with a learned one, and survives the network being retrained. "
-                "Compare the distribution exactly; compare Dice, sensitivity and "
-                "specificity to 1e-4 -- and report them to 3-4 decimals, because the "
-                "digits past that are noise.\n\n"
+        "note": "**What the stability means.** The winning thresholds came back identical "
+                "in every run, across a retraining of the network and across loading it "
+                "rather than restating its training. That is the claim this experiment "
+                "makes: the case-dependence of the permissive threshold survives "
+                "replacing a human annotation with a learned one. Report Dice, "
+                "sensitivity and specificity to 3-4 decimals; past that is noise.\n\n"
                 "**Specificity is over the whole volume**, as BraTS scores it, so it is "
                 "dominated by the air around the head and sits near 1 for any plausible "
                 "segmentation. The differences between rows carry the information; the "
@@ -374,6 +395,7 @@ EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
 #: A program with no `print`/`save` computes nothing and exits 0 (the engine now
 #: refuses it). Catching that here keeps a dud out of the artifact.
 GOAL_RE = re.compile(r"^[ \t]*(print|save)[ \t]", re.MULTILINE)
+PRINT_RE = re.compile(r"^[ \t]*print[ \t]", re.MULTILINE)
 #: Absolute dataset paths are machine-specific; the README must list them.
 DATASET_RE = re.compile(r"^\s*(\w*dataset_root|work_root)\s*=\s*\"([^\"]+)\"", re.MULTILINE)
 
@@ -408,6 +430,72 @@ def copy_tree(src: Path, dst: Path) -> tuple[int, int]:
     return files, total
 
 
+def hgg_ids(dataset_root: Path) -> list[str]:
+    """The HGG cases in the order `name_mapping.csv` lists them -- the selection
+    both sweeps make, reproduced so the build can ship exactly what they read."""
+    rows = (dataset_root / "name_mapping.csv").read_text(encoding="utf-8").splitlines()
+    return [r.split(",")[-1].strip() for r in rows if r.split(",")[0].strip() == "HGG"]
+
+
+def scored_cases(dataset_root: Path) -> list[str]:
+    """The cases the two sweeps score, from the programs' own literals.
+
+    Both select by name from `name_mapping.csv` and then slice, so the shipped
+    population is decided by two numbers in each program. Reading them here
+    rather than restating them means a build cannot ship a window the programs
+    do not read -- and it stops if the two programs stop agreeing, because the
+    comparability of experiments 3 and 4 rests on their scoring the same cases.
+    """
+    ids = hgg_ids(dataset_root)
+    chosen: dict[str, list[str]] = {}
+    for rel, start_name, count_name in (
+            ("doc/gallery/programs/simpleitk/brats-threshold-sweep-aiim.imgql",
+             "case_start", "case_count"),
+            ("doc/gallery/programs/nnunet/brats-threshold-sweep-nnunet.imgql",
+             "eval_start", "eval_count")):
+        text = (REPO / rel).read_text(encoding="utf-8")
+        window = []
+        for name in (start_name, count_name):
+            found = re.search(rf"^\s*{name}\s*=\s*(\d+)", text, re.MULTILINE)
+            if not found:
+                sys.exit(f"{rel}: no `{name}` literal; the build reads it to know "
+                         f"which cases to ship")
+            window.append(int(found.group(1)))
+        start, count = window
+        chosen[rel] = ids[start:start + count]
+        if len(chosen[rel]) != count:
+            sys.exit(f"{rel}: wants HGG positions {start}-{start + count - 1}, but "
+                     f"{dataset_root.name} has {len(ids)} HGG cases")
+    if len({tuple(v) for v in chosen.values()} ) != 1:
+        sys.exit("the two sweeps no longer score the same cases, so shipping one set "
+                 "would starve one of them:\n  "
+                 + "\n  ".join(f"{k}: {v[0]}..{v[-1]}" for k, v in chosen.items()))
+    return next(iter(chosen.values()))
+
+
+def point_at_shipped_data(out: Path) -> list[tuple[str, str, str]]:
+    """Rewrite the copied programs' roots to the shipped data, and say what was
+    rewritten. The repository keeps placeholders -- a path that is right on one
+    machine is wrong everywhere else -- and the artifact, which carries the data,
+    does not need the reviewer to type anything."""
+    rewritten = []
+    for spec in PROGRAMS:
+        path = out / spec["path"]
+        text = original = path.read_text(encoding="utf-8")
+        # Only the PLACEHOLDERS: the five-case sampler already names a path
+        # inside the artifact, and rewriting that would point it at the sweeps'
+        # twenty cases instead of its own five.
+        for name, value in ((r"\w*dataset_root", DATASET_DEST), ("work_root", "model")):
+            def swap(m, spec=spec, value=value):
+                rewritten.append((spec["path"], m.group(2).strip(), value))
+                return f'{m.group(1)}"{value}"'
+            text = re.sub(rf'^((\s*{name})\s*=\s*)"(/path/to[^"]*)"',
+                          swap, text, flags=re.MULTILINE)
+        if text != original:
+            path.write_text(text, encoding="utf-8")
+    return rewritten
+
+
 def git(*args: str) -> str:
     try:
         return subprocess.run(["git", *args], cwd=REPO, capture_output=True,
@@ -439,15 +527,19 @@ def check_programs(out: Path):
     """Report programs that compute nothing, their goal counts, and the paths a
     reviewer must set. Counted from the COPIED files, so the README describes
     the artifact rather than the checkout."""
-    dud, paths, goals = [], [], {}
+    dud, paths, goals, printed = [], [], {}, {}
     for spec in PROGRAMS:
         text = (out / spec["path"]).read_text(encoding="utf-8")
         goals[spec["path"]] = len(GOAL_RE.findall(text))
+        printed[spec["path"]] = len(PRINT_RE.findall(text))
         if not goals[spec["path"]]:
             dud.append(spec["path"])
         for name, value in DATASET_RE.findall(text):
-            paths.append((spec["path"], name, value))
-    return dud, paths, goals
+            # Only placeholders are the reviewer's to set. A root that points
+            # inside the artifact is already right.
+            if value.startswith("/path/to"):
+                paths.append((spec["path"], name, value))
+    return dud, paths, goals, printed
 
 
 def write_checksums(out: Path) -> int:
@@ -485,20 +577,28 @@ def _oracle_block(spec: dict) -> str:
 
 
 def write_readme(out: Path, paths: list[tuple[str, str, str]],
-                 goals: dict[str, int], with_model: bool) -> None:
+                 goals: dict[str, int], printed: dict[str, int],
+                 with_model: bool) -> None:
     lock = out / "implementation/python/requirements.lock"
     n_locked = (len(re.findall(r"^[a-zA-Z].*==", lock.read_text(encoding="utf-8"),
                                re.MULTILINE)) if lock.exists() else 0)
+    n_dataset_files = sum(1 for f in (out / DATASET_DEST).rglob("*") if f.is_file())
     """Write the reviewer's instructions: one numbered section per experiment.
 
     Generated rather than kept by hand, so it cannot drift from the manifest:
     the table, the commands and the goal counts all come from PROGRAMS and from
     the copied files themselves.
     """
+    def _saved(s, goals, printed):
+        """A `save` goal writes a file and prints nothing, so it would otherwise
+        be counted as a line the reviewer never sees."""
+        n = goals[s["path"]] - printed[s["path"]]
+        return "" if not n else f" and {n} written by `save`"
+
     def _needs(s):
         if not s["needs_dataset"]:
             return "**none**"
-        return "BraTS2020 + GPU" if s.get("needs_gpu") else "BraTS2020"
+        return "shipped cases + GPU" if s.get("needs_gpu") else "shipped cases"
 
     index_rows = "\n".join(
         f"| {i} | {s['title']} | {_needs(s)} | {s['minutes']} | {goals[s['path']]} "
@@ -512,19 +612,11 @@ def write_readme(out: Path, paths: list[tuple[str, str, str]],
         data_line = ("This program needs **no data**. If it fails, the problem is the\n"
                      "install, not the dataset.\n"
                      if not spec["needs_dataset"] else
-                     "This program needs BraTS 2020. Set its path first -- see section B.\n")
-        if spec["reproducibility"].startswith("no"):
-            data_line += (
-                "\n**Not bit-reproducible, by construction.** It trains a network: GPU\n"
-                "kernel non-determinism and the training seed mean your Dice values will\n"
-                "differ from ours in the last digits, and from your own second run. What\n"
-                "should reproduce is the SHAPE of the result -- the spread of winning\n"
-                "thresholds -- not the digits. Every other experiment here is\n"
-                "bit-identical; this one is the exception and says so.\n")
+                     "It reads BraTS cases that ship in this artifact -- nothing to\n"
+                     "download, nothing to edit. See section B.\n")
+        if spec.get("nondeterminism"):
+            data_line += "\n" + spec["nondeterminism"] + "\n"
         if spec.get("needs_gpu"):
-            data_line += ("\nIt also needs `work_root` set to the shipped model directory --\n"
-                          "one line, explained in **section F**. Do that before running, or it\n"
-                          "trains from scratch for hours.\n")
             data_line += ("\nA CUDA GPU is assumed (`nnunet_device = \"cuda\"` in the\n"
                           "program). Set it to `\"cpu\"` to run without one, and expect it\n"
                           "to take very much longer.\n")
@@ -542,7 +634,7 @@ def write_readme(out: Path, paths: list[tuple[str, str, str]],
 {cmd}
 ```
 
-Expected: **exit status 0**, {goals[spec['path']]} named goal{'' if goals[spec['path']] == 1 else 's'} printed as JSON,
+Expected: **exit status 0**, {printed[spec['path']]} named goal{'' if printed[spec['path']] == 1 else 's'} printed as JSON{_saved(spec, goals, printed)},
 and {spec['total_files']} file{'' if spec['total_files'] == 1 else 's'} under
 `{spec['outputs']}`. Time: {spec['minutes']}.
 
@@ -562,44 +654,29 @@ and failed; see section D.
 {_oracle_block(spec)}
 """)
 
-    to_edit = "\n".join(f"| `{p}` | `{n}` | `{v}` |" for p, n, v in paths) or \
-              "| — | — | none found |"
-
     model_section = (
-        "**The program always calls `nnunet.train`, and that is expected.** `train`\n"
-        "skips the training when a trained model is already present in `work_root`.\n"
-        "For each fold it looks for\n\n"
+        "**The program loads these weights; it does not train.** `nnunet.load_model`\n"
+        "names the model that is already under `work_root` -- shipped as `model/`, and\n"
+        "already written into the program -- and reads\n\n"
         "```\n"
-        "<work_root>/nnUNet_results/Dataset900_BraTS2020WholeTumour/nnUNetTrainer__nnUNetPlans__3d_fullres/fold_0/checkpoint_final.pth\n"
+        "model/nnUNet_results/Dataset900_BraTS2020WholeTumour/nnUNetTrainer__nnUNetPlans__3d_fullres/fold_0/\n"
         "```\n\n"
-        "and if that file exists it logs\n"
-        "`Skipping 3d_fullres fold 0 (checkpoint already exists)` and moves on. Check\n"
-        "the log for that line: with it, experiment 4 takes about three minutes;\n"
-        "without it, the network trains for hours.\n\n"
-        "So loading the model means three things:\n\n"
-        "1. **`model/` is a populated `work_root`**, rather than a single weights file.\n"
-        "   holds the checkpoint at that exact path plus `plans.json`,\n"
-        "   `dataset.json`, `dataset_fingerprint.json` and `postprocessing.pkl` --\n"
-        "   what `train` needs to find everything in place. You set one line in\n"
-        "   the program, as section B says: `work_root = \"<this directory>/model\"`.\n"
-        "2. **The names must match.** The path is built from the program's\n"
-        "   `dataset_name`, `nnunet_trainer` and `nnunet_config`. If any of them is\n"
-        "   changed, `train` finds no checkpoint and retrains from scratch, without\n"
-        "   warning and for hours. Leave them as shipped.\n"
-        "3. **It saves the training, not the dataset.** Preprocessing runs before\n"
-        "   the checkpoint check, so the 50 training cases are still read and\n"
-        "   preprocessed under `model/`. Without BraTS the program cannot run at\n"
-        "   all, weights or no weights.\n\n"
-        "`postprocessing.pkl` is 260 bytes and easy to overlook. It records the\n"
-        "decision nnU-Net took on its validation set: keep only the largest\n"
-        "connected component. Without it the run still succeeds, but predictions\n"
-        "come out raw and every number is off by about 1e-2 against the expected\n"
-        "values. Do not delete it.\n\n"
-        "`model/voxlogica_manifest.json` records what these weights are -- dataset,\n"
-        "trainer, configuration, folds, postprocessing -- and is rewritten by each\n"
-        "run. The training DATA is not here and cannot be: it is BraTS, rewritten.\n"
-        "(`nnunet.train` also accepts a `pretrained` argument. That serves a different\n"
-        "purpose -- weights to initialise a new training from -- and is not needed here.)\n"
+        "Two things follow:\n\n"
+        "1. **The names must match.** That path is built from the program's\n"
+        "   `nnunet_config` and `nnunet_trainer`, and the dataset folder comes from\n"
+        "   `model/voxlogica_manifest.json`. Change one of them and the load fails\n"
+        "   loudly -- `no completed fold under ...` -- rather than training for hours.\n"
+        "2. **`postprocessing.pkl` is part of the model.** 260 bytes, under\n"
+        "   `fold_0/validation/`. It records what nnU-Net determined on its own\n"
+        "   validation set: keep only the largest connected component. Without it the\n"
+        "   run still succeeds and predicts raw, which moves the aggregates by about\n"
+        "   1e-2 and changes the threshold distribution. Do not delete it.\n\n"
+        "`model/voxlogica_manifest.json` records what these weights are: dataset,\n"
+        "trainer, configuration, folds, postprocessing. The network was trained on HGG\n"
+        "positions 0-49 -- `BraTS20_Training_001` to `_050` -- which is why the sweep\n"
+        "scores positions 50-69 and why those training cases are not shipped. Loading\n"
+        "writes nothing: after experiment 4, `model/` is byte for byte what\n"
+        "`SHA256SUMS` lists. Experiment 1 is the program that trains.\n"
         if with_model else
         "Not included in this build. Rebuild with `--with-model` to add it.\n")
 
@@ -668,14 +745,14 @@ paper can be retaken here.
 If all five steps pass, the artifact is ready for the full evaluation. A good
 next move is to start experiment 1 in the background -- it needs no dataset
 either, but takes 51 minutes on 24 cores and 77 on 4, at 1.2 GB of memory --
-and meanwhile obtain BraTS as section B describes.
+and meanwhile read section B -- short, now that the data ships.
 
 ## Resources
 
 | | |
 |---|---|
-| Disk | 25 GB free, dataset excluded (venv 8 GB, ~5 GB of results store per sweep) |
-| RAM, measured peak | depends on parallelism. At 24 threads: experiment 2: 8.8 GB; 3: 4.5 GB. At 4 threads (`--threads 4`): experiment 1: 1.2 GB; 2: 1.9 GB; 3: 2.4 GB. Experiment 4 is run at `--threads 4`, as section C gives it, and peaks at **8.0 GB**. A VM with 8 GB runs experiments 1, 2 and 3; **16 GB runs all four** |
+| Disk | 25 GB free (venv 8 GB, ~5 GB of results store per sweep; the artifact itself, image data included, is under 500 MB) |
+| RAM, measured peak | depends on parallelism. At 24 threads: experiment 2: 8.8 GB; 3: 4.5 GB. At 4 threads (`--threads 4`): experiment 1: 1.2 GB; 2: 1.9 GB; 3: 2.4 GB. Experiment 4 is run at `--threads 4`, as section C gives it, and peaks at **7.6 GB**. A VM with 8 GB runs experiments 1, 2 and 3; **16 GB runs all four** |
 | CPU | any; the engine uses every core it finds. Times in this README are from a 24-core machine |
 | GPU | **experiment 4 only** (`nnunet_device = "cuda"`). Without one it can run on CPU -- set the device to `"cpu"` -- but we have not timed that |
 | Network | once, during bootstrap; every download is version-pinned and hash-checked |
@@ -686,15 +763,10 @@ container with 4 cores, 8 GB and no GPU -- experiment 1 in 77 min, 2 in 31 s,
 3 in 3 min.
 
 Experiment 4 needs more: at `--threads 4`, the configuration section C gives,
-it peaks at **8.0 GB**, so **16 GB is enough**.
-
-It will not fit in 8 GB, and lowering `--threads` further does not help:
-`nnUNetv2_plan_and_preprocess` reaches 7.7 GB on its own in the first minute,
-and that part is nnU-Net's own process, outside the engine's control. With 8 GB
-the run is killed by the out-of-memory killer after 24 seconds, inside
-preprocessing -- before any prediction and before the GPU would matter at all.
-So the obstacle is memory first and the GPU second, and the ask is a 16 GB
-machine with a CUDA device, not a large one.
+it peaks at **7.6 GB**, so **16 GB is enough** and 8 GB leaves no margin. The
+peak is the sweep's own working set -- twenty percentile-ranked volumes and
+twenty-one candidate segmentations each -- so the ask is a 16 GB machine with a
+CUDA device, not a large one.
 
 ---
 
@@ -704,10 +776,10 @@ machine with a CUDA device, not a large one.
 sha256sum -c SHA256SUMS
 ```
 
-Every line must end in `OK`. Do this FIRST: section B has you edit two
-program files, and running experiment 4 rewrites `model/voxlogica_manifest.json`,
-so a check made afterwards reports exactly those files as changed. Running it
-now, before any edit, is the only time the result is informative.
+Every line must end in `OK`. It covers the engine, the programs, the weights
+and the image data. Nothing in the experiments writes back into these files --
+runs write under `output/` and into their results store -- so the check stays
+informative afterwards as well.
 
 ## A. Build the tool
 
@@ -719,11 +791,10 @@ The first call runs `bootstrap.py`, which downloads a pinned `uv`, reads
 `.python-version` and creates `.venv` here. Measured: 137 packages in 44 s on
 a fast connection. It is idempotent: re-run it freely.
 
-**Disk: have 25 GB free before you start**, dataset excluded. The venv is
-8 GB (torch and its CUDA libraries are most of it), each of the two sweeps
-writes a ~5 GB results store, and the nnU-Net experiment preprocesses ~2 GB
-under `model/`. If space runs short the engine warns `cache budget cut from
-... by free space`; check free space and rerun.
+**Disk: have 25 GB free before you start.** The venv is 8 GB (torch and its
+CUDA libraries are most of it) and each of the two sweeps writes a ~5 GB results
+store. If space runs short the engine warns `cache budget cut from ... by free
+space`; check free space and rerun.
 
 Every version is pinned. `implementation/python/requirements.lock` resolves the
 whole transitive graph -- {n_locked} packages, each with its sha256 -- and that
@@ -748,108 +819,45 @@ Two requirements:
    `python -m voxlogica.main` directly appears to work and then fails inside
    nnU-Net with `No such file or directory: nnUNetv2_plan_and_preprocess`.
 
-## B. Point the programs at your copy of BraTS
+## B. The BraTS cases
 
-The datasets are not here: the BraTS data-use agreement does not let us
-redistribute them, so you have to obtain them yourself. Experiment 1 needs
-none of this.
+They ship with the artifact. Nothing to download, nothing to edit.
 
-**Where to get BraTS 2020.** The training data is mirrored on Kaggle:
-
-    https://www.kaggle.com/datasets/awsaf49/brats20-dataset-training-validation
-
-You need a Kaggle account. The official source is the challenge organisers
-(CBICA, University of Pennsylvania), who require a registration; this mirror
-carries the same 369 training cases in the layout BraTS ships, one directory
-per case.
-
-It nests them one level below the archive root, so the path the programs want is
-
-    <where you unzipped>/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData
-
-The archive also carries the validation split -- 125 cases, four modalities and
-no segmentations, as BraTS publishes it. Nothing here reads it, so point the
-commands below at the training directory above rather than at the archive root.
-
-**Two things to do to that copy.** Both are properties of this mirror, checked
-against its own file listing rather than assumed:
-
-1. **Compress the volumes.** All 1845 of them arrive uncompressed -- `.nii`,
-   not one `.nii.gz` -- and the programs look for `*_flair.nii.gz` and friends:
-   `find <root> -name '*.nii' -exec gzip {{}} +`. Without it `dir` finds
-   nothing at all.
-2. **Rename one file.** Case `BraTS20_Training_355` ships its segmentation as
-   `W39_1998.09.19_Segm.nii`, which is why the mirror has 368 `_seg` files and
-   369 of everything else. After gzipping, rename it to
-   `BraTS20_Training_355_seg.nii.gz`. It is LGG and neither program scores it,
-   but the manifest check counts it.
-
-Then run the manifest check below, before anything else. It identifies every
-volume by its DECOMPRESSED content, so compressing the mirror's files yourself
-is fine: gzip is not reproducible -- the same data gives different bytes at a
-different level -- and a check on the bytes would have reported a correctly
-obtained dataset as wrong, every file of it.
-
-Each program names its dataset root as a literal near the top. These are the
-lines to edit:
-
-| program | variable | value as shipped |
+| what | where | read by |
 |---|---|---|
-{to_edit}
+| the twenty scored cases, `BraTS20_Training_051` to `_070`, five volumes each | `data/MICCAI_BraTS2020_TrainingData/` | experiments 3 and 4 |
+| `name_mapping.csv`, the metadata the population is selected from | the same directory | experiments 3 and 4 |
+| the five-case sample | `doc/gallery/programs/brats2020/data/` | experiment 2 |
 
-The five-case sampler additionally wants five specific cases in
-`doc/gallery/programs/brats2020/data/`, one directory each, exactly as BraTS
-ships them; `doc/gallery/programs/brats2020/data/README.md` names the five.
+The twenty are HGG positions 50-69 of the official training set. Both sweeps
+read the grade and the id out of `name_mapping.csv`, keep the HGG rows and
+slice, so a case is in the study because the metadata says so -- not because of
+what happens to be on disk. That file lists all 369 cases, so those positions
+are positions in the full dataset. The other 344 cases are not here: no shipped
+program names them, and the ones that trained the network (positions 0-49) are
+not needed to use it -- see section F.
 
-**A path left unset does not pass silently.** The BraTS programs read
-`name_mapping.csv` from `dataset_root` first, so a wrong root stops the run at
-once, naming the line and the file:
-
-```
-43 | name_mapping = load(concat(dataset_root, "/name_mapping.csv"))
-load source not found: /path/to/MICCAI_BraTS2020_TrainingData/name_mapping.csv
-```
-
-### Check that your BraTS is the same BraTS
+**These are the official cases, unmodified**, redistributed here with the
+permission of the BraTS organisers. To see that rather than take it:
 
 ```bash
-python3 tools/dataset_manifest.py /path/to/MICCAI_BraTS2020_TrainingData
+python3 tools/dataset_manifest.py data/MICCAI_BraTS2020_TrainingData --subset
 ```
 
-Expected: `OK: this dataset matches the one the expected values were measured
-on.` and exit status 0. It takes a few seconds; `--quick` skips the hashing and
-compares sizes only.
+Expected: `OK: the {n_dataset_files} files here are the ones the expected values
+were measured on.` and exit status 0. `tools/brats2020-manifest.json` is the
+contract it checks against -- all 369 cases of the official set, each volume
+identified by its DECOMPRESSED content, so the check also passes on a copy
+compressed at another level.
 
-**What this protects against.** The two BraTS experiments select cases by NAME
--- the ids `name_mapping.csv` lists as `HGG`, offset by `case_start` and
-`eval_start` -- so a missing or extra case no longer shifts the others onto a
-different patient. What the manifest still pins is WHICH BYTES those names
-resolve to. A case whose files differ from the ones we measured, or a copy of
-the dataset where a name points at different data, produces a run that
-succeeds with Dice values that look reasonable and describe something else,
-with nothing in the output to indicate it.
+To run the sweeps against your own copy of the full training set instead, point
+`dataset_root` at it -- one line near the top of each of the two programs -- and
+run the same check without `--subset` to see whether that copy is the one these
+numbers came from.
 
-The five-case sampler (experiment 2) is the exception: it reads whatever is in
-its own `data/` directory, in listing order, and names the five cases it
-expects in the README there.
-
-The check therefore compares the ORDERED listing rather than counting files,
-and on a mismatch it reports the index where the two diverge. Everything from
-that index onwards is reading data we did not measure.
-
-It also checks `name_mapping.csv`, the metadata file BraTS ships beside the
-cases. BOTH BraTS experiments select their population from it -- the 293 cases
-whose first field says `HGG` -- so a copy of BraTS without that file cannot run
-experiment 3 or experiment 4 at all, and a copy with a DIFFERENT one runs them
-on a different population. The check reproduces the selection and names the
-first case it would pick differently.
-
-Symlinks are fine -- to the whole dataset, to case directories, or to files;
-`dir` follows them. One thing to know: with `full_paths` the programs sort by
-the path each link RESOLVES TO, so links that point to scattered places can
-come out in an order your directory listing does not show. Linking from one
-place keeps the two orders the same, and the check above will say if they are
-not.
+If you use these cases outside this evaluation, cite the challenge: Menze et
+al., *IEEE TMI* 34(10), 2015; Bakas et al., *Nature Scientific Data* 4, 2017;
+Bakas et al., arXiv:1811.02629, 2018.
 
 ## C. Run the experiments
 
@@ -873,8 +881,8 @@ three pairings below are comparable, and together they are the paper's claim:
 The twenty cases are outside the network's training set (positions 0-49), so
 neither method is being scored on data it was fitted to.
 
-**A trap worth naming.** The two programs print sixteen goal names in common,
-and fifteen of the sixteen MEAN DIFFERENT THINGS -- only `n_cases` does not --
+**A trap worth naming.** The two programs print nineteen goal names in common,
+and eighteen of them MEAN DIFFERENT THINGS -- only `n_cases` does not --
 because each program defines `truth_of` for itself:
 
 | | `truth_of(i)` is |
@@ -926,10 +934,10 @@ either BraTS experiment and must not be on a tmpfs (so not under `/tmp` on
 most systems): a store in RAM competes with the memory the engine budgets
 from.
 
-**Do not run the same experiment twice at the same time.** The smoke test puts
-its training tree in a fixed directory under `/tmp`, and experiment 4 puts its
-preprocessing under `model/`; two concurrent runs of the same program share that
-directory and corrupt each other's preprocessing. Run them one after another.
+**Do not run experiment 1 twice at the same time.** It puts its training tree
+in a fixed directory under `/tmp`, so two concurrent runs share it and corrupt
+each other's preprocessing. Run them one after another. Experiment 4 writes
+nothing outside `output/` and its store: it loads the shipped weights.
 
 ## E. Reproducibility
 
@@ -938,9 +946,11 @@ across thread counts -- verified at 1, 4 and 16 threads on experiment 3, and
 identical again to a warm-cache run. Only the wall time changes. So a number
 that differs on your machine is not the scheduler.
 
-The nnU-Net programs are the exception: GPU non-determinism and training seeds
-mean their predictions are not reproducible bit-for-bit unless you use the
-shipped weights rather than retraining.
+The nnU-Net programs are the exception. Experiment 1 trains, so its output is
+not reproducible bit-for-bit at all. Experiment 4 uses the shipped weights and
+only predicts with them, which puts it within 1e-4 -- nnU-Net's sliding-window
+inference on a GPU is not bitwise deterministic -- with the winning thresholds
+identical every time.
 
 ## F. The trained model
 
@@ -993,7 +1003,7 @@ before the run. String values keep their quotes, and the shell must not eat
 them:
 
 ```bash
---set 'dataset_root="/path/to/MICCAI_BraTS2020_TrainingData"' --set case_count=2
+--set 'dataset_root="data/MICCAI_BraTS2020_TrainingData"' --set case_count=2
 ```
 
 The program as run is written to `program.imgql` beside the results, overrides
@@ -1020,6 +1030,9 @@ def main() -> int:
     ap.add_argument("--model-source", type=Path, default=None,
                     help=f"nnU-Net work_root the weights come from "
                          f"(default: {MODEL_SOURCE})")
+    ap.add_argument("--dataset-source", type=Path, default=None,
+                    help=f"BraTS 2020 training directory the shipped cases come from "
+                         f"(default: {DATASET_SOURCE})")
     ap.add_argument("--tar", action="store_true", help="also write a .tar.gz beside it")
     ap.add_argument("--zip", action="store_true",
                     help="also write a .zip beside it (EasyChair wants a ZIP)")
@@ -1031,6 +1044,7 @@ def main() -> int:
         src = args.model_source.expanduser().resolve()
         MODEL["source"] = src / "nnUNet_results"
         MODEL["manifest"] = src / "voxlogica_manifest.json"
+
 
     out = Path(args.out).expanduser().resolve()
     started = time.time()
@@ -1080,24 +1094,66 @@ def main() -> int:
     print(f"    all {len(MEASUREMENT)} compile under Python "
           f"{sys.version_info.major}.{sys.version_info.minor}")
 
-    step(5, "Placeholder for the five-case sample (no image data is copied)")
-    data_dir = out / "doc/gallery/programs/brats2020/data"
+    step(5, "Copying the five-case sample")
+    sample_src = REPO / SAMPLE_DEST
+    data_dir = out / SAMPLE_DEST
     data_dir.mkdir(parents=True, exist_ok=True)
-    cases = sorted(p.name for p in (REPO / "doc/gallery/programs/brats2020/data").iterdir()
-                   if p.is_dir()) if (REPO / "doc/gallery/programs/brats2020/data").exists() else []
+    cases = sorted(d.name for d in sample_src.iterdir() if d.is_dir()) \
+        if sample_src.exists() else []
+    if not cases:
+        sys.exit(f"no case directories under {sample_src}: experiment 2 reads whatever "
+                 f"is in its own data directory, and would score nothing")
+    sample_size = 0
+    for case in cases:
+        f, s = copy_tree(sample_src / case, data_dir / case)
+        files += f
+        sample_size += s
+    size += sample_size
     (data_dir / "README.md").write_text(
         "# The five-case sample\n\n"
-        "Empty on purpose. BraTS may not be redistributed, so these five cases have\n"
-        "to come from your own copy of MICCAI_BraTS2020_TrainingData. Copy or symlink\n"
-        "one directory per case, exactly as BraTS ships them (five files inside:\n"
-        "`_flair`, `_t1`, `_t1ce`, `_t2`, `_seg`):\n\n"
+        "Five cases of the BraTS 2020 training set, as BraTS ships them -- one\n"
+        "directory each, five volumes inside (`_flair`, `_t1`, `_t1ce`, `_t2`,\n"
+        "`_seg`):\n\n"
         + "".join(f"- `{c}`\n" for c in cases)
-        + "\nThe program reads them with `dir(..., recursive)`, so the directory names\n"
-          "matter only for your own bookkeeping; the file suffixes matter.\n",
+        + "\nThe program reads them with `dir(..., recursive)` and scores them in\n"
+          "listing order, so the file suffixes matter and the directory names do not.\n"
+          "Replacing them with five other cases is a valid thing to do; the expected\n"
+          "values in the README are then no longer the ones to compare against.\n",
         encoding="utf-8")
-    print(f"    named {len(cases)} cases, copied 0 images (BraTS policy)")
+    print(f"    {len(cases)} cases ({human(sample_size)}): {', '.join(cases)}")
 
-    step(6, "Trained model")
+    step(6, "Copying the BraTS cases the sweeps score")
+    dataset_src = (args.dataset_source.expanduser().resolve()
+                   if args.dataset_source else DATASET_SOURCE)
+    if not (dataset_src / "name_mapping.csv").is_file():
+        sys.exit(f"no BraTS 2020 training directory at {dataset_src} "
+                 f"(no name_mapping.csv); point --dataset-source at one")
+    scored = scored_cases(dataset_src)
+    dataset_dir = out / DATASET_DEST
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    # The metadata first: both sweeps select their population from it, and it is
+    # also what makes the shipped slice legible -- the ids in it are the full 369,
+    # so the positions the programs name are the positions of the official set.
+    f, dataset_size = copy_tree(dataset_src / "name_mapping.csv",
+                                dataset_dir / "name_mapping.csv")
+    files += f
+    for case in scored:
+        case_src = dataset_src / case
+        if not case_src.is_dir():
+            sys.exit(f"{case} is in the window the programs score but is not in "
+                     f"{dataset_src}")
+        f, s = copy_tree(case_src, dataset_dir / case)
+        files += f
+        dataset_size += s
+    size += dataset_size
+    print(f"    name_mapping.csv, {len(scored)} cases {scored[0]} .. {scored[-1]} "
+          f"({human(dataset_size)})")
+
+    # Now that the data is in, the programs can name it. Nothing left to edit.
+    for program, name, value in point_at_shipped_data(out):
+        print(f"    {Path(program).name}: {name} -> {value}")
+
+    step(7, "Trained model")
     if args.with_model:
         src = MODEL["source"]
         if not src.exists():
@@ -1108,9 +1164,9 @@ def main() -> int:
         manifest = MODEL["manifest"]
         if manifest.exists():
             m = json.loads(manifest.read_text(encoding="utf-8"))
-            shipped = {"dataset_name": m.get("dataset_name", ""),
-                       "trainer": m.get("trainer", ""),
+            shipped = {"trainer": m.get("trainer", ""),
                        "configuration": m.get("configuration", "")}
+            dataset_folder = m.get("dataset_folder", "") or m.get("dataset_name", "")
             sel = (m.get("selection") or [{}])[0]
             shipped["trainer"] = shipped["trainer"] or sel.get("trainer", "")
 
@@ -1133,13 +1189,13 @@ def main() -> int:
         for path, found in consumers:
             print(f"    consumer: {Path(path).name}")
         if shipped:
-            print(f"    shipped weights: {shipped['dataset_name']} / "
+            print(f"    shipped weights: {dataset_folder} / "
                   f"{shipped['trainer']} / {shipped['configuration']}")
         if mismatch:
             detail = "; ".join(f"{k}: program wants {w!r}, weights are {g!r}"
                                for k, (w, g) in mismatch.items())
             sys.exit("the weights do not match what the shipped program asks for, "
-                     "so nnU-Net would ignore them and retrain:\n  " + detail +
+                     "so loading them would fail:\n  " + detail +
                      "\nAlign the program's constants with the weights (or "
                      "retrain), then rebuild.")
 
@@ -1173,13 +1229,13 @@ def main() -> int:
     else:
         print("    skipped (pass --with-model to include ~240 MB of weights)")
 
-    step(7, "Checking the programs")
+    step(8, "Checking the programs")
     shipped = {spec["path"] for spec in PROGRAMS}
     orphaned = sorted(set(ORACLE) - shipped)
     if orphaned:
         sys.exit("ORACLE has expected values for programs this artifact does not "
                  "ship:\n  " + "\n  ".join(orphaned))
-    dud, paths, goals = check_programs(out)
+    dud, paths, goals, printed = check_programs(out)
     for program, name, value in paths:
         print(f"    {Path(program).name}: {name} = {value}")
     if dud:
@@ -1187,10 +1243,15 @@ def main() -> int:
                  "nothing:\n  " + "\n  ".join(dud))
     print("    " + ", ".join(f"{Path(s['path']).name}: {goals[s['path']]} goals"
                              for s in PROGRAMS))
-    print(f"    {len(paths)} paths for the reviewer to set")
+    if paths:
+        sys.exit("these shipped programs still name a placeholder path, while the "
+                 "README tells the reviewer there is nothing to edit:\n  "
+                 + "\n  ".join(f"{program}: {name} = {value}"
+                                for program, name, value in paths))
+    print("    no placeholder paths left: every root names something in the artifact")
 
-    step(8, "Writing README.md and PROVENANCE.json")
-    write_readme(out, paths, goals, args.with_model)
+    step(9, "Writing README.md and PROVENANCE.json")
+    write_readme(out, paths, goals, printed, args.with_model)
     dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
     (out / "PROVENANCE.json").write_text(json.dumps({
         "doi": DOI,
@@ -1204,18 +1265,20 @@ def main() -> int:
         "builder_python": sys.version.split()[0],
         "programs": [s["path"] for s in PROGRAMS],
         "includes_model": args.with_model,
-        "includes_dataset": False,
+        "includes_dataset": True,
+        "dataset_cases": scored,
+        "dataset_sample_cases": cases,
     }, indent=2) + "\n", encoding="utf-8")
     if dirty:
         print("    WARNING: working tree has uncommitted tracked changes; "
               "the commit in PROVENANCE.json does not describe what was copied")
 
-    step(9, "Writing SHA256SUMS")
+    step(10, "Writing SHA256SUMS")
     print(f"    {write_checksums(out)} files hashed")
 
     tarball = None
     if args.tar:
-        step(10, "Writing the tarball")
+        step(11, "Writing the tarball")
         tarball = out.with_suffix(".tar.gz")
         with tarfile.open(tarball, "w:gz") as tf:
             tf.add(out, arcname=out.name)
@@ -1223,7 +1286,7 @@ def main() -> int:
 
     zipball = None
     if args.zip:
-        step(11 if args.tar else 10, "Writing the zip")
+        step(12 if args.tar else 11, "Writing the zip")
         import zipfile
         zipball = out.with_suffix(".zip")
         with zipfile.ZipFile(zipball, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -1239,7 +1302,8 @@ def main() -> int:
           f"  files      {count}\n"
           f"  size       {human(total)}\n"
           f"  model      {'included' if args.with_model else 'not included'}\n"
-          f"  dataset    never included (BraTS policy)\n"
+          f"  dataset    {len(scored) + len(cases)} BraTS cases "
+          f"({human(dataset_size + sample_size)})\n"
           + (f"  tarball    {tarball}\n" if tarball else "")
           + (f"  zip        {zipball}\n" if zipball else "")
           + f"  built in   {time.time() - started:.1f} s\n"

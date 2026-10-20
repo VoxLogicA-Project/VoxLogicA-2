@@ -15,6 +15,12 @@ This writes down the order, and checks it.
     python3 tools/dataset_manifest.py --write <brats-root>   # ours, once
     python3 tools/dataset_manifest.py <brats-root>           # theirs, to verify
     python3 tools/dataset_manifest.py --quick <brats-root>   # sizes only, no hashing
+    python3 tools/dataset_manifest.py --subset <brats-root>  # part of the dataset
+
+`--subset` is for a root that holds SOME of the cases -- the twenty-five the
+artifact ships, say. It checks the cases that are there against the same
+manifest, and that they appear in the order the full dataset puts them in; it
+does not require the rest.
 
 Stdlib only, and plain `python3`: a reviewer runs this BEFORE building anything.
 """
@@ -184,7 +190,7 @@ def write(root: Path, quick: bool) -> int:
     return 0
 
 
-def check(root: Path, quick: bool) -> int:
+def check(root: Path, quick: bool, subset: bool = False) -> int:
     if not MANIFEST.is_file():
         sys.exit(f"no manifest at {MANIFEST}")
     want = json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -199,7 +205,8 @@ def check(root: Path, quick: bool) -> int:
     problems: list[str] = []
 
     print(f"dataset:  {root}")
-    print(f"expected: {want['dataset']}, {want['case_count']} cases\n")
+    print(f"expected: {want['dataset']}, {want['case_count']} cases"
+          + (" (checking the part that is here)" if subset else "") + "\n")
 
     for rel in METADATA:
         if not (root / rel).is_file():
@@ -232,6 +239,27 @@ def check(root: Path, quick: bool) -> int:
                 f"Replace the symlinks with a copy, or link whole case directories "
                 f"from one place.")
             print(f"  WARN  {pattern:18} symlink targets reorder this listing")
+        if subset:
+            # Present files must BE the reference's, and keep its relative order:
+            # the programs index by position within their own slice, so a copy
+            # that holds the right cases in a different order still reads a
+            # different case at index i.
+            known = set(expected)
+            unknown = [rel for rel in found if rel not in known]
+            if unknown:
+                problems.append(
+                    f"{pattern}: {len(unknown)} file(s) here are not in the reference "
+                    f"dataset, first {unknown[0]}")
+                print(f"  WRONG {pattern:18} {len(unknown)} file(s) not in the reference")
+            elif found != [rel for rel in expected if rel in set(found)]:
+                problems.append(f"{pattern}: the files here are not in the order the "
+                                f"full dataset puts them in")
+                print(f"  WRONG {pattern:18} present but out of order")
+            else:
+                print(f"  OK    {pattern:18} {len(found)} of {len(expected)} files, "
+                      f"in the expected order")
+            continue
+
         if found == expected:
             print(f"  OK    {pattern:18} {len(found)} files, in the expected order")
             continue
@@ -252,7 +280,8 @@ def check(root: Path, quick: bool) -> int:
         for rel, entry in sorted(want["files"].items()):
             full = root / rel
             if not full.is_file():
-                problems.append(f"missing: {rel}")
+                if not subset:
+                    problems.append(f"missing: {rel}")
                 continue
             if quick:
                 size = content(full)[1] if full.suffix == ".gz" else full.stat().st_size
@@ -269,6 +298,9 @@ def check(root: Path, quick: bool) -> int:
             checked += 1
         print(f"\n  {checked} files checked "
               f"({'size only' if quick else 'size and sha256'})")
+        if subset and checked == 0:
+            problems.append("nothing here is in the reference dataset: no file of it "
+                            "was found under this root")
 
     if problems:
         print(f"\nFAILED: {len(problems)} problem(s)\n")
@@ -282,7 +314,11 @@ def check(root: Path, quick: bool) -> int:
               "with the expected values in the README.")
         return 1
 
-    print("\nOK: this dataset matches the one the expected values were measured on.")
+    if subset:
+        print(f"\nOK: the {checked} files here are the ones the expected values were "
+              f"measured on.")
+    else:
+        print("\nOK: this dataset matches the one the expected values were measured on.")
     return 0
 
 
@@ -293,12 +329,18 @@ def main() -> int:
                     help="write the manifest from this root instead of checking against it")
     ap.add_argument("--quick", action="store_true",
                     help="compare sizes only, skipping ~3 GB of hashing")
+    ap.add_argument("--subset", action="store_true",
+                    help="this root holds part of the dataset: check what is here, "
+                         "and that it is in the full dataset's order")
     args = ap.parse_args()
+    if args.write and args.subset:
+        ap.error("--write writes the whole contract; it cannot be written from a subset")
 
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
         sys.exit(f"not a directory: {root}")
-    return write(root, args.quick) if args.write else check(root, args.quick)
+    return (write(root, args.quick) if args.write
+            else check(root, args.quick, subset=args.subset))
 
 
 if __name__ == "__main__":

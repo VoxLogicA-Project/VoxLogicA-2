@@ -3,9 +3,9 @@
 //
 // The companion program (doc/gallery/programs/simpleitk/brats-threshold-sweep-aiim.imgql)
 // sweeps viThr and scores each candidate segmentation against `*_seg.nii.gz`.
-// Here nnU-Net is trained on the four BraTS modalities (FLAIR, T1, T1CE, T2)
-// with that same ground truth, and its PREDICTION takes the place of the truth
-// in the sweep. Everything downstream -- Dice, argmax, the statistics over the
+// Here a nnU-Net trained on the four BraTS modalities (FLAIR, T1, T1CE, T2)
+// against that same ground truth is LOADED, and its PREDICTION takes the place
+// of the truth in the sweep. Everything downstream -- Dice, argmax, the statistics over the
 // chosen thresholds, the outliers, the exports -- is unchanged, so the two
 // programs can be read side by side and their numbers compared directly.
 //
@@ -17,7 +17,8 @@
 // property of the annotator.
 //
 // That reading only holds if the prediction is not a memorized copy of the
-// truth, which is what `train_range` and `eval_range` below are for.
+// truth. The model named below was trained on HGG positions 0-49; the sweep is
+// scored on positions 50-69, which the network never saw.
 
 import "simpleitk"
 import "vox1"
@@ -34,30 +35,25 @@ output_dir   = "output/aiim-sweep-nnunet"
 // generated data.
 work_root = "/path/to/this/artifact/model"
 
-// TRAIN AND EVALUATION RANGES. Disjoint by default: the sweep is scored against
-// predictions for cases the network never saw. Set `eval_start` to `train_start`
-// for the in-sample run -- a pipeline check, not a result, because a network
+// EVALUATION RANGE, as positions in the HGG list built below. Set `eval_start`
+// to 0 for an in-sample run -- a pipeline check, not a result, because a network
 // predicting its own training cases returns something close to the truth it was
 // given and the sweep then just re-measures the AIIM experiment with noise on
 // top.
-train_start = 0
-train_count = 50
 eval_start  = 50
 eval_count  = 20
 
 outlier_count = 10       // worst cases to export
 
 // ------------------------------------------------------ nnU-Net settings ---
-// One fold, not the documented five: five folds is five trainings, and the
-// question here does not need the ensemble. `3d_fullres` because BraTS is
+// These three WHICH model, not how to train one: nnU-Net stores a trained model
+// under the configuration, trainer and plans identifier it was trained with, and
+// `load_model` looks it up by exactly that. `3d_fullres` because BraTS is
 // volumetric and the whole point is a reference built from all four modalities
-// in 3D. Both are arguments, so a run that wants nnU-Net's full recommended
-// workflow says so here.
+// in 3D. `nnunet_device` is where inference runs.
 nnunet_config  = "3d_fullres"
-nnunet_folds   = 1
 nnunet_device  = "cuda"
 nnunet_trainer = "nnUNetTrainer"
-dataset_name   = "BraTS2020WholeTumour"
 
 // ------------------------------------------------------- the population ---
 // HIGH-GRADE GLIOMAS ONLY, as in the published study. The grade is not in any
@@ -78,8 +74,8 @@ hgg_ids = for line in (filter line in name_mapping do strings.equals(grade(line)
 
 // Paths built from the id, in the layout BraTS ships: one directory per case,
 // five files inside it. The five lists line up index-for-index by construction.
-// They are NOT sliced: `train_range` and `eval_range` index them directly, so
-// a case keeps the same index whichever range it falls in.
+// They are NOT sliced: `eval_range` indexes them directly, so a case keeps its
+// position in the HGG list and `case_053_*` on disk means position 53.
 path_of(id, modality) = concat(dataset_root, "/", id, "/", id, "_", modality, ".nii.gz")
 flair_paths = for id in hgg_ids do path_of(id, "flair")
 t1_paths    = for id in hgg_ids do path_of(id, "t1")
@@ -87,7 +83,6 @@ t1ce_paths  = for id in hgg_ids do path_of(id, "t1ce")
 t2_paths    = for id in hgg_ids do path_of(id, "t2")
 gt_paths    = for id in hgg_ids do path_of(id, "seg")
 
-train_range = range(train_start, train_start + train_count)
 eval_range  = range(eval_start,  eval_start  + eval_count)
 
 // ------------------------------------------------------------ parameters ---
@@ -107,26 +102,26 @@ modalities_of(i) =
     ReadImage(index(t1ce_paths,  i)),
     ReadImage(index(t2_paths,    i)) ]
 
-modality_names = ["FLAIR", "T1", "T1CE", "T2"]
+// The order of the four is not a convention: it is the channel order the model
+// was trained with, recorded as `modalities` in the work root's manifest. Pass
+// them in another order and the network reads T1 as FLAIR.
 
-// BraTS labels the tumour tissue classes 1, 2 and 4. The study is about the
-// WHOLE tumour, so the label is flattened to one foreground class here rather
-// than training a three-class model and merging afterwards: nnU-Net wants
-// 0 = background, 1 = foreground, and this keeps the learned target and the
-// swept target the same shape.
-whole_tumour_label(path) = BinaryThreshold(ReadImage(path), 1, 4, 1, 0)
-
+// Exported files are named by POSITION in the HGG list, so `case_053_*` on disk
+// is position 53 and the figures can be traced back to a case id.
 case_name(i) = concat("case_", format_string("{:03.0f}", i))
 
-// A training case is [id, [modality, ...], label].
-train_case(i) = [ case_name(i), modalities_of(i), whole_tumour_label(index(gt_paths, i)) ]
-
-training_cases = for i in train_range do train_case(i)
-
 // ------------------------------------------------------------- the model ---
-model     = nnunet.train(training_cases, work_root, modality_names,
-                         nnunet_config, nnunet_folds, dataset_name,
-                         nnunet_device, nnunet_trainer)
+// NAMED, not retrained. `load_model` reads the manifest and the checkpoints
+// under `work_root` and hands back the model that is there; it goes nowhere near
+// the training path and writes nothing. The alternative -- restating the
+// `nnunet.train(...)` that produced the model -- decides "already trained" from
+// the trainer DIRECTORY rather than from the training data, so an expression
+// that differs even slightly can be handed a model trained on other cases
+// silently; and it runs nnU-Net's preprocessing over the training set
+// unconditionally, which needs those cases on disk and costs the memory of
+// materializing them. Experiment 1 of this artifact is the program that trains.
+model     = nnunet.load_model(work_root, nnunet_config, nnunet_trainer,
+                              nnunet_device)
 predictor = nnunet.make_predictor(model)
 
 // ----------------------------------------------------------- the pipeline ---
@@ -194,10 +189,8 @@ model_specificity = for i in cases do specificity(truth_of(i), reference_of(i))
 
 // ------------------------------------------------------------ statistics ---
 // Printed rather than derived into a yes/no, so the log records exactly which
-// cases trained and which were swept: equal starts mean the in-sample run.
-print "n_train_cases"       train_count
+// cases were swept.
 print "n_cases"             eval_count
-print "train_start"         train_start
 print "eval_start"          eval_start
 
 // Read these FIRST: they bound everything below. A sweep scored against a model
