@@ -1878,9 +1878,13 @@ def intensity(model: object) -> sitk.Image:
     if img.GetNumberOfComponentsPerPixel() == 1:
         return _as_float_image(img)
 
-    red_channel = sitk.VectorIndexSelectionCast(img, 0)
-    green_channel = sitk.VectorIndexSelectionCast(img, 1)
-    blue_channel = sitk.VectorIndexSelectionCast(img, 2)
+    # To FLOAT first. The channels of an 8-bit colour image come back 8-bit, and
+    # SimpleITK casts the scalar operand to the image's type before multiplying:
+    # every weight is below 1, so each product came out zero and the luminance of
+    # any integer image was a black image.
+    red_channel = _as_float_image(sitk.VectorIndexSelectionCast(img, 0))
+    green_channel = _as_float_image(sitk.VectorIndexSelectionCast(img, 1))
+    blue_channel = _as_float_image(sitk.VectorIndexSelectionCast(img, 2))
     return sitk.Add(
         sitk.Multiply(0.2126, red_channel),
         sitk.Add(
