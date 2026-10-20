@@ -703,7 +703,7 @@ Source: https://github.com/VoxLogicA-Project/VoxLogicA-2
 
 **Additional requirements.** No proprietary software, and no licence to accept:
 everything the artifact installs is fetched by `bootstrap.py` from pinned,
-hash-checked versions. Two things are not in the TACAS VM's standard image:
+hash-checked versions. Experiment 4 needs two things the other three do not:
 
 - **A CUDA GPU, for experiment 4 only.** It loads a trained nnU-Net and predicts
   with it. Setting `nnunet_device = "cpu"` in the program removes the
@@ -725,9 +725,9 @@ Not tried on arm64, macOS or Windows: the lock was resolved against the Linux
 x86-64 wheels. `bootstrap.py` fetches its own interpreter, so the host's Python
 does not matter.
 
-**Packaging.** Plain files to copy into the TACAS VM -- no VM image and no
-Docker. There is one build command (`./voxlogica --help`, section A) and one run
-command per experiment (section C).
+**Packaging.** Plain files: unpack the archive and run in place. Nothing to
+import and nothing to install by hand -- one build command (`./voxlogica
+--help`, section A) and one run command per experiment (section C).
 
 **If you have no GPU**, experiments 1, 2 and 3 are the subset to run: about an
 hour together, and they carry the paper's symbolic results. Experiment 4 is the
@@ -789,13 +789,13 @@ and meanwhile read section B -- short, now that the data ships.
 | | |
 |---|---|
 | Disk | 25 GB free (venv 8 GB, ~5 GB of results store per sweep; the artifact itself, image data included, is under 500 MB) |
-| RAM, measured peak | depends on parallelism. At 24 threads: experiment 2: 8.8 GB; 3: 4.5 GB. At 4 threads (`--threads 4`): experiment 1: 1.2 GB; 2: 1.9 GB; 3: 2.4 GB. Experiment 4 is run at `--threads 4`, as section C gives it, and peaks at **7.6 GB**. A VM with 8 GB runs experiments 1, 2 and 3; **16 GB runs all four** |
+| RAM, measured peak | depends on parallelism. At 24 threads: experiment 2: 8.8 GB; 3: 4.5 GB. At 4 threads (`--threads 4`): experiment 1: 1.2 GB; 2: 1.9 GB; 3: 2.4 GB. Experiment 4 is run at `--threads 4`, as section C gives it, and peaks at **7.6 GB**. 8 GB runs experiments 1, 2 and 3; **16 GB runs all four** |
 | CPU | any; the engine uses every core it finds. Times in this README are from a 24-core machine |
 | GPU | **experiment 4 only** (`nnunet_device = "cuda"`). Without one it can run on CPU -- set the device to `"cpu"` -- but we have not timed that |
 | Network | once, during bootstrap; every download is version-pinned and hash-checked |
 | OS | Linux x86-64 is what we measured on. `bootstrap.py` fetches its own interpreter, so the host Python does not matter |
 
-In a virtual machine: experiments 1, 2 and 3 fit, measured in an Ubuntu 22.04
+On a small machine, experiments 1, 2 and 3 fit: measured in an Ubuntu 22.04
 container with 4 cores, 8 GB and no GPU -- experiment 1 in 77 min, 2 in 31 s,
 3 in 3 min.
 
