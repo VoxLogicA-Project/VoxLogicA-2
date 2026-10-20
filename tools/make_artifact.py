@@ -166,9 +166,8 @@ PROGRAMS: list[dict] = [
             "cases: three planes, and for each plane the FLAIR, the segmentation "
             "and the ground truth",
             "those PNGs are 90 DIFFERENT images -- grey anatomy, with a white mask "
-            "on the segmentation and ground-truth ones. All black, or nine "
-            "identical files per case, means the `Extract` index is being dropped: "
-            "the engine that ships here fixed that, an older one did not",
+            "on the segmentation and ground-truth ones: three planes of one case, "
+            "and the same plane across the ten",
         ],
         "total_files": 90,
     },
@@ -212,9 +211,9 @@ PROGRAMS: list[dict] = [
             "worst cases: three planes, and for each plane FOUR images -- `_flair`, "
             "`_predicted` (the sweep), `_nnunet` (the learned reference it was scored "
             "against) and `_truth` (the annotation, for the reader's own judgement)",
-            "those PNGs are 120 DIFFERENT images -- grey anatomy with a white mask on "
-            "the three masked ones. All black means the `Extract` index is being "
-            "dropped; the engine that ships here fixed that",
+            "those PNGs are 120 DIFFERENT images -- grey anatomy, with a white mask "
+            "on the three masked ones: the sweep, the learned reference and the "
+            "annotation, at the same plane",
         ],
         "total_files": 120,
     },
@@ -813,7 +812,7 @@ here.
 If all six steps pass, the artifact is ready for the full evaluation. A good
 next move is to start experiment 1 in the background -- it needs no dataset
 either, and on a four-core machine it takes about 7 minutes and peaks under
-2 GB -- and meanwhile read section B, short now that the data ships.
+2 GB -- and meanwhile read section B.
 
 ## Resources
 
