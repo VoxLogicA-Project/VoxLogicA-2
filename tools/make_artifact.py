@@ -742,7 +742,7 @@ one that needs the GPU, and it is the comparison against a learned reference.
 
 ## Smoke test (early light review) -- about 5 minutes, no dataset
 
-**These five steps are the whole smoke test.** They need no BraTS, no GPU
+**These six steps are the whole smoke test.** They need no BraTS, no GPU
 and no large machine, and they are enough to tell whether the artifact is sound.
 None of the four experiments has to run to pass it; they belong to the full
 evaluation, and the shortest of them still takes about an hour.
@@ -757,7 +757,7 @@ sha256sum -c SHA256SUMS | grep -vc ': OK$'                 # 0
 # 3. every shipped program is well-formed against the engine that ships with it
 for p in doc/gallery/programs/*/*.imgql; do
   ./voxlogica run --no-serve --no-execute "$p" && echo "ok $p"
-done                                                       # ok, five times
+done                                                       # ok, six times
 
 # 4. the engine actually computes -- one second, no data
 ./voxlogica run --no-serve doc/gallery/programs/default/default-range-map.imgql
@@ -770,7 +770,25 @@ squares=[0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0, 64.0, 81.0, 100.0, 121.0, 1
 ```
 
 ```bash
-# 5. the measurement suite runs -- about 3 seconds, still no data
+# 5. an image in, an image out -- the hello world, about a second
+./voxlogica run --no-serve doc/gallery/programs/hello/hello-greyscale.imgql
+```
+
+That one must print
+
+```
+min=18.410999298095703
+max=182.37600708007812
+mean=85.00000127156575
+```
+
+and write `output/hello-greyscale/hello-greyscale.png`: the input's three colour
+bars as three greys, 54, 182 and 18. It is the shortest program here that reads
+an image, computes over it and writes a result -- section H says what to change
+in it.
+
+```bash
+# 6. the measurement suite runs -- about 3 seconds, still no data
 python3 tools/perf/suite.py --hold 0 --reps 1 --warm-runs 1 --experiments cache \\
     --program doc/gallery/programs/default/default-range-map.imgql \\
     --out perf/smoke --work-dir perf/work
@@ -782,11 +800,12 @@ is the apparatus the paper's performance figures were taken with; section G
 says how to point it at a real experiment.
 
 Step 3 parses, reduces and type-checks each program without computing anything;
-step 4 computes; step 5 measures. Together they show that the environment is
-complete, that the engine works end to end, and that the measurements in the
-paper can be retaken here.
+steps 4 and 5 compute, the second of them on an image and back out to a file;
+step 6 measures. Together they show that the environment is complete, that the
+engine works end to end, and that the measurements in the paper can be retaken
+here.
 
-If all five steps pass, the artifact is ready for the full evaluation. A good
+If all six steps pass, the artifact is ready for the full evaluation. A good
 next move is to start experiment 1 in the background -- it needs no dataset
 either, but takes 51 minutes on 24 cores and 77 on 4, at 1.2 GB of memory --
 and meanwhile read section B -- short, now that the data ships.
