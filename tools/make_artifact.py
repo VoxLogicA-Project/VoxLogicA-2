@@ -624,8 +624,9 @@ def write_readme(out: Path, paths: list[tuple[str, str, str]],
         if spec.get("needs_gpu"):
             data_line += ("\nA CUDA GPU is assumed (`nnunet_device = \"cuda\"` in the\n"
                           "program), and it uses 2.5 GB of GPU memory -- measured, so a card\n"
-                          "with about 3 GB free is enough. Set the device to `\"cpu\"` to run\n"
-                          "without one, and expect it to take very much longer.\n")
+                          "with about 3 GB free is enough. The device can be set to `\"cpu\"`,\n"
+                          "but a test run of ours spent 90 minutes without finishing a single\n"
+                          "prediction, so we cannot say what that path costs.\n")
         cmd = f"./voxlogica run {spec['path']}"
         if spec.get("run_flags"):
             cmd += " " + spec["run_flags"]
@@ -821,7 +822,7 @@ either, and on a four-core machine it takes about 7 minutes and peaks under
 | Disk | 25 GB free (venv 8 GB, ~5 GB of results store per sweep; the artifact itself, image data included, is under 500 MB) |
 | RAM, measured peak | depends on parallelism. At 24 threads: experiment 2: 8.8 GB; 3: 4.5 GB. At 4 threads (`--threads 4`): experiment 1: 1.8 GB; 2: 1.9 GB; 3: 2.4 GB. Experiment 4 is run at `--threads 4`, as section C gives it, and peaks at **7.6 GB**. 8 GB runs experiments 1, 2 and 3; **16 GB runs all four** |
 | CPU | any; the engine uses every core it finds. Each time in this README names the machine it was taken on |
-| GPU | **experiment 4 only** (`nnunet_device = "cuda"`), and it needs **2.5 GB of GPU memory**, measured -- any CUDA card with about 3 GB free will do. Measured with driver 595.71.05; the shipped wheels are the CUDA 12.8 build (`torch 2.10.0`, `nvidia-cuda-runtime-cu12 12.8.90`). Without a GPU it can run on CPU -- set the device to `"cpu"` -- but we have not timed that |
+| GPU | **experiment 4 only** (`nnunet_device = "cuda"`), and it needs **2.5 GB of GPU memory**, measured -- any CUDA card with about 3 GB free will do. Measured with driver 595.71.05; the shipped wheels are the CUDA 12.8 build (`torch 2.10.0`, `nvidia-cuda-runtime-cu12 12.8.90`). Without one, the device can be set to `"cpu"`: the program runs, but a test run of ours spent 90 minutes without finishing a single prediction, so we cannot say what that path costs |
 | Network | once, during bootstrap; every download is version-pinned and hash-checked |
 | OS | Linux x86-64 is what we measured on. `bootstrap.py` fetches its own interpreter, so the host Python does not matter |
 
