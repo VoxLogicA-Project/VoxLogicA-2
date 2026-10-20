@@ -241,6 +241,14 @@ def load_model(**kwargs: Any) -> dict[str, Any]:
             device=device,
             trainer=trainer,
         )
+        # Ask nnU-Net's postprocessing question of the fold on disk. The key has
+        # to be ABSENT when it is put: `build_model` always carries a
+        # `postprocessing` key, and `resolve_postprocessing` reads a key that is
+        # present and None as "already asked, unanswerable" and returns at once.
+        # Left as it was, every prediction from a loaded model silently skipped
+        # nnU-Net's own decision and predicted raw -- measured on BraTS: two of
+        # twenty cases moved by more than 0.2 Dice.
+        del model["postprocessing"]
         model["postprocessing"] = runtime.resolve_postprocessing(model)
         return model
     except Exception as exc:  # noqa: BLE001
