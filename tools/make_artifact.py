@@ -71,6 +71,12 @@ ENGINE: list[str] = [
     # Not an experiment: the one-second program the smoke test runs to
     # see the engine COMPUTE something, rather than only parse and typecheck.
     "doc/gallery/programs/default/default-range-map.imgql",
+    # The hello world, with its input: the shortest program that reads an image,
+    # computes something over it and writes a result. It is what someone starts
+    # from to write their own, which is why it ships and has a section of its own
+    # in the README.
+    "doc/gallery/programs/hello/hello-greyscale.imgql",
+    "doc/gallery/programs/hello/hello-input.png",
 ]
 
 #: The measurement suite. The paper's performance figures were taken with this
@@ -699,7 +705,8 @@ Source: https://github.com/VoxLogicA-Project/VoxLogicA-2
 
 ## Badges, requirements, platforms
 
-**Badges applied for: Available and Functional.** Reusable is **not** requested.
+**Badges applied for: Available and Reusable**, and Functional, which Reusable
+subsumes.
 
 **Additional requirements.** No proprietary software, and no licence to accept:
 everything the artifact installs is fetched by `bootstrap.py` from pinned,
@@ -1054,6 +1061,61 @@ experiments use; it defaults to case 001.
 
 Your numbers will not be ours -- these were taken on 24 cores. The shape is
 the claim: how the time moves with the width, and what the cache is worth.
+
+---
+
+## H. Writing a program of your own
+
+`doc/gallery/programs/hello/hello-greyscale.imgql` is the shortest program that
+reads an image, computes something over it and writes a result. Its input ships
+beside it -- 240x180, three colour bars.
+
+```bash
+./voxlogica run doc/gallery/programs/hello/hello-greyscale.imgql
+```
+
+Expected: exit status 0, three printed goals and one written file.
+
+| | value | why that value |
+|---|---|---|
+| `min` | 18.410999 | pure blue, 0.0722 x 255 |
+| `max` | 182.37601 | pure green, 0.7152 x 255 |
+| `mean` | 85.000001 | equal thirds, and the three weights sum to 1 |
+| `output/hello-greyscale/hello-greyscale.png` | 54, 182, 18 | the three bars as three greys |
+
+Those weights are the whole content of the program: `intensity` is ITU-R BT.709
+luminance, so the greys it produces are not the average of the channels.
+
+Four things to try on it:
+
+1. **Delete the `save` goal.** The file is not written and the three numbers
+   still print. A goal is a request for a value; the engine computes what the
+   goals need and nothing else.
+2. **Point `input_path` at another image.** Anything SimpleITK reads -- PNG,
+   JPEG, NIfTI, DICOM -- and in any dimension; nothing in the program is 2D.
+3. **Replace `intensity(colour)` with `green(colour)`.** One channel instead of
+   the weighted sum, and `max` becomes 255.
+4. **Add a goal:** `print "sigma" index(stats, 3)`. Nothing else recomputes --
+   equal expressions are the same node in the graph, so the statistics are
+   already there.
+
+To find out what else can be written:
+
+```bash
+./voxlogica list-primitives       # every primitive, by namespace, as JSON
+./voxlogica typecheck <program>   # check a program without running it
+```
+
+`list-primitives` is the reference: name, namespace, arity and the docstring the
+kernel carries. The kernels themselves are under
+`implementation/python/voxlogica/primitives/<namespace>/`, one package per
+namespace, and a new namespace is a directory with a `get_primitives()` -- which
+is how `vox1`, `simpleitk` and `nnunet` are built, with nothing special about
+any of them.
+
+The four experiments are the other examples, and they are written to be read:
+each starts with a comment saying what the program is for and what to notice in
+how it is written.
 """, encoding="utf-8")
 
 

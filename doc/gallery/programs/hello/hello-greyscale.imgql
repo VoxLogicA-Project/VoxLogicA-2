@@ -1,0 +1,40 @@
+// Hello, greyscale: the smallest program that does something to an image.
+// Read a colour PNG, take its luminance, write the result back out.
+//
+// WHAT TO NOTICE. Every line below is a DEFINITION, not a step. `grey` is what
+// the luminance of `colour` IS; nothing is computed until one of the goals at
+// the bottom asks for a value, and then the engine computes only what that
+// value needs. Delete the `save` goal and no file is written -- the rest still
+// prints.
+
+import "simpleitk"
+import "vox1"
+
+// The input ships beside this program: three colour bars, 240x180, 8-bit RGB.
+// Point this at any image SimpleITK can read -- PNG, JPEG, NIfTI, DICOM.
+input_path = "doc/gallery/programs/hello/hello-input.png"
+
+colour = ReadImage(input_path)
+
+// ITU-R BT.709 luminance: 0.2126 red + 0.7152 green + 0.0722 blue, the weights
+// that match what the eye does with each channel rather than averaging them.
+// A single-channel image passes straight through, so this is also a no-op on an
+// image that is already grey.
+grey = intensity(colour)
+
+// PNG stores integers. The input is 8-bit and `intensity` keeps that range, so
+// a cast is all this needs: rescaling instead would stretch the contrast and
+// hand back a different image.
+grey_png = Cast(grey, GetPixelIDValueFromString("sitkUInt8"))
+
+// min, max, mean, sigma, variance, sum, count -- in that order.
+stats = Statistics(grey)
+
+print "min"  index(stats, 0)
+print "max"  index(stats, 1)
+print "mean" index(stats, 2)
+
+// `save` is a goal like `print`: it asks for a value and writes it where it
+// says. The path is a literal; when it has to be computed, call the writer as
+// an ordinary expression instead -- `WriteImage(grey_png, <path>)`.
+save "output/hello-greyscale/hello-greyscale.png" grey_png
