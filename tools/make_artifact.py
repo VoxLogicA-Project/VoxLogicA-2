@@ -51,6 +51,10 @@ MARKER = ".voxlogica-artifact"
 #: the artifact, so a program's relative imports and paths still resolve.
 ENGINE: list[str] = [
     "LICENSE",                                # GPL-3.0; the AEC needs one to evaluate at all
+    # The container recipe. The image itself is published beside this archive --
+    # it is 8.6 GB -- and this is what it is built from, so a reviewer can read
+    # what went in and rebuild it.
+    "Dockerfile",
     "voxlogica",                              # the launcher
     "bootstrap.py",                           # builds .venv, fetches uv
     ".python-version",                        # 3.14t -- free-threaded, required
@@ -588,6 +592,10 @@ def write_readme(out: Path, paths: list[tuple[str, str, str]],
     n_locked = (len(re.findall(r"^[a-zA-Z].*==", lock.read_text(encoding="utf-8"),
                                re.MULTILINE)) if lock.exists() else 0)
     n_dataset_files = sum(1 for f in (out / DATASET_DEST).rglob("*") if f.is_file())
+    #: The image is published per artifact tag, so the commands name the tag the
+    #: README was generated from rather than a moving `latest`.
+    image_tag = (git("describe", "--tags", "--abbrev=0") or "latest").replace(
+        "tacas-artifact-", "")
     """Write the reviewer's instructions: one numbered section per experiment.
 
     Generated rather than kept by hand, so it cannot drift from the manifest:
@@ -729,6 +737,7 @@ downloads about 3 GB of pinned packages. Nothing else reaches the network.
 
 | | |
 |---|---|
+| all four experiments | the container image, from the archive beside this one |
 | all four experiments | Ubuntu 26.04, kernel 7.0, 24 cores, 61 GB, one CUDA GPU |
 | the smoke test and experiments 1, 2 and 3 | Ubuntu 25.04 in a container, 4 cores, 8 GB, no GPU |
 | experiments 1, 2 and 3 | Ubuntu 22.04 in a container, 4 cores, 8 GB, no GPU |
@@ -835,6 +844,61 @@ it peaks at **7.6 GB**, so **16 GB is enough** and 8 GB leaves no margin. The
 peak is the sweep's own working set -- twenty percentile-ranked volumes and
 twenty-one candidate segmentations each -- so the ask is a 16 GB machine with a
 CUDA device, not a large one.
+
+---
+
+## Running it in a container
+
+A container image is published beside this archive, at the DOI above:
+`voxlogica-tacas-image.tar.gz`, 5.0 GB compressed and 10.3 GB loaded. It carries
+the engine, its pinned dependencies, the BraTS cases and the trained weights,
+all installed when the image was built -- so nothing about your machine decides
+what runs, and the container needs no network at all. `Dockerfile` in this
+archive is what it was built from.
+
+```bash
+docker load -i voxlogica-tacas-image.tar.gz
+mkdir -p out store
+```
+
+Then one command per experiment, each on one line. `out` collects the images the
+programs write and `store` keeps the engine's results store on your disk, where
+it survives the container and makes a second run instant:
+
+```bash
+# the one-second program, to see it work
+docker run --rm -v "$PWD/out:/artifact/output" -v "$PWD/store:/root/.voxlogica" voxlogica-tacas:{image_tag} ./voxlogica run doc/gallery/programs/hello/hello-greyscale.imgql
+
+# experiment 1 -- about 7 minutes on four cores
+docker run --rm -v "$PWD/out:/artifact/output" -v "$PWD/store:/root/.voxlogica" voxlogica-tacas:{image_tag} ./voxlogica run doc/gallery/programs/nnunet/nnunet-circle-segmentation.imgql
+
+# experiment 2 -- five cases
+docker run --rm -v "$PWD/out:/artifact/output" -v "$PWD/store:/root/.voxlogica" voxlogica-tacas:{image_tag} ./voxlogica run doc/gallery/programs/brats2020/brats-five-cases.imgql
+
+# experiment 3 -- the sweep
+docker run --rm -v "$PWD/out:/artifact/output" -v "$PWD/store:/root/.voxlogica" voxlogica-tacas:{image_tag} ./voxlogica run doc/gallery/programs/simpleitk/brats-threshold-sweep-aiim.imgql
+
+# experiment 4 -- the one that needs the GPU
+docker run --rm --gpus all -v "$PWD/out:/artifact/output" -v "$PWD/store:/root/.voxlogica" voxlogica-tacas:{image_tag} ./voxlogica run doc/gallery/programs/nnunet/brats-threshold-sweep-nnunet.imgql --threads 4
+```
+
+Four things to know:
+
+1. **`--gpus all` needs the NVIDIA Container Toolkit** on the host, which is how
+   Docker reaches a GPU at all. With podman the same thing is
+   `--device nvidia.com/gpu=all`. Everything else here runs without a GPU.
+2. **Experiment 2 writes its one file beside its program**, inside the
+   container, not under `output/`. Leave out `--rm` and `docker cp` it out, or
+   read the printed goals, which are what section C compares.
+3. **podman takes these commands unchanged**, in place of `docker`.
+4. **The rest of this README applies inside the container as it stands**: the
+   expected values, the file counts, the sections on the store and on
+   reproducibility. The working directory is `/artifact`, and
+   `sha256sum -c SHA256SUMS` passes in there too.
+
+The native path -- unpack this archive and run `./voxlogica` -- is the one the
+rest of this README describes, and it is tested just as carefully. The image is
+for a reviewer who would rather not have the host decide anything.
 
 ---
 
